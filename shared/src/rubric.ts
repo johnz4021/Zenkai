@@ -48,7 +48,13 @@ export interface GeneratedProblem {
   /** Declared model paths for `is_model_path` on file_save events. */
   model_paths: string[];
   /** Debugging rounds: where the planted bug lives (ground truth, free). */
-  planted_bug?: { file: string; line: number; description: string };
+  planted_bug?: {
+    file: string;
+    line: number;
+    description: string;
+    /** Exact full name of the one test the bug breaks — validator asserts it. */
+    failing_test: string;
+  };
   spec: string;
   /** Scripted mutation schedule — deterministic, never LLM-timed. */
   mutations: { offset_ms: number; new_spec: string }[];

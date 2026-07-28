@@ -14,3 +14,4 @@ coverage/
 spikes/**/out/
 .gstack/
 spikes/spike2-extension/ext-dir/
+problems/
