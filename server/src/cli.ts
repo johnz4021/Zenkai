@@ -36,7 +36,18 @@ if (cmd === 'generate') {
   const report = validateProblem(path.resolve(target ?? '.'));
   console.log(JSON.stringify(report, null, 2));
   process.exit(report.ok ? 0 : 2);
+} else if (cmd === 'session') {
+  const { runSession } = await import('./session.js');
+  await runSession({
+    repoRoot,
+    problemDir: path.resolve(target ?? path.join(repoRoot, 'problems', 'debugging-001')),
+    sessionId: process.env.IP_SESSION_ID ?? `sess-${Date.now()}`,
+    userId: process.env.IP_USER_ID ?? 'u1',
+    port: 3200,
+    idePort: 3100,
+    autorunTests: process.env.IP_AUTORUN_TESTS === '1',
+  });
 } else {
-  console.error('usage: cli.ts generate [targetDir] | validate <repoDir>');
+  console.error('usage: cli.ts generate [targetDir] | validate <repoDir> | session <problemDir>');
   process.exit(64);
 }

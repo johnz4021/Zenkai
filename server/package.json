@@ -4,6 +4,8 @@
   "version": "0.0.1",
   "type": "module",
   "dependencies": {
-    "@interview-prep/shared": "*"
+    "@interview-prep/shared": "*",
+    "http-proxy": "^1.18.1",
+    "ws": "^8.21.1"
   }
 }
