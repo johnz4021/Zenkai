@@ -61,9 +61,9 @@ Write `problem.json` at the repo root, exactly this shape:
   "rubric": {
     "round_type": "debugging",
     "trigger": { "event": "test_run", "predicate": "first_failure" },
-    "window": { "duration_ms": 90000 },
+    "window": { "until": "test_run", "min_duration_ms": 30000, "duration_ms": 600000 },
     "labels": ["clarifying_question", "assumption_update", "immediate_edit", "test_run", "inactivity"],
-    "expectation": "<one sentence: what a strong candidate does in the 90s after first seeing the failure>"
+    "expectation": "<one sentence: what a strong candidate does between first seeing the failure and their next test run>"
   }
 }
 ```

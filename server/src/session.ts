@@ -12,7 +12,7 @@
  * iframe (eng review architecture rule).
  */
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -22,7 +22,7 @@ import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
 import { classify } from './classifier.js';
 import { claudeJudge } from './llm-judge.js';
 import { buildFeedback } from './feedback.js';
-import { buildGraphView, loadStore, recordSession, saveStore } from './gap-graph.js';
+import { buildGraphView, buildTargetNote, loadStore, recordSession, saveStore } from './gap-graph.js';
 import { sessionPage } from './chrome.js';
 import { TraceStore } from './trace-store.js';
 
@@ -34,6 +34,8 @@ export interface SessionConfig {
   port: number;
   idePort: number;
   autorunTests: boolean;
+  /** Generate the next (gap-targeted) problem when this session ends. */
+  prepareNext: boolean;
 }
 
 const IDE_IMAGE = 'gitpod/openvscode-server:latest';
@@ -185,6 +187,26 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       path.join(cfg.repoRoot, 'feedback', `${cfg.sessionId}.json`),
       JSON.stringify({ card, classification, view }, null, 2),
     );
+
+    // Close the memory loop: generate the NEXT problem now, aimed at the gap
+    // this session just surfaced. Detached and unwaited — it takes ~5 minutes
+    // and nobody is watching, so by the time they come back it is ready.
+    if (cfg.prepareNext) {
+      const note = buildTargetNote(view);
+      const child = spawn(
+        'npx',
+        ['tsx', path.join(cfg.repoRoot, 'server', 'src', 'cli.ts'), 'prepare'],
+        {
+          cwd: cfg.repoRoot,
+          detached: true,
+          stdio: 'ignore',
+          env: { ...process.env, IP_TARGET_NOTE: note ?? '', IP_USER_ID: cfg.userId },
+        },
+      );
+      child.unref();
+      console.log(`[session] preparing next problem in background${note ? ' (targeted)' : ''}`);
+    }
+
     return card;
   };
 

@@ -5,10 +5,14 @@ import { classify, extractWindow, findTrigger, mechanicalLabels } from './classi
 const rubric: Rubric = {
   round_type: 'debugging',
   trigger: { event: 'test_run', predicate: 'first_failure' },
-  window: { duration_ms: 90_000 },
+  // One debugging cycle: failure → next attempt, capped at 10 minutes.
+  window: { until: 'test_run', min_duration_ms: 30_000, duration_ms: 600_000 },
   labels: ['clarifying_question', 'assumption_update', 'immediate_edit', 'test_run', 'inactivity'],
   expectation: 'reads the failure before editing',
 };
+
+/** The old fixed-duration shape, kept to prove both still work. */
+const fixedWindowRubric: Rubric = { ...rubric, window: { duration_ms: 90_000 } };
 
 let n = 0;
 const ev = (type: TraceEvent['type'], ts: number, payload: unknown = null): TraceEvent => ({
@@ -43,11 +47,47 @@ describe('findTrigger (first_failure)', () => {
 });
 
 describe('extractWindow', () => {
-  it('bounds the window by duration and excludes the trigger itself', () => {
+  it('bounds a fixed window by duration and excludes the trigger itself', () => {
     const t = failedRun(10_000);
     const inside = ev('edit', 50_000);
     const outside = ev('edit', 101_000);
-    expect(extractWindow([t, inside, outside], rubric, t)).toEqual([inside]);
+    expect(extractWindow([t, inside, outside], fixedWindowRubric, t)).toEqual([inside]);
+  });
+
+  // REGRESSION (found by driving a real session in a browser): a genuine
+  // clarifying question arrived 272s after the failing test and fell outside
+  // the old 90s window, so the classifier could not see the good behavior it
+  // exists to reward. One debugging cycle must include it.
+  it('captures a clarifying question at +272s that the old 90s window missed', () => {
+    const t = failedRun(0);
+    const question = ev('utterance', 272_000, { text: 'is the deadline measured from now?' });
+    expect(extractWindow([t, question], fixedWindowRubric, t)).toEqual([]);
+    expect(extractWindow([t, question], rubric, t)).toEqual([question]);
+  });
+
+  it('closes the cycle on the next test run', () => {
+    const t = failedRun(0);
+    const edit = ev('edit', 60_000);
+    const rerun = greenRun(120_000);
+    const after = ev('edit', 200_000);
+    const w = extractWindow([t, edit, rerun, after], rubric, t);
+    expect(w).toEqual([edit, rerun]); // includes the closing attempt, excludes what follows
+  });
+
+  it('ignores an instant re-run inside min_duration_ms (re-reading the output)', () => {
+    const t = failedRun(0);
+    const peek = failedRun(5_000); // same failure, re-run just to look again
+    const think = ev('utterance', 60_000, { text: 'why is the boundary excluded?' });
+    const attempt = greenRun(200_000);
+    const w = extractWindow([t, peek, think, attempt], rubric, t);
+    expect(w.map((e) => e.type)).toEqual(['test_run', 'utterance', 'test_run']);
+  });
+
+  it('falls back to the hard cap when the cycle is never closed', () => {
+    const t = failedRun(0);
+    const inside = ev('edit', 500_000);
+    const beyondCap = ev('edit', 700_000);
+    expect(extractWindow([t, inside, beyondCap], rubric, t)).toEqual([inside]);
   });
 });
 

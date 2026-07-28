@@ -63,14 +63,20 @@ export function extractWindow(
   trigger: TraceEvent,
 ): TraceEvent[] {
   const start = trigger.ts;
-  let end = Number.POSITIVE_INFINITY;
-  if (rubric.window.duration_ms) end = start + rubric.window.duration_ms;
-  const until = rubric.window.until;
+  const hardEnd = rubric.window.duration_ms
+    ? start + rubric.window.duration_ms
+    : Number.POSITIVE_INFINITY;
+  // Do not let `until` slam the window shut immediately (e.g. an instant
+  // re-run just to re-read the failure output).
+  const earliestClose = start + (rubric.window.min_duration_ms ?? 0);
+
   const inRange = events
-    .filter((e) => e.ts > start && e.ts <= end)
+    .filter((e) => e.ts > start && e.ts <= hardEnd)
     .sort((a, b) => a.ts - b.ts);
+
+  const until = rubric.window.until;
   if (!until) return inRange;
-  const stopIdx = inRange.findIndex((e) => e.type === until);
+  const stopIdx = inRange.findIndex((e) => e.type === until && e.ts >= earliestClose);
   return stopIdx === -1 ? inRange : inRange.slice(0, stopIdx + 1);
 }
 

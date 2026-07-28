@@ -165,6 +165,39 @@ export function buildGraphView(store: GapStore, lastSessionId?: string): GraphVi
   };
 }
 
+/**
+ * Turn the graph into generator emphasis — this is what closes the memory loop.
+ *
+ * Without this the gap graph is a gap LOG: written every session, read by
+ * nobody, and the next problem is as random as the first. The product's whole
+ * claim is that session seven is smarter than session one, and this function
+ * is where that claim becomes mechanical.
+ *
+ * Returns undefined when there is nothing learned yet (session one), so the
+ * generator produces a neutral problem instead of chasing noise.
+ */
+export function buildTargetNote(view: GraphView): string | undefined {
+  const focus = view.active[0];
+  if (!focus) return undefined;
+  // One data point is an observation, not a pattern (design decision D1).
+  // Target it, but say so, so the generator does not over-fit to a fluke.
+  const confidence =
+    view.session_count < PATTERN_MIN_SESSIONS
+      ? `This is provisional: only ${view.session_count} session(s) so far, so treat it as a lead rather than an established pattern.`
+      : `This has fired ${focus.fired_count} times across ${view.session_count} sessions and is currently ${focus.state}.`;
+
+  return [
+    'TARGETING NOTE (from this candidate\'s history):',
+    `Their most active gap is: "${focus.description}"`,
+    confidence,
+    'Design the problem so this specific behavior is both LIKELY TO BE TRIGGERED and CLEARLY OBSERVABLE.',
+    'For example, if the gap is editing before reading the failure, make the failure output genuinely',
+    'informative so that reading it is rewarded and skipping it is costly. If the gap is going quiet,',
+    'make the bug one where stating an assumption out loud would obviously help.',
+    'Do NOT mention this note, the gap, or that anything is being measured anywhere in the spec or the repo.',
+  ].join('\n');
+}
+
 // ---- persistence (JSON per user; SQLite when multi-user arrives) ----
 
 export function loadStore(dir: string, userId: string): GapStore {

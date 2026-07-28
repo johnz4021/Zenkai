@@ -25,9 +25,27 @@ export interface RubricTrigger {
   predicate?: 'first_occurrence' | 'first_failure';
 }
 
+/**
+ * A measurement window opens at the trigger and closes on whichever comes
+ * first: the `until` event (not before `min_duration_ms`) or `duration_ms`.
+ *
+ * Why not a plain duration: a fixed 90s window was measured live to capture
+ * only the candidate's REFLEX. A real clarifying question arrived at +272s
+ * and was invisible, so the tool could not observe the behavior it exists to
+ * reward. Closing on the next test run instead means the window is one
+ * DEBUGGING CYCLE — failure to next attempt — which is semantically real
+ * rather than an arbitrary number.
+ *
+ * `min_duration_ms` guards the degenerate case where someone re-runs the
+ * suite seconds later just to re-read the output, which would otherwise slam
+ * the window shut before anything happened.
+ */
 export interface RubricWindow {
-  /** Fixed duration, or open until a closing event type fires. */
+  /** Hard cap. Window closes here regardless. */
   duration_ms?: number;
+  /** Window will not close on `until` before this much time has passed. */
+  min_duration_ms?: number;
+  /** Closing event type (e.g. the next test_run = next attempt). */
   until?: TraceEventType;
 }
 
