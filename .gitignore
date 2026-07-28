@@ -12,3 +12,4 @@ coverage/
 
 # spike throwaway output
 spikes/**/out/
+.gstack/

@@ -1,0 +1,9 @@
+{
+  "name": "spike1-iframe",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Spike 1: can openvscode-server be framed under a same-origin proxy? THROWAWAY.",
+  "dependencies": {
+    "http-proxy": "^1.18.1"
+  }
+}
