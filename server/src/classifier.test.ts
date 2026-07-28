@@ -146,3 +146,46 @@ describe('classify end-to-end (fake judge)', () => {
     expect(result.labels.map((l) => l.label)).toEqual(['immediate_edit']);
   });
 });
+
+describe('nudge contamination (interviewer posture A)', () => {
+  const nudge = (ts: number) =>
+    ev('interviewer', ts, { text: 'have another look at the index', kind: 'answer', nudge: true, unprompted: false });
+  const neutralTurn = (ts: number) =>
+    ev('interviewer', ts, { text: '12 minutes left. Leading theory?', kind: 'pressure', nudge: false, unprompted: true });
+
+  it('marks a label whose only evidence follows a nudge', async () => {
+    const events = [failedRun(10_000), nudge(20_000), ev('edit', 30_000, { path: 'a.ts' })];
+    const result = await classify(events, rubric, 'spec', noJudge);
+    const edit = result.labels.find((l) => l.label === 'immediate_edit');
+    expect(edit?.contaminated).toBe(true);
+  });
+
+  it('leaves labels clean when the interviewer only applied pressure', async () => {
+    const events = [failedRun(10_000), neutralTurn(20_000), ev('edit', 30_000, { path: 'a.ts' })];
+    const result = await classify(events, rubric, 'spec', noJudge);
+    expect(result.labels.find((l) => l.label === 'immediate_edit')?.contaminated).toBeFalsy();
+  });
+
+  it('does not contaminate behavior that PRECEDED the nudge', async () => {
+    const events = [failedRun(10_000), ev('edit', 15_000, { path: 'a.ts' }), nudge(20_000)];
+    const result = await classify(events, rubric, 'spec', noJudge);
+    expect(result.labels.find((l) => l.label === 'immediate_edit')?.contaminated).toBeFalsy();
+  });
+
+  it('expires: one nudge does not blank the whole debugging cycle', async () => {
+    const events = [failedRun(10_000), nudge(20_000), ev('edit', 200_000, { path: 'a.ts' })];
+    const result = await classify(events, rubric, 'spec', noJudge);
+    expect(result.labels.find((l) => l.label === 'immediate_edit')?.contaminated).toBeFalsy();
+  });
+
+  it('keeps a label whose evidence is only PARTLY prompted', async () => {
+    const events = [
+      failedRun(10_000),
+      ev('pause', 15_000, { ms: 22_000 }),
+      nudge(20_000),
+      ev('pause', 30_000, { ms: 25_000 }),
+    ];
+    const result = await classify(events, rubric, 'spec', noJudge);
+    expect(result.labels.find((l) => l.label === 'inactivity')?.contaminated).toBeFalsy();
+  });
+});

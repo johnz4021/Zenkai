@@ -32,6 +32,51 @@ export interface LabelEvidence {
   label: SpecChangeLabel;
   /** (source, seq) refs into the trace — the two-line citation's raw material. */
   evidence: { source: string; seq: number; ts: number; note: string }[];
+  /**
+   * True when every piece of evidence landed in the shadow of an interviewer
+   * nudge. The behavior was PROMPTED, so it says nothing about what the
+   * candidate does on their own — it is reported but never counted.
+   */
+  contaminated?: boolean;
+}
+
+/**
+ * How long a nudge's influence lasts.
+ *
+ * Long enough to cover read → think → act after the interviewer narrowed the
+ * search space; short enough that one nudge does not swallow a whole ten
+ * minute debugging cycle and blank the session.
+ */
+export const NUDGE_CONTAMINATION_MS = 120_000;
+
+/** Interviewer turns that narrowed the search space, in ts order. */
+export function nudgeTimes(windowEvents: TraceEvent[]): number[] {
+  return windowEvents
+    .filter((e) => e.type === 'interviewer' && (e.payload as { nudge?: boolean })?.nudge === true)
+    .map((e) => e.ts)
+    .sort((a, b) => a - b);
+}
+
+/**
+ * Mark labels whose evidence is entirely downstream of a nudge.
+ *
+ * ALL evidence must be contaminated, not just some: if the candidate asked a
+ * clarifying question on their own AND another after a nudge, the label stands
+ * on the clean one.
+ */
+export function markContamination(
+  labels: LabelEvidence[],
+  windowEvents: TraceEvent[],
+): LabelEvidence[] {
+  const nudges = nudgeTimes(windowEvents);
+  if (nudges.length === 0) return labels;
+  const inShadow = (ts: number) =>
+    nudges.some((n) => ts >= n && ts - n <= NUDGE_CONTAMINATION_MS);
+  return labels.map((l) =>
+    l.evidence.length > 0 && l.evidence.every((e) => inShadow(e.ts))
+      ? { ...l, contaminated: true }
+      : l,
+  );
 }
 
 export interface Classification {
@@ -164,7 +209,7 @@ export async function classify(
   return {
     trigger,
     windowEvents,
-    labels: mechanicalLabels(windowEvents, judgments),
+    labels: markContamination(mechanicalLabels(windowEvents, judgments), windowEvents),
     trigger_occurred: true,
   };
 }

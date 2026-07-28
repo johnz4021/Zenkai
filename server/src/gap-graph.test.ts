@@ -97,3 +97,39 @@ describe('graph view', () => {
     expect(buildGraphView(s, 's5').newly_closed).toEqual([]);
   });
 });
+
+describe('contaminated labels never earn remediation credit', () => {
+  const record = (store: GapStore, id: string, contaminatedLabels: SpecChangeLabel[]) =>
+    recordSession(store, { ...session(id, []), contaminated_labels: contaminatedLabels }, {});
+
+  it('does not close a gap that only stayed quiet because we prompted them', () => {
+    let s = emptyStore('u1');
+    s = fire(s, 's1', ['immediate_edit']);
+    // Three triggered sessions where it did not fire — but in one of them the
+    // behavior showed up right after an interviewer nudge, so that session
+    // proves nothing either way.
+    s = record(s, 's2', []);
+    s = record(s, 's3', ['immediate_edit']);
+    s = record(s, 's4', []);
+    expect(s.gaps.immediate_edit).toBeDefined();
+    expect(s.gaps.immediate_edit?.closed_at).toBeUndefined();
+  });
+
+  it('still closes when the clean streak is genuinely clean', () => {
+    let s = emptyStore('u1');
+    s = fire(s, 's1', ['immediate_edit']);
+    s = record(s, 's2', []);
+    s = record(s, 's3', []);
+    s = record(s, 's4', []);
+    expect(s.gaps.immediate_edit?.closed_at).toBeDefined();
+  });
+
+  it('tolerates sessions recorded before the interviewer existed', () => {
+    let s = emptyStore('u1');
+    s = fire(s, 's1', ['inactivity']);
+    s = fire(s, 's2', []);
+    s = fire(s, 's3', []);
+    s = fire(s, 's4', []);
+    expect(s.gaps.inactivity?.closed_at).toBeDefined();
+  });
+});

@@ -27,6 +27,8 @@ export interface FeedbackFinding {
   description: string;
   citation: CitationLine[];
   delta_ms: number | null;
+  /** Shown, but excluded from the gap graph: the interviewer prompted it. */
+  contaminated: boolean;
 }
 
 export interface FeedbackCard {
@@ -70,6 +72,7 @@ export function buildFeedback(
       description: GAP_DESCRIPTIONS[l.label] ?? l.label.replace(/_/g, ' '),
       citation: lines,
       delta_ms: delta,
+      contaminated: Boolean(l.contaminated),
     };
   });
 

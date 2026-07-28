@@ -104,6 +104,7 @@ if (cmd === 'generate') {
     idePort: 3100,
     autorunTests: process.env.IP_AUTORUN_TESTS !== '0',
     prepareNext: process.env.IP_PREPARE_NEXT !== '0',
+    interviewer: process.env.IP_INTERVIEWER === '0' ? null : undefined,
   });
 } else {
   console.error(

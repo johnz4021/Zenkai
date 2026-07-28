@@ -20,3 +20,8 @@ traces/
 gaps/
 feedback/
 .ide-data/
+
+# build artifacts
+*.tsbuildinfo
+shared/dist/
+.ide-data/

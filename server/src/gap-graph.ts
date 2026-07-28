@@ -38,7 +38,14 @@ export interface SessionRecord {
   ts: number;
   round_type: string;
   trigger_occurred: boolean;
+  /** Clean labels only — contaminated ones are listed separately, never here. */
   labels_fired: SpecChangeLabel[];
+  /**
+   * Labels that fired only in the shadow of an interviewer nudge. Recorded so
+   * the streak can tell "they didn't do it" from "we prompted them, so we
+   * don't know". Absent on sessions recorded before the interviewer existed.
+   */
+  contaminated_labels?: SpecChangeLabel[];
 }
 
 export interface GapStore {
@@ -106,6 +113,13 @@ export function recordSession(
     if (gap.closed_at || gap.instances.length === 0) continue;
     if (recent.length < REMEDIATION_STREAK) continue;
     const streakClean = recent.every((s) => !s.labels_fired.includes(key as SpecChangeLabel));
+    // A session where this gap fired only after a nudge is UNINFORMATIVE, not
+    // clean. Counting it would hand out remediation credit for behavior we
+    // prompted — exactly the false positive T11 exists to prevent.
+    const streakContaminated = recent.some((s) =>
+      (s.contaminated_labels ?? []).includes(key as SpecChangeLabel),
+    );
+    if (streakContaminated) continue;
     // The gap must have existed BEFORE the streak began, or "3 clean sessions"
     // is just "we never saw it" wearing a suit.
     const firstOfStreak = recent[0];

@@ -69,6 +69,22 @@ export interface UtterancePayload {
 }
 
 /**
+ * A turn from the interviewer agent.
+ *
+ * `nudge` is the load-bearing field: true when the turn narrowed the search
+ * space for the candidate. Anything the candidate does shortly after a nudge
+ * was PROMPTED, not self-directed, so the classifier marks those labels
+ * contaminated instead of counting them for or against them.
+ */
+export interface InterviewerPayload {
+  text: string;
+  kind: 'answer' | 'pressure' | 'probe' | 'decline' | 'silent';
+  nudge: boolean;
+  /** True when the turn was unprompted (a pressure beat, not a reply). */
+  unprompted: boolean;
+}
+
+/**
  * Ordering helper: total order for classification. Same-source pairs use
  * exact `seq`; cross-source pairs fall back to `ts`. Cross-source events
  * within CROSS_SOURCE_AMBIGUITY_MS are "ambiguous" — callers must not

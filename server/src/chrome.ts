@@ -24,6 +24,7 @@ export function sessionPage(sessionId: string): string {
   #log { flex: 1; overflow-y: auto; padding: 10px 14px; }
   #log .u { margin: 0 0 8px; }
   #log .u b { color: var(--dim); font-weight: normal; }
+  #log .pending { color: var(--dim); }
   form { display: flex; border-top: 1px solid var(--line); }
   input { flex: 1; background: none; border: 0; color: inherit; font: inherit; padding: 10px 14px; outline: none; }
   form button { background: none; border: 0; border-left: 1px solid var(--line); color: var(--dim); padding: 0 14px; font: inherit; cursor: pointer; }
@@ -49,7 +50,7 @@ export function sessionPage(sessionId: string): string {
   <iframe src="/?folder=/home/workspace/problem"></iframe>
   <aside>
     <div id="log">
-      <p class="u"><b>notes</b> — think aloud here; questions and stated assumptions are part of the session record.</p>
+      <p class="u"><b>interviewer</b> — ask about the spec and intended behavior; you'll get an answer. Questions about where the bug is, you won't. Think aloud here too: questions and stated assumptions are part of the session record.</p>
       <p class="u"><b>observed</b> — edits, saves, file opens, ≥20s silences, this chat, and test runs made with the <b>Run Tests</b> button in the editor's status bar. Terminal commands are not observed. The suite runs once automatically at start.</p>
     </div>
     <div id="feedback"></div>
@@ -79,16 +80,42 @@ export function sessionPage(sessionId: string): string {
   setInterval(pollStatus, 3000);
   pollStatus();
 
+  // Interviewer turns arrive here, whether they answer something we asked or
+  // land unprompted. Server-driven: the chrome never decides what it says.
+  let lastSeq = -1;
+  const log = document.getElementById('log');
+  function say(who, text, cls) {
+    const p = document.createElement('p');
+    p.className = 'u' + (cls ? ' ' + cls : '');
+    p.innerHTML = '<b>' + who + '</b> ' + text.replace(/</g, '&lt;');
+    log.appendChild(p);
+    log.scrollTop = log.scrollHeight;
+    return p;
+  }
+  let thinkingEl = null;
+  async function pollMessages() {
+    try {
+      const r = await fetch('/api/messages?since=' + lastSeq);
+      const s = await r.json();
+      for (const m of s.messages) {
+        lastSeq = Math.max(lastSeq, m.seq);
+        if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
+        say('interviewer', m.text);
+      }
+      if (s.thinking && !thinkingEl) thinkingEl = say('interviewer', '…', 'pending');
+      if (!s.thinking && thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
+    } catch {}
+  }
+  setInterval(pollMessages, 2000);
+  pollMessages();
+
   document.getElementById('f').addEventListener('submit', async (e) => {
     e.preventDefault();
     const input = document.getElementById('msg');
     const text = input.value.trim();
     if (!text) return;
     input.value = '';
-    const p = document.createElement('p');
-    p.className = 'u';
-    p.innerHTML = '<b>you</b> ' + text.replace(/</g, '&lt;');
-    document.getElementById('log').appendChild(p);
+    say('you', text);
     await fetch('/api/utterance', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -130,6 +157,9 @@ export function sessionPage(sessionId: string): string {
       if (f.delta_ms != null) {
         const s = Math.round(f.delta_ms / 1000);
         html += '<p class="delta">&#8595; ' + Math.floor(s / 60) + 'm ' + (s % 60) + 's between the two</p>';
+      }
+      if (f.contaminated) {
+        html += '<p class="cite">Followed an interviewer nudge — recorded, but not counted toward your patterns.</p>';
       }
       html += '</div>';
     }

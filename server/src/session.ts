@@ -25,6 +25,7 @@ import { buildFeedback } from './feedback.js';
 import { buildGraphView, buildTargetNote, loadStore, recordSession, saveStore } from './gap-graph.js';
 import { sessionPage } from './chrome.js';
 import { TraceStore } from './trace-store.js';
+import { bugContext, claudeInterviewer, renderActivity, type Interviewer } from './interviewer.js';
 
 export interface SessionConfig {
   repoRoot: string;
@@ -36,7 +37,16 @@ export interface SessionConfig {
   autorunTests: boolean;
   /** Generate the next (gap-targeted) problem when this session ends. */
   prepareNext: boolean;
+  /** Injectable; omit for the real `claude -p` agent, null to run without one. */
+  interviewer?: Interviewer | null;
 }
+
+/** Nominal round length — what the interviewer's time pressure counts down. */
+const SESSION_LENGTH_MS = 45 * 60_000;
+/** Floor between unprompted pressure beats. An interviewer that talks every
+ *  minute stops being pressure and starts being noise. */
+const PRESSURE_INTERVAL_MS = 4 * 60_000;
+const PRESSURE_TICK_MS = 30_000;
 
 const IDE_IMAGE = 'gitpod/openvscode-server:latest';
 const CONTAINER = 'ip-session';
@@ -93,6 +103,15 @@ function ensureIdeDataDir(repoRoot: string): string {
   writeFileSync(path.join(userDir, 'settings.json'), body);
   writeFileSync(path.join(machineDir, 'settings.json'), body);
   return dataDir;
+}
+
+/** The debugging trigger: a test run that actually failed. */
+function hasFailingRun(events: TraceEvent[]): boolean {
+  return events.some((e) => {
+    if (e.type !== 'test_run') return false;
+    const code = (e.payload as { exit_code?: number | null } | null)?.exit_code;
+    return code !== 0 && code != null;
+  });
 }
 
 function ensureExtensionBuilt(repoRoot: string): string {
@@ -154,6 +173,61 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   });
 
   let ended = false;
+
+  // ---- interviewer ----
+  const { bug, bugFile } = bugContext(problem);
+  const interviewer =
+    cfg.interviewer === undefined
+      ? claudeInterviewer(path.join(cfg.repoRoot, 'prompts', 'interviewer.md'))
+      : cfg.interviewer;
+  const t0 = Date.now();
+  let lastInterviewerTs = t0;
+  let interviewerBusy = false;
+
+  /** One interviewer turn. `null` message = unprompted pressure beat. */
+  const runInterviewer = async (candidateMessage: string | null): Promise<void> => {
+    if (!interviewer || ended || interviewerBusy) return;
+    interviewerBusy = true;
+    try {
+      const events = store.readAll();
+      const now = Date.now();
+      const turn = await interviewer({
+        spec: problem.spec,
+        bug,
+        bugFile,
+        elapsedMs: now - t0,
+        remainingMs: SESSION_LENGTH_MS - (now - t0),
+        recentActivity: renderActivity(events, now),
+        transcript: events
+          .filter((e) => e.type === 'utterance' || e.type === 'interviewer')
+          .slice(-10)
+          .map((e) => ({
+            who: e.type === 'utterance' ? ('candidate' as const) : ('interviewer' as const),
+            text: String((e.payload as { text?: string })?.text ?? ''),
+          })),
+        candidateMessage,
+      });
+      if (turn.redacted) {
+        console.warn('[interviewer] leak guard fired — reply replaced');
+      }
+      if (!turn.say) return; // silence is a valid turn; nothing to record
+      lastInterviewerTs = Date.now();
+      store.emitChrome('interviewer', {
+        text: turn.say,
+        kind: turn.kind,
+        nudge: turn.nudge,
+        unprompted: candidateMessage === null,
+        ...(turn.redacted ? { redacted: true } : {}),
+      });
+    } catch (e) {
+      console.warn('[interviewer] turn failed:', String(e));
+    } finally {
+      interviewerBusy = false;
+    }
+  };
+
+  let pressureTimer: NodeJS.Timeout | null = null;
+
   const readBody = (req: http.IncomingMessage): Promise<string> =>
     new Promise((resolve) => {
       let b = '';
@@ -162,9 +236,15 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     });
 
   const finalize = async (): Promise<unknown> => {
+    if (pressureTimer) clearInterval(pressureTimer);
     store.emitChrome('session_end', {});
     const events: TraceEvent[] = store.readAll();
     const classification = await classify(events, problem.rubric, problem.spec, claudeJudge);
+
+    // Labels the interviewer prompted are reported but never counted — they
+    // measure our nudge, not the candidate.
+    const clean = classification.labels.filter((l) => !l.contaminated);
+    const contaminated = classification.labels.filter((l) => l.contaminated);
 
     let gapStore = loadStore(gapsDir, cfg.userId);
     gapStore = recordSession(
@@ -174,9 +254,10 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         ts: Date.now(),
         round_type: problem.round_type,
         trigger_occurred: classification.trigger_occurred,
-        labels_fired: classification.labels.map((l) => l.label),
+        labels_fired: clean.map((l) => l.label),
+        contaminated_labels: contaminated.map((l) => l.label),
       },
-      Object.fromEntries(classification.labels.map((l) => [l.label, l.evidence])),
+      Object.fromEntries(clean.map((l) => [l.label, l.evidence])),
     );
     saveStore(gapsDir, gapStore);
 
@@ -220,22 +301,36 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       const events = store.readAll();
       const counts: Record<string, number> = {};
       for (const e of events) counts[e.type] = (counts[e.type] ?? 0) + 1;
-      const triggerArmed = events.some(
-        (e) =>
-          e.type === 'test_run' &&
-          (e.payload as { exit_code?: number | null } | null)?.exit_code !== 0 &&
-          (e.payload as { exit_code?: number | null } | null)?.exit_code != null,
-      );
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(
-        JSON.stringify({ session_id: cfg.sessionId, counts, trigger_armed: triggerArmed }),
+        JSON.stringify({
+          session_id: cfg.sessionId,
+          counts,
+          trigger_armed: hasFailingRun(events),
+        }),
       );
     }
     if (url === '/api/utterance' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)) || '{}') as { text?: string };
       const ev = store.emitChrome('utterance', { text: body.text ?? '' });
+      // Do not make the candidate wait on a model round-trip to see their own
+      // message land; the reply arrives via /api/messages.
+      void runInterviewer(body.text ?? '');
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ seq: ev.seq }));
+      return res.end(JSON.stringify({ seq: ev.seq, pending: Boolean(interviewer) }));
+    }
+    if (url.startsWith('/api/messages')) {
+      const since = Number(new URL(url, 'http://x').searchParams.get('since') ?? -1);
+      const messages = store
+        .readAll()
+        .filter((e) => e.type === 'interviewer' && e.seq > since)
+        .map((e) => ({
+          seq: e.seq,
+          ts: e.ts,
+          ...(e.payload as Record<string, unknown>),
+        }));
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ messages, thinking: interviewerBusy }));
     }
     if (url === '/api/end' && req.method === 'POST') {
       if (ended) {
@@ -294,6 +389,18 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     });
     server.listen(cfg.port, resolve);
   });
+  // Unprompted pressure beats. Only once the round is genuinely underway —
+  // before the first failing run there is nothing to apply pressure about.
+  if (interviewer) {
+    pressureTimer = setInterval(() => {
+      if (ended || interviewerBusy) return;
+      if (!hasFailingRun(store.readAll())) return;
+      if (Date.now() - lastInterviewerTs < PRESSURE_INTERVAL_MS) return;
+      void runInterviewer(null);
+    }, PRESSURE_TICK_MS);
+    pressureTimer.unref();
+  }
+
   console.log(`[session] ${cfg.sessionId}`);
   console.log(`[session] open   http://localhost:${cfg.port}/session`);
   console.log('[session] Ctrl+C tears down the container');
