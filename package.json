@@ -1,0 +1,19 @@
+{
+  "name": "interview-prep",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Interview prep for IDE-native rounds with a persistent gap graph",
+  "workspaces": [
+    "shared",
+    "server",
+    "extension"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -b shared server extension"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}
