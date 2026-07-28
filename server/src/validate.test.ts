@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkManifest, parseVitestJson } from './validate.js';
+import { checkManifest, normalizeTestName, parseVitestJson } from './validate.js';
 import type { GeneratedProblem } from '@interview-prep/shared';
 
 const report = (failures: { status: string; fullName: string }[][]) =>
@@ -25,6 +25,23 @@ describe('parseVitestJson', () => {
   it('reports zero failures on a green run', () => {
     const json = report([[{ status: 'passed', fullName: 'a' }]]);
     expect(parseVitestJson(json).failed).toEqual([]);
+  });
+});
+
+describe('normalizeTestName', () => {
+  // REGRESSION: debugging-001 was rejected because vitest's fullName joins
+  // describe+test with a space while the manifest used " > ". Same test,
+  // different notation — a correct problem must not fail over punctuation.
+  it('treats " > " separators and plain spaces as the same name', () => {
+    const fromVitest = 'hold expiry keeps the units of an extended hold reserved past its original deadline';
+    const fromManifest = 'hold expiry > keeps the units of an extended hold reserved past its original deadline';
+    expect(normalizeTestName(fromVitest)).toBe(normalizeTestName(fromManifest));
+  });
+
+  it('still distinguishes genuinely different tests', () => {
+    expect(normalizeTestName('reserve > rejects overdraw')).not.toBe(
+      normalizeTestName('reserve > releases expired holds'),
+    );
   });
 });
 

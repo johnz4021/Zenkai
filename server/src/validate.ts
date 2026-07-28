@@ -45,6 +45,21 @@ export function parseVitestJson(jsonText: string): { failed: string[]; total: nu
   return { failed, total: data.numTotalTests ?? total };
 }
 
+/**
+ * Test names arrive in two notations: vitest's `fullName` joins describe and
+ * test with a single SPACE ("hold expiry keeps units reserved"), while humans
+ * and generators write the conventional separator ("hold expiry > keeps units
+ * reserved"). Normalize both before comparing, or a correct problem gets
+ * rejected over punctuation. Exported for tests.
+ */
+export function normalizeTestName(name: string): string {
+  return name
+    .replace(/\s*>\s*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
 /** Pure manifest checker. Exported for tests. */
 export function checkManifest(problem: GeneratedProblem, repoDir: string): string[] {
   const failures: string[] = [];
@@ -112,14 +127,14 @@ export function validateProblem(repoDir: string): ValidationReport {
   if (total < 8) failures.push(`only ${total} tests — prompt requires >= 8`);
   if (failed.length !== 1) {
     failures.push(`expected exactly 1 failing test, got ${failed.length}: [${failed.join(' | ')}]`);
-  } else if (
-    problem.planted_bug &&
-    failed[0] !== problem.planted_bug.failing_test &&
-    !failed[0]?.includes(problem.planted_bug.failing_test)
-  ) {
-    failures.push(
-      `failing test "${failed[0]}" is not the manifest's "${problem.planted_bug.failing_test}"`,
-    );
+  } else if (problem.planted_bug) {
+    const observed = normalizeTestName(failed[0] ?? '');
+    const claimed = normalizeTestName(problem.planted_bug.failing_test);
+    if (observed !== claimed && !observed.includes(claimed) && !claimed.includes(observed)) {
+      failures.push(
+        `failing test "${failed[0]}" is not the manifest's "${problem.planted_bug.failing_test}"`,
+      );
+    }
   }
 
   return { ok: failures.length === 0, problem, failures, failedTests: failed };
