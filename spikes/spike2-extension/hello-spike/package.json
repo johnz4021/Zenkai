@@ -7,6 +7,12 @@
   "main": "./extension.js",
   "activationEvents": ["onStartupFinished"],
   "extensionKind": ["workspace"],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true,
+      "description": "Observes editor events only; does not evaluate workspace code."
+    }
+  },
   "dependencies": {
     "ws": "^8.18.0"
   }

@@ -42,6 +42,10 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/html' });
     return res.end(page('shell-prefix.html'));
   }
+  if (req.url === '/shell-folder') {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(page('shell-folder.html'));
+  }
   if (req.url.startsWith('/ide/')) {
     req.url = req.url.slice('/ide'.length);
     return proxy.web(req, res);
