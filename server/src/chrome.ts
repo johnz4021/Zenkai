@@ -42,12 +42,16 @@ export function sessionPage(sessionId: string): string {
 <header>
   <span>session <b>${sessionId}</b></span>
   <span class="t" id="clock">00:00</span>
+  <span class="t" id="status">observing: —</span>
   <button id="end">End session</button>
 </header>
 <main>
   <iframe src="/?folder=/home/workspace/problem"></iframe>
   <aside>
-    <div id="log"><p class="u"><b>notes</b> — think aloud here; questions and stated assumptions are part of the session record.</p></div>
+    <div id="log">
+      <p class="u"><b>notes</b> — think aloud here; questions and stated assumptions are part of the session record.</p>
+      <p class="u"><b>observed</b> — edits, saves, file opens, ≥20s silences, this chat, and test runs made with the <b>Run Tests</b> button in the editor's status bar. Terminal commands are not observed. The suite runs once automatically at start.</p>
+    </div>
     <div id="feedback"></div>
     <form id="f"><input id="msg" autocomplete="off" placeholder="ask / note an assumption…" /><button>send</button></form>
   </aside>
@@ -59,6 +63,21 @@ export function sessionPage(sessionId: string): string {
     document.getElementById('clock').textContent =
       String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
   }, 1000);
+
+  async function pollStatus() {
+    try {
+      const r = await fetch('/api/status');
+      const s = await r.json();
+      const c = s.counts || {};
+      const n = (k) => c[k] || 0;
+      document.getElementById('status').textContent =
+        'observing: ' + n('edit') + ' edits · ' + n('file_save') + ' saves · ' +
+        n('test_run') + ' test runs · ' +
+        (s.trigger_armed ? 'trigger armed ✓' : 'waiting for first failing test run');
+    } catch {}
+  }
+  setInterval(pollStatus, 3000);
+  pollStatus();
 
   document.getElementById('f').addEventListener('submit', async (e) => {
     e.preventDefault();

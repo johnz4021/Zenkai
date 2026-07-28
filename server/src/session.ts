@@ -91,7 +91,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     '-e', `IP_USER_ID=${cfg.userId}`,
     '-e', `IP_WS_URL=ws://host.docker.internal:${cfg.port}/trace`,
     '-e', `IP_TEST_CMD=${testCmd}`,
-    ...(cfg.autorunTests ? ['-e', 'IP_AUTORUN_TESTS=1'] : []),
+    // Kickoff run is the DEFAULT: the debugging trigger must not depend on
+    // the candidate finding the status-bar button (learned the hard way).
+    ...(cfg.autorunTests ? [] : ['-e', 'IP_AUTORUN_TESTS=0']),
     '-v', `${extDist}:/ext`,
     '-v', `${cfg.problemDir}:/home/workspace/problem`,
     IDE_IMAGE,
@@ -154,6 +156,21 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       res.writeHead(200, { 'content-type': 'text/html' });
       return res.end(sessionPage(cfg.sessionId));
     }
+    if (url === '/api/status') {
+      const events = store.readAll();
+      const counts: Record<string, number> = {};
+      for (const e of events) counts[e.type] = (counts[e.type] ?? 0) + 1;
+      const triggerArmed = events.some(
+        (e) =>
+          e.type === 'test_run' &&
+          (e.payload as { exit_code?: number | null } | null)?.exit_code !== 0 &&
+          (e.payload as { exit_code?: number | null } | null)?.exit_code != null,
+      );
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(
+        JSON.stringify({ session_id: cfg.sessionId, counts, trigger_armed: triggerArmed }),
+      );
+    }
     if (url === '/api/utterance' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)) || '{}') as { text?: string };
       const ev = store.emitChrome('utterance', { text: body.text ?? '' });
@@ -199,7 +216,24 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     }
   });
 
-  await new Promise<void>((resolve) => server.listen(cfg.port, resolve));
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE') {
+        const who = spawnSync('lsof', ['-tiTCP:' + cfg.port, '-sTCP:LISTEN'], {
+          encoding: 'utf8',
+        }).stdout.trim();
+        reject(
+          new Error(
+            `port ${cfg.port} is already in use${who ? ` by pid ${who}` : ''} — ` +
+              `a previous session is still running. Kill it (kill ${who || '<pid>'}) and retry.`,
+          ),
+        );
+      } else {
+        reject(err);
+      }
+    });
+    server.listen(cfg.port, resolve);
+  });
   console.log(`[session] ${cfg.sessionId}`);
   console.log(`[session] open   http://localhost:${cfg.port}/session`);
   console.log('[session] Ctrl+C tears down the container');

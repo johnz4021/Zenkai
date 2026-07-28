@@ -122,6 +122,9 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   // ---- test runs: spawned, observed, first-class ----
+  // Output goes to a visible channel: a spawned run prints nowhere by
+  // default, and an invisible failing suite made the whole round illegible.
+  const testOutput = vscode.window.createOutputChannel('Test Results');
   let running = false;
   const runTests = () => {
     if (running || !folder) return;
@@ -131,14 +134,18 @@ export function activate(context: vscode.ExtensionContext): void {
     running = true;
     touch();
     statusItem.text = '$(sync~spin) Tests running…';
+    testOutput.clear();
+    testOutput.appendLine(`$ ${cmdline}`);
     const t0 = Date.now();
     const child = spawn(bin, args, { cwd: folder.uri.fsPath });
     let tail = '';
-    const keepTail = (d: Buffer) => {
-      tail = (tail + d.toString()).slice(-4_000);
+    const keep = (d: Buffer) => {
+      const s = d.toString();
+      tail = (tail + s).slice(-4_000);
+      testOutput.append(s);
     };
-    child.stdout.on('data', keepTail);
-    child.stderr.on('data', keepTail);
+    child.stdout.on('data', keep);
+    child.stderr.on('data', keep);
     child.on('close', (code) => {
       running = false;
       const payload: TestRunPayload = {
@@ -148,11 +155,13 @@ export function activate(context: vscode.ExtensionContext): void {
       };
       emitter.emit('test_run', { ...payload, summary: (tail.match(/Tests.*$/m) ?? [''])[0] });
       statusItem.text = code === 0 ? '$(check) Tests passed — Run again' : '$(x) Tests failed — Run again';
-      vscode.window.setStatusBarMessage(code === 0 ? 'Tests passed' : 'Tests failed', 4_000);
+      // A failing suite is the round's opening move — put it on screen.
+      if (code !== 0) testOutput.show(true);
     });
     child.on('error', (err) => {
       running = false;
       statusItem.text = '$(beaker) Run Tests';
+      testOutput.appendLine(String(err));
       emitter.emit('test_run', { via: 'task', exit_code: null, duration_ms: Date.now() - t0, error: String(err) });
     });
   };
@@ -166,9 +175,11 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('interviewPrep.runTests', runTests),
   );
 
-  // Headless smoke path: lets the E2E script exercise the full loop without
-  // clicking the status bar.
-  if (process.env.IP_AUTORUN_TESTS === '1') setTimeout(runTests, 3_000);
+  // Kickoff run. For a debugging round the failing suite IS the problem
+  // statement, and the rubric's trigger is that first failure — it must not
+  // depend on the candidate discovering a status-bar button. Opt OUT with
+  // IP_AUTORUN_TESTS=0 (round types where a kickoff run makes no sense).
+  if (process.env.IP_AUTORUN_TESTS !== '0') setTimeout(runTests, 3_000);
 }
 
 export function deactivate(): void {

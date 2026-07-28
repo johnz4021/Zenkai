@@ -45,7 +45,7 @@ if (cmd === 'generate') {
     userId: process.env.IP_USER_ID ?? 'u1',
     port: 3200,
     idePort: 3100,
-    autorunTests: process.env.IP_AUTORUN_TESTS === '1',
+    autorunTests: process.env.IP_AUTORUN_TESTS !== '0',
   });
 } else {
   console.error('usage: cli.ts generate [targetDir] | validate <repoDir> | session <problemDir>');
