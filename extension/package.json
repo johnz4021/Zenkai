@@ -1,0 +1,15 @@
+{
+  "name": "@interview-prep/extension",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Build workspace for the trace-emitter VS Code extension",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.80.0",
+    "@types/ws": "^8.5.0",
+    "esbuild": "^0.24.0",
+    "ws": "^8.18.0"
+  }
+}
