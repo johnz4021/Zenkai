@@ -1,0 +1,13 @@
+{
+  "name": "hello-spike",
+  "publisher": "interview-prep",
+  "version": "0.0.1",
+  "description": "Spike 2: does a workspace-kind extension load in the remote host and reach the network? THROWAWAY.",
+  "engines": { "vscode": "^1.80.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "extensionKind": ["workspace"],
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

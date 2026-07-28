@@ -1,0 +1,9 @@
+{
+  "name": "spike2-extension",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Spike 2 host collector deps. THROWAWAY.",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
