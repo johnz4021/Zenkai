@@ -59,6 +59,40 @@ function ensureLinuxDeps(problemDir: string): void {
   writeFileSync(marker, String(Date.now()));
 }
 
+/**
+ * Materialize the IDE user-data dir with our seeded settings.
+ *
+ * Found by driving a real session in a browser: without these settings the
+ * candidate hits a Workspace Trust modal before they can read the problem,
+ * and VS Code's built-in Chat panel captures typing meant for the editor —
+ * a silent data-loss path, since we never see that text.
+ *
+ * Mount a host dir we create ourselves; never let Docker auto-create the
+ * parents (root-owned parents are what broke extension registration in
+ * spike 2).
+ */
+function ensureIdeDataDir(repoRoot: string): string {
+  const dataDir = path.join(repoRoot, '.ide-data');
+  const userDir = path.join(dataDir, 'User');
+  const machineDir = path.join(dataDir, 'Machine');
+  mkdirSync(userDir, { recursive: true });
+  mkdirSync(machineDir, { recursive: true });
+  const settings = JSON.parse(
+    readFileSync(path.join(repoRoot, 'server', 'ide-settings.json'), 'utf8'),
+  ) as Record<string, unknown>;
+  for (const k of Object.keys(settings)) if (k.startsWith('//')) delete settings[k];
+  const body = JSON.stringify(settings, null, 2);
+  // KNOWN ISSUE: neither scope currently reaches the workbench UI — VS Code
+  // Web reads workbench settings from browser IndexedDB. Verified failing on
+  // clean browser state for User/, Machine/, and product.json
+  // configurationDefaults. See server/ide-settings.json for the full note and
+  // the remaining fix (pre-boot injection through our proxy). Kept because
+  // this dir also gives us logs/workspaceStorage at a known path.
+  writeFileSync(path.join(userDir, 'settings.json'), body);
+  writeFileSync(path.join(machineDir, 'settings.json'), body);
+  return dataDir;
+}
+
 function ensureExtensionBuilt(repoRoot: string): string {
   const dist = path.join(repoRoot, 'extension', 'dist');
   if (!existsSync(path.join(dist, 'trace-emitter-0.0.1', 'extension.js'))) {
@@ -75,6 +109,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
   ensureLinuxDeps(cfg.problemDir);
   const extDist = ensureExtensionBuilt(cfg.repoRoot);
+  const ideDataDir = ensureIdeDataDir(cfg.repoRoot);
 
   const tracesDir = path.join(cfg.repoRoot, 'traces');
   const gapsDir = path.join(cfg.repoRoot, 'gaps');
@@ -95,9 +130,12 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     // the candidate finding the status-bar button (learned the hard way).
     ...(cfg.autorunTests ? [] : ['-e', 'IP_AUTORUN_TESTS=0']),
     '-v', `${extDist}:/ext`,
+    '-v', `${ideDataDir}:/ipdata`,
     '-v', `${cfg.problemDir}:/home/workspace/problem`,
     IDE_IMAGE,
-    '--without-connection-token', '--host', '0.0.0.0', '--extensions-dir', '/ext',
+    '--without-connection-token', '--host', '0.0.0.0',
+    '--extensions-dir', '/ext',
+    '--user-data-dir', '/ipdata',
   ]);
 
   // ---- one server: chrome + api + trace ingest + IDE proxy ----
