@@ -50,10 +50,21 @@ function say(who, text, cls) {
   return p;
 }
 let thinkingEl = null;
+let lastHeardSeq = -1;
 async function pollMessages() {
   try {
-    const r = await fetch('/api/messages?since=' + lastSeq);
+    const r = await fetch('/api/messages?since=' + lastSeq + '&vsince=' + lastHeardSeq);
     const s = await r.json();
+    // What the mic heard, echoed back — the candidate must SEE their voice
+    // registering, or a quiet agent is indistinguishable from a dead one.
+    for (const h of s.heard || []) {
+      lastHeardSeq = Math.max(lastHeardSeq, h.seq);
+      if (h.untranscribed) {
+        say('you (voice)', '(heard speech — transcription unavailable)', 'pending');
+      } else {
+        say('you (voice)', h.text);
+      }
+    }
     for (const m of s.messages) {
       lastSeq = Math.max(lastSeq, m.seq);
       if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }

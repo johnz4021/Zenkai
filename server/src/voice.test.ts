@@ -103,16 +103,74 @@ describe('utterance stamping', () => {
   });
 });
 
+describe('buffering until open (the lost-segment fix, spike 5)', () => {
+  it('audio sent while the socket is CONNECTING is flushed on open, in order', () => {
+    // The live failure: ws.send() on a connecting socket throws, and the
+    // whole first utterance after an idle disconnect vanished.
+    const { rt, up } = runtime();
+    rt.handleClientMessage({ type: 'speech_start', ts: 1_000 });
+    rt.handleClientMessage({ type: 'audio', audio_base_64: 'AAA1', duration_ms: 100 });
+    rt.handleClientMessage({ type: 'audio', audio_base_64: 'AAA2', duration_ms: 100 });
+    rt.handleClientMessage({ type: 'speech_end', ts: 2_000 });
+    expect(up.sent).toEqual([]); // nothing raw-sent before open
+    up.fire('open');
+    expect(up.sent.map((s) => JSON.parse(s))).toEqual([
+      { message_type: 'input_audio_chunk', audio_base_64: 'AAA1' },
+      { message_type: 'input_audio_chunk', audio_base_64: 'AAA2' },
+      { message_type: 'input_audio_chunk', audio_base_64: '', commit: true },
+    ]);
+  });
+
+  it('a whole segment spoken against a dead socket survives the reconnect', () => {
+    const { rt, up, h } = runtime();
+    rt.handleClientMessage({ type: 'speech_start', ts: 1_000 });
+    up.fire('open');
+    rt.handleUpstreamMessage(JSON.stringify({ message_type: 'committed_transcript', text: 'first' }));
+    up.fire('close'); // vendor idle-close (~15s, code 1000)
+    // Next utterance starts on a dead socket — the killer loop.
+    rt.handleClientMessage({ type: 'speech_start', ts: 30_000 });
+    rt.handleClientMessage({ type: 'audio', audio_base_64: 'BBBB', duration_ms: 100 });
+    rt.handleClientMessage({ type: 'speech_end', ts: 31_000 });
+    up.fire('open'); // reconnect completes
+    rt.handleUpstreamMessage(JSON.stringify({ message_type: 'committed_transcript', text: 'second' }));
+    expect(h.utterances).toEqual([
+      { text: 'first', ts: 1_000 },
+      { text: 'second', ts: 30_000 },
+    ]);
+  });
+});
+
 describe('sensor health into the trace', () => {
-  it('upstream lifecycle emits stt up/down sensor events', () => {
+  it('an idle close between segments is NORMAL, not an outage', () => {
     const { rt, up, h } = runtime();
     rt.handleClientMessage({ type: 'speech_start', ts: 1 });
     up.fire('open');
-    up.fire('close');
+    rt.handleUpstreamMessage(JSON.stringify({ message_type: 'committed_transcript', text: 'done' }));
+    up.fire('close'); // idle close AFTER the segment finished
+    expect(h.sensors).toEqual([{ sensor: 'stt', state: 'up', reason: 'connected' }]);
+  });
+
+  it('a close MID-SEGMENT is a real loss and says so', () => {
+    const { rt, up, h } = runtime();
+    rt.handleClientMessage({ type: 'speech_start', ts: 1 });
+    up.fire('open');
+    up.fire('close'); // still mid-segment: no transcript arrived
     expect(h.sensors).toEqual([
       { sensor: 'stt', state: 'up', reason: 'connected' },
-      { sensor: 'stt', state: 'down', reason: 'socket closed' },
+      { sensor: 'stt', state: 'down', reason: 'socket closed mid-segment' },
     ]);
+  });
+
+  it('vendor error messages surface as sensor evidence instead of vanishing', () => {
+    const { rt, up, h } = runtime();
+    rt.handleClientMessage({ type: 'speech_start', ts: 1 });
+    up.fire('open');
+    rt.handleUpstreamMessage(JSON.stringify({ message_type: 'quota_exceeded', error: 'out of credits' }));
+    expect(h.sensors).toContainEqual({
+      sensor: 'stt',
+      state: 'down',
+      reason: 'quota_exceeded: out of credits',
+    });
   });
 
   it('presence messages (including mute) pass through as sensor events', () => {

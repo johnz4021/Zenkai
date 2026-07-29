@@ -243,12 +243,15 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     if (!interviewer || !intentCheck || !text.trim() || ended) return;
     void intentCheck(text, problem.spec)
       .then((addressed) => {
+        // "Judged not-addressed" and "check crashed" must never look the
+        // same in the log (first live session was undebuggable without this).
+        console.log(`[intent] ${addressed ? 'ADDRESSED' : 'narration'}: ${text.slice(0, 80)}`);
         if (!addressed) return; // narration: traced, agent stays silent
         turnQueue.push(text);
         pump();
       })
-      .catch(() => {
-        /* fail toward silence, never toward interruption */
+      .catch((e) => {
+        console.warn(`[intent] check FAILED (staying silent): ${String(e).slice(0, 120)}`);
       });
   };
 
@@ -443,16 +446,35 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     }
     if (url.startsWith('/api/messages')) {
       const since = Number(new URL(url, 'http://x').searchParams.get('since') ?? -1);
-      const messages = store
-        .readAll()
+      const all = store.readAll();
+      const messages = all
         .filter((e) => e.type === 'interviewer' && e.seq > since)
         .map((e) => ({
           seq: e.seq,
           ts: e.ts,
           ...(e.payload as Record<string, unknown>),
         }));
+      // Spoken words echo back to the panel. First live session lesson:
+      // transcripts landed in the trace but NOTHING showed the candidate
+      // their voice registering, so a half-broken pipeline read as fully
+      // dead. seq keying is separate from interviewer seq, so the client
+      // tracks a second cursor (vsince).
+      const vsince = Number(new URL(url, 'http://x').searchParams.get('vsince') ?? -1);
+      const heard = all
+        .filter(
+          (e) =>
+            e.type === 'utterance' &&
+            e.source === 'chrome' &&
+            (e.payload as { via?: string })?.via === 'voice' &&
+            e.seq > vsince,
+        )
+        .map((e) => ({
+          seq: e.seq,
+          text: String((e.payload as { text?: string })?.text ?? ''),
+          untranscribed: Boolean((e.payload as { untranscribed?: boolean })?.untranscribed),
+        }));
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ messages, thinking: interviewerBusy }));
+      return res.end(JSON.stringify({ messages, heard, thinking: interviewerBusy }));
     }
     if (url === '/api/end' && req.method === 'POST') {
       if (ended) {

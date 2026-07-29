@@ -132,9 +132,20 @@ export class VoiceRuntime extends EventEmitter {
   };
 
   private upstream: UpstreamSocket | null = null;
+  private upstreamOpen = false;
+  /**
+   * Outbound buffer until the upstream socket is OPEN. Spike 5 evidence:
+   * ElevenLabs idle-closes the socket after ~15s (code 1000), so almost
+   * every utterance after a pause begins on a dead or CONNECTING socket —
+   * and ws.send() on a connecting socket THROWS, which silently ate whole
+   * segments in the first live session ('Can we...' was the surviving tail
+   * of one). Everything queues here and flushes on 'open'.
+   */
+  private pendingOut: string[] = [];
   private currentSpeechStart: number | null = null;
   private partial = '';
   private closed = false;
+  private readonly debug = process.env.IP_VOICE_DEBUG === '1';
 
   constructor(
     private readonly cfg: VoiceConfig,
@@ -170,20 +181,21 @@ export class VoiceRuntime extends EventEmitter {
       case 'audio': {
         if (this.budget.state().exhausted || this.currentSpeechStart === null) return;
         this.budget.addSttMs(msg.duration_ms);
-        this.upstream?.send(
+        this.sendUpstream(
           JSON.stringify({ message_type: 'input_audio_chunk', audio_base_64: msg.audio_base_64 }),
         );
         return;
       }
       case 'speech_end': {
         if (this.currentSpeechStart === null) return;
-        if (!this.health.stt_up || !this.upstream) {
-          // STT is dead but presence heard a whole segment. Record it.
+        if (!this.upstream) {
+          // No socket and none coming: presence heard a segment, record it.
           this.flushUntranscribed();
           return;
         }
         // Commit the segment so the upstream finalizes its transcript.
-        this.upstream.send(
+        // (Buffered like everything else if the socket is still connecting.)
+        this.sendUpstream(
           JSON.stringify({ message_type: 'input_audio_chunk', audio_base_64: '', commit: true }),
         );
         return;
@@ -191,9 +203,28 @@ export class VoiceRuntime extends EventEmitter {
     }
   }
 
+  /** Send now if open, buffer if connecting. NEVER raw-send: ws throws on a
+   *  CONNECTING socket, and that throw ate whole segments (spike 5). */
+  private sendUpstream(data: string): void {
+    if (this.upstream && this.upstreamOpen) {
+      try {
+        this.upstream.send(data);
+      } catch (e) {
+        if (this.debug) console.warn('[voice] send failed, buffering:', String(e).slice(0, 120));
+        this.pendingOut.push(data);
+      }
+    } else {
+      this.pendingOut.push(data);
+    }
+    // ~60s of audio at 100ms chunks. If the socket has been down that long
+    // the segment is already contaminated evidence; stop hoarding memory.
+    while (this.pendingOut.length > 600) this.pendingOut.shift();
+  }
+
   /** Upstream transcript message (parsed). Exposed for tests. */
   handleUpstreamMessage(raw: unknown): void {
-    let msg: { message_type?: string; type?: string; text?: string; transcript?: string };
+    if (this.debug) console.log('[voice] <-', String(raw).slice(0, 300));
+    let msg: { message_type?: string; type?: string; text?: string; transcript?: string; error?: string };
     try {
       msg = JSON.parse(String(raw)) as typeof msg;
     } catch {
@@ -201,6 +232,14 @@ export class VoiceRuntime extends EventEmitter {
     }
     const kind = msg.message_type ?? msg.type ?? '';
     const text = (msg.text ?? msg.transcript ?? '').trim();
+    // Vendor errors were silently discarded before spike 5. Every one is
+    // sensor evidence: it names why words went missing.
+    if (kind.includes('error') || kind === 'quota_exceeded' || kind === 'rate_limited' || kind === 'commit_throttled') {
+      this.health.stt_up = this.health.stt_up && kind === 'commit_throttled'; // throttle ≠ dead
+      this.hooks.emitSensor('stt', kind === 'commit_throttled' ? 'up' : 'down', `${kind}: ${msg.error ?? ''}`.slice(0, 200));
+      return;
+    }
+    if (kind === 'session_started') return; // handshake ack, healthy
     if (kind.includes('partial')) {
       this.partial = text;
       return;
@@ -244,17 +283,40 @@ export class VoiceRuntime extends EventEmitter {
     try {
       const sock = factory(this.cfg.sttUrl ?? STT_URL, { 'xi-api-key': this.cfg.apiKey });
       this.upstream = sock;
+      this.upstreamOpen = false;
       sock.on('open', () => {
+        this.upstreamOpen = true;
         this.health.stt_up = true;
         this.hooks.emitSensor('stt', 'up', 'connected');
+        // Flush everything that arrived while connecting — this is the fix
+        // for the lost-segment bug: the first utterance after an idle
+        // disconnect lands intact instead of being eaten by the handshake.
+        const pending = this.pendingOut;
+        this.pendingOut = [];
+        for (const data of pending) {
+          try {
+            sock.send(data);
+          } catch {
+            this.pendingOut.push(data);
+          }
+        }
       });
       sock.on('message', (data) => this.handleUpstreamMessage(data));
       sock.on('close', () => {
+        this.upstreamOpen = false;
         this.health.stt_up = false;
         this.upstream = null;
-        if (!this.closed) this.hooks.emitSensor('stt', 'down', 'socket closed');
+        // Idle close (~15s, code 1000) is NORMAL vendor behavior, not an
+        // outage: nothing was being said, so nothing can have been missed.
+        // A mid-segment close IS a loss — flag only that.
+        if (!this.closed && this.currentSpeechStart !== null) {
+          this.hooks.emitSensor('stt', 'down', 'socket closed mid-segment');
+        } else if (this.debug) {
+          console.log('[voice] upstream idle-closed (normal)');
+        }
       });
       sock.on('error', (err) => {
+        this.upstreamOpen = false;
         this.health.stt_up = false;
         this.hooks.emitSensor('stt', 'down', `socket error: ${String(err).slice(0, 200)}`);
       });
