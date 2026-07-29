@@ -246,3 +246,19 @@ describe('tts', () => {
     expect(rt.health.tts_failures).toBe(1);
   });
 });
+
+describe('lifecycle: nothing after close', () => {
+  it('frames from a still-open tab after finalize are ignored entirely', () => {
+    // Measured live: 5 phantom untranscribed utterances landed in the trace
+    // minutes AFTER the End Session click.
+    const { rt, up, h } = runtime();
+    rt.handleClientMessage({ type: 'speech_start', ts: 1_000 });
+    up.fire('open');
+    rt.close();
+    rt.handleClientMessage({ type: 'speech_start', ts: 200_000 });
+    rt.handleClientMessage({ type: 'audio', audio_base_64: 'x', duration_ms: 1_000 });
+    rt.handleClientMessage({ type: 'speech_end', ts: 201_000 });
+    expect(h.utterances).toEqual([]);
+    expect(rt.budget.spentUsd()).toBe(0);
+  });
+});

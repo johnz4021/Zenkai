@@ -161,6 +161,18 @@ export function startVoice({ onState, onAgentAudioWanted }) {
     return state.muted;
   }
 
+  /** Session over: release the mic and tear everything down. The server
+   *  also ignores late frames, but holding a live mic open after End
+   *  Session is wrong on its own terms. */
+  function stop() {
+    state.muted = true;
+    try { if (state.ctx) state.ctx.close(); } catch {}
+    try { if (state.stream) state.stream.getTracks().forEach((t) => t.stop()); } catch {}
+    try { if (state.ws) state.ws.close(); } catch {}
+    try { if (state.audioEl) state.audioEl.pause(); } catch {}
+    setChip('ended');
+  }
+
   /** Called by session.js when a new interviewer turn arrives. */
   function speak(seq) {
     if (state.chip.indexOf('text only') !== -1) return;
@@ -176,5 +188,5 @@ export function startVoice({ onState, onAgentAudioWanted }) {
   }
 
   boot();
-  return { toggleMute, speak };
+  return { toggleMute, speak, stop };
 }

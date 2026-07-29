@@ -115,7 +115,7 @@ describe('mechanicalLabels', () => {
   it('derives inactivity from a gap in the merged trace, plus test_run from a rerun', () => {
     // Trigger at t=10s, first activity (the rerun) at t=60s → a 50s gap.
     const rerun = greenRun(60_000);
-    const names = mechanicalLabels([rerun], [], { start_ts: 10_000, end_ts: 60_000 }).map(
+    const names = mechanicalLabels([rerun], [], { start_ts: 10_000, end_ts: 60_000, end_reason: 'until' as const }).map(
       (l) => l.label,
     );
     expect(names).toContain('inactivity');
@@ -132,7 +132,7 @@ describe('mechanicalLabels', () => {
       legacyPause,
       ev('edit', 35_000, { path: 'a.ts' }),
     ];
-    const names = mechanicalLabels(busy, [], { start_ts: 10_000, end_ts: 40_000 }).map((l) => l.label);
+    const names = mechanicalLabels(busy, [], { start_ts: 10_000, end_ts: 40_000, end_reason: 'session_end' as const }).map((l) => l.label);
     expect(names).not.toContain('inactivity');
   });
 
@@ -218,12 +218,35 @@ describe('server-side inactivity — the regression matrix', () => {
     expect(result.labels.map((l) => l.label)).toContain('inactivity');
   });
 
-  it('a trailing gap — silence between the last action and the window close — counts', async () => {
-    // Activity at 15s, then nothing until the session ends at 50s.
+  // REGRESSION (measured live, second voice session): the candidate finished
+  // their last sentence, spent 22s winding down, clicked "End Session" — and
+  // was scored "goes quiet when something breaks". A gap that ends at the
+  // End Session click is a WRAP-UP TAIL, not silence-while-stuck. This was
+  // the only label that fired in that session, and it fed the gap graph.
+  it('the wrap-up tail before End Session does NOT count as inactivity', async () => {
     const sessionEnd = (ts: number): TraceEvent => ({
       session_id: 's', user_id: 'u', source: 'chrome', seq: n++, ts, type: 'session_end', payload: {},
     });
-    const events = [failedRun(10_000), ev('edit', 15_000, { path: 'a.ts' }), sessionEnd(50_000)];
+    const events = [
+      failedRun(10_000),
+      ev('utterance', 15_000, { text: 'it does not deeply equal what we expected' }),
+      sessionEnd(40_000), // 25s tail, then the click
+    ];
+    const result = await classify(events, rubric, 'spec', noJudge);
+    expect(result.labels.map((l) => l.label)).not.toContain('inactivity');
+  });
+
+  it('a trailing gap running into the HARD CAP still counts — they were mid-session', async () => {
+    const sessionEnd = (ts: number): TraceEvent => ({
+      session_id: 's', user_id: 'u', source: 'chrome', seq: n++, ts, type: 'session_end', payload: {},
+    });
+    // Last activity at 500s; cap at 610s; session ran on to 700s. The
+    // 110s from last activity to the cap is real in-session silence.
+    const events = [
+      failedRun(10_000),
+      ev('edit', 500_000, { path: 'a.ts' }),
+      sessionEnd(700_000),
+    ];
     const result = await classify(events, rubric, 'spec', noJudge);
     expect(result.labels.map((l) => l.label)).toContain('inactivity');
   });

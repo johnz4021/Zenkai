@@ -157,6 +157,11 @@ export class VoiceRuntime extends EventEmitter {
 
   /** Messages from the browser voice client (parsed JSON). */
   handleClientMessage(msg: ClientVoiceMessage): void {
+    // After finalize the session record is closed. Frames from a still-open
+    // browser tab must not append phantom utterances to an ended trace
+    // (measured live: 5 untranscribed segments landed minutes after the
+    // End Session click) — and must not stream to a paid endpoint.
+    if (this.closed) return;
     switch (msg.type) {
       case 'presence': {
         this.health.presence_up = msg.state === 'up';

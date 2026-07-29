@@ -152,6 +152,8 @@ const ref = (e: TraceEvent, note: string) => ({
 export interface WindowBounds {
   start_ts: number;
   end_ts: number;
+  /** What closed the window — decides whether the trailing gap is evidence. */
+  end_reason: 'until' | 'session_end' | 'cap' | 'last_event';
 }
 
 export function computeInactivity(
@@ -163,9 +165,21 @@ export function computeInactivity(
     .map((e) => e.ts)
     .sort((a, b) => a - b);
 
+  // The TRAILING gap — last activity to window close — is evidence only when
+  // the window closed on the clock (hard cap): the candidate was still in
+  // the session and genuinely silent. A gap that ends at session_end is the
+  // WRAP-UP TAIL — measured live: a candidate finished their sentence,
+  // spent 22s winding down, clicked "End Session", and was scored "goes
+  // quiet when something breaks". They weren't quiet; they were done. Same
+  // exclusion for last_event (mid-session classification: no way to know
+  // what follows). An `until` close ends AT a test_run, which is activity,
+  // so its trailing gap is zero by construction either way.
+  const trailingCounts = bounds.end_reason === 'cap';
+  const points = trailingCounts ? [...activity, bounds.end_ts] : activity;
+
   const gaps: LabelEvidence['evidence'] = [];
   let prev = bounds.start_ts;
-  for (const ts of [...activity, bounds.end_ts]) {
+  for (const ts of points) {
     const gap = ts - prev;
     if (gap >= INACTIVITY_THRESHOLD_MS) {
       gaps.push({
@@ -199,15 +213,22 @@ export function windowBounds(
   const last = windowEvents[windowEvents.length - 1];
   const closedByUntil =
     rubric.window.until !== undefined && last !== undefined && last.type === rubric.window.until;
-  if (closedByUntil) return { start_ts: trigger.ts, end_ts: last.ts };
+  if (closedByUntil) return { start_ts: trigger.ts, end_ts: last.ts, end_reason: 'until' };
 
   // The hard cap is only a real boundary once we KNOW the clock passed it —
   // i.e. the session ended. Without a session_end, treating the cap as the
   // window edge would invent minutes of "silence" that have not happened yet;
   // the last observed event is the honest end of what we can measure.
   const sessionEnd = allEvents.find((e) => e.type === 'session_end');
-  const end = sessionEnd ? Math.min(hardEnd, sessionEnd.ts) : (last?.ts ?? trigger.ts);
-  return { start_ts: trigger.ts, end_ts: Math.max(end, trigger.ts) };
+  if (!sessionEnd) {
+    return { start_ts: trigger.ts, end_ts: last?.ts ?? trigger.ts, end_reason: 'last_event' };
+  }
+  const capped = sessionEnd.ts > hardEnd;
+  return {
+    start_ts: trigger.ts,
+    end_ts: Math.max(capped ? hardEnd : sessionEnd.ts, trigger.ts),
+    end_reason: capped ? 'cap' : 'session_end',
+  };
 }
 
 export function mechanicalLabels(

@@ -97,6 +97,9 @@ document.getElementById('end').addEventListener('click', async () => {
   const btn = document.getElementById('end');
   btn.disabled = true;
   btn.textContent = 'Classifying…';
+  // Release the mic FIRST — the session record closes with /api/end, and a
+  // live mic past that point streams audio nobody will ever score.
+  if (window.ipVoice) window.ipVoice.stop();
   const res = await fetch('/api/end', { method: 'POST' });
   const card = await res.json();
   render(card);
