@@ -180,7 +180,13 @@ export class VoiceRuntime extends EventEmitter {
         this.health.speech_starts += 1;
         this.currentSpeechStart = msg.ts;
         this.partial = '';
-        this.ensureUpstream();
+        // FRESH upstream session per segment. Measured live: a long-lived
+        // session went half-dead after its 4th commit — no transcripts, no
+        // errors, no close, socket "open" — and 11 segments of narration
+        // streamed into it for two minutes. Long-lived vendor sessions buy
+        // idle-close races and silent death; a per-segment session costs one
+        // ~150ms handshake that the outbound buffer already hides.
+        this.rotateUpstream();
         return;
       }
       case 'audio': {
@@ -203,6 +209,11 @@ export class VoiceRuntime extends EventEmitter {
         this.sendUpstream(
           JSON.stringify({ message_type: 'input_audio_chunk', audio_base_64: '', commit: true }),
         );
+        // Watchdog: a commit that draws NO response — no transcript, no
+        // error, no close — within the deadline means the session is mute
+        // (the half-death failure mode). Record the segment honestly and
+        // kill the socket so the next segment starts clean.
+        this.armWatchdog();
         return;
       }
     }
@@ -250,6 +261,7 @@ export class VoiceRuntime extends EventEmitter {
       return;
     }
     if (kind.includes('committed') || kind.includes('final')) {
+      this.disarmWatchdog();
       const stamp = this.currentSpeechStart;
       this.currentSpeechStart = null;
       const finalText = text || this.partial;
@@ -270,12 +282,70 @@ export class VoiceRuntime extends EventEmitter {
 
   /** Emit the in-flight segment as untranscribed, if any. */
   private flushUntranscribed(): void {
+    this.disarmWatchdog();
     if (this.currentSpeechStart === null) return;
     const stamp = this.currentSpeechStart;
     this.currentSpeechStart = null;
     this.partial = '';
     this.health.empty_transcripts += 1;
     this.hooks.emitUtterance('', stamp);
+  }
+
+  // ---- per-segment session rotation + mute-session watchdog ----
+
+  /** Close the current upstream WITHOUT ceremony and open a fresh one. */
+  private rotateUpstream(): void {
+    if (this.upstream) {
+      // Detach before closing: this is deliberate rotation, and the old
+      // socket's close event must not be reported as an outage.
+      const old = this.upstream;
+      this.upstream = null;
+      this.upstreamOpen = false;
+      try {
+        old.close();
+      } catch {
+        /* already dead — exactly why we rotate */
+      }
+    }
+    this.ensureUpstream();
+  }
+
+  static WATCHDOG_MS = 8_000;
+  private watchdog: NodeJS.Timeout | null = null;
+
+  private armWatchdog(): void {
+    this.disarmWatchdog();
+    this.watchdog = setTimeout(() => {
+      this.watchdog = null;
+      if (this.currentSpeechStart === null) return; // answered after all
+      this.health.stt_up = false;
+      this.hooks.emitSensor(
+        'stt',
+        'down',
+        `unresponsive: commit unanswered for ${VoiceRuntime.WATCHDOG_MS / 1000}s`,
+      );
+      this.flushUntranscribed();
+      // Kill the mute socket so the NEXT segment starts on a fresh one
+      // instead of streaming into the void again.
+      if (this.upstream) {
+        const dead = this.upstream;
+        this.upstream = null;
+        this.upstreamOpen = false;
+        try {
+          dead.close();
+        } catch {
+          /* dead is dead */
+        }
+      }
+    }, VoiceRuntime.WATCHDOG_MS);
+    this.watchdog.unref?.();
+  }
+
+  private disarmWatchdog(): void {
+    if (this.watchdog) {
+      clearTimeout(this.watchdog);
+      this.watchdog = null;
+    }
   }
 
   private ensureUpstream(): void {
@@ -289,7 +359,10 @@ export class VoiceRuntime extends EventEmitter {
       const sock = factory(this.cfg.sttUrl ?? STT_URL, { 'xi-api-key': this.cfg.apiKey });
       this.upstream = sock;
       this.upstreamOpen = false;
+      // Every handler guards on identity: after a rotation, a LATE event
+      // from the abandoned socket must not mutate the fresh one's state.
       sock.on('open', () => {
+        if (this.upstream !== sock) return;
         this.upstreamOpen = true;
         this.health.stt_up = true;
         this.hooks.emitSensor('stt', 'up', 'connected');
@@ -306,8 +379,12 @@ export class VoiceRuntime extends EventEmitter {
           }
         }
       });
-      sock.on('message', (data) => this.handleUpstreamMessage(data));
+      sock.on('message', (data) => {
+        if (this.upstream !== sock) return;
+        this.handleUpstreamMessage(data);
+      });
       sock.on('close', () => {
+        if (this.upstream !== sock) return;
         this.upstreamOpen = false;
         this.health.stt_up = false;
         this.upstream = null;
@@ -321,6 +398,7 @@ export class VoiceRuntime extends EventEmitter {
         }
       });
       sock.on('error', (err) => {
+        if (this.upstream !== sock) return;
         this.upstreamOpen = false;
         this.health.stt_up = false;
         this.hooks.emitSensor('stt', 'down', `socket error: ${String(err).slice(0, 200)}`);
@@ -362,6 +440,7 @@ export class VoiceRuntime extends EventEmitter {
 
   close(): void {
     this.closed = true;
+    this.disarmWatchdog();
     this.upstream?.close();
     this.upstream = null;
   }

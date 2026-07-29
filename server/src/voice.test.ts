@@ -262,3 +262,84 @@ describe('lifecycle: nothing after close', () => {
     expect(rt.budget.spentUsd()).toBe(0);
   });
 });
+
+describe('per-segment sessions + mute-session watchdog (the half-death fix)', () => {
+  function freshFactoryRuntime(h = hooks()) {
+    const sockets: ReturnType<typeof fakeUpstream>[] = [];
+    const rt = new VoiceRuntime(
+      {
+        apiKey: 'test',
+        upstreamFactory: () => {
+          const s = fakeUpstream();
+          sockets.push(s);
+          return s;
+        },
+      },
+      h,
+    );
+    return { rt, sockets, h };
+  }
+
+  it('every segment gets a FRESH upstream session', () => {
+    const { rt, sockets } = freshFactoryRuntime();
+    rt.handleClientMessage({ type: 'speech_start', ts: 1_000 });
+    sockets[0]!.fire('open');
+    rt.handleUpstreamMessage(JSON.stringify({ message_type: 'committed_transcript', text: 'one' }));
+    rt.handleClientMessage({ type: 'speech_start', ts: 30_000 });
+    expect(sockets).toHaveLength(2);
+  });
+
+  it('a mute session is declared dead by the watchdog, honestly recorded', () => {
+    // The live failure, twice over: audio + commit sent, and the vendor
+    // session returns NOTHING — no transcript, no error, no close.
+    vi.useFakeTimers();
+    try {
+      const { rt, sockets, h } = freshFactoryRuntime();
+      rt.handleClientMessage({ type: 'speech_start', ts: 1_000 });
+      sockets[0]!.fire('open');
+      rt.handleClientMessage({ type: 'audio', audio_base_64: 'x', duration_ms: 3_000 });
+      rt.handleClientMessage({ type: 'speech_end', ts: 4_000 });
+      vi.advanceTimersByTime(VoiceRuntime.WATCHDOG_MS + 1);
+      expect(h.utterances).toEqual([{ text: '', ts: 1_000 }]); // recorded, not lost
+      expect(h.sensors).toContainEqual({
+        sensor: 'stt',
+        state: 'down',
+        reason: 'unresponsive: commit unanswered for 8s',
+      });
+      // Next segment must NOT stream into the corpse.
+      rt.handleClientMessage({ type: 'speech_start', ts: 60_000 });
+      expect(sockets).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a transcript in time disarms the watchdog — no false outage', () => {
+    vi.useFakeTimers();
+    try {
+      const { rt, sockets, h } = freshFactoryRuntime();
+      rt.handleClientMessage({ type: 'speech_start', ts: 1_000 });
+      sockets[0]!.fire('open');
+      rt.handleClientMessage({ type: 'speech_end', ts: 3_000 });
+      rt.handleUpstreamMessage(JSON.stringify({ message_type: 'committed_transcript', text: 'made it' }));
+      vi.advanceTimersByTime(VoiceRuntime.WATCHDOG_MS * 2);
+      expect(h.utterances).toEqual([{ text: 'made it', ts: 1_000 }]);
+      expect(h.sensors.filter((s) => (s as { state: string }).state === 'down')).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a LATE event from a rotated-away socket cannot touch the fresh one', () => {
+    const { rt, sockets } = freshFactoryRuntime();
+    rt.handleClientMessage({ type: 'speech_start', ts: 1_000 });
+    sockets[0]!.fire('open');
+    rt.handleUpstreamMessage(JSON.stringify({ message_type: 'committed_transcript', text: 'one' }));
+    rt.handleClientMessage({ type: 'speech_start', ts: 30_000 });
+    sockets[1]!.fire('open');
+    sockets[0]!.fire('close'); // abandoned socket dies late
+    // The fresh socket must still be live and receiving.
+    rt.handleClientMessage({ type: 'audio', audio_base_64: 'y', duration_ms: 100 });
+    expect(sockets[1]!.sent.length).toBeGreaterThan(0);
+  });
+});
