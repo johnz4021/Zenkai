@@ -52,6 +52,18 @@ export function buildFeedback(
   classification: Classification,
   graph: GraphView,
 ): FeedbackCard {
+  // The candidate's own words at the cited moment. The hardest part of
+  // behavior feedback is disbelief — a paraphrase is arguable, a quote of
+  // yourself is not (CEO review D3.1). Looked up by (source, seq) in the
+  // window; untranscribed segments have no words to quote.
+  const quoteFor = (ref: { source: string; seq: number }): string | null => {
+    const ev = classification.windowEvents.find(
+      (e) => e.type === 'utterance' && e.source === ref.source && e.seq === ref.seq,
+    );
+    const text = String((ev?.payload as { text?: string } | undefined)?.text ?? '').trim();
+    return text ? `"${text}"` : null;
+  };
+
   const findings: FeedbackFinding[] = classification.labels.map((l) => {
     const lines: CitationLine[] = [];
     if (classification.trigger) {
@@ -63,7 +75,8 @@ export function buildFeedback(
     }
     const first = l.evidence[0];
     if (first) {
-      lines.push({ ts: first.ts, clock: clock(first.ts), what: first.note });
+      const quote = quoteFor(first);
+      lines.push({ ts: first.ts, clock: clock(first.ts), what: quote ?? first.note });
     }
     const delta =
       classification.trigger && first ? first.ts - classification.trigger.ts : null;

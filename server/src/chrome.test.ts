@@ -11,7 +11,7 @@ import { clientScript, sessionPage } from './chrome.js';
  */
 describe('session chrome', () => {
   const html = sessionPage('sess-test');
-  const js = clientScript();
+  const js = clientScript() ?? '';
 
   it('has a parseable client script', () => {
     expect(() => new Function(js)).not.toThrow();
@@ -40,5 +40,31 @@ describe('session chrome', () => {
 
   it('renders contaminated findings as recorded-but-not-counted', () => {
     expect(js).toContain('not counted toward your patterns');
+  });
+
+  it('serves exactly the allowlisted client files, nothing else', () => {
+    expect(clientScript('voice.js')).toContain('startVoice');
+    expect(clientScript('presence.js')).toContain('presenceStep');
+    expect(clientScript('../session.ts')).toBeNull();
+    expect(clientScript('secrets.env')).toBeNull();
+  });
+
+  it('boots voice as a module and wires the mute control', () => {
+    expect(html).toContain("import { startVoice } from '/client/voice.js'");
+    expect(html).toContain('id="mute"');
+    expect(html).toContain('id="voicechip"');
+  });
+
+  it('plays interviewer audio from the STORED turn seq — the guarded text', () => {
+    // The client asks for /voice/tts/<seq>; the server reads that event's
+    // payload.text, which guard() produced. No client path carries raw
+    // model output to the speaker.
+    expect(js).toContain('window.ipVoice.speak(m.seq)');
+    expect(clientScript('voice.js')).toContain("'/voice/tts/' + seq");
+  });
+
+  it('voice client never sees a vendor key or vendor URL', () => {
+    const voice = clientScript('voice.js') ?? '';
+    expect(voice).not.toMatch(/elevenlabs|xi-api-key/i);
   });
 });

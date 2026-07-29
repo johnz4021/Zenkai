@@ -17,9 +17,12 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-/** The client script, read once per process. */
-export function clientScript(): string {
-  return readFileSync(path.join(here, 'client', 'session.js'), 'utf8');
+const CLIENT_FILES = ['session.js', 'voice.js', 'presence.js'];
+
+/** A named client script, or null for anything not explicitly listed. */
+export function clientScript(name = 'session.js'): string | null {
+  if (!CLIENT_FILES.includes(name)) return null;
+  return readFileSync(path.join(here, 'client', name), 'utf8');
 }
 
 export function sessionPage(sessionId: string): string {
@@ -32,7 +35,9 @@ export function sessionPage(sessionId: string): string {
   body { margin: 0; font: 13px/1.45 ui-monospace, monospace; background: #17171a; color: #e6e6ea; display: flex; flex-direction: column; height: 100vh; }
   header { display: flex; align-items: center; gap: 16px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
   header .t { color: var(--dim); }
-  header button { margin-left: auto; background: none; border: 1px solid var(--line); color: #e6e6ea; padding: 5px 12px; font: inherit; cursor: pointer; }
+  header button { background: none; border: 1px solid var(--line); color: #e6e6ea; padding: 5px 12px; font: inherit; cursor: pointer; }
+  header #mute { margin-left: auto; color: var(--dim); }
+  header #mute.on { color: #e6e6ea; border-color: #e6e6ea; }
   main { flex: 1; display: flex; min-height: 0; }
   iframe { flex: 1; border: 0; }
   aside { width: 340px; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
@@ -59,13 +64,15 @@ export function sessionPage(sessionId: string): string {
   <span>session <b>${sessionId}</b></span>
   <span class="t" id="clock">00:00</span>
   <span class="t" id="status">observing: —</span>
+  <span class="t" id="voicechip">voice: —</span>
+  <button id="mute" title="mute the mic">mute</button>
   <button id="end">End session</button>
 </header>
 <main>
   <iframe src="/?folder=/home/workspace/problem"></iframe>
   <aside>
     <div id="log">
-      <p class="u"><b>interviewer</b> — ask about the spec and intended behavior; you'll get an answer. Questions about where the bug is, you won't. Think aloud here too: questions and stated assumptions are part of the session record.</p>
+      <p class="u"><b>interviewer</b> — just talk. The mic is live (headphones recommended); think out loud freely — the interviewer only replies when you actually address it, and answers spec questions. Where the bug is, you won't get. Typing here works the same way. Mute is in the header.</p>
       <p class="u"><b>observed</b> — edits, saves, file opens, this chat, and test runs made with the <b>Run Tests</b> button in the editor's status bar. Terminal commands are not observed. Silences ≥20s with no activity anywhere count as going quiet. The suite runs once automatically at start.</p>
     </div>
     <div id="feedback"></div>
@@ -73,5 +80,16 @@ export function sessionPage(sessionId: string): string {
   </aside>
 </main>
 <script src="/client/session.js"></script>
+<script type="module">
+  import { startVoice } from '/client/voice.js';
+  const chip = document.getElementById('voicechip');
+  const muteBtn = document.getElementById('mute');
+  fetch('/api/status').then(r => r.json()).then(s => {
+    if (!s.voice || !s.voice.enabled) { chip.textContent = 'voice: off'; muteBtn.style.display = 'none'; return; }
+    const v = startVoice({ onState: (c) => { chip.textContent = 'voice: ' + c; } });
+    window.ipVoice = v;
+    muteBtn.addEventListener('click', () => muteBtn.classList.toggle('on', v.toggleMute()));
+  });
+</script>
 `;
 }

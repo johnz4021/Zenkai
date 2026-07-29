@@ -58,6 +58,8 @@ async function pollMessages() {
       lastSeq = Math.max(lastSeq, m.seq);
       if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
       say('interviewer', m.text);
+      // Voice: the turn's audio is fetched from the STORED (guarded) event.
+      if (window.ipVoice) window.ipVoice.speak(m.seq);
     }
     if (s.thinking && !thinkingEl) thinkingEl = say('interviewer', '…', 'pending');
     if (!s.thinking && thinkingEl) { thinkingEl.remove(); thinkingEl = null; }

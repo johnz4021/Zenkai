@@ -26,7 +26,8 @@ export type TraceEventType =
   | 'utterance'     // typed chat message from the candidate
   | 'interviewer'   // message from the interviewer agent
   | 'spec_mutation' // scripted spec swap fired by the chrome (never LLM-timed)
-  | 'pause'         // >= INACTIVITY_THRESHOLD_MS of silence (see labels.ts)
+  | 'pause'         // LEGACY: extension-emitted verdict; readable, ignored
+  | 'sensor'        // voice sensor state change (see SensorPayload)
   | 'session_start'
   | 'session_end';
 
@@ -66,6 +67,34 @@ export interface SpecMutationPayload {
 
 export interface UtterancePayload {
   text: string;
+  /** How the words arrived. Absent = typed (pre-voice traces). */
+  via?: 'text' | 'voice';
+  /**
+   * Voice only: when the SPEECH began, not when the transcript arrived.
+   * The event's `ts` is set to this. A transcript lands seconds after the
+   * words were spoken; stamping at arrival would shift every utterance by
+   * the STT round trip and corrupt gap arithmetic in a system whose central
+   * label is a 20s gap threshold (outside-voice finding, eng review).
+   */
+  speech_start_ts?: number;
+}
+
+/**
+ * Voice sensor state change, emitted by the server into the trace.
+ *
+ * TWO sensors, deliberately independent (eng review tension 1):
+ *   - `presence`: browser-local energy gate. Knows THAT you were speaking.
+ *   - `stt`: the paid transcription path. Knows WHAT you said.
+ *
+ * The split is what keeps a dead transcript from excusing genuine silence:
+ * presence-alive + stt-dead still disproves "went quiet", so inactivity
+ * stays trustworthy while content labels (clarifying_question, ...) are
+ * marked contaminated. Presence-dead contaminates both.
+ */
+export interface SensorPayload {
+  sensor: 'presence' | 'stt';
+  state: 'up' | 'down';
+  reason: string;
 }
 
 /**

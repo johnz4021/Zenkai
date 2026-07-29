@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import httpProxy from 'http-proxy';
-import { WebSocketServer } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
 import { isFailingRun } from '@interview-prep/shared';
 import { classify } from './classifier.js';
@@ -29,7 +29,16 @@ import { buildFeedback } from './feedback.js';
 import { buildGraphView, buildTargetNote, loadStore, recordSession, saveStore } from './gap-graph.js';
 import { clientScript, sessionPage } from './chrome.js';
 import { TraceStore } from './trace-store.js';
-import { bugContext, claudeInterviewer, renderActivity, type Interviewer } from './interviewer.js';
+import {
+  TurnQueue,
+  bugContext,
+  pickIntentCheck,
+  pickInterviewer,
+  renderActivity,
+  type IntentCheck,
+  type Interviewer,
+} from './interviewer.js';
+import { VoiceRuntime, type ClientVoiceMessage } from './voice.js';
 
 export interface SessionConfig {
   repoRoot: string;
@@ -41,8 +50,12 @@ export interface SessionConfig {
   autorunTests: boolean;
   /** Generate the next (gap-targeted) problem when this session ends. */
   prepareNext: boolean;
-  /** Injectable; omit for the real `claude -p` agent, null to run without one. */
+  /** Injectable; omit for the real agent, null to run without one. */
   interviewer?: Interviewer | null;
+  /** Injectable; omit for the real model check. */
+  intentCheck?: IntentCheck | null;
+  /** Voice on/off. Rollback is a restart with IP_VOICE=0 (feature flag). */
+  voice?: boolean;
 }
 
 /** Nominal round length — what the interviewer's time pressure counts down. */
@@ -178,11 +191,66 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   const { bug, bugFile } = bugContext(problem);
   const interviewer =
     cfg.interviewer === undefined
-      ? claudeInterviewer(path.join(cfg.repoRoot, 'prompts', 'interviewer.md'))
+      ? pickInterviewer(path.join(cfg.repoRoot, 'prompts', 'interviewer.md'))
       : cfg.interviewer;
+  // The interviewer silently reads the candidate's gap history — it shapes
+  // where pressure lands and is never mentioned (prompt rule + leaksGapNote
+  // guard). Same never-mention contract as the generator (T15).
+  const targetNote = buildTargetNote(buildGraphView(loadStore(gapsDir, cfg.userId)));
   const t0 = Date.now();
   let lastInterviewerTs = t0;
   let interviewerBusy = false;
+
+  // ---- intent routing (OUTSIDE the busy lock — eng review issue 1) ----
+  // Every utterance is classified the moment it lands; only ADDRESSED ones
+  // queue for a reply. Narration never contends for the lock, and a question
+  // asked while the agent is mid-turn waits instead of vanishing.
+  const intentCheck: IntentCheck | null =
+    cfg.intentCheck === undefined ? pickIntentCheck() : cfg.intentCheck;
+  const turnQueue = new TurnQueue(2);
+
+  // ---- voice (IP_VOICE flag + key present, else text-only) ----
+  const elevenKey = process.env.ELEVENLABS_API_KEY ?? process.env.IP_ELEVENLABS_KEY ?? '';
+  const voiceEnabled = (cfg.voice ?? true) && elevenKey.length > 0;
+  const voice = voiceEnabled
+    ? new VoiceRuntime(
+        {
+          apiKey: elevenKey,
+          upstreamFactory: (url, headers) => new WebSocket(url, { headers }) as never,
+        },
+        {
+          emitSensor: (sensor, state, reason) =>
+            store.emitChrome('sensor', { sensor, state, reason }),
+          emitUtterance: (text, speechStartTs) => {
+            store.emitChrome(
+              'utterance',
+              { text, via: 'voice', ...(text ? {} : { untranscribed: true }), speech_start_ts: speechStartTs },
+              speechStartTs, // stamped at SPEECH START, never transcript arrival
+            );
+            routeUtterance(text); // intent check; narration stays silent
+          },
+        },
+      )
+    : null;
+
+  const pump = (): void => {
+    if (ended || interviewerBusy) return;
+    const merged = turnQueue.drain();
+    if (merged !== null) void runInterviewer(merged);
+  };
+
+  const routeUtterance = (text: string): void => {
+    if (!interviewer || !intentCheck || !text.trim() || ended) return;
+    void intentCheck(text, problem.spec)
+      .then((addressed) => {
+        if (!addressed) return; // narration: traced, agent stays silent
+        turnQueue.push(text);
+        pump();
+      })
+      .catch(() => {
+        /* fail toward silence, never toward interruption */
+      });
+  };
 
   /** One interviewer turn. `null` message = unprompted pressure beat. */
   const runInterviewer = async (candidateMessage: string | null): Promise<void> => {
@@ -195,6 +263,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         spec: problem.spec,
         bug,
         bugFile,
+        targetNote,
         elapsedMs: now - t0,
         remainingMs: SESSION_LENGTH_MS - (now - t0),
         recentActivity: renderActivity(events, now),
@@ -223,6 +292,8 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       console.warn('[interviewer] turn failed:', String(e));
     } finally {
       interviewerBusy = false;
+      // A question may have stacked while this turn was composing.
+      pump();
     }
   };
 
@@ -237,6 +308,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
   const finalize = async (): Promise<unknown> => {
     if (pressureTimer) clearInterval(pressureTimer);
+    voice?.close();
     store.emitChrome('session_end', {});
     const events: TraceEvent[] = store.readAll();
     const classification = await classify(events, problem.rubric, problem.spec, claudeJudge);
@@ -266,7 +338,21 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     mkdirSync(path.join(cfg.repoRoot, 'feedback'), { recursive: true });
     writeFileSync(
       path.join(cfg.repoRoot, 'feedback', `${cfg.sessionId}.json`),
-      JSON.stringify({ card, classification, view }, null, 2),
+      JSON.stringify(
+        {
+          card,
+          classification,
+          view,
+          // Voice health belongs in the record you open when a session felt
+          // wrong: "the mic seemed off" must be checkable after the fact.
+          // speech_starts vs transcripts is the gate-quality ratio — if it
+          // drifts high, the energy gate is streaming non-speech and Silero
+          // gets un-deferred (TODOS.md #3).
+          voice: voice ? { budget: voice.budget.state(), health: voice.health } : null,
+        },
+        null,
+        2,
+      ),
     );
 
     // Close the memory loop: generate the NEXT problem now, aimed at the gap
@@ -297,9 +383,15 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       res.writeHead(200, { 'content-type': 'text/html' });
       return res.end(sessionPage(cfg.sessionId));
     }
-    if (url === '/client/session.js') {
+    if (url.startsWith('/client/')) {
+      const name = path.basename(url); // no traversal: basename only
+      const body = clientScript(name);
+      if (body === null) {
+        res.writeHead(404);
+        return res.end('no such client file');
+      }
       res.writeHead(200, { 'content-type': 'text/javascript' });
-      return res.end(clientScript());
+      return res.end(body);
     }
     if (url === '/api/status') {
       const events = store.readAll();
@@ -311,17 +403,43 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           session_id: cfg.sessionId,
           counts,
           trigger_armed: hasFailingRun(events),
+          voice: voice
+            ? { enabled: true, budget: voice.budget.state(), health: voice.health }
+            : { enabled: false },
         }),
       );
     }
     if (url === '/api/utterance' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)) || '{}') as { text?: string };
-      const ev = store.emitChrome('utterance', { text: body.text ?? '' });
-      // Do not make the candidate wait on a model round-trip to see their own
-      // message land; the reply arrives via /api/messages.
-      void runInterviewer(body.text ?? '');
+      const ev = store.emitChrome('utterance', { text: body.text ?? '', via: 'text' });
+      // Typed and spoken words take the SAME path: trace always, intent
+      // check outside the lock, reply via /api/messages if addressed.
+      routeUtterance(body.text ?? '');
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ seq: ev.seq, pending: Boolean(interviewer) }));
+    }
+    if (url.startsWith('/voice/tts/') && voice) {
+      // The text is read from the STORED interviewer event — downstream of
+      // guard() by construction. A redacted turn reaches the speaker
+      // redacted; there is no path from raw model output to audio.
+      const seq = Number(url.slice('/voice/tts/'.length));
+      const turn = store
+        .readAll()
+        .find((e) => e.type === 'interviewer' && e.seq === seq);
+      const text = String((turn?.payload as { text?: string } | undefined)?.text ?? '');
+      if (!text) {
+        res.writeHead(404);
+        return res.end('no such turn');
+      }
+      const out = await voice.tts(text);
+      if (!out.ok) {
+        res.writeHead(503, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: out.error }));
+      }
+      res.writeHead(200, { 'content-type': 'audio/mpeg' });
+      const { Readable } = await import('node:stream');
+      Readable.fromWeb(out.body as never).pipe(res);
+      return;
     }
     if (url.startsWith('/api/messages')) {
       const since = Number(new URL(url, 'http://x').searchParams.get('since') ?? -1);
@@ -367,9 +485,24 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       }
     });
   });
+  // Browser voice client: presence/audio control messages in, nothing out.
+  // Transcripts and replies travel the normal trace + /api/messages paths.
+  const voiceWss = new WebSocketServer({ noServer: true });
+  voiceWss.on('connection', (ws) => {
+    ws.on('message', (data) => {
+      try {
+        voice?.handleClientMessage(JSON.parse(String(data)) as ClientVoiceMessage);
+      } catch {
+        /* malformed frame */
+      }
+    });
+  });
+
   server.on('upgrade', (req, socket, head) => {
     if (req.url === '/trace') {
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+    } else if (req.url === '/voice') {
+      voiceWss.handleUpgrade(req, socket, head, (ws) => voiceWss.emit('connection', ws, req));
     } else {
       proxy.ws(req, socket, head);
     }

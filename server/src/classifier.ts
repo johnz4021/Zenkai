@@ -271,6 +271,85 @@ export function mechanicalLabels(
   return labels;
 }
 
+/**
+ * Sensor-degradation contamination (eng review D4 + tension 1).
+ *
+ * Sensor failure creates the OPPOSITE problem from nudges: not "this fired
+ * because we prompted it" but "this fired because data went missing". So it
+ * marks exactly the labels whose FIRING could be an artifact of blindness:
+ *
+ *   presence dead  → we know nothing about speech
+ *                    · inactivity contaminated (the "gap" may have been talk)
+ *                    · immediate_edit contaminated (a spoken thought before
+ *                      the edit would be invisible)
+ *   stt dead, presence alive → we know THAT they spoke, not WHAT
+ *                    · inactivity stays TRUSTWORTHY — presence-only speech
+ *                      still lands in the trace as untranscribed utterances,
+ *                      so real silence is still real
+ *                    · immediate_edit contaminated (the lost words might have
+ *                      been the clarifying question)
+ *
+ * Content labels that FIRED are never contaminated by sensors — their
+ * evidence exists. Pre-voice traces carry no sensor events and pass through
+ * untouched.
+ */
+export function sensorDownIntervals(
+  events: TraceEvent[],
+  sensor: 'presence' | 'stt',
+): { start: number; end: number }[] {
+  const changes = events
+    .filter((e) => e.type === 'sensor' && (e.payload as { sensor?: string })?.sensor === sensor)
+    .sort((a, b) => a.ts - b.ts);
+  if (changes.length === 0) return [];
+  const out: { start: number; end: number }[] = [];
+  let downSince: number | null = null;
+  for (const ev of changes) {
+    const state = (ev.payload as { state?: string }).state;
+    if (state === 'down' && downSince === null) downSince = ev.ts;
+    if (state === 'up' && downSince !== null) {
+      out.push({ start: downSince, end: ev.ts });
+      downSince = null;
+    }
+  }
+  if (downSince !== null) out.push({ start: downSince, end: Number.POSITIVE_INFINITY });
+  return out;
+}
+
+const overlaps = (a: { start: number; end: number }, s: number, e: number) =>
+  a.start < e && a.end > s;
+
+export function markSensorContamination(
+  labels: LabelEvidence[],
+  allEvents: TraceEvent[],
+  bounds: WindowBounds,
+): LabelEvidence[] {
+  const voiceWasActive = allEvents.some((e) => e.type === 'sensor');
+  if (!voiceWasActive) return labels;
+
+  const presenceDown = sensorDownIntervals(allEvents, 'presence');
+  const sttDown = sensorDownIntervals(allEvents, 'stt');
+  const inWindow = (iv: { start: number; end: number }) => overlaps(iv, bounds.start_ts, bounds.end_ts);
+
+  return labels.map((l) => {
+    if (l.contaminated) return l;
+    if (l.label === 'inactivity') {
+      // Contaminate only if presence was down during one of the actual gaps.
+      const gapHit = l.evidence.some((g) =>
+        presenceDown.some((iv) => overlaps(iv, g.ts, bounds.end_ts)),
+      );
+      return gapHit ? { ...l, contaminated: true } : l;
+    }
+    if (l.label === 'immediate_edit') {
+      const firstEditTs = l.evidence[0]?.ts ?? bounds.end_ts;
+      const blind = [...presenceDown, ...sttDown].some((iv) =>
+        overlaps(iv, bounds.start_ts, firstEditTs),
+      );
+      return blind ? { ...l, contaminated: true } : l;
+    }
+    return l; // content labels that fired have real evidence
+  });
+}
+
 export async function classify(
   events: TraceEvent[],
   rubric: Rubric,
@@ -284,13 +363,21 @@ export async function classify(
   const windowEvents = extractWindow(events, rubric, trigger);
   const utterances = windowEvents
     .filter((e) => e.type === 'utterance')
-    .map((e) => ({ seq: e.seq, text: String((e.payload as { text?: string })?.text ?? '') }));
+    .map((e) => ({ seq: e.seq, text: String((e.payload as { text?: string })?.text ?? '') }))
+    // Untranscribed voice segments (presence heard sound, STT produced no
+    // words) count as activity but carry nothing to judge.
+    .filter((u) => u.text.trim().length > 0);
   const judgments = utterances.length > 0 ? await judge(utterances, spec) : [];
   const bounds = windowBounds(events, rubric, trigger, windowEvents);
+  const labels = markSensorContamination(
+    markContamination(mechanicalLabels(windowEvents, judgments, bounds), windowEvents),
+    events,
+    bounds,
+  );
   return {
     trigger,
     windowEvents,
-    labels: markContamination(mechanicalLabels(windowEvents, judgments, bounds), windowEvents),
+    labels,
     trigger_occurred: true,
   };
 }

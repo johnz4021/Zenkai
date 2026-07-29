@@ -277,3 +277,88 @@ describe('nudge contamination (interviewer posture A)', () => {
     expect(inactivity?.contaminated).toBeFalsy();
   });
 });
+
+describe('sensor contamination (two-way split, eng review tension 1)', () => {
+  const sensor = (ts: number, s: 'presence' | 'stt', state: 'up' | 'down'): TraceEvent =>
+    ({ session_id: 's', user_id: 'u', source: 'chrome', seq: n++, ts, type: 'sensor',
+       payload: { sensor: s, state, reason: 'test' } }) as TraceEvent;
+  const spokenEmpty = (ts: number): TraceEvent =>
+    ({ session_id: 's', user_id: 'u', source: 'chrome', seq: n++, ts, type: 'utterance',
+       payload: { text: '', via: 'voice', untranscribed: true } }) as TraceEvent;
+  const sessionEnd = (ts: number): TraceEvent =>
+    ({ session_id: 's', user_id: 'u', source: 'chrome', seq: n++, ts, type: 'session_end', payload: {} }) as TraceEvent;
+
+  it('presence dead during a gap → inactivity contaminated, not erased', async () => {
+    const events = [
+      sensor(5_000, 'presence', 'up'), sensor(5_000, 'stt', 'up'),
+      failedRun(10_000),
+      sensor(12_000, 'presence', 'down'),          // mic died
+      ev('edit', 45_000, { path: 'a.ts' }),        // 35s "gap" — but we were deaf
+      sessionEnd(50_000),
+    ];
+    const result = await classify(events, rubric, 'spec', noJudge);
+    const inact = result.labels.find((l) => l.label === 'inactivity');
+    expect(inact).toBeDefined();
+    expect(inact?.contaminated).toBe(true);
+  });
+
+  it('stt dead but presence alive → inactivity stays TRUSTWORTHY', async () => {
+    // Presence-only speech lands as untranscribed utterances, so a real
+    // 35s gap with a working presence sensor is real silence.
+    const events = [
+      sensor(5_000, 'presence', 'up'), sensor(5_000, 'stt', 'up'),
+      failedRun(10_000),
+      sensor(11_000, 'stt', 'down'),
+      ev('edit', 45_000, { path: 'a.ts' }),
+      sessionEnd(50_000),
+    ];
+    const result = await classify(events, rubric, 'spec', noJudge);
+    const inact = result.labels.find((l) => l.label === 'inactivity');
+    expect(inact).toBeDefined();
+    expect(inact?.contaminated).toBeFalsy();
+  });
+
+  it('untranscribed speech suppresses inactivity — STT death cannot fabricate silence', async () => {
+    const events = [
+      sensor(5_000, 'presence', 'up'), sensor(5_000, 'stt', 'up'),
+      failedRun(10_000),
+      sensor(11_000, 'stt', 'down'),
+      spokenEmpty(18_000), spokenEmpty(35_000),    // narrating; words lost
+      ev('edit', 45_000, { path: 'a.ts' }),
+      sessionEnd(50_000),
+    ];
+    const result = await classify(events, rubric, 'spec', noJudge);
+    expect(result.labels.map((l) => l.label)).not.toContain('inactivity');
+  });
+
+  it('stt dead before the first edit → immediate_edit contaminated (the lost words might have been the question)', async () => {
+    const events = [
+      sensor(5_000, 'presence', 'up'), sensor(5_000, 'stt', 'up'),
+      failedRun(10_000),
+      sensor(11_000, 'stt', 'down'),
+      spokenEmpty(13_000),
+      ev('edit', 15_000, { path: 'a.ts' }),
+      sessionEnd(50_000),
+    ];
+    const result = await classify(events, rubric, 'spec', noJudge);
+    const ie = result.labels.find((l) => l.label === 'immediate_edit');
+    expect(ie?.contaminated).toBe(true);
+  });
+
+  it('pre-voice traces (no sensor events) pass through untouched', async () => {
+    const events = [failedRun(10_000), ev('edit', 12_000, { path: 'a.ts' })];
+    const result = await classify(events, rubric, 'spec', noJudge);
+    expect(result.labels.every((l) => !l.contaminated)).toBe(true);
+  });
+
+  it('sensors healthy the whole session → nothing contaminated', async () => {
+    const events = [
+      sensor(5_000, 'presence', 'up'), sensor(5_000, 'stt', 'up'),
+      failedRun(10_000),
+      ev('edit', 45_000, { path: 'a.ts' }),
+      sessionEnd(50_000),
+    ];
+    const result = await classify(events, rubric, 'spec', noJudge);
+    expect(result.labels.find((l) => l.label === 'inactivity')?.contaminated).toBeFalsy();
+  });
+});

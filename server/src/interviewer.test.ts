@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   REDACTED_REPLY,
+  TurnQueue,
+  renderSplit,
   bugContext,
   guard,
   leaksBugLocation,
@@ -169,5 +171,102 @@ describe('bugContext', () => {
 
   it('degrades safely for round types with no planted bug', () => {
     expect(bugContext({} as GeneratedProblem).bugFile).toBe('');
+  });
+});
+
+describe('TurnQueue (addressed turns only; narration never enters)', () => {
+  it('answers two stacked questions as one turn, oldest first', async () => {
+    const { TurnQueue } = await import('./interviewer.js');
+    const q = new TurnQueue(2);
+    q.push('is the deadline from now?');
+    q.push('and does extend re-register the hold?');
+    expect(q.drain()).toBe('is the deadline from now?\nand does extend re-register the hold?');
+    expect(q.drain()).toBeNull();
+  });
+
+  it('caps at 2 by dropping the OLDEST — the newest is what they wait on', async () => {
+    const { TurnQueue } = await import('./interviewer.js');
+    const q = new TurnQueue(2);
+    q.push('q1');
+    q.push('q2');
+    q.push('q3');
+    expect(q.drain()).toBe('q2\nq3');
+  });
+});
+
+describe('gap-note never-mention guard (T15)', () => {
+  it('redacts meta-talk about the candidate history', () => {
+    for (const leak of [
+      'Last time you went quiet when the test failed.',
+      "I've noticed your pattern of editing before reading the failure.",
+      'You tend to go silent under pressure.',
+      'Your progress is being measured, so narrate.',
+    ]) {
+      const out = guard({ say: leak, kind: 'probe', nudge: false }, BUG_FILE, true, true);
+      expect(out.redacted, leak).toBe(true);
+    }
+  });
+
+  it('lets ordinary probing through — the note shapes pressure, it does not mute it', () => {
+    for (const fine of [
+      'Talk me through what you have ruled out so far.',
+      'What did the failure output actually say?',
+      "Twelve minutes left. What's your leading theory?",
+      'Walk me through your last change.',
+    ]) {
+      const out = guard({ say: fine, kind: 'probe', nudge: false }, BUG_FILE, true, true);
+      expect(out.redacted, fine).toBeUndefined();
+    }
+  });
+
+  it('is DISARMED when no target note was injected', () => {
+    const out = guard(
+      { say: 'You tend to be careful — good.', kind: 'probe', nudge: false },
+      BUG_FILE,
+      true,
+      false,
+    );
+    expect(out.redacted).toBeUndefined();
+  });
+
+  it('an unprompted gap leak redacts to silence, like the bug guard', () => {
+    const out = guard(
+      { say: 'Last session you went quiet here.', kind: 'pressure', nudge: false },
+      BUG_FILE,
+      false,
+      true,
+    );
+    expect(out.say).toBe('');
+    expect(out.kind).toBe('silent');
+  });
+});
+
+describe('renderSplit (prompt caching seam)', () => {
+  const ctx = {
+    spec: 'THE SPEC', bug: 'THE BUG', bugFile: BUG_FILE, targetNote: 'TARGETING NOTE: gap X',
+    elapsedMs: 60_000, remainingMs: 44 * 60_000, recentActivity: 'ACT', transcript: [],
+    candidateMessage: 'hello',
+  };
+
+  it('the stable half contains spec, bug, and note; the turn half the clock', () => {
+    const template = readFileSync(path.join(REPO, 'prompts/interviewer.md'), 'utf8');
+    const { system, turn } = renderSplit(template, ctx);
+    expect(system).toContain('THE SPEC');
+    expect(system).toContain('THE BUG');
+    expect(system).toContain('TARGETING NOTE: gap X');
+    expect(system).not.toContain('Elapsed: 1 min');
+    expect(turn).toContain('Elapsed: 1 min');
+    expect(turn).toContain('hello');
+  });
+
+  it('is IDENTICAL across turns when only per-turn state changes — or caching dies', () => {
+    const template = readFileSync(path.join(REPO, 'prompts/interviewer.md'), 'utf8');
+    const a = renderSplit(template, ctx).system;
+    const b = renderSplit(template, {
+      ...ctx, elapsedMs: 20 * 60_000, remainingMs: 25 * 60_000,
+      recentActivity: 'DIFFERENT', candidateMessage: 'another question',
+      transcript: [{ who: 'candidate' as const, text: 'earlier' }],
+    }).system;
+    expect(a).toBe(b);
   });
 });

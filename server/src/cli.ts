@@ -105,6 +105,8 @@ if (cmd === 'generate') {
     autorunTests: process.env.IP_AUTORUN_TESTS !== '0',
     prepareNext: process.env.IP_PREPARE_NEXT !== '0',
     interviewer: process.env.IP_INTERVIEWER === '0' ? null : undefined,
+    intentCheck: process.env.IP_INTERVIEWER === '0' ? null : undefined,
+    voice: process.env.IP_VOICE !== '0',
   });
 } else {
   console.error(
