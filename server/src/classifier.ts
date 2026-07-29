@@ -15,7 +15,8 @@
  * any live deadline; post-session classification has none.
  */
 
-import type { Rubric, SpecChangeLabel, TestRunPayload, TraceEvent } from '@interview-prep/shared';
+import type { Rubric, SpecChangeLabel, TraceEvent } from '@interview-prep/shared';
+import { INACTIVITY_THRESHOLD_MS, isCandidateActivity, isFailingRun } from '@interview-prep/shared';
 
 export interface UtteranceJudgment {
   seq: number;
@@ -93,8 +94,7 @@ export function findTrigger(events: TraceEvent[], rubric: Rubric): TraceEvent | 
   for (const ev of ordered) {
     if (ev.type !== rubric.trigger.event) continue;
     if (rubric.trigger.predicate === 'first_failure') {
-      const p = ev.payload as TestRunPayload | null;
-      if (p && p.exit_code !== 0 && p.exit_code !== null) return ev;
+      if (isFailingRun(ev)) return ev;
     } else {
       return ev;
     }
@@ -132,9 +132,88 @@ const ref = (e: TraceEvent, note: string) => ({
   note,
 });
 
+/**
+ * Inactivity, computed by the SERVER over the merged trace.
+ *
+ *   trigger ──act──act────────────────act──█ window close
+ *              │    └──── gap ≥ 20s ────┘
+ *              └ any source: edit, save, test run, chat, (soon) speech
+ *
+ * This replaces the extension's `pause` event, which was a keystrokes-only
+ * VERDICT: narrating out loud — and even typing a clarifying question into
+ * the chat panel — scored as silence, because chat is chrome-sourced and
+ * never reached the extension's activity clock. Only the server sees every
+ * source, so only the server may define silence. The extension now reports
+ * facts; this function interprets them.
+ *
+ * Boundaries count: the stretch from the trigger to the first activity, and
+ * from the last activity to the window close, are gaps like any other.
+ */
+export interface WindowBounds {
+  start_ts: number;
+  end_ts: number;
+}
+
+export function computeInactivity(
+  windowEvents: TraceEvent[],
+  bounds: WindowBounds,
+): LabelEvidence['evidence'] {
+  const activity = windowEvents
+    .filter(isCandidateActivity)
+    .map((e) => e.ts)
+    .sort((a, b) => a - b);
+
+  const gaps: LabelEvidence['evidence'] = [];
+  let prev = bounds.start_ts;
+  for (const ts of [...activity, bounds.end_ts]) {
+    const gap = ts - prev;
+    if (gap >= INACTIVITY_THRESHOLD_MS) {
+      gaps.push({
+        source: 'server',
+        seq: -1, // derived, not a stored event
+        ts: prev,
+        note: `went silent for ${Math.round(gap / 1000)}s (no edits, saves, runs, or utterances from any source)`,
+      });
+    }
+    prev = Math.max(prev, ts);
+  }
+  return gaps;
+}
+
+/**
+ * Where the measurement window actually ends on the clock. The `until`
+ * close is the last window event; a capped/open window ends at the hard cap
+ * or the session end, whichever came first. Without this, an empty window
+ * (failing run, then nothing) would have no second timestamp to measure a
+ * gap against — and that exact case is the genuine-silence positive control.
+ */
+export function windowBounds(
+  allEvents: TraceEvent[],
+  rubric: Rubric,
+  trigger: TraceEvent,
+  windowEvents: TraceEvent[],
+): WindowBounds {
+  const hardEnd = rubric.window.duration_ms
+    ? trigger.ts + rubric.window.duration_ms
+    : Number.POSITIVE_INFINITY;
+  const last = windowEvents[windowEvents.length - 1];
+  const closedByUntil =
+    rubric.window.until !== undefined && last !== undefined && last.type === rubric.window.until;
+  if (closedByUntil) return { start_ts: trigger.ts, end_ts: last.ts };
+
+  // The hard cap is only a real boundary once we KNOW the clock passed it —
+  // i.e. the session ended. Without a session_end, treating the cap as the
+  // window edge would invent minutes of "silence" that have not happened yet;
+  // the last observed event is the honest end of what we can measure.
+  const sessionEnd = allEvents.find((e) => e.type === 'session_end');
+  const end = sessionEnd ? Math.min(hardEnd, sessionEnd.ts) : (last?.ts ?? trigger.ts);
+  return { start_ts: trigger.ts, end_ts: Math.max(end, trigger.ts) };
+}
+
 export function mechanicalLabels(
   windowEvents: TraceEvent[],
   judgments: UtteranceJudgment[],
+  bounds?: WindowBounds,
 ): LabelEvidence[] {
   const labels: LabelEvidence[] = [];
   const judged = new Map(judgments.map((j) => [j.seq, j]));
@@ -150,7 +229,6 @@ export function mechanicalLabels(
   );
   const edits = windowEvents.filter((e) => e.type === 'edit');
   const reruns = windowEvents.filter((e) => e.type === 'test_run');
-  const pauses = windowEvents.filter((e) => e.type === 'pause');
 
   if (clarifying.length > 0) {
     labels.push({
@@ -182,11 +260,13 @@ export function mechanicalLabels(
       evidence: reruns.map((e) => ref(e, 'ran the tests inside the window')),
     });
   }
-  if (pauses.length > 0) {
-    labels.push({
-      label: 'inactivity',
-      evidence: pauses.map((e) => ref(e, `went silent ≥20s`)),
-    });
+  // Inactivity is server-derived from gaps in the merged trace, never from
+  // extension `pause` events (see computeInactivity). No bounds, no verdict.
+  if (bounds) {
+    const gaps = computeInactivity(windowEvents, bounds);
+    if (gaps.length > 0) {
+      labels.push({ label: 'inactivity', evidence: gaps });
+    }
   }
   return labels;
 }
@@ -206,10 +286,11 @@ export async function classify(
     .filter((e) => e.type === 'utterance')
     .map((e) => ({ seq: e.seq, text: String((e.payload as { text?: string })?.text ?? '') }));
   const judgments = utterances.length > 0 ? await judge(utterances, spec) : [];
+  const bounds = windowBounds(events, rubric, trigger, windowEvents);
   return {
     trigger,
     windowEvents,
-    labels: markContamination(mechanicalLabels(windowEvents, judgments), windowEvents),
+    labels: markContamination(mechanicalLabels(windowEvents, judgments, bounds), windowEvents),
     trigger_occurred: true,
   };
 }

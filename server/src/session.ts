@@ -2,7 +2,10 @@
  * Session runtime — the one process that runs a live session.
  *
  *   browser ──► :3200 ── /session            chrome page
+ *                     ├─ /client/session.js  extracted chrome client
+ *                     ├─ /api/status         event counts + trigger-armed
  *                     ├─ /api/utterance      chrome-source trace events
+ *                     ├─ /api/messages       interviewer turns since seq
  *                     ├─ /api/end            classify → gap graph → feedback
  *                     ├─ /trace (ws)         emitter ingest (ack per event)
  *                     └─ everything else ──► openvscode-server :3100
@@ -19,11 +22,12 @@ import path from 'node:path';
 import httpProxy from 'http-proxy';
 import { WebSocketServer } from 'ws';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
+import { isFailingRun } from '@interview-prep/shared';
 import { classify } from './classifier.js';
 import { claudeJudge } from './llm-judge.js';
 import { buildFeedback } from './feedback.js';
 import { buildGraphView, buildTargetNote, loadStore, recordSession, saveStore } from './gap-graph.js';
-import { sessionPage } from './chrome.js';
+import { clientScript, sessionPage } from './chrome.js';
 import { TraceStore } from './trace-store.js';
 import { bugContext, claudeInterviewer, renderActivity, type Interviewer } from './interviewer.js';
 
@@ -105,13 +109,9 @@ function ensureIdeDataDir(repoRoot: string): string {
   return dataDir;
 }
 
-/** The debugging trigger: a test run that actually failed. */
+/** The debugging trigger: a test run that actually failed (shared predicate). */
 function hasFailingRun(events: TraceEvent[]): boolean {
-  return events.some((e) => {
-    if (e.type !== 'test_run') return false;
-    const code = (e.payload as { exit_code?: number | null } | null)?.exit_code;
-    return code !== 0 && code != null;
-  });
+  return events.some(isFailingRun);
 }
 
 function ensureExtensionBuilt(repoRoot: string): string {
@@ -296,6 +296,10 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     if (url === '/session') {
       res.writeHead(200, { 'content-type': 'text/html' });
       return res.end(sessionPage(cfg.sessionId));
+    }
+    if (url === '/client/session.js') {
+      res.writeHead(200, { 'content-type': 'text/javascript' });
+      return res.end(clientScript());
     }
     if (url === '/api/status') {
       const events = store.readAll();

@@ -1,0 +1,33 @@
+{
+  "session_id": "sess-1785284794551",
+  "note": "Real session, debugging-002 (expiry sweep bug). Candidate opened files, asked two process questions, edited vitest.config.ts and stockLedger.ts before asking the one genuine clarifying question at +112.9s. Two silence gaps: 12.9s->44.1s (31.2s) and 90.0s->112.9s (22.9s). No interviewer nudges. Window closes at session_end (+128.7s), no rerun.",
+  "round_type": "debugging",
+  "utterance_judgments": [
+    {
+      "seq": 0,
+      "text": "where should i start",
+      "clarifying_question": false,
+      "assumption_update": false,
+      "why": "process question; references no spec entity or behavior"
+    },
+    {
+      "seq": 2,
+      "text": "where's the spec?",
+      "clarifying_question": false,
+      "assumption_update": false,
+      "why": "asks about materials, resolves no spec ambiguity"
+    },
+    {
+      "seq": 4,
+      "text": "what should the intended behaviour be",
+      "clarifying_question": true,
+      "assumption_update": false,
+      "why": "asks for intended behavior to resolve ambiguity - the exact behavior the rubric rewards"
+    }
+  ],
+  "expected": {
+    "trigger_occurred": true,
+    "labels": ["clarifying_question", "immediate_edit", "inactivity"],
+    "contaminated": []
+  }
+}

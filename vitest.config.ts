@@ -6,6 +6,6 @@ export default defineConfig({
     // Without this exclusion every `npm test` at the root goes red the moment
     // a problem is generated, and the signal from our own suite is destroyed.
     // Spike dirs are throwaway and self-contained; they don't belong either.
-    exclude: ['**/node_modules/**', 'problems/**', 'spikes/**'],
+    exclude: ['**/node_modules/**', '**/dist/**', 'problems/**', 'spikes/**'],
   },
 });

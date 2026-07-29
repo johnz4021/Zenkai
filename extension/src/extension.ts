@@ -16,7 +16,6 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import * as vscode from 'vscode';
 import type { FileSavePayload, GeneratedProblem, TestRunPayload } from '@interview-prep/shared';
-import { INACTIVITY_THRESHOLD_MS } from '@interview-prep/shared';
 import { DurableEmitter } from './durable-log.js';
 
 const IGNORED = ['/node_modules/', '/.git/', '/.trace/'];
@@ -63,21 +62,13 @@ export function activate(context: vscode.ExtensionContext): void {
     round_type: problem?.round_type ?? null,
   });
 
-  // ---- activity + pause detection (operational definition: 20s silence) ----
-  let lastActivity = Date.now();
-  let pauseEmitted = false;
-  const touch = () => {
-    lastActivity = Date.now();
-    pauseEmitted = false;
-  };
-  const pauseTimer = setInterval(() => {
-    const silence = Date.now() - lastActivity;
-    if (!pauseEmitted && silence >= INACTIVITY_THRESHOLD_MS) {
-      pauseEmitted = true;
-      emitter.emit('pause', { since_ts: lastActivity, silence_ms: silence });
-    }
-  }, 5_000);
-  context.subscriptions.push({ dispose: () => clearInterval(pauseTimer) });
+  // NOTE deliberately absent: pause/inactivity detection. This extension once
+  // owned a 20s-without-keystrokes timer and emitted `pause` VERDICTS — which
+  // scored a candidate narrating out loud (or typing into the chat panel,
+  // which never reaches this process) as silence. The server derives
+  // inactivity from gaps in the merged trace across ALL sources
+  // (server/src/classifier.ts computeInactivity). This extension reports
+  // facts only; it never interprets them.
 
   const relevant = (uri: vscode.Uri): boolean =>
     uri.scheme === 'file' && !IGNORED.some((p) => uri.path.includes(p));
@@ -90,7 +81,6 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((e) => {
       if (!relevant(e.document.uri) || e.contentChanges.length === 0) return;
-      touch();
       const key = e.document.uri.path;
       const buf = editBuffer.get(key);
       if (buf) {
@@ -106,12 +96,10 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.workspace.onDidOpenTextDocument((doc) => {
       if (!relevant(doc.uri)) return;
-      touch();
       emitter.emit('file_open', { path: doc.uri.path });
     }),
     vscode.workspace.onDidSaveTextDocument((doc) => {
       if (!relevant(doc.uri)) return;
-      touch();
       const rel = folder ? path.relative(folder.uri.fsPath, doc.uri.fsPath) : doc.uri.path;
       const payload: FileSavePayload = {
         path: doc.uri.path,
@@ -132,7 +120,6 @@ export function activate(context: vscode.ExtensionContext): void {
     const [bin, ...args] = cmdline.split(' ');
     if (!bin) return;
     running = true;
-    touch();
     statusItem.text = '$(sync~spin) Tests running…';
     testOutput.clear();
     testOutput.appendLine(`$ ${cmdline}`);

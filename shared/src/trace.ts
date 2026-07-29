@@ -85,6 +85,40 @@ export interface InterviewerPayload {
 }
 
 /**
+ * The debugging trigger predicate, defined ONCE. session.ts (trigger-armed
+ * status) and the classifier (findTrigger) both consumed their own copy of
+ * this until they drifted into review as a DRY finding. A null exit_code
+ * means the run never completed — that is "unknown", not "failed".
+ */
+export function isFailingRun(e: TraceEvent): boolean {
+  if (e.type !== 'test_run') return false;
+  const code = (e.payload as TestRunPayload | null)?.exit_code;
+  return code !== 0 && code != null;
+}
+
+/**
+ * Event types that count as CANDIDATE activity for inactivity computation.
+ * The interviewer speaking is not the candidate doing something; neither are
+ * scripted mutations or session bookkeeping. `pause` is deliberately absent:
+ * it was the extension's own silence VERDICT (keystrokes-only, so narrating
+ * out loud — and even typing into the chat panel — scored as inactivity).
+ * The server now derives silence from gaps in THIS list across all sources;
+ * old traces containing `pause` events remain readable and simply ignored.
+ */
+export const CANDIDATE_ACTIVITY_TYPES: readonly TraceEventType[] = [
+  'edit',
+  'file_open',
+  'file_save',
+  'command',
+  'test_run',
+  'utterance',
+];
+
+export function isCandidateActivity(e: TraceEvent): boolean {
+  return (CANDIDATE_ACTIVITY_TYPES as readonly string[]).includes(e.type);
+}
+
+/**
  * Ordering helper: total order for classification. Same-source pairs use
  * exact `seq`; cross-source pairs fall back to `ts`. Cross-source events
  * within CROSS_SOURCE_AMBIGUITY_MS are "ambiguous" — callers must not

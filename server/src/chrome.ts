@@ -5,7 +5,22 @@
  * production shell): rows + hairline dividers, ONE accent (focus only),
  * utility copy (D2), observations-vs-patterns framing (D1), remediation
  * leads when present (D3), two-line evidence citations (variant A).
+ *
+ * Client behavior lives in client/session.js (served at /client/session.js)
+ * — extracted from an inline template literal before voice tripled it.
+ * This file owns markup and style only.
  */
+
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+
+/** The client script, read once per process. */
+export function clientScript(): string {
+  return readFileSync(path.join(here, 'client', 'session.js'), 'utf8');
+}
 
 export function sessionPage(sessionId: string): string {
   return /* html */ `<!doctype html>
@@ -51,126 +66,12 @@ export function sessionPage(sessionId: string): string {
   <aside>
     <div id="log">
       <p class="u"><b>interviewer</b> — ask about the spec and intended behavior; you'll get an answer. Questions about where the bug is, you won't. Think aloud here too: questions and stated assumptions are part of the session record.</p>
-      <p class="u"><b>observed</b> — edits, saves, file opens, ≥20s silences, this chat, and test runs made with the <b>Run Tests</b> button in the editor's status bar. Terminal commands are not observed. The suite runs once automatically at start.</p>
+      <p class="u"><b>observed</b> — edits, saves, file opens, this chat, and test runs made with the <b>Run Tests</b> button in the editor's status bar. Terminal commands are not observed. Silences ≥20s with no activity anywhere count as going quiet. The suite runs once automatically at start.</p>
     </div>
     <div id="feedback"></div>
     <form id="f"><input id="msg" autocomplete="off" placeholder="ask / note an assumption…" /><button>send</button></form>
   </aside>
 </main>
-<script>
-  const t0 = Date.now();
-  setInterval(() => {
-    const s = Math.floor((Date.now() - t0) / 1000);
-    document.getElementById('clock').textContent =
-      String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
-  }, 1000);
-
-  async function pollStatus() {
-    try {
-      const r = await fetch('/api/status');
-      const s = await r.json();
-      const c = s.counts || {};
-      const n = (k) => c[k] || 0;
-      document.getElementById('status').textContent =
-        'observing: ' + n('edit') + ' edits · ' + n('file_save') + ' saves · ' +
-        n('test_run') + ' test runs · ' +
-        (s.trigger_armed ? 'trigger armed ✓' : 'waiting for first failing test run');
-    } catch {}
-  }
-  setInterval(pollStatus, 3000);
-  pollStatus();
-
-  // Interviewer turns arrive here, whether they answer something we asked or
-  // land unprompted. Server-driven: the chrome never decides what it says.
-  let lastSeq = -1;
-  const log = document.getElementById('log');
-  function say(who, text, cls) {
-    const p = document.createElement('p');
-    p.className = 'u' + (cls ? ' ' + cls : '');
-    p.innerHTML = '<b>' + who + '</b> ' + text.replace(/</g, '&lt;');
-    log.appendChild(p);
-    log.scrollTop = log.scrollHeight;
-    return p;
-  }
-  let thinkingEl = null;
-  async function pollMessages() {
-    try {
-      const r = await fetch('/api/messages?since=' + lastSeq);
-      const s = await r.json();
-      for (const m of s.messages) {
-        lastSeq = Math.max(lastSeq, m.seq);
-        if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
-        say('interviewer', m.text);
-      }
-      if (s.thinking && !thinkingEl) thinkingEl = say('interviewer', '…', 'pending');
-      if (!s.thinking && thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
-    } catch {}
-  }
-  setInterval(pollMessages, 2000);
-  pollMessages();
-
-  document.getElementById('f').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const input = document.getElementById('msg');
-    const text = input.value.trim();
-    if (!text) return;
-    input.value = '';
-    say('you', text);
-    await fetch('/api/utterance', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
-  });
-
-  document.getElementById('end').addEventListener('click', async () => {
-    const btn = document.getElementById('end');
-    btn.disabled = true;
-    btn.textContent = 'Classifying…';
-    const res = await fetch('/api/end', { method: 'POST' });
-    const card = await res.json();
-    render(card);
-    btn.textContent = 'Session ended';
-  });
-
-  function render(card) {
-    document.getElementById('log').style.display = 'none';
-    document.getElementById('f').style.display = 'none';
-    const el = document.getElementById('feedback');
-    el.style.display = 'block';
-    let html = '';
-    for (const c of card.newly_closed) {
-      html += '<div class="row closedmark"><p class="desc">Closed: ' + c.description +
-        '</p><p class="cite">fired ' + c.fired_count + ' times before this streak; not observed in 3 straight triggered sessions.</p></div>';
-    }
-    html += '<h2>' + (card.mode === 'observations' ? 'Session observations' : 'Session findings') + '</h2>';
-    if (!card.trigger_occurred) {
-      html += '<div class="row"><p class="desc">The trigger condition did not occur this session — nothing to classify.</p></div>';
-    } else if (card.findings.length === 0) {
-      html += '<div class="row"><p class="desc">No labels fired in the post-trigger window.</p></div>';
-    }
-    for (const f of card.findings) {
-      html += '<div class="row"><p class="desc">' + f.description + '</p>';
-      for (const line of f.citation) {
-        html += '<p class="cite"><span class="clk">' + line.clock + '</span>  ' + line.what + '</p>';
-      }
-      if (f.delta_ms != null) {
-        const s = Math.round(f.delta_ms / 1000);
-        html += '<p class="delta">&#8595; ' + Math.floor(s / 60) + 'm ' + (s % 60) + 's between the two</p>';
-      }
-      if (f.contaminated) {
-        html += '<p class="cite">Followed an interviewer nudge — recorded, but not counted toward your patterns.</p>';
-      }
-      html += '</div>';
-    }
-    if (card.focus) {
-      html += '<div class="focus"><p class="k">next session focus</p><p>' + card.focus.description + '</p></div>';
-    }
-    if (card.mode === 'observations') {
-      html += '<p class="meta">Session ' + (3 - card.sessions_until_patterns) + ' of 3 before patterns emerge. These are single-session observations, not yet patterns.</p>';
-    }
-    el.innerHTML = html;
-  }
-</script>
+<script src="/client/session.js"></script>
 `;
 }
