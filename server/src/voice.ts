@@ -112,7 +112,13 @@ export interface VoiceConfig {
   fetchImpl?: typeof fetch;
 }
 
-const STT_URL = 'wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v2_realtime';
+// language_code PINNED, not auto-detected. First judge-era live session:
+// with language_code null, short fragments and background noise came back
+// as Russian ("Смех"), Turkish, and CJK punctuation — per-segment detection
+// hallucinates languages on exactly the fragmented speech this product
+// records. Override with IP_STT_LANGUAGE for non-English candidates.
+const STT_URL = () =>
+  `wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v2_realtime&language_code=${process.env.IP_STT_LANGUAGE ?? 'en'}`;
 const TTS_URL = (voiceId: string, modelId: string) =>
   `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?model_id=${modelId}&output_format=mp3_44100_64`;
 /** "George" — a calm default; overridable per env. */
@@ -264,8 +270,12 @@ export class VoiceRuntime extends EventEmitter {
       this.disarmWatchdog();
       const stamp = this.currentSpeechStart;
       this.currentSpeechStart = null;
-      const finalText = text || this.partial;
+      let finalText = text || this.partial;
       this.partial = '';
+      // A transcript with no letters in any script ('。', '... ？') is
+      // punctuation noise from the recognizer, not words — record the
+      // segment as untranscribed speech rather than junk content.
+      if (finalText && !/\p{L}/u.test(finalText)) finalText = '';
       if (!finalText) {
         // VAD fired, upstream heard nothing intelligible. Tracked (a high
         // starts-to-empties ratio means the gate streams non-speech) AND
@@ -356,7 +366,7 @@ export class VoiceRuntime extends EventEmitter {
       return;
     }
     try {
-      const sock = factory(this.cfg.sttUrl ?? STT_URL, { 'xi-api-key': this.cfg.apiKey });
+      const sock = factory(this.cfg.sttUrl ?? STT_URL(), { 'xi-api-key': this.cfg.apiKey });
       this.upstream = sock;
       this.upstreamOpen = false;
       // Every handler guards on identity: after a rotation, a LATE event

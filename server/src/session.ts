@@ -196,8 +196,21 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // where pressure lands and is never mentioned (prompt rule + leaksGapNote
   // guard). Same never-mention contract as the generator (T15).
   const targetNote = buildTargetNote(buildGraphView(loadStore(gapsDir, cfg.userId)));
-  const t0 = Date.now();
-  let lastInterviewerTs = t0;
+  // The session clock anchors at the CANDIDATE'S ARRIVAL, never process
+  // start. First live session: the server idled 71 minutes before the
+  // candidate opened the page, "elapsed" blew past the 45-minute round, and
+  // the interviewer role-played "time's up" from its first turn — then
+  // pressured a 9-minute-old session into giving up. Null until first
+  // contact; the pressure timer stays quiet until then.
+  let sessionStartedAt: number | null = null;
+  let lastInterviewerTs = 0;
+  const markCandidateContact = () => {
+    if (sessionStartedAt === null) {
+      sessionStartedAt = Date.now();
+      lastInterviewerTs = sessionStartedAt;
+      console.log('[session] candidate arrived — clock started');
+    }
+  };
   let interviewerBusy = false;
 
   // ---- intent routing (OUTSIDE the busy lock — eng review issue 1) ----
@@ -266,8 +279,8 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         bug,
         bugFile,
         targetNote,
-        elapsedMs: now - t0,
-        remainingMs: SESSION_LENGTH_MS - (now - t0),
+        elapsedMs: now - (sessionStartedAt ?? now),
+        remainingMs: SESSION_LENGTH_MS - (now - (sessionStartedAt ?? now)),
         recentActivity: renderActivity(events, now),
         transcript: events
           .filter((e) => e.type === 'utterance' || e.type === 'interviewer')
@@ -382,6 +395,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   const server = http.createServer(async (req, res) => {
     const url = req.url ?? '/';
     if (url === '/session') {
+      markCandidateContact();
       res.writeHead(200, { 'content-type': 'text/html' });
       return res.end(sessionPage(cfg.sessionId));
     }
@@ -522,6 +536,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       try {
         const ev = JSON.parse(String(data)) as TraceEvent;
         if (ev.session_id !== cfg.sessionId) return; // stale emitter from a prior run
+        markCandidateContact(); // extension activity also proves arrival
         store.ingest(ev);
         ws.send(JSON.stringify({ ack: { seq: ev.seq } }));
       } catch {
@@ -574,7 +589,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // before the first failing run there is nothing to apply pressure about.
   if (interviewer) {
     pressureTimer = setInterval(() => {
-      if (ended || interviewerBusy) return;
+      if (ended || interviewerBusy || sessionStartedAt === null) return;
       if (!hasFailingRun(store.readAll())) return;
       if (Date.now() - lastInterviewerTs < PRESSURE_INTERVAL_MS) return;
       void runInterviewer(null);

@@ -397,8 +397,14 @@ export function apiIntentCheck(): IntentCheck {
         .join('')
         .toLowerCase();
       return out.includes('yes');
-    } catch {
-      return false; // fail toward silence, never toward interruption
+    } catch (e) {
+      // Fail toward silence, never toward interruption — but NEVER silently.
+      // First judge-era live session: every utterance (including "Yo,
+      // interviewer, can you give me a hand?") came back narration, and this
+      // catch ate whatever went wrong, leaving nothing to diagnose. The
+      // all-false fallback pathology banned in the judge was alive here.
+      console.warn('[intent] API check ERRORED (treating as narration):', String(e).slice(0, 200));
+      return false;
     }
   };
 }
@@ -407,6 +413,9 @@ export function apiIntentCheck(): IntentCheck {
 export function claudePIntentCheck(): IntentCheck {
   return async (text, spec) => {
     const out = await runClaudeP(INTENT_PROMPT(text, spec), 'haiku', 20_000);
+    if (out.trim().length === 0) {
+      console.warn('[intent] claude -p returned EMPTY (treating as narration)');
+    }
     return out.toLowerCase().includes('yes');
   };
 }

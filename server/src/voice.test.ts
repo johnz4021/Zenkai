@@ -343,3 +343,21 @@ describe('per-segment sessions + mute-session watchdog (the half-death fix)', ()
     expect(sockets[1]!.sent.length).toBeGreaterThan(0);
   });
 });
+
+describe('junk-segment filter (live finding: language-detection noise)', () => {
+  it("a letterless transcript ('。', '... ？') lands as untranscribed, not content", () => {
+    const { rt, up, h } = runtime();
+    rt.handleClientMessage({ type: 'speech_start', ts: 1_000 });
+    up.fire('open');
+    rt.handleUpstreamMessage(JSON.stringify({ message_type: 'committed_transcript', text: '。' }));
+    expect(h.utterances).toEqual([{ text: '', ts: 1_000 }]);
+  });
+
+  it('real words in any script survive the filter', () => {
+    const { rt, up, h } = runtime();
+    rt.handleClientMessage({ type: 'speech_start', ts: 1_000 });
+    up.fire('open');
+    rt.handleUpstreamMessage(JSON.stringify({ message_type: 'committed_transcript', text: 'ok' }));
+    expect(h.utterances).toEqual([{ text: 'ok', ts: 1_000 }]);
+  });
+});

@@ -357,6 +357,41 @@ export async function runGauntlet(opts: GauntletOptions): Promise<Scorecard> {
     detail: consDetail,
   });
 
+  // ---- 6. intent-check accuracy (from the live deafness incident) ----
+  // The first judge-era live session had EVERY utterance — including "Yo,
+  // interviewer, can you give me a hand?" — classified narration, while the
+  // same check passed in isolation. This metric keeps the check honest under
+  // the same conditions the gauntlet runs everything else.
+  log(`[gauntlet:${mode}] intent check`);
+  const { apiIntentCheck, claudePIntentCheck } = await import('../interviewer.js');
+  const intentCheck = process.env.ANTHROPIC_API_KEY ? apiIntentCheck() : claudePIntentCheck();
+  const INTENT_CASES: { text: string; addressed: boolean }[] = [
+    { text: "But I'm not really sure where this is being set. Can you give me a hint here?", addressed: true },
+    { text: 'Yo, interviewer, uh, can you give me a hand here?', addressed: true },
+    { text: 'Can you tell me, um, where I can get started here?', addressed: true },
+    { text: 'Is the deadline measured from now or from the original deadline?', addressed: true },
+    { text: 'Okay. So, I assume this is a debugging task.', addressed: false },
+    { text: "Let's try and figure out where the bug is, um, first.", addressed: false },
+    { text: 'Um, so the sweep releases the full count, not the remaining...', addressed: false },
+    { text: 'Oh, fuck.', addressed: false },
+    { text: "Yeah, that's probably why.", addressed: false },
+    { text: 'Hey, there. Um, how are you doing?', addressed: false }, // background speaker
+  ];
+  let intentOk = 0;
+  const intentDetail: string[] = [];
+  for (const c of INTENT_CASES) {
+    const got = await intentCheck(c.text, FIXTURE_DEBUGGING_PROBLEM.spec);
+    if (got === c.addressed) intentOk += 1;
+    else intentDetail.push(`"${c.text.slice(0, 50)}": got ${got ? 'addressed' : 'narration'}, expected ${c.addressed ? 'addressed' : 'narration'}`);
+  }
+  metrics.push({
+    metric: 'intent_accuracy',
+    score: intentOk / INTENT_CASES.length,
+    threshold: 0.9,
+    pass: intentOk / INTENT_CASES.length >= 0.9,
+    detail: intentDetail,
+  });
+
   // ---- citations, across everything above ----
   const citationScore = citation.total ? citation.kept / citation.total : 1;
   metrics.push({
