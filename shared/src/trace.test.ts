@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { SPEC_CHANGE_LABELS, isSpecChangeLabel } from './labels.js';
 import {
   CROSS_SOURCE_AMBIGUITY_MS,
   compareEvents,
@@ -19,16 +18,6 @@ function ev(partial: Partial<TraceEvent>): TraceEvent {
   };
 }
 
-describe('labels', () => {
-  it('has no duplicates (single source of truth would hide a drift)', () => {
-    expect(new Set(SPEC_CHANGE_LABELS).size).toBe(SPEC_CHANGE_LABELS.length);
-  });
-
-  it('guards unknown strings', () => {
-    expect(isSpecChangeLabel('clarifying_question')).toBe(true);
-    expect(isSpecChangeLabel('vibes')).toBe(false);
-  });
-});
 
 describe('compareEvents', () => {
   it('same-source pairs use exact seq, ignoring timestamps', () => {

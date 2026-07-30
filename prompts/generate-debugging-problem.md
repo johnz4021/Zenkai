@@ -60,12 +60,36 @@ Write `problem.json` at the repo root, exactly this shape:
   "mutations": [],
   "rubric": {
     "round_type": "debugging",
-    "trigger": { "event": "test_run", "predicate": "first_failure" },
-    "window": { "until": "test_run", "min_duration_ms": 30000, "duration_ms": 600000 },
-    "labels": ["clarifying_question", "assumption_update", "immediate_edit", "test_run", "inactivity"],
-    "expectation": "<one sentence: what a strong candidate does between first seeing the failure and their next test run>"
+    "dimensions": {
+      "clarify": "<what resolving ambiguity looks like ON THIS PROBLEM>",
+      "approach": "<what a real hypothesis looks like ON THIS PROBLEM>",
+      "communicate": "<what narration worth hearing sounds like here>",
+      "implement": "<what a targeted change looks like here>",
+      "verify": "<what checking the fix means here>",
+      "reflect": "<what explaining the root cause means here>"
+    }
   }
 }
 ```
+
+## Writing the dimension expectations (this is graded feedback material — be exact)
+
+Each expectation describes what a STRONG candidate does on THIS SPECIFIC problem,
+in one sentence naming an OBSERVABLE behavior tied to this problem's entities. A
+session judge applies these verbatim; vague expectations produce vague feedback
+forever.
+
+Rules:
+- Name entities from YOUR spec (the modules, states, and behaviors you built).
+- Describe an action someone could point to in a transcript, never a mental state.
+  BANNED stems: "understands...", "thinks about...", "is aware of...".
+- For `approach`, demand a MECHANISM, not a location.
+
+Worked examples (from an inventory-holds problem — match this specificity):
+- approach: "Names a mechanism before editing — e.g. that the expiry sweep
+  releases the hold's ORIGINAL unit count rather than its remaining count —
+  not merely 'something in the expiry code'."
+- verify: "Re-runs the suite after the fix, confirms the extended-hold expiry
+  test passes, and checks that partial-shipment release still works."
 
 Output nothing else. When verification holds and problem.json is written, you are done.

@@ -6,7 +6,7 @@
  *                     ├─ /api/status         event counts + trigger-armed
  *                     ├─ /api/utterance      chrome-source trace events
  *                     ├─ /api/messages       interviewer turns since seq
- *                     ├─ /api/end            classify → gap graph → feedback
+ *                     ├─ /api/end            judge → gap graph → feedback
  *                     ├─ /trace (ws)         emitter ingest (ack per event)
  *                     └─ everything else ──► openvscode-server :3100
  *                                            (root-namespace partition, spike 1)

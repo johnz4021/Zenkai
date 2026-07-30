@@ -4,7 +4,6 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { listReady, markUsed, pickProblem } from './pool.js';
 import { buildTargetNote, emptyStore, recordSession, buildGraphView } from './gap-graph.js';
-import type { SpecChangeLabel } from '@interview-prep/shared';
 
 function makeProblem(root: string, name: string, mtimeOffset = 0): string {
   const dir = path.join(root, name);
@@ -53,7 +52,7 @@ describe('problem pool', () => {
 });
 
 describe('buildTargetNote (the memory loop)', () => {
-  const session = (id: string, labels: SpecChangeLabel[]) => ({
+  const session = (id: string, labels: string[]) => ({
     session_id: id,
     ts: Date.now(),
     round_type: 'debugging',

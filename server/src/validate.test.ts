@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkManifest, normalizeTestName, parseVitestJson } from './validate.js';
+import { checkExpectations, checkManifest, normalizeTestName, parseVitestJson } from './validate.js';
 import type { GeneratedProblem } from '@interview-prep/shared';
 
 const report = (failures: { status: string; fullName: string }[][]) =>
@@ -56,32 +56,61 @@ describe('checkManifest', () => {
       description: 'expiry comparison excludes the boundary instant',
       failing_test: 'reserve > releases expired holds',
     },
-    spec: 'x'.repeat(150),
+    spec:
+      'The inventory module places time-limited holds on stock units; every hold carries an expiry deadline, and an hourly sweep releases expired holds back to available stock. One behavior is broken: find and fix it.',
     mutations: [],
     rubric: {
       round_type: 'debugging',
-      trigger: { event: 'test_run', predicate: 'first_failure' },
-      window: { duration_ms: 90_000 },
-      labels: ['clarifying_question', 'immediate_edit', 'test_run'],
-      expectation: 'reads the failure output before editing',
+      dimensions: {
+        clarify: 'Reads the failing expiry test body and asks whether the deadline boundary is inclusive before editing.',
+        approach: 'Names the mechanism: the sweep comparison excludes the boundary instant, so holds expiring exactly on the deadline are never released.',
+        communicate: 'Narrates which hold states are being inspected while tracing the sweep.',
+        implement: 'Changes only the sweep comparison to test the stated boundary hypothesis.',
+        verify: 'Re-runs the suite and confirms the expired-holds test passes with stock restored.',
+        reflect: 'Explains why the boundary instant was excluded and what the fix changes.',
+      },
     },
   };
 
-  it('rejects labels outside the single source of truth', () => {
-    const bad = {
-      ...base,
-      rubric: { ...base.rubric, labels: ['clarifying_question', 'vibes'] },
-    } as unknown as GeneratedProblem;
-    const failures = checkManifest(bad, '/nonexistent');
-    expect(failures.some((f) => f.includes('vibes'))).toBe(true);
+  it('accepts a manifest with concrete, spec-tied expectations', () => {
+    expect(checkExpectations(base)).toEqual([]);
   });
 
-  it('requires a test_run trigger for debugging rounds', () => {
+  it('rejects a manifest with no dimensions at all — a generation failure', () => {
+    const bad = { ...base, rubric: { round_type: 'debugging' } } as GeneratedProblem;
+    expect(checkExpectations(bad).some((f) => f.includes('dimensions missing'))).toBe(true);
+  });
+
+  it('rejects vague stems — "understands the problem" is not an observable behavior', () => {
     const bad = {
       ...base,
-      rubric: { ...base.rubric, trigger: { event: 'spec_mutation' } },
-    } as unknown as GeneratedProblem;
-    const failures = checkManifest(bad, '/nonexistent');
-    expect(failures.some((f) => f.includes('test_run'))).toBe(true);
+      rubric: {
+        ...base.rubric,
+        dimensions: { ...base.rubric.dimensions, clarify: 'Understands the problem and the expiry deadline sweep behavior well' },
+      },
+    } as GeneratedProblem;
+    expect(checkExpectations(bad).some((f) => f.includes('vague stem'))).toBe(true);
+  });
+
+  it('rejects thin expectations (under 8 words)', () => {
+    const bad = {
+      ...base,
+      rubric: { ...base.rubric, dimensions: { ...base.rubric.dimensions, verify: 'Runs the expiry tests again' } },
+    } as GeneratedProblem;
+    expect(checkExpectations(bad).some((f) => f.includes('too thin'))).toBe(true);
+  });
+
+  it('rejects generic expectations that share no vocabulary with the spec', () => {
+    const bad = {
+      ...base,
+      rubric: {
+        ...base.rubric,
+        dimensions: {
+          ...base.rubric.dimensions,
+          approach: 'States a general plan of attack before writing any code changes at all',
+        },
+      },
+    } as GeneratedProblem;
+    expect(checkExpectations(bad).some((f) => f.includes('no vocabulary'))).toBe(true);
   });
 });

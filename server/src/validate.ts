@@ -16,7 +16,8 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { isSpecChangeLabel, type GeneratedProblem } from '@interview-prep/shared';
+import type { GeneratedProblem } from '@interview-prep/shared';
+import { DIMENSIONS } from '@interview-prep/shared';
 
 export interface ValidationReport {
   ok: boolean;
@@ -75,10 +76,58 @@ export function checkManifest(problem: GeneratedProblem, repoDir: string): strin
     }
   }
   if (!problem.spec || problem.spec.length < 100) failures.push('spec missing or too short');
-  const badLabels = (problem.rubric?.labels ?? []).filter((l) => !isSpecChangeLabel(l));
-  if (badLabels.length > 0) failures.push(`rubric labels outside source of truth: ${badLabels.join(', ')}`);
-  if (problem.rubric?.trigger?.event !== 'test_run') {
-    failures.push('debugging rubric trigger must be test_run');
+  failures.push(...checkExpectations(problem));
+  return failures;
+}
+
+/**
+ * Expectation concreteness gate (eng review T3, upgraded to critical path
+ * by the outside voice): under the judge design, feedback quality is
+ * DOWNSTREAM of expectation quality — a vague expectation produces vague
+ * feedback on that dimension forever, and it looks like a judge problem.
+ * The gate is mechanical: every dimension present, long enough to say
+ * something, not a known-vague stem, and tied to THIS problem's vocabulary.
+ */
+const VAGUE_STEMS = /^(understands?|thinks? about|considers?|is (aware|mindful)|knows?|has a (good|solid) (grasp|understanding))\b/i;
+
+export function checkExpectations(problem: GeneratedProblem): string[] {
+  const failures: string[] = [];
+  const dims = problem.rubric?.dimensions;
+  if (!dims) {
+    // Pre-v2 manifests fall back to round-type defaults; only NEW
+    // generations (which the generator prompt requires to emit dimensions)
+    // are held to the gate. validateProblem runs at generation time, so a
+    // fresh manifest without dimensions is a generation failure.
+    return ['rubric.dimensions missing (generator must emit per-dimension expectations)'];
+  }
+  // Vocabulary pool: the spec AND the planted bug. reflect/approach
+  // expectations legitimately speak the bug's language ("the boundary
+  // instant"), which the candidate-facing spec deliberately does not.
+  const specWords = new Set(
+    `${problem.spec ?? ''} ${problem.planted_bug?.description ?? ''}`
+      .toLowerCase()
+      .split(/[^a-z]+/)
+      .filter((w) => w.length >= 5),
+  );
+  for (const key of DIMENSIONS) {
+    const exp = dims[key];
+    if (!exp || exp.trim().length === 0) {
+      failures.push(`expectation missing for dimension: ${key}`);
+      continue;
+    }
+    if (exp.trim().split(/\s+/).length < 8) {
+      failures.push(`expectation for ${key} too thin (< 8 words): "${exp}"`);
+    }
+    if (VAGUE_STEMS.test(exp.trim())) {
+      failures.push(`expectation for ${key} starts with a vague stem: "${exp.slice(0, 40)}..."`);
+    }
+    const tied = exp
+      .toLowerCase()
+      .split(/[^a-z]+/)
+      .some((w) => w.length >= 5 && specWords.has(w));
+    if (!tied) {
+      failures.push(`expectation for ${key} shares no vocabulary with the spec — not problem-specific: "${exp.slice(0, 60)}..."`);
+    }
   }
   return failures;
 }

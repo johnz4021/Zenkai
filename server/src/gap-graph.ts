@@ -19,11 +19,11 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { SpecChangeLabel, Verdict } from '@interview-prep/shared';
+import type { Verdict } from '@interview-prep/shared';
 import { DIMENSION_DEFS, isDimensionKey } from '@interview-prep/shared';
 import type { Assessment } from './judge.js';
 
-export const GAP_LABELS: readonly SpecChangeLabel[] = ['immediate_edit', 'inactivity'];
+export const GAP_LABELS: readonly string[] = ['immediate_edit', 'inactivity'];
 export const GAP_DESCRIPTIONS: Record<string, string> = {
   immediate_edit: 'Starts editing before reading the failure or asking about it.',
   inactivity: 'Goes quiet when something breaks instead of narrating or probing.',

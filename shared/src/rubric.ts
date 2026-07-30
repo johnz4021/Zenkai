@@ -13,7 +13,6 @@
  * not code. System design is out of scope: not IDE-native.
  */
 
-import type { SpecChangeLabel } from './labels.js';
 import type { TraceEventType } from './trace.js';
 
 export type RoundType = 'dsa' | 'lld' | 'debugging' | 'decomp';
@@ -55,7 +54,7 @@ export interface Rubric {
    *  judge design but kept optional so pre-v2 manifests still parse. */
   trigger?: RubricTrigger;
   window?: RubricWindow;
-  labels?: readonly SpecChangeLabel[];
+  labels?: readonly string[];
   expectation?: string;
   /**
    * v2 (judge design): per-problem expectations for the universal dimension

@@ -136,3 +136,62 @@ both the bug's mechanism and vocabulary the spec itself uses. See `interviewer.t
 run against the guard.
 
 **Effort:** human ~1 day / CC ~40 min. **Priority:** P2.
+
+---
+
+## 7. Disposition axis (open-vocabulary tendencies)
+
+**What:** A second scoring axis alongside dimensions, for recurring behavioral
+tendencies that cut across stages: "anchors on a preconceived cause instead of
+instrumenting to see what actually happened."
+
+**Why:** The user named this himself as the most valuable feedback he could
+imagine receiving. Codex went further and argued it is "where the useful
+pattern lives," and that dimensions alone risk mush. Partly mitigated by
+storing the judge's per-session analysis with each dimension instance (that
+landed in scope), which makes a disposition *visible* in the memory without
+being *named*. Naming it is what this TODO is for.
+
+**Blocked on:** dimension scoring validated across enough real sessions to know
+whether the analysis text already surfaces these tendencies well enough. Also
+needs entity resolution (match a free-form finding to an existing one), which
+is the machinery the current design deliberately avoids.
+
+**Effort:** human ~1 wk / CC ~2-3 hrs. **Priority:** P2 after ~10 judged sessions.
+
+---
+
+## 8. Interviewer-agent quality is unmeasured
+
+**What:** Nothing assesses whether the interviewer agent itself performed well.
+
+**Why:** Codex caught this and it is a real hole in the measurement story. A
+wrong spec answer, a badly-timed nudge, or a slow TTS turn changes what the
+candidate does, and all of it currently scores as the candidate's gap.
+Reliability annotations cover sensors and nudges; they do not cover interviewer
+*correctness*.
+
+**Where to start:** the interviewer's turns are already in the trace with kind
+and nudge flags. A separate cheap pass could flag turns that contradict the
+spec. Note the recursion risk: a model grading a model, unaudited.
+
+**Effort:** human ~2-3 days / CC ~1 hr. **Priority:** P3.
+
+---
+
+## 9. Generated-expectation quality is on the critical path
+
+**What:** Nothing checks that the generator's per-dimension expectations are
+concrete.
+
+**Why:** Under the judge design, feedback quality is downstream of expectation
+quality. "Understands the problem" as an expectation produces vague feedback on
+that dimension forever, and it will look like a judge problem rather than a
+generator problem. Codex correctly reclassified this from "known open" to
+"critical path."
+
+**Where to start:** a mechanical check at generation time (does the expectation
+name an observable behavior, or is it an abstract noun) plus a spot-check in
+the validator, which already exists for the failing-test manifest.
+
+**Effort:** human ~1 day / CC ~30 min. **Priority:** P2, ships with the judge.

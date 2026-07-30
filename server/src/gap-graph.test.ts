@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { SpecChangeLabel } from '@interview-prep/shared';
 import { buildGraphView, buildTargetNote, emptyStore, recordAssessment, recordSession, type GapStore } from './gap-graph.js';
 
 let t = 0;
 const session = (
   id: string,
-  labels: SpecChangeLabel[],
+  labels: string[],
   triggerOccurred = true,
 ): Parameters<typeof recordSession>[1] => ({
   session_id: id,
@@ -99,7 +98,7 @@ describe('graph view', () => {
 });
 
 describe('contaminated labels never earn remediation credit', () => {
-  const record = (store: GapStore, id: string, contaminatedLabels: SpecChangeLabel[]) =>
+  const record = (store: GapStore, id: string, contaminatedLabels: string[]) =>
     recordSession(store, { ...session(id, []), contaminated_labels: contaminatedLabels }, {});
 
   it('does not close a gap that only stayed quiet because we prompted them', () => {
