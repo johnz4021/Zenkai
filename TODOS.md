@@ -205,3 +205,29 @@ name an observable behavior, or is it an abstract noun) plus a spot-check in
 the validator, which already exists for the failing-test manifest.
 
 **Effort:** human ~1 day / CC ~30 min. **Priority:** P2, ships with the judge.
+
+---
+
+## 10. Speaker attribution: a third party in mic range is recorded as you
+
+**What:** Anyone speaking within microphone range is transcribed into the
+candidate's record as if they said it.
+
+**Why:** Measured in the first judge-era live session. A background speaker's
+"Hey, there. Um, how are you doing?" landed in the trace, and the judge counted
+"off-topic asides" against the candidate's `communicate` verdict. The candidate
+apologised on the record — to a system that had no way to act on it.
+
+**Why intent detection cannot fix it:** that utterance IS addressed language;
+classifying it as an ask is correct as language and wrong as attribution. The
+gauntlet's intent metric deliberately does NOT test this case, so it never
+pretends to cover it.
+
+**Where to start:** the honest options are speaker diarization (ElevenLabs
+Scribe returns `speaker_id` on the timestamped variant — a per-segment check
+that the voice matches the enrolled candidate), or an explicit
+"someone else is talking" mute affordance. Diarization is the real fix;
+the mute is the two-minute one.
+
+**Effort:** human ~2-3 days / CC ~1 hr. **Priority:** P2 before any user in a
+shared space, which for a college senior is most of them.

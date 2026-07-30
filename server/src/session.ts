@@ -253,7 +253,24 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
   const routeUtterance = (text: string): void => {
     if (!interviewer || !intentCheck || !text.trim() || ended) return;
-    void intentCheck(text, problem.spec)
+    // Context matters: a question split across breaths ("So I'm thinking...
+    // / ...can you tell me if that's right?") is unreadable as a lone
+    // fragment. Exclude the utterance itself — it is passed separately as
+    // the one under judgement.
+    const recent = store
+      .readAll()
+      .filter(
+        (e) =>
+          (e.type === 'utterance' && String((e.payload as { text?: string })?.text ?? '').trim()) ||
+          e.type === 'interviewer',
+      )
+      .slice(-5)
+      .map((e) => ({
+        who: e.type === 'utterance' ? ('candidate' as const) : ('interviewer' as const),
+        text: String((e.payload as { text?: string })?.text ?? ''),
+      }))
+      .filter((r) => r.text !== text);
+    void intentCheck(text, problem.spec, recent)
       .then((addressed) => {
         // "Judged not-addressed" and "check crashed" must never look the
         // same in the log (first live session was undebuggable without this).

@@ -365,30 +365,88 @@ export async function runGauntlet(opts: GauntletOptions): Promise<Scorecard> {
   log(`[gauntlet:${mode}] intent check`);
   const { apiIntentCheck, claudePIntentCheck } = await import('../interviewer.js');
   const intentCheck = process.env.ANTHROPIC_API_KEY ? apiIntentCheck() : claudePIntentCheck();
-  const INTENT_CASES: { text: string; addressed: boolean }[] = [
+  type IntentCase = {
+    text: string;
+    addressed: boolean;
+    recent?: { who: 'candidate' | 'interviewer'; text: string }[];
+  };
+  const INTENT_CASES: IntentCase[] = [
+    // -- ADDRESSED: real asks --
     { text: "But I'm not really sure where this is being set. Can you give me a hint here?", addressed: true },
     { text: 'Yo, interviewer, uh, can you give me a hand here?', addressed: true },
     { text: 'Can you tell me, um, where I can get started here?', addressed: true },
     { text: 'Is the deadline measured from now or from the original deadline?', addressed: true },
+    { text: 'We are only meant to fix src, not the tests, right?', addressed: true },
+    // -- ADDRESSED: only resolvable WITH context (the split-question case) --
+    {
+      text: '...can you tell me if that reading is right?',
+      addressed: true,
+      recent: [
+        { who: 'candidate', text: 'So I am thinking the sweep releases everything held...' },
+        { who: 'candidate', text: 'even the units that already shipped, which is why we see eight...' },
+      ],
+    },
+    {
+      text: 'Does that match what you expected?',
+      addressed: true,
+      recent: [{ who: 'candidate', text: 'Okay so my read is the expiry index keeps a stale entry.' }],
+    },
+    // -- NARRATION: rhetorical SELF-questions (the loosening risk) --
+    { text: 'Wait, why would this be null here?', addressed: false },
+    { text: 'Hmm, is this even the right file?', addressed: false },
+    { text: 'Did I miss something in the test setup?', addressed: false },
+    // Reclassified after the first run: this asks about INTENDED BEHAVIOR,
+    // which only the interviewer can answer. The original 'narration' label
+    // was my error, not the model's.
+    { text: 'So what happens if the hold expires exactly on the deadline?', addressed: true },
+    // -- NARRATION: plain thinking aloud, filler, asides --
     { text: 'Okay. So, I assume this is a debugging task.', addressed: false },
     { text: "Let's try and figure out where the bug is, um, first.", addressed: false },
     { text: 'Um, so the sweep releases the full count, not the remaining...', addressed: false },
     { text: 'Oh, fuck.', addressed: false },
     { text: "Yeah, that's probably why.", addressed: false },
-    { text: 'Hey, there. Um, how are you doing?', addressed: false }, // background speaker
+    // REMOVED: 'Hey, there. Um, how are you doing?' (background speaker).
+    // Judged addressed — correctly, as language. The failure there is
+    // SPEAKER ATTRIBUTION (a third party in mic range), which intent
+    // classification cannot solve and this metric must not pretend to
+    // test. Tracked in TODOS as the roommate problem.
+    // -- NARRATION: a self-question RIGHT AFTER an interviewer turn, where
+    //    context could wrongly suggest a conversation is in progress --
+    {
+      text: 'Right, so where does the released count come from...',
+      addressed: false,
+      recent: [
+        { who: 'candidate', text: 'What does the failing test actually assert?' },
+        { who: 'interviewer', text: 'Read the diff and tell me what you see.' },
+      ],
+    },
   ];
   let intentOk = 0;
   const intentDetail: string[] = [];
+  let falseTriggers = 0;
   for (const c of INTENT_CASES) {
-    const got = await intentCheck(c.text, FIXTURE_DEBUGGING_PROBLEM.spec);
+    const got = await intentCheck(c.text, FIXTURE_DEBUGGING_PROBLEM.spec, c.recent);
     if (got === c.addressed) intentOk += 1;
-    else intentDetail.push(`"${c.text.slice(0, 50)}": got ${got ? 'addressed' : 'narration'}, expected ${c.addressed ? 'addressed' : 'narration'}`);
+    else {
+      // Over-triggering (narration judged addressed) means interrupting a
+      // candidate mid-thought — the failure the "when in doubt, no" bias
+      // existed to prevent. Called out separately so loosening the bias
+      // cannot look like a win while regressing this direction.
+      if (got && !c.addressed) falseTriggers += 1;
+      intentDetail.push(
+        `${got && !c.addressed ? 'FALSE TRIGGER ' : ''}"${c.text.slice(0, 50)}": got ${got ? 'addressed' : 'narration'}, expected ${c.addressed ? 'addressed' : 'narration'}`,
+      );
+    }
   }
+  if (falseTriggers > 0) intentDetail.unshift(`${falseTriggers} false trigger(s) — interruptions mid-thought`);
   metrics.push({
     metric: 'intent_accuracy',
     score: intentOk / INTENT_CASES.length,
     threshold: 0.9,
-    pass: intentOk / INTENT_CASES.length >= 0.9,
+    // A single false trigger fails the metric outright regardless of the
+    // overall rate: interrupting a candidate mid-thought is the asymmetric
+    // harm, and an aggregate score would let it hide behind good recall.
+    pass: intentOk / INTENT_CASES.length >= 0.9 && falseTriggers === 0,
     detail: intentDetail,
   });
 

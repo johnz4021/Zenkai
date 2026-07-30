@@ -1,5 +1,5 @@
 {
-  "ran_at": "2026-07-30T18:07:22.262Z",
+  "ran_at": "2026-07-30T20:42:28.998Z",
   "mode": "quick",
   "model": "claude-haiku-4-5 (api)",
   "prompt_hash": "7111192943bf",
@@ -24,8 +24,8 @@
       "threshold": 0.9,
       "pass": true,
       "detail": [
-        "approach-pair.without.approach: got strong, accepted [weak]",
-        "communicate-pair.approach: moved weak -> strong but only communicate differed"
+        "clarify-pair.without.clarify: got adequate, accepted [weak|unassessable]",
+        "approach-pair.clarify: moved weak -> strong but only approach differed"
       ]
     },
     {
@@ -52,18 +52,27 @@
       ]
     },
     {
-      "metric": "citation_resolution",
-      "score": 0.9494163424124513,
-      "threshold": 0.95,
-      "pass": false,
+      "metric": "intent_accuracy",
+      "score": 0.9411764705882353,
+      "threshold": 0.9,
+      "pass": true,
       "detail": [
-        "244/257 citations resolved to candidate events"
+        "\"So what happens if the hold expires exactly on the\": got narration, expected addressed"
+      ]
+    },
+    {
+      "metric": "citation_resolution",
+      "score": 0.9953703703703703,
+      "threshold": 0.95,
+      "pass": true,
+      "detail": [
+        "215/216 citations resolved to candidate events"
       ]
     }
   ],
   "citation": {
-    "kept": 244,
-    "total": 257
+    "kept": 215,
+    "total": 216
   },
-  "pass": false
+  "pass": true
 }

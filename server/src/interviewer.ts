@@ -66,7 +66,14 @@ export type Interviewer = (ctx: InterviewerContext) => Promise<InterviewerTurn>;
  * reply interrupts the candidate mid-thought, which is the one thing worse
  * than any latency number.
  */
-export type IntentCheck = (text: string, spec: string) => Promise<boolean>;
+export type IntentCheck = (
+  text: string,
+  spec: string,
+  /** The last few turns, oldest first — a question split across breaths
+   *  ("So I'm thinking... / ...can you tell me if that's right?") is
+   *  unreadable as a lone fragment. */
+  recent?: { who: 'candidate' | 'interviewer'; text: string }[],
+) => Promise<boolean>;
 
 /**
  * Addressed turns waiting for the interviewer. FIFO, small cap.
@@ -365,31 +372,67 @@ export function pickInterviewer(templatePath: string): Interviewer {
     : claudeInterviewer(templatePath);
 }
 
-const INTENT_PROMPT = (text: string, spec: string) =>
+const INTENT_PROMPT = (
+  text: string,
+  spec: string,
+  recent: { who: 'candidate' | 'interviewer'; text: string }[] = [],
+) =>
   [
-    'A candidate in a technical interview said the following while working:',
+    'A candidate is working through a technical interview problem out loud.',
+    'Decide whether their LATEST utterance is addressed to the interviewer.',
+    '',
+    'Problem context: ' + spec.slice(0, 1200),
+    '',
+    recent.length > 0
+      ? 'What was said just before (oldest first):\n' +
+        recent.map((r) => `${r.who}: ${r.text}`).join('\n')
+      : '(nothing said before this)',
+    '',
+    'LATEST utterance from the candidate:',
     '---',
     text,
     '---',
-    'The problem spec (context): ' + spec.slice(0, 1500),
     '',
-    'Was this ADDRESSED TO THE INTERVIEWER (a question or statement expecting a',
-    'reply), as opposed to thinking aloud / narrating / muttering to themselves?',
-    'When in doubt say no — interrupting someone mid-thought is worse than',
-    'missing a question they will rephrase.',
+    'ADDRESSED (answer yes) — they want a response from the interviewer:',
+    '- asks the interviewer for information, a hint, or confirmation',
+    '- addresses them directly ("hey", "so", "can you", using their role)',
+    '- a fragment that COMPLETES a question begun in the lines above',
+    '- checks a shared assumption ("we are meant to fix only src, right?")',
+    '',
+    'NOT ADDRESSED (answer no) — thinking out loud:',
+    '- a RHETORICAL SELF-QUESTION they are working through themselves',
+    '  ("why is this null?", "wait, did I miss something?", "is this even',
+    '  the right file?") — interrogative form, but they are reasoning, not',
+    '  asking. This is the most common case; do not mistake it for an ask.',
+    '- narrating what they read, suspect, or are about to try',
+    '- filler, false starts, swearing, or asides to no one',
+    '',
+    'THE DECIDING TEST when a question could be either — who can answer it?',
+    '- About INTENDED BEHAVIOR, requirements, or the rules of the exercise?',
+    '  Only the interviewer knows. That is an ask. ("Should a partially',
+    '  shipped hold release only unshipped units?")',
+    '- About THE CODE IN FRONT OF THEM — what a variable holds, which branch',
+    '  ran, what a function does? They can answer it by reading. That is',
+    '  thinking aloud, even in question form. ("Why is this null?", "Did I',
+    '  miss something in the test setup?")',
+    '',
+    'Otherwise the test is INTENT, not punctuation: would a human interviewer',
+    'sitting there feel it was their turn to speak? If the candidate is',
+    'mid-thought and would keep going regardless, answer no.',
+    '',
     'Reply with ONLY the word "yes" or "no".',
   ].join('\n');
 
 /** Intent check via the API (haiku, fast path). */
 export function apiIntentCheck(): IntentCheck {
-  return async (text, spec) => {
+  return async (text, spec, recent) => {
     try {
       const { default: Anthropic } = await import('@anthropic-ai/sdk');
       const client = new Anthropic();
       const msg = await client.messages.create({
         model: 'claude-haiku-4-5',
         max_tokens: 5,
-        messages: [{ role: 'user', content: INTENT_PROMPT(text, spec) }],
+        messages: [{ role: 'user', content: INTENT_PROMPT(text, spec, recent) }],
       });
       const out = msg.content
         .filter((b) => b.type === 'text')
@@ -411,8 +454,8 @@ export function apiIntentCheck(): IntentCheck {
 
 /** Intent check via headless claude (no API key; slower, text-mode OK). */
 export function claudePIntentCheck(): IntentCheck {
-  return async (text, spec) => {
-    const out = await runClaudeP(INTENT_PROMPT(text, spec), 'haiku', 20_000);
+  return async (text, spec, recent) => {
+    const out = await runClaudeP(INTENT_PROMPT(text, spec, recent), 'haiku', 20_000);
     if (out.trim().length === 0) {
       console.warn('[intent] claude -p returned EMPTY (treating as narration)');
     }
