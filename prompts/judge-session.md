@@ -40,8 +40,9 @@ and the bar FOR THIS PROBLEM follows in the expectations section.
 
 ## Hard rules
 
-1. **Cite specific moments.** Evidence is an array of timeline offsets in
-   seconds (e.g. the line `+1:10` is offset 70). Cite the EXACT line that
+1. **Cite specific moments.** Every timeline line starts with `+<N>s` — its
+   offset in seconds. Evidence is an array of those numbers verbatim (the
+   line `+111s opened ...` is cited as `111`). Cite the EXACT line that
    supports the claim, not a nearby one, not a range. Every non-unassessable
    verdict needs at least one citation.
 2. **Never quote the candidate.** Write your analysis in your own words and

@@ -25,10 +25,10 @@ describe('renderTimeline', () => {
       ev('interviewer', 80, { text: 'From now.', kind: 'answer', nudge: false }, 'chrome'),
     ]);
     const idx = (s: string) => out.indexOf(s);
-    expect(idx('+0:00  session started')).toBeGreaterThan(-1);
-    expect(idx('+0:06  ran tests — tests FAILED')).toBeGreaterThan(idx('session started'));
-    expect(out).toContain('+1:10  candidate: "is the deadline from now?"');
-    expect(out).toContain('+1:20  interviewer: "From now."');
+    expect(idx('+0s  session started')).toBeGreaterThan(-1);
+    expect(idx('+6s  ran tests — tests FAILED')).toBeGreaterThan(idx('session started'));
+    expect(out).toContain('+70s  candidate: "is the deadline from now?"');
+    expect(out).toContain('+80s  interviewer: "From now."');
   });
 
   it('renders untranscribed speech as speech, never as silence', () => {
@@ -57,7 +57,7 @@ describe('renderTimeline', () => {
       ev('sensor', 180, { sensor: 'stt', state: 'up', reason: 'reconnected' }, 'chrome'),
       ev('session_end', 300, {}, 'chrome'),
     ]);
-    expect(out).toContain('EVIDENCE GAP +1:00–+3:00');
+    expect(out).toContain('EVIDENCE GAP +60s–+180s');
     expect(out).toContain('never WHAT they said');
   });
 

@@ -23,10 +23,9 @@ import httpProxy from 'http-proxy';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
 import { isFailingRun } from '@interview-prep/shared';
-import { classify } from './classifier.js';
-import { claudeJudge } from './llm-judge.js';
-import { buildFeedback } from './feedback.js';
-import { buildGraphView, buildTargetNote, loadStore, recordSession, saveStore } from './gap-graph.js';
+import { judgeSession } from './judge.js';
+import { buildAssessmentCard } from './feedback.js';
+import { buildGraphView, buildTargetNote, loadStore, recordAssessment, saveStore } from './gap-graph.js';
 import { clientScript, sessionPage } from './chrome.js';
 import { TraceStore } from './trace-store.js';
 import {
@@ -314,37 +313,37 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     voice?.close();
     store.emitChrome('session_end', {});
     const events: TraceEvent[] = store.readAll();
-    const classification = await classify(events, problem.rubric, problem.spec, claudeJudge);
 
-    // Labels the interviewer prompted are reported but never counted — they
-    // measure our nudge, not the candidate.
-    const clean = classification.labels.filter((l) => !l.contaminated);
-    const contaminated = classification.labels.filter((l) => l.contaminated);
+    // The judge IS the feedback (2026-07-30 design). Blind to the gap graph;
+    // knows the planted bug; failure yields UNASSESSED, never a verdict.
+    const result = await judgeSession({
+      sessionId: cfg.sessionId,
+      events,
+      problem,
+      templatePath: path.join(cfg.repoRoot, 'prompts', 'judge-session.md'),
+    });
+
+    mkdirSync(path.join(cfg.repoRoot, 'assessments'), { recursive: true });
+    writeFileSync(
+      path.join(cfg.repoRoot, 'assessments', `${cfg.sessionId}.json`),
+      JSON.stringify(result, null, 2),
+    );
 
     let gapStore = loadStore(gapsDir, cfg.userId);
-    gapStore = recordSession(
-      gapStore,
-      {
-        session_id: cfg.sessionId,
-        ts: Date.now(),
-        round_type: problem.round_type,
-        trigger_occurred: classification.trigger_occurred,
-        labels_fired: clean.map((l) => l.label),
-        contaminated_labels: contaminated.map((l) => l.label),
-      },
-      Object.fromEntries(clean.map((l) => [l.label, l.evidence])),
-    );
-    saveStore(gapsDir, gapStore);
+    if (result.status === 'assessed') {
+      // Unassessed writes NOTHING — a judge failure must not become history.
+      gapStore = recordAssessment(gapStore, result, problem.round_type);
+      saveStore(gapsDir, gapStore);
+    }
 
     const view = buildGraphView(gapStore, cfg.sessionId);
-    const card = buildFeedback(cfg.sessionId, classification, view);
+    const card = buildAssessmentCard(result, view, events, problem.planted_bug?.description);
     mkdirSync(path.join(cfg.repoRoot, 'feedback'), { recursive: true });
     writeFileSync(
       path.join(cfg.repoRoot, 'feedback', `${cfg.sessionId}.json`),
       JSON.stringify(
         {
           card,
-          classification,
           view,
           // Voice health belongs in the record you open when a session felt
           // wrong: "the mic seemed off" must be checkable after the fact.
@@ -362,7 +361,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     // this session just surfaced. Detached and unwaited — it takes ~5 minutes
     // and nobody is watching, so by the time they come back it is ready.
     if (cfg.prepareNext) {
-      const note = buildTargetNote(view);
+      const note = buildTargetNote(view, gapStore);
       const child = spawn(
         'npx',
         ['tsx', path.join(cfg.repoRoot, 'server', 'src', 'cli.ts'), 'prepare'],

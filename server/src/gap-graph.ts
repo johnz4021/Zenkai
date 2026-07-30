@@ -19,7 +19,9 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { SpecChangeLabel } from '@interview-prep/shared';
+import type { SpecChangeLabel, Verdict } from '@interview-prep/shared';
+import { DIMENSION_DEFS, isDimensionKey } from '@interview-prep/shared';
+import type { Assessment } from './judge.js';
 
 export const GAP_LABELS: readonly SpecChangeLabel[] = ['immediate_edit', 'inactivity'];
 export const GAP_DESCRIPTIONS: Record<string, string> = {
@@ -27,10 +29,26 @@ export const GAP_DESCRIPTIONS: Record<string, string> = {
   inactivity: 'Goes quiet when something breaks instead of narrating or probing.',
 };
 
+/** Card/focus description for any gap key — dimension-aware, label fallback. */
+export function gapDescription(key: string): string {
+  if (isDimensionKey(key)) return DIMENSION_DEFS[key].weak;
+  return GAP_DESCRIPTIONS[key] ?? key;
+}
+
 export interface GapInstance {
   session_id: string;
   ts: number;
   evidence: { source: string; seq: number; ts: number; note: string }[];
+  /**
+   * Judge-era texture (tension 1, CEO review): the judge's sentence about
+   * THIS session. Without it, "approach weak 4/5" is a mush bucket; with it,
+   * the memory expands into four specific descriptions of how — which is
+   * where the disposition patterns become visible before they are ever
+   * formally named. Absent on label-era instances.
+   */
+  analysis?: string;
+  verdict?: Verdict;
+  round_type_at?: string;
 }
 
 export interface SessionRecord {
@@ -38,14 +56,16 @@ export interface SessionRecord {
   ts: number;
   round_type: string;
   trigger_occurred: boolean;
-  /** Clean labels only — contaminated ones are listed separately, never here. */
-  labels_fired: SpecChangeLabel[];
+  /** Keys (labels or dimensions) that FIRED as gaps this session. */
+  labels_fired: string[];
   /**
-   * Labels that fired only in the shadow of an interviewer nudge. Recorded so
-   * the streak can tell "they didn't do it" from "we prompted them, so we
-   * don't know". Absent on sessions recorded before the interviewer existed.
+   * Keys for which this session was UNINFORMATIVE — label-era: fired only
+   * after a nudge; dimension-era: verdict unassessable, or a weak verdict
+   * whose every citation was stripped (a claim without a receipt must not
+   * write history). Uninformative keys neither advance nor reset a
+   * remediation streak.
    */
-  contaminated_labels?: SpecChangeLabel[];
+  contaminated_labels?: string[];
 }
 
 export interface GapStore {
@@ -87,17 +107,22 @@ export function recordSession(
   store: GapStore,
   record: SessionRecord,
   evidenceByLabel: Record<string, GapInstance['evidence']>,
+  /** Judge-era texture merged into each fired instance (analysis, verdict, round). */
+  metaByKey?: Record<string, Pick<GapInstance, 'analysis' | 'verdict' | 'round_type_at'>>,
 ): GapStore {
   const next: GapStore = JSON.parse(JSON.stringify(store)) as GapStore;
   next.sessions.push(record);
 
   for (const label of record.labels_fired) {
-    if (!(GAP_LABELS as readonly string[]).includes(label)) continue;
+    // Label-era keys are restricted to the negative set; dimension keys are
+    // all gap-capable (a weak verdict on any dimension is a gap).
+    if (!isDimensionKey(label) && !(GAP_LABELS as readonly string[]).includes(label)) continue;
     const gap = (next.gaps[label] ??= { instances: [] });
     gap.instances.push({
       session_id: record.session_id,
       ts: record.ts,
       evidence: evidenceByLabel[label] ?? [],
+      ...(metaByKey?.[label] ?? {}),
     });
     // Reopen on fire (D3): a closed gap that fires again is active history intact.
     delete gap.closed_at;
@@ -112,12 +137,12 @@ export function recordSession(
   for (const [key, gap] of Object.entries(next.gaps)) {
     if (gap.closed_at || gap.instances.length === 0) continue;
     if (recent.length < REMEDIATION_STREAK) continue;
-    const streakClean = recent.every((s) => !s.labels_fired.includes(key as SpecChangeLabel));
+    const streakClean = recent.every((s) => !s.labels_fired.includes(key));
     // A session where this gap fired only after a nudge is UNINFORMATIVE, not
     // clean. Counting it would hand out remediation credit for behavior we
     // prompted — exactly the false positive T11 exists to prevent.
     const streakContaminated = recent.some((s) =>
-      (s.contaminated_labels ?? []).includes(key as SpecChangeLabel),
+      (s.contaminated_labels ?? []).includes(key),
     );
     if (streakContaminated) continue;
     // The gap must have existed BEFORE the streak began, or "3 clean sessions"
@@ -130,6 +155,69 @@ export function recordSession(
     }
   }
   return next;
+}
+
+/**
+ * Judge-era entry point: fold an Assessment into the graph.
+ *
+ *   weak                          → gap fires (instance with the analysis)
+ *   weak + all citations stripped → UNINFORMATIVE (a claim without a receipt
+ *                                   must not write history)
+ *   unassessable                  → UNINFORMATIVE (nothing was observable)
+ *   adequate / strong             → counts toward the remediation streak
+ *
+ * trigger_occurred generalizes to "the session was assessable at all":
+ * a session where every dimension was unassessable proves nothing and must
+ * not advance any streak — same rule T11 established for trigger-less
+ * sessions, one level up.
+ */
+export function recordAssessment(
+  store: GapStore,
+  assessment: Assessment,
+  roundType: string,
+): GapStore {
+  const fired: string[] = [];
+  const uninformative: string[] = [];
+  const evidenceByKey: Record<string, GapInstance['evidence']> = {};
+  const metaByKey: Record<string, Pick<GapInstance, 'analysis' | 'verdict' | 'round_type_at'>> = {};
+
+  for (const d of assessment.dimensions) {
+    if (d.verdict === 'unassessable' || (d.verdict === 'weak' && d.evidence_stripped)) {
+      uninformative.push(d.dimension);
+      continue;
+    }
+    if (d.verdict === 'weak') {
+      fired.push(d.dimension);
+      evidenceByKey[d.dimension] = d.evidence.map((offset) => ({
+        source: 'judge',
+        seq: -1,
+        ts: offset, // seconds from session start; renderer resolves via trace
+        note: d.analysis,
+      }));
+      metaByKey[d.dimension] = {
+        analysis: d.analysis,
+        verdict: d.verdict,
+        round_type_at: roundType,
+      };
+    }
+    // adequate/strong: not a gap; contributes to the streak by absence.
+  }
+
+  const anyAssessable = assessment.dimensions.some((d) => d.verdict !== 'unassessable');
+
+  return recordSession(
+    store,
+    {
+      session_id: assessment.session_id,
+      ts: assessment.judged_at,
+      round_type: roundType,
+      trigger_occurred: anyAssessable,
+      labels_fired: fired,
+      contaminated_labels: uninformative,
+    },
+    evidenceByKey,
+    metaByKey,
+  );
 }
 
 export function buildGraphView(store: GapStore, lastSessionId?: string): GraphView {
@@ -152,7 +240,7 @@ export function buildGraphView(store: GapStore, lastSessionId?: string): GraphVi
       : 'fading';
     return {
       key,
-      description: GAP_DESCRIPTIONS[key] ?? key,
+      description: gapDescription(key),
       fired_count: gap.instances.length,
       last_fired_ts: last?.ts ?? null,
       weight: Number(weight.toFixed(3)),
@@ -190,7 +278,7 @@ export function buildGraphView(store: GapStore, lastSessionId?: string): GraphVi
  * Returns undefined when there is nothing learned yet (session one), so the
  * generator produces a neutral problem instead of chasing noise.
  */
-export function buildTargetNote(view: GraphView): string | undefined {
+export function buildTargetNote(view: GraphView, store?: GapStore): string | undefined {
   const focus = view.active[0];
   if (!focus) return undefined;
   // One data point is an observation, not a pattern (design decision D1).
@@ -200,14 +288,24 @@ export function buildTargetNote(view: GraphView): string | undefined {
       ? `This is provisional: only ${view.session_count} session(s) so far, so treat it as a lead rather than an established pattern.`
       : `This has fired ${focus.fired_count} times across ${view.session_count} sessions and is currently ${focus.state}.`;
 
+  // Judge-era texture: the analysis SENTENCES, not just the dimension name.
+  // "approach: weak" tells the generator almost nothing; "named a location,
+  // not a mechanism, and edited before stating what was wrong" tells it
+  // exactly what to make costly.
+  const recentAnalyses = (store?.gaps[focus.key]?.instances ?? [])
+    .filter((i) => i.analysis)
+    .slice(-3)
+    .map((i) => `  - (${i.round_type_at ?? 'session'}) ${i.analysis}`);
+
   return [
-    'TARGETING NOTE (from this candidate\'s history):',
+    "TARGETING NOTE (from this candidate's history):",
     `Their most active gap is: "${focus.description}"`,
     confidence,
+    ...(recentAnalyses.length > 0
+      ? ['What it looked like in recent sessions:', ...recentAnalyses]
+      : []),
     'Design the problem so this specific behavior is both LIKELY TO BE TRIGGERED and CLEARLY OBSERVABLE.',
-    'For example, if the gap is editing before reading the failure, make the failure output genuinely',
-    'informative so that reading it is rewarded and skipping it is costly. If the gap is going quiet,',
-    'make the bug one where stating an assumption out loud would obviously help.',
+    'Make the behavior the note describes costly to skip and rewarding to do well.',
     'Do NOT mention this note, the gap, or that anything is being measured anywhere in the spec or the repo.',
   ].join('\n');
 }

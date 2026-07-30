@@ -106,41 +106,69 @@ document.getElementById('end').addEventListener('click', async () => {
   btn.textContent = 'Session ended';
 });
 
+function esc(s) { return String(s).replace(/</g, '&lt;'); }
+
 function render(card) {
   document.getElementById('log').style.display = 'none';
   document.getElementById('f').style.display = 'none';
   const el = document.getElementById('feedback');
   el.style.display = 'block';
   let html = '';
+
+  // Three DISTINCT states — assessed / per-dimension unassessable /
+  // assessment failed. Collapsing any pair reads as success.
+  if (card.state === 'unassessed') {
+    html += '<h2>Session not assessed</h2>';
+    html += '<div class="row"><p class="desc">' + esc(card.reason) + '</p></div>';
+    el.innerHTML = html;
+    return;
+  }
+
   for (const c of card.newly_closed) {
-    html += '<div class="row closedmark"><p class="desc">Closed: ' + c.description +
-      '</p><p class="cite">fired ' + c.fired_count + ' times before this streak; not observed in 3 straight triggered sessions.</p></div>';
+    html += '<div class="row closedmark"><p class="desc">Closed: ' + esc(c.description) +
+      '</p><p class="cite">fired ' + c.fired_count + ' times before this streak; not observed in 3 straight assessed sessions.</p></div>';
   }
+
   html += '<h2>' + (card.mode === 'observations' ? 'Session observations' : 'Session findings') + '</h2>';
-  if (!card.trigger_occurred) {
-    html += '<div class="row"><p class="desc">The trigger condition did not occur this session — nothing to classify.</p></div>';
-  } else if (card.findings.length === 0) {
-    html += '<div class="row"><p class="desc">No labels fired in the post-trigger window.</p></div>';
-  }
-  for (const f of card.findings) {
-    html += '<div class="row"><p class="desc">' + f.description + '</p>';
-    for (const line of f.citation) {
-      html += '<p class="cite"><span class="clk">' + line.clock + '</span>  ' + line.what + '</p>';
+  if (card.summary) html += '<div class="row"><p class="desc">' + esc(card.summary) + '</p></div>';
+
+  for (const r of card.rows || []) {
+    const cls = r.verdict === 'strong' ? 'v-strong' : r.verdict === 'weak' ? 'v-weak' : r.verdict === 'unassessable' ? 'v-none' : '';
+    html += '<div class="row ' + cls + '">';
+    html += '<p class="desc"><b class="dim">' + esc(r.dimension) + '</b> · ' +
+      (r.verdict === 'unassessable' ? 'not assessable this session' : esc(r.verdict)) + '</p>';
+    html += '<p class="desc">' + esc(r.analysis) + '</p>';
+    for (const q of r.quotes || []) {
+      // Quotes are pulled server-side from YOUR trace — never model-written.
+      html += '<p class="cite"><span class="clk">' + esc(q.clock) + '</span>  ' + esc(q.text) + '</p>';
     }
-    if (f.delta_ms != null) {
-      const s = Math.round(f.delta_ms / 1000);
-      html += '<p class="delta">&#8595; ' + Math.floor(s / 60) + 'm ' + (s % 60) + 's between the two</p>';
-    }
-    if (f.contaminated) {
-      html += '<p class="cite">Followed an interviewer nudge — recorded, but not counted toward your patterns.</p>';
+    if (r.unreceipted) {
+      html += '<p class="cite">No verifiable citation survived for this claim — weigh it accordingly.</p>';
     }
     html += '</div>';
   }
+
+  // Bug disclosure gated on solved (tension 2): a problem you did not crack
+  // stays re-runnable unless you choose to see the answer.
+  if (card.bug) {
+    if (card.solved) {
+      html += '<div class="row"><p class="desc"><b>The bug:</b> ' + esc(card.bug.description) + '</p></div>';
+    } else {
+      html += '<div class="row"><button id="showbug">show me the bug (spoils a re-run)</button>' +
+        '<p class="desc" id="bugtext" style="display:none"><b>The bug:</b> ' + esc(card.bug.description) + '</p></div>';
+    }
+  }
+
   if (card.focus) {
-    html += '<div class="focus"><p class="k">next session focus</p><p>' + card.focus.description + '</p></div>';
+    html += '<div class="focus"><p class="k">next session focus</p><p>' + esc(card.focus.description) + '</p></div>';
   }
   if (card.mode === 'observations') {
     html += '<p class="meta">Session ' + (3 - card.sessions_until_patterns) + ' of 3 before patterns emerge. These are single-session observations, not yet patterns.</p>';
   }
   el.innerHTML = html;
+  const sb = document.getElementById('showbug');
+  if (sb) sb.addEventListener('click', () => {
+    document.getElementById('bugtext').style.display = 'block';
+    sb.style.display = 'none';
+  });
 }

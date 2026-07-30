@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SpecChangeLabel } from '@interview-prep/shared';
-import { buildGraphView, emptyStore, recordSession, type GapStore } from './gap-graph.js';
+import { buildGraphView, buildTargetNote, emptyStore, recordAssessment, recordSession, type GapStore } from './gap-graph.js';
 
 let t = 0;
 const session = (
@@ -131,5 +131,101 @@ describe('contaminated labels never earn remediation credit', () => {
     s = fire(s, 's3', []);
     s = fire(s, 's4', []);
     expect(s.gaps.inactivity?.closed_at).toBeDefined();
+  });
+});
+
+describe('recordAssessment (judge era: dimensions are the gap keys)', () => {
+  const dim = (
+    dimension: string,
+    verdict: 'strong' | 'adequate' | 'weak' | 'unassessable',
+    extra: Record<string, unknown> = {},
+  ) => ({ dimension, verdict, analysis: `${dimension} was ${verdict}`, evidence: [50], ...extra });
+
+  const assessment = (id: string, dims: ReturnType<typeof dim>[], ts = (t += 1_000_000)) =>
+    ({
+      session_id: id, status: 'assessed', judged_at: ts, model: 'fake', prompt_hash: 'x',
+      schema_version: 1, renderer_version: 1, expectations_used: {}, solved: false,
+      summary: 's', dimensions: dims,
+    }) as unknown as Parameters<typeof recordAssessment>[1];
+
+  const SIX = (overrides: Record<string, 'strong' | 'adequate' | 'weak' | 'unassessable'> = {}) =>
+    (['clarify', 'approach', 'communicate', 'implement', 'verify', 'reflect'] as const).map((k) =>
+      dim(k, overrides[k] ?? 'adequate'),
+    );
+
+  it('weak fires a gap instance carrying the analysis texture', () => {
+    let s = emptyStore('u1');
+    s = recordAssessment(s, assessment('a1', SIX({ approach: 'weak' })), 'debugging');
+    const inst = s.gaps['approach']?.instances[0];
+    expect(inst).toBeDefined();
+    expect(inst?.analysis).toBe('approach was weak');
+    expect(inst?.round_type_at).toBe('debugging');
+    expect(s.gaps['clarify']).toBeUndefined(); // adequate is not a gap
+  });
+
+  it('a weak verdict with all citations stripped is UNINFORMATIVE, never history', () => {
+    let s = emptyStore('u1');
+    s = recordAssessment(
+      s,
+      assessment('a1', SIX({ verify: 'weak' }).map((d) =>
+        d.dimension === 'verify' ? { ...d, evidence: [], evidence_stripped: true } : d,
+      )),
+      'debugging',
+    );
+    expect(s.gaps['verify']).toBeUndefined();
+    expect(s.sessions[0]?.contaminated_labels).toContain('verify');
+  });
+
+  it('remediation: 3 assessable non-weak sessions close a dimension gap', () => {
+    let s = emptyStore('u1');
+    s = recordAssessment(s, assessment('a1', SIX({ approach: 'weak' })), 'debugging');
+    s = recordAssessment(s, assessment('a2', SIX()), 'debugging');
+    s = recordAssessment(s, assessment('a3', SIX()), 'dsa');
+    s = recordAssessment(s, assessment('a4', SIX()), 'debugging');
+    expect(s.gaps['approach']?.closed_at).toBeDefined();
+  });
+
+  it('unassessable sessions neither advance nor reset the streak', () => {
+    let s = emptyStore('u1');
+    s = recordAssessment(s, assessment('a1', SIX({ approach: 'weak' })), 'debugging');
+    s = recordAssessment(s, assessment('a2', SIX()), 'debugging');
+    // approach unassessable: uninformative for the streak
+    s = recordAssessment(s, assessment('a3', SIX({ approach: 'unassessable' })), 'debugging');
+    s = recordAssessment(s, assessment('a4', SIX()), 'debugging');
+    expect(s.gaps['approach']?.closed_at).toBeUndefined();
+  });
+
+  it('a fully-unassessable session is trigger-less: proves nothing at all', () => {
+    let s = emptyStore('u1');
+    s = recordAssessment(s, assessment('a1', SIX({ verify: 'weak' })), 'debugging');
+    const ghost = SIX({
+      clarify: 'unassessable', approach: 'unassessable', communicate: 'unassessable',
+      implement: 'unassessable', verify: 'unassessable', reflect: 'unassessable',
+    });
+    s = recordAssessment(s, assessment('g1', ghost), 'debugging');
+    s = recordAssessment(s, assessment('g2', ghost), 'debugging');
+    s = recordAssessment(s, assessment('g3', ghost), 'debugging');
+    expect(s.sessions.filter((x) => x.trigger_occurred)).toHaveLength(1);
+    expect(s.gaps['verify']?.closed_at).toBeUndefined();
+  });
+
+  it('cross-round-type: every session counts toward one profile (D2 rationale)', () => {
+    let s = emptyStore('u1');
+    s = recordAssessment(s, assessment('a1', SIX({ clarify: 'weak' })), 'debugging');
+    s = recordAssessment(s, assessment('a2', SIX({ clarify: 'weak' })), 'dsa');
+    s = recordAssessment(s, assessment('a3', SIX({ clarify: 'weak' })), 'lld');
+    expect(s.gaps['clarify']?.instances).toHaveLength(3);
+    const rounds = s.gaps['clarify']!.instances.map((i) => i.round_type_at);
+    expect(rounds).toEqual(['debugging', 'dsa', 'lld']);
+  });
+
+  it('buildTargetNote carries the analysis sentences, not just the dimension name', () => {
+    let s = emptyStore('u1');
+    s = recordAssessment(s, assessment('a1', SIX({ approach: 'weak' })), 'debugging');
+    s = recordAssessment(s, assessment('a2', SIX({ approach: 'weak' })), 'dsa');
+    const note = buildTargetNote(buildGraphView(s, 'a2'), s)!;
+    expect(note).toContain('approach was weak');
+    expect(note).toContain('(dsa)');
+    expect(note).toContain('Do NOT mention this note');
   });
 });

@@ -1,107 +1,141 @@
 /**
- * Feedback card data (design review D1/D2/D3).
+ * Feedback card data (design review D1/D2/D3 + judge design 2026-07-30).
  *
- *   classification + graph view ──► FeedbackCard JSON ──► chrome renders rows
+ *   assessment + graph view + trace ──► AssessmentCard ──► chrome renders
  *
- * D1: before PATTERN_MIN_SESSIONS, findings are "observations", framed as a
- *     first data point with an explicit sessions-until-patterns count.
- * D2: utility copy only. Every string states what was observed, never mood.
- * D3: remediation leads the card when it happened.
+ * Three DISTINCT states, never collapsed (outside-voice finding: collapsing
+ * any pair reads as success):
+ *   - assessed:      per-dimension rows
+ *   - unassessable:  a per-dimension state WITH its reason on the row
+ *   - unassessed:    the judge failed; the card says so and offers rejudge
  *
- * Evidence citations are the two-line form the design review locked (borrowed
- * from mockup variant A): trigger line, evidence line, elapsed delta.
+ * Quotes are pulled by THIS renderer from the trace via the judge's
+ * citations — the judge never writes quoted text, so a fabricated quote is
+ * structurally impossible. A row whose citations were all stripped renders
+ * its verdict labeled as unreceipted.
+ *
+ * Bug disclosure (tension 2): the judge always KNOWS the bug; the card
+ * discusses it freely when solved, and holds it behind a "show me the bug"
+ * toggle when not — so a problem you didn't crack stays re-runnable.
  */
 
-import type { Classification } from './classifier.js';
-import type { GraphView } from './gap-graph.js';
-import { GAP_DESCRIPTIONS } from './gap-graph.js';
+import type { TraceEvent, Verdict } from '@interview-prep/shared';
+import { isCandidateEvent, type Assessment, type JudgeResult } from './judge.js';
+import { eventAtOffset } from './timeline.js';
+import { PATTERN_MIN_SESSIONS, gapDescription, type GraphView } from './gap-graph.js';
 
-export interface CitationLine {
-  ts: number;
-  clock: string;
-  what: string;
+export interface Quote {
+  clock: string; // +M:SS offset
+  text: string;  // verbatim from the trace, never from the judge
 }
 
-export interface FeedbackFinding {
-  label: string;
-  description: string;
-  citation: CitationLine[];
-  delta_ms: number | null;
-  /** Shown, but excluded from the gap graph: the interviewer prompted it. */
-  contaminated: boolean;
+export interface DimensionRow {
+  dimension: string;
+  verdict: Verdict;
+  analysis: string;
+  quotes: Quote[];
+  /** Verdict survived but every citation was stripped — render as a claim
+   *  without a receipt, visually distinct from evidenced rows. */
+  unreceipted?: boolean;
 }
 
-export interface FeedbackCard {
+export interface AssessmentCard {
   session_id: string;
+  state: 'assessed' | 'unassessed';
+  /** unassessed only: why, and that the trace is saved for rejudging. */
+  reason?: string;
   mode: 'observations' | 'patterns'; // D1
   sessions_until_patterns: number;
+  summary?: string;
+  solved?: boolean;
+  /** Present when a bug exists; the client gates rendering on `solved`. */
+  bug?: { description: string };
+  rows?: DimensionRow[];
   newly_closed: { key: string; description: string; fired_count: number }[]; // D3 — leads
-  findings: FeedbackFinding[];
   focus: { key: string; description: string } | null;
-  trigger_occurred: boolean;
 }
 
-const clock = (ts: number): string => {
-  const d = new Date(ts);
-  const p = (x: number) => String(x).padStart(2, '0');
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-};
+const fmtOffset = (seconds: number): string =>
+  `+${Math.floor(seconds / 60)}:${String(Math.round(seconds % 60)).padStart(2, '0')}`;
 
-export function buildFeedback(
-  sessionId: string,
-  classification: Classification,
-  graph: GraphView,
-): FeedbackCard {
-  // The candidate's own words at the cited moment. The hardest part of
-  // behavior feedback is disbelief — a paraphrase is arguable, a quote of
-  // yourself is not (CEO review D3.1). Looked up by (source, seq) in the
-  // window; untranscribed segments have no words to quote.
-  const quoteFor = (ref: { source: string; seq: number }): string | null => {
-    const ev = classification.windowEvents.find(
-      (e) => e.type === 'utterance' && e.source === ref.source && e.seq === ref.seq,
-    );
-    const text = String((ev?.payload as { text?: string } | undefined)?.text ?? '').trim();
-    return text ? `"${text}"` : null;
-  };
-
-  const findings: FeedbackFinding[] = classification.labels.map((l) => {
-    const lines: CitationLine[] = [];
-    if (classification.trigger) {
-      lines.push({
-        ts: classification.trigger.ts,
-        clock: clock(classification.trigger.ts),
-        what: 'test run failed',
-      });
+/** Verbatim text for a cited trace event. */
+function quoteFor(events: TraceEvent[], offsetSeconds: number): Quote | null {
+  // Same candidate-only resolution as the verifier, so the quote shown is
+  // the event the citation was verified against.
+  const e = eventAtOffset(events, offsetSeconds, 2_000, isCandidateEvent);
+  if (!e) return null;
+  const p = (e.payload ?? {}) as Record<string, unknown>;
+  const clock = fmtOffset(offsetSeconds);
+  switch (e.type) {
+    case 'utterance': {
+      const text = String(p.text ?? '').trim();
+      return { clock, text: text ? `"${text}"` : '[spoke — transcription unavailable]' };
     }
-    const first = l.evidence[0];
-    if (first) {
-      const quote = quoteFor(first);
-      lines.push({ ts: first.ts, clock: clock(first.ts), what: quote ?? first.note });
+    case 'edit':
+    case 'file_save':
+    case 'file_open': {
+      const verb = e.type === 'edit' ? 'edited' : e.type === 'file_save' ? 'saved' : 'opened';
+      const path = String(p.path ?? '').split('/').slice(-2).join('/');
+      return { clock, text: `${verb} ${path}` };
     }
-    const delta =
-      classification.trigger && first ? first.ts - classification.trigger.ts : null;
-    return {
-      label: l.label,
-      description: GAP_DESCRIPTIONS[l.label] ?? l.label.replace(/_/g, ' '),
-      citation: lines,
-      delta_ms: delta,
-      contaminated: Boolean(l.contaminated),
-    };
-  });
+    case 'test_run':
+      return { clock, text: p.exit_code === 0 ? 'ran tests — passed' : 'ran tests — failed' };
+    case 'command':
+      return { clock, text: `terminal: ${String(p.command ?? '')}` };
+    default:
+      return { clock, text: e.type };
+  }
+}
 
+function graphBits(graph: GraphView) {
   return {
-    session_id: sessionId,
-    mode: graph.session_count < 3 ? 'observations' : 'patterns',
+    mode: (graph.session_count < PATTERN_MIN_SESSIONS ? 'observations' : 'patterns') as
+      | 'observations'
+      | 'patterns',
     sessions_until_patterns: graph.sessions_until_patterns,
     newly_closed: graph.newly_closed.map((key) => ({
       key,
-      description: GAP_DESCRIPTIONS[key] ?? key,
-      fired_count: graph.active.concat(graph.closed).find((g) => g.key === key)?.fired_count ?? 0,
+      description: gapDescription(key),
+      fired_count:
+        graph.active.concat(graph.closed).find((g) => g.key === key)?.fired_count ?? 0,
     })),
-    findings,
-    focus: graph.focus
-      ? { key: graph.focus, description: GAP_DESCRIPTIONS[graph.focus] ?? graph.focus }
-      : null,
-    trigger_occurred: classification.trigger_occurred,
+    focus: graph.focus ? { key: graph.focus, description: gapDescription(graph.focus) } : null,
+  };
+}
+
+export function buildAssessmentCard(
+  result: JudgeResult,
+  graph: GraphView,
+  events: TraceEvent[],
+  bugDescription?: string,
+): AssessmentCard {
+  if (result.status === 'unassessed') {
+    return {
+      session_id: result.session_id,
+      state: 'unassessed',
+      reason: `Couldn't assess this session (${result.reason}). Your trace is saved — rejudge anytime.`,
+      ...graphBits(graph),
+    };
+  }
+
+  const a: Assessment = result;
+  const rows: DimensionRow[] = a.dimensions.map((d) => ({
+    dimension: d.dimension,
+    verdict: d.verdict,
+    analysis: d.analysis,
+    quotes: d.evidence
+      .map((offset) => quoteFor(events, offset))
+      .filter((q): q is Quote => q !== null),
+    ...(d.evidence_stripped ? { unreceipted: true } : {}),
+  }));
+
+  return {
+    session_id: a.session_id,
+    state: 'assessed',
+    summary: a.summary,
+    solved: a.solved,
+    ...(bugDescription ? { bug: { description: bugDescription } } : {}),
+    rows,
+    ...graphBits(graph),
   };
 }

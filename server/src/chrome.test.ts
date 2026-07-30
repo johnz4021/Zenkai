@@ -38,8 +38,19 @@ describe('session chrome', () => {
     expect(html).toContain('no activity anywhere');
   });
 
-  it('renders contaminated findings as recorded-but-not-counted', () => {
-    expect(js).toContain('not counted toward your patterns');
+  it('renders the three assessment states distinctly — none may read as success', () => {
+    expect(js).toContain('Session not assessed');          // judge failed
+    expect(js).toContain('not assessable this session');   // per-dimension
+    expect(js).toContain('Session observations');          // assessed (D1 framing)
+  });
+
+  it('gates bug disclosure on solved with an explicit spoiler toggle', () => {
+    expect(js).toContain('show me the bug');
+    expect(js).toContain('card.solved');
+  });
+
+  it('labels unreceipted claims so a verdict without evidence never passes as fact', () => {
+    expect(js).toContain('No verifiable citation survived');
   });
 
   it('serves exactly the allowlisted client files, nothing else', () => {

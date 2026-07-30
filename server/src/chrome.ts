@@ -56,6 +56,11 @@ export function sessionPage(sessionId: string): string {
   .cite .clk { color: #e6e6ea; }
   .delta { color: var(--dim); padding-left: 18px; }
   .closedmark { border-left: 2px solid var(--accent); padding-left: 10px; }
+  .row .dim { text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+  .v-strong .dim { color: var(--accent); }
+  .v-weak .dim { color: #e6a23c; }
+  .v-none { opacity: .55; }
+  #feedback button { background: none; border: 1px solid var(--line); color: var(--dim); padding: 4px 10px; font: inherit; cursor: pointer; }
   .focus { border: 1px solid var(--accent); padding: 10px; margin-top: 14px; }
   .focus .k { color: var(--accent); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
   .meta { color: var(--dim); margin-top: 12px; }

@@ -30,10 +30,11 @@ export const RENDERER_VERSION = 1;
 /** Rough ceiling before low-signal compression kicks in (~chars/4). */
 export const TOKEN_CEILING = 12_000;
 
-const fmt = (ms: number): string => {
-  const s = Math.max(0, Math.round(ms / 1000));
-  return `+${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-};
+// RAW SECONDS, deliberately not +M:SS. Live rejudge finding: shown "+1:51",
+// the judge cited offset 151 (reading minutes:seconds as digits), every
+// citation missed by 40s, and the verifier stripped honest evidence. The
+// timeline is FOR the judge; the human-facing card formats its own clocks.
+const fmt = (ms: number): string => `+${Math.max(0, Math.round(ms / 1000))}s`;
 
 /** Down-intervals per sensor from `sensor` events (moved from classifier.ts). */
 export function sensorDownIntervals(
@@ -206,6 +207,11 @@ export function eventAtOffset(
   events: TraceEvent[],
   offsetSeconds: number,
   toleranceMs = 2_000,
+  /** Restrict resolution to matching events. Live finding: a `sensor`
+   *  bookkeeping event 0.1s nearer than the candidate's utterance
+   *  photobombed a nearest-event lookup and got an honest citation
+   *  stripped — resolve against the events that can BE evidence. */
+  filter?: (e: TraceEvent) => boolean,
 ): TraceEvent | null {
   if (events.length === 0) return null;
   const t0 = Math.min(...events.map((e) => e.ts));
@@ -213,6 +219,7 @@ export function eventAtOffset(
   let best: TraceEvent | null = null;
   let bestDist = Number.POSITIVE_INFINITY;
   for (const e of events) {
+    if (filter && !filter(e)) continue;
     const d = Math.abs(e.ts - target);
     if (d < bestDist) {
       best = e;

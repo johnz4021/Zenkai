@@ -194,8 +194,11 @@ export function verifyCitations(
     const kept: number[] = [];
     const stripped: number[] = [];
     for (const offset of d.evidence) {
-      const ev = eventAtOffset(events, offset);
-      if (ev && isCandidateEvent(ev)) kept.push(offset);
+      // Resolve against candidate events ONLY: a bookkeeping event landing
+      // nearer must not disqualify an honest citation, and an interviewer
+      // line must never satisfy one.
+      const ev = eventAtOffset(events, offset, 2_000, isCandidateEvent);
+      if (ev) kept.push(offset);
       else stripped.push(offset);
     }
     const out: DimensionAssessment = { ...d, evidence: kept };

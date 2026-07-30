@@ -61,6 +61,75 @@ if (cmd === 'generate') {
   const dir = path.join(problemsRoot, `debugging-${Date.now()}`);
   console.log(`[prepare] ${dir}${note ? ' (targeted at current focus gap)' : ' (neutral — nothing learned yet)'}`);
   process.exit(await generateInto(dir, note));
+} else if (cmd === 'rejudge' || cmd === 'judge') {
+  // Judging is a pure function of the stored trace, so a failed or stale
+  // assessment is never a lost session — re-run it any time, including the
+  // whole history after a prompt improvement (assessments are version-
+  // stamped for exactly this).
+  const { judgeSession } = await import('./judge.js');
+  const { renderTimeline } = await import('./timeline.js');
+  const { buildAssessmentCard } = await import('./feedback.js');
+  const { buildGraphView, loadStore, recordAssessment, saveStore } = await import('./gap-graph.js');
+  const { readFileSync, writeFileSync, mkdirSync, readdirSync } = await import('node:fs');
+  if (!target) {
+    console.error('usage: cli.ts rejudge <session-id> [--record]');
+    process.exit(64);
+  }
+  const sessionId = target.replace(/\.jsonl$/, '').split('/').pop()!;
+  const tracePath = path.join(repoRoot, 'traces', `${sessionId}.jsonl`);
+  const events = readFileSync(tracePath, 'utf8')
+    .split('\n')
+    .filter((l) => l.trim())
+    .map((l) => JSON.parse(l) as import('@interview-prep/shared').TraceEvent);
+
+  // Find the problem this session ran (the .used marker names the session).
+  let problemDir: string | null = null;
+  for (const dir of readdirSync(problemsRoot)) {
+    const marker = path.join(problemsRoot, dir, '.used');
+    try {
+      if (readFileSync(marker, 'utf8').split('\n')[0] === sessionId) {
+        problemDir = path.join(problemsRoot, dir);
+        break;
+      }
+    } catch {
+      /* unused problem */
+    }
+  }
+  if (!problemDir) {
+    console.error(`no problem found for session ${sessionId} (no .used marker names it)`);
+    process.exit(2);
+  }
+  const problem = JSON.parse(readFileSync(path.join(problemDir, 'problem.json'), 'utf8'));
+
+  console.error(`[rejudge] ${sessionId} against ${path.basename(problemDir)}...`);
+  console.error(renderTimeline(events).split('\n').slice(0, 3).join('\n') + '\n...');
+  const result = await judgeSession({
+    sessionId,
+    events,
+    problem,
+    templatePath: path.join(repoRoot, 'prompts', 'judge-session.md'),
+  });
+  mkdirSync(path.join(repoRoot, 'assessments'), { recursive: true });
+  writeFileSync(
+    path.join(repoRoot, 'assessments', `${sessionId}.json`),
+    JSON.stringify(result, null, 2),
+  );
+
+  // --record writes into the gap graph; plain rejudge is a dry look.
+  let store = loadStore(path.join(repoRoot, 'gaps'), userId);
+  if (process.argv.includes('--record') && result.status === 'assessed') {
+    store = recordAssessment(store, result, problem.round_type);
+    saveStore(path.join(repoRoot, 'gaps'), store);
+    console.error('[rejudge] recorded into the gap graph');
+  }
+  const card = buildAssessmentCard(
+    result,
+    buildGraphView(store, sessionId),
+    events,
+    problem.planted_bug?.description,
+  );
+  console.log(JSON.stringify(card, null, 2));
+  process.exit(result.status === 'assessed' ? 0 : 3);
 } else if (cmd === 'validate') {
   const report = validateProblem(path.resolve(target ?? '.'));
   console.log(JSON.stringify(report, null, 2));
