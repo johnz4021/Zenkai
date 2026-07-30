@@ -1,0 +1,73 @@
+{
+  "session_id": "gauntlet-approach-pair-with",
+  "status": "assessed",
+  "judged_at": 1785436066235,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": true,
+  "summary": "The candidate ran the suite, read the failing test, and quickly diagnosed that the sweep was returning shipped-out units by comparing expected vs actual unit counts. They named the exact mechanism (original count vs remaining count) before editing sweep.ts, then confirmed the fix with a passing test run and ended the session without further comment.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "strong",
+      "analysis": "Before touching any code, the candidate opened the failing test file and explicitly compared expected and actual unit counts, correctly identifying that shipped units were reappearing. This grounded their hypothesis in the actual test evidence rather than a guess.",
+      "evidence": [
+        15,
+        30
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "strong",
+      "analysis": "The candidate stated a precise mechanism — the sweep releases the original unit count instead of the remaining count — matching the ground truth bug almost exactly, before making any edit.",
+      "evidence": [
+        60
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "adequate",
+      "analysis": "They narrated the diff observation and the hypothesis clearly, giving the interviewer a path to follow up through diagnosis. However there was no narration during the edit itself or after the test run, leaving the implementation and confirmation steps unexplained.",
+      "evidence": [
+        30,
+        60
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "adequate",
+      "analysis": "The edit to sweep.ts directly followed the stated hypothesis and was saved promptly, with no scattered or contradictory changes observed. There is no visible detail on the specific code change, only that it followed the stated plan and led to a passing suite.",
+      "evidence": [
+        85,
+        95
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "adequate",
+      "analysis": "They re-ran the full test suite after the edit and confirmed a pass rather than assuming success, which is the minimum bar for verification. There was no explicit check of edge cases like fully-released holds or other sweep behaviors beyond the overall suite result.",
+      "evidence": [
+        130
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "weak",
+      "analysis": "After the tests passed, the candidate ended the session immediately without articulating why the remaining-count fix resolves the phantom-stock issue or confirming the mechanism held up under the fix. The reasoning stopped at the pre-edit hypothesis with no closing explanation.",
+      "evidence": [
+        130,
+        140
+      ]
+    }
+  ]
+}

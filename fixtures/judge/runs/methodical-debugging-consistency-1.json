@@ -1,0 +1,75 @@
+{
+  "session_id": "gauntlet-methodical-debugging-consistency-1",
+  "status": "assessed",
+  "judged_at": 1785436349447,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": true,
+  "summary": "The candidate read the failing test, quickly identified the discrepancy between released and held units, formed a precise mechanism hypothesis, and implemented a fix matching that hypothesis. Tests passed afterward and they gave a clear causal explanation of the bug and fix.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "strong",
+      "analysis": "The candidate opened the failing test file first and extracted the specific discrepancy from the diff (8 released vs 5 still held), then explicitly asked whether a partially shipped hold should return only unshipped units before committing to a fix direction. This resolves the exact ambiguity the problem intends.",
+      "evidence": [
+        15,
+        40,
+        55
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "strong",
+      "analysis": "Before opening the buggy file, the candidate stated a specific, falsifiable mechanism: the sweep releases the original unit count rather than the remaining count. This is exactly the level of specificity the bar calls for, not a vague location guess.",
+      "evidence": [
+        75
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "strong",
+      "analysis": "The candidate narrated their reading of the diff, their hypothesis, their confirmation upon opening the source file, and their final explanation, giving a transcript that alone explains the path taken.",
+      "evidence": [
+        40,
+        75,
+        110,
+        185
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "strong",
+      "analysis": "The edit to sweep.ts directly followed the stated hypothesis (changing release computation from full units to units minus shipped), was scoped to the identified line, and was saved promptly without unrelated thrashing.",
+      "evidence": [
+        130,
+        140
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "strong",
+      "analysis": "After editing, the candidate re-ran the full test suite and confirmed it passed before declaring success, treating the green run as confirmation rather than the goal itself.",
+      "evidence": [
+        170
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "strong",
+      "analysis": "The closing statement correctly ties the fix to the root cause: the sweep was returning phantom stock for partially shipped holds because it released the original unit count, and subtracting shipped units aligns release with actual held units, matching the ground truth mechanism.",
+      "evidence": [
+        185
+      ]
+    }
+  ]
+}

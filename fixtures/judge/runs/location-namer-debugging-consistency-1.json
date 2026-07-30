@@ -1,0 +1,73 @@
+{
+  "session_id": "gauntlet-location-namer-debugging-consistency-1",
+  "status": "assessed",
+  "judged_at": 1785436426383,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": true,
+  "summary": "The candidate ran the tests, guessed the sweep file was the culprit, opened it, made a single edit, and reran the suite to a green result in under two minutes. There was no stated mechanism, minimal narration, and no explanation of why the fix worked before ending the session.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "weak",
+      "analysis": "The candidate moved straight from the failing test run to a location guess without reading the failing test body or asking anything about what a partially-shipped hold should release on expiry. No ambiguity was raised or resolved before editing began.",
+      "evidence": [
+        20
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "weak",
+      "analysis": "The stated plan was only a location ('probably something in the sweep file'), not a mechanism; they never articulated that the bug might be releasing original count instead of remaining count before touching code.",
+      "evidence": [
+        20
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "weak",
+      "analysis": "Aside from the initial vague guess and a closing remark that it passes, there is no narration during the file read, the edit, or the save — an interviewer would have had no visibility into what was being changed or why.",
+      "evidence": [
+        30,
+        60,
+        70
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "adequate",
+      "analysis": "The edit was a single, decisive change to the correct file with no thrashing or backtracking, and it resulted in a passing suite, suggesting the change was reasonably targeted even though it was never explained.",
+      "evidence": [
+        60,
+        70,
+        110
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "adequate",
+      "analysis": "They did rerun the full test suite after the edit and confirmed a pass before ending the session, meeting the minimum bar of checking before declaring success, though no edge-case reasoning (e.g. full-release holds) was voiced.",
+      "evidence": [
+        110
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "weak",
+      "analysis": "The closing remark is a bare acknowledgment that the tests pass, with no articulation of the root cause (original vs remaining unit count) or why the change fixes the phantom-stock behavior.",
+      "evidence": [
+        120
+      ]
+    }
+  ]
+}

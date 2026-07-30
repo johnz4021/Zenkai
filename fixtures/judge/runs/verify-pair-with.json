@@ -1,0 +1,73 @@
+{
+  "session_id": "gauntlet-verify-pair-with",
+  "status": "assessed",
+  "judged_at": 1785436023980,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": true,
+  "summary": "The candidate ran the tests, read the failing test, and within a minute correctly named the exact mechanism (sweep releasing original count instead of remaining), then made a single scoped edit that turned the suite green and gave a root-cause explanation matching the planted bug. The session was fast and efficient with light but sufficient narration at each key juncture.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "adequate",
+      "analysis": "They did not ask the interviewer any clarifying questions, but they did read the failing test body and quoted its expected-vs-actual values before forming a direction, which resolved the relevant ambiguity through the material itself rather than through guessing. This falls short of actively surfacing the partial-shipment edge case out loud, but it is not an unstated assumption either.",
+      "evidence": [
+        15,
+        30
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "strong",
+      "analysis": "Before touching any code, they stated a specific, falsifiable mechanism — the sweep releases the original unit count rather than the remaining count — which matches the ground-truth root cause almost verbatim. This is a mechanism, not just a location, and it was stated prior to the edit.",
+      "evidence": [
+        60
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "strong",
+      "analysis": "The transcript alone tracks their path: diagnosing the diff at +30s, naming the mechanism at +60s, and explaining the root cause at +145s. Though sparse, each narration point lands exactly at a decision moment, letting an interviewer follow the reasoning without needing to interrupt.",
+      "evidence": [
+        30,
+        60,
+        145
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "strong",
+      "analysis": "The edit to src/sweep.ts directly followed from the stated hypothesis about released quantity, was saved promptly, and was scoped to the single file implicated by the bug — no scattered or contradictory edits appeared.",
+      "evidence": [
+        80,
+        90
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "strong",
+      "analysis": "After editing, they re-ran the full test suite and confirmed a pass before declaring the issue resolved, treating the green run as confirmation rather than skipping straight to a claim of success.",
+      "evidence": [
+        130
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "strong",
+      "analysis": "Their closing statement ties the fix back to the mechanism — phantom stock from returning the original count — rather than just noting the tests passed, matching the actual root cause of the bug.",
+      "evidence": [
+        145
+      ]
+    }
+  ]
+}

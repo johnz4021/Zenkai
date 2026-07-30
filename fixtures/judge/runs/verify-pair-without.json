@@ -1,0 +1,75 @@
+{
+  "session_id": "gauntlet-verify-pair-without",
+  "status": "assessed",
+  "judged_at": 1785436042778,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": true,
+  "summary": "The candidate quickly read the failing test, correctly diagnosed the phantom-stock mechanism (original count vs remaining count), and applied a fix matching the actual root cause. However, they never re-ran the test suite to confirm the fix before ending the session.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "weak",
+      "analysis": "The candidate read the test failure output and inferred the mechanism directly, but never asked or verbally confirmed whether partially-shipped holds should return only unshipped units — they moved straight from observation to hypothesis without surfacing this as an open question. Given the ambiguity in what 'remaining' vs 'original' should mean for a partially-shipped hold, this was worth stating rather than assuming.",
+      "evidence": [
+        30,
+        60
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "strong",
+      "analysis": "At +60s the candidate named the exact mechanism — the sweep releases the original count instead of remaining — before touching any code, which matches the ground-truth bug precisely and is specific enough to be wrong.",
+      "evidence": [
+        60
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "strong",
+      "analysis": "The candidate narrated their reasoning at each key step: the diff observation at +30s, the hypothesis at +60s, and the closing explanation at +100s, giving a transcript that explains the path from failure to fix without needing interviewer prompts.",
+      "evidence": [
+        30,
+        60,
+        100
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "strong",
+      "analysis": "The edit and save at +80s and +90s directly followed the stated hypothesis about releasing remaining rather than original count, with no scattered or contradictory changes observed.",
+      "evidence": [
+        80,
+        90
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "weak",
+      "analysis": "No test run occurs after the +90s save; the only test execution in the whole session is the initial failing run at +6s. The candidate declared the issue resolved at +100s without re-running the suite to confirm the fix actually turned the test green.",
+      "evidence": [
+        6,
+        90,
+        100
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "strong",
+      "analysis": "At +100s the candidate restated the root cause clearly — that the sweep was returning the original count as phantom stock — showing they understood why the change fixed the underlying behavior, not just that code was edited.",
+      "evidence": [
+        100
+      ]
+    }
+  ]
+}

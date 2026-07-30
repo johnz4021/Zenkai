@@ -61,12 +61,58 @@ if (cmd === 'generate') {
   const dir = path.join(problemsRoot, `debugging-${Date.now()}`);
   console.log(`[prepare] ${dir}${note ? ' (targeted at current focus gap)' : ' (neutral — nothing learned yet)'}`);
   process.exit(await generateInto(dir, note));
+} else if (cmd === 'promote-fixture') {
+  // Phase 6 golden-set promotion: a REAL session whose card the candidate
+  // confirmed becomes a regression fixture. Ground truth = the judge's
+  // verdicts where confirmed; disputed dimensions are recorded as
+  // disputed (excluded from scoring until hand-resolved). The golden set
+  // grows from genuine sessions only — never app-testing runs.
+  const { readFileSync, writeFileSync, mkdirSync } = await import('node:fs');
+  if (!target) {
+    console.error('usage: cli.ts promote-fixture <session-id>');
+    process.exit(64);
+  }
+  const sid = target;
+  const events = readFileSync(path.join(repoRoot, 'traces', `${sid}.jsonl`), 'utf8')
+    .split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+  const assessment = JSON.parse(
+    readFileSync(path.join(repoRoot, 'assessments', `${sid}.json`), 'utf8'),
+  ) as { status: string; dimensions?: { dimension: string; verdict: string }[] };
+  if (assessment.status !== 'assessed') {
+    console.error('session was never assessed — nothing to promote');
+    process.exit(2);
+  }
+  let confirms: Record<string, boolean> = {};
+  try {
+    confirms = JSON.parse(
+      readFileSync(path.join(repoRoot, 'assessments', `${sid}.confirm.json`), 'utf8'),
+    ) as Record<string, boolean>;
+  } catch {
+    console.error('no confirmations recorded — confirm dimensions on the card first');
+    process.exit(2);
+  }
+  const expected: Record<string, string[]> = {};
+  const disputed: string[] = [];
+  for (const d of assessment.dimensions ?? []) {
+    if (confirms[d.dimension] === true) expected[d.dimension] = [d.verdict];
+    else if (confirms[d.dimension] === false) disputed.push(d.dimension);
+  }
+  const goldenDir = path.join(repoRoot, 'fixtures', 'judge', 'golden');
+  mkdirSync(goldenDir, { recursive: true });
+  writeFileSync(
+    path.join(goldenDir, `${sid}.json`),
+    JSON.stringify({ session_id: sid, promoted_at: new Date().toISOString(), events, expected, disputed }, null, 2),
+  );
+  console.log(
+    `promoted: ${Object.keys(expected).length} confirmed dimension(s), ${disputed.length} disputed (excluded until hand-resolved)`,
+  );
 } else if (cmd === 'eval-judge') {
   const { runGauntlet, renderScorecard } = await import('./eval/gauntlet.js');
   const scorecard = await runGauntlet({
     repoRoot,
     quick: process.argv.includes('--quick'),
     simulate: process.argv.includes('--simulate'),
+    resume: process.argv.includes('--resume'),
   });
   console.log(renderScorecard(scorecard));
   process.exit(scorecard.pass ? 0 : 1);

@@ -1,0 +1,81 @@
+{
+  "session_id": "gauntlet-sim-recoverer-dsa",
+  "status": "assessed",
+  "judged_at": 1785436322854,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Establishes how duplicate values and reused indices behave in findPairs before designing.",
+    "approach": "States the algorithm and its complexity — e.g. a hashmap pass making it O(n) versus the naive O(n^2) — BEFORE writing code.",
+    "communicate": "Talks through the pair-collection logic while implementing it.",
+    "implement": "Implementation follows the stated algorithm for collecting unique index pairs.",
+    "verify": "Dry-runs findPairs on an example with duplicates and re-runs the suite including the large-input test.",
+    "reflect": "Restates the complexity and where the hashmap approach would break."
+  },
+  "solved": true,
+  "summary": "Candidate started with a brute-force nested loop, confirmed the pairing/dedup contract by checking the test file, then diagnosed the large-input timeout as O(n^2) and rewrote to a hashmap-based O(n) solution. They dry-ran the new algorithm on a duplicate-containing example before saving, hit one failing edge case (complement equal to current value), fixed the insertion order, and verified all tests passed.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "strong",
+      "analysis": "After writing the initial brute-force loop, the candidate paused to resolve exactly the ambiguity the problem calls out — whether pairs or indices needed deduping, and how duplicate values interact with index reuse — by reading the test file rather than guessing. They then explicitly reconciled this with their existing implementation.",
+      "evidence": [
+        95,
+        108,
+        122
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "strong",
+      "analysis": "The first pass was only a vague 'brute force first' intent, but once the timing failure surfaced, the candidate explicitly named the mechanism (nested loop is O(n^2) over ~10k elements) and stated the replacement algorithm and its complexity (hashmap of value-to-indices, O(n) single pass) before writing any code.",
+      "evidence": [
+        165,
+        178,
+        192
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "strong",
+      "analysis": "The candidate narrated almost every step: the initial loop logic, the complexity diagnosis, the hashmap design, and a full manual dry run with concrete values, giving a transcript that fully explains the path taken.",
+      "evidence": [
+        63,
+        178,
+        230,
+        285
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "strong",
+      "analysis": "Edits tracked the stated plans in order: brute force first, then a full rewrite to the hashmap approach, then a targeted fix for the complement-equals-self edge case discovered during testing, with no unexplained scope changes.",
+      "evidence": [
+        205,
+        248,
+        348
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "strong",
+      "analysis": "Before trusting the hashmap rewrite, the candidate manually traced it against a duplicate-containing example, then ran the full suite, and after a failure diagnosed and fixed the bug before re-running to confirm a full green pass including the large-input test.",
+      "evidence": [
+        265,
+        325,
+        378
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "strong",
+      "analysis": "The candidate correctly identified the root cause of the failing edge case (checking the map before inserting the current value, not after) and closed with a correct restatement of the algorithm's time and space complexity, tying the fix to the underlying mechanism rather than just citing green tests.",
+      "evidence": [
+        362,
+        383
+      ]
+    }
+  ]
+}

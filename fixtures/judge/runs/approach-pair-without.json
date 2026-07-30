@@ -1,0 +1,73 @@
+{
+  "session_id": "gauntlet-approach-pair-without",
+  "status": "assessed",
+  "judged_at": 1785437072228,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": true,
+  "summary": "The candidate quickly diagnosed the symptom (shipped units reappearing in stock) from the test diff, made a single edit to sweep.ts, and confirmed the suite passed before ending the session. The session was very short, with minimal narration of the actual fix and no post-fix reflection on why it worked.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "weak",
+      "analysis": "The candidate opened the failing test and paraphrased the diff (shipped units returning), which is useful groundwork, but never posed a question about whether partially-shipped holds should retain their shipped-unit deduction before diving into the sweep code. They moved straight from reading the diff to editing without checking the assumption against the test's intent.",
+      "evidence": [
+        15,
+        30,
+        85
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "weak",
+      "analysis": "The stated plan at the point of committing to a direction was to 'dig around' the release path and watch hold-state fields — a location and vague intent, not a mechanism. Despite the earlier diagnostic remark hinting at the right symptom, no explicit hypothesis like 'sweep releases original count instead of remaining' was voiced before editing.",
+      "evidence": [
+        60
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "adequate",
+      "analysis": "The candidate narrated the failure diff and a loose plan to investigate the sweep and hold-state fields, giving an interviewer a rough sense of direction. However, no narration accompanied the actual edit or the reasoning behind the specific code change, leaving a gap in the transcript's explanatory power.",
+      "evidence": [
+        30,
+        60
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "adequate",
+      "analysis": "A single, targeted edit was made to src/sweep.ts and saved, consistent with the stated (if vague) intent to work in the release path, with no thrashing or contradictory changes observed. The execution was efficient and resulted in a passing suite, though the sparse planning makes it hard to judge precision against a stated mechanism.",
+      "evidence": [
+        85,
+        95
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "adequate",
+      "analysis": "The candidate re-ran the test suite after the edit and confirmed a pass before ending the session, meeting the baseline expectation of checking work rather than declaring success blindly. There is no evidence of deeper edge-case checking (e.g. confirming full-release holds still behave correctly) beyond the aggregate suite result.",
+      "evidence": [
+        130
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "weak",
+      "analysis": "Immediately after the suite passed, the candidate ended the session with no stated explanation of why the original fix addressed the phantom-stock mechanism or how it relates to the remaining-vs-original count issue. The session ends without any articulation connecting the fix to the root cause.",
+      "evidence": [
+        140
+      ]
+    }
+  ]
+}

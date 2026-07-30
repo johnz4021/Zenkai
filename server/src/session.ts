@@ -475,6 +475,29 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ messages, heard, thinking: interviewerBusy }));
     }
+    if (url === '/api/card-feedback' && req.method === 'POST') {
+      // Phase 6 golden-set loop: per-dimension "did this match?" from the
+      // candidate. Confirmations accumulate next to the assessment; a
+      // confirmed session can be promoted into the gauntlet's golden
+      // fixtures (cli promote-fixture) — the library grows from REAL
+      // sessions, never app-testing runs.
+      const body = JSON.parse((await readBody(req)) || '{}') as {
+        dimension?: string;
+        agree?: boolean;
+      };
+      const file = path.join(cfg.repoRoot, 'assessments', `${cfg.sessionId}.confirm.json`);
+      let confirms: Record<string, boolean> = {};
+      try {
+        confirms = JSON.parse(readFileSync(file, 'utf8')) as Record<string, boolean>;
+      } catch {
+        /* first confirmation */
+      }
+      if (body.dimension) confirms[body.dimension] = Boolean(body.agree);
+      mkdirSync(path.join(cfg.repoRoot, 'assessments'), { recursive: true });
+      writeFileSync(file, JSON.stringify(confirms, null, 2));
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ ok: true }));
+    }
     if (url === '/api/end' && req.method === 'POST') {
       if (ended) {
         res.writeHead(409);

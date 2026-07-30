@@ -1,0 +1,76 @@
+{
+  "session_id": "gauntlet-methodical-debugging-consistency-4",
+  "status": "assessed",
+  "judged_at": 1785436387081,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": true,
+  "summary": "The candidate methodically read the failing test, articulated the exact mechanism (sweep releasing original count instead of remaining), implemented a targeted fix in sweep.ts, and verified with a full test run before explaining the root cause. The session was efficient, well-narrated, and directly resolved the planted bug.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "strong",
+      "analysis": "The candidate read the failing test and diff output, then explicitly asked whether a partially shipped hold should return only unshipped units, resolving the ambiguity against the spec before touching code. This matches the expected behavior of interrogating the partial-shipment semantics before committing to a direction.",
+      "evidence": [
+        15,
+        40,
+        55
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "strong",
+      "analysis": "Before opening the source file, the candidate stated a precise hypothesis naming the mechanism: the sweep releases the original count rather than the remaining count. This is exactly the kind of specific, falsifiable claim the rubric calls for.",
+      "evidence": [
+        75
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "strong",
+      "analysis": "The candidate narrated their reasoning at each step: interpreting the diff, forming the hypothesis, confirming it against the code, and explaining the fix afterward. The transcript alone reconstructs their full path without needing interviewer intervention.",
+      "evidence": [
+        40,
+        75,
+        110,
+        185
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "strong",
+      "analysis": "The edit to sweep.ts directly followed the stated hypothesis — changing the release computation from the original unit count to units minus shipped — with no scattered or contradictory changes.",
+      "evidence": [
+        110,
+        130,
+        140
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "strong",
+      "analysis": "The candidate re-ran the full test suite after the fix and confirmed a pass before declaring success, treating the green run as confirmation rather than the goal itself.",
+      "evidence": [
+        170
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "strong",
+      "analysis": "The closing explanation correctly identifies the phantom-stock mechanism and explains why subtracting shipped units resolves it, matching the actual root cause rather than just noting the test passed.",
+      "evidence": [
+        185
+      ]
+    }
+  ]
+}

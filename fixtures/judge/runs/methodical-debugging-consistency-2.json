@@ -1,0 +1,75 @@
+{
+  "session_id": "gauntlet-methodical-debugging-consistency-2",
+  "status": "assessed",
+  "judged_at": 1785436360432,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": true,
+  "summary": "The candidate read the failing test, articulated a precise hypothesis about the sweep releasing original rather than remaining units, and implemented and verified a fix that made the suite pass. The whole process was narrated clearly and matched the ground-truth bug almost exactly.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "strong",
+      "analysis": "Before touching any code, the candidate read the failing test and diff output, then explicitly asked whether a partially shipped hold should return only unshipped units, resolving it by referencing the spec's use of 'remaining'. This directly targets the real ambiguity in the bug.",
+      "evidence": [
+        15,
+        40,
+        55
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "strong",
+      "analysis": "At 75s the candidate stated a specific mechanism — the sweep releases the original count instead of the remaining count — before opening the implementation file, which is exactly the level of specificity the bar calls for.",
+      "evidence": [
+        75
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "strong",
+      "analysis": "The candidate narrated each step of their reasoning: reading the diff, forming the hypothesis, confirming it against the code, and explaining the fix afterward, giving a fully legible trail from problem to solution.",
+      "evidence": [
+        40,
+        75,
+        110,
+        185
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "strong",
+      "analysis": "The edit made at 130s directly followed the stated hypothesis (subtracting shipped units from the release computation) with no scope creep or unrelated changes, and was saved promptly.",
+      "evidence": [
+        130,
+        140
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "strong",
+      "analysis": "After the fix, the candidate re-ran the full test suite rather than assuming success, and confirmed a pass before declaring the issue resolved.",
+      "evidence": [
+        170
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "strong",
+      "analysis": "At 185s the candidate clearly connected the fix to the failure mechanism, explaining that the sweep previously returned phantom stock for partial shipments and that subtracting shipped units aligns release with actual held quantity — matching the ground-truth root cause.",
+      "evidence": [
+        185
+      ]
+    }
+  ]
+}

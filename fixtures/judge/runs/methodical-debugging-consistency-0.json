@@ -1,0 +1,76 @@
+{
+  "session_id": "gauntlet-methodical-debugging-consistency-0",
+  "status": "assessed",
+  "judged_at": 1785436336796,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": true,
+  "summary": "The candidate read the failing test, articulated the exact root-cause mechanism before touching code, made a scoped fix to src/sweep.ts, reran the suite to confirm green, and gave a clear explanation of why the fix worked. This was a clean, well-narrated run that matches the ground-truth bug almost exactly.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "strong",
+      "analysis": "They opened the failing test and quoted the diff numbers (8 released vs 5 held) to ground their reasoning, then explicitly posed and resolved the ambiguity of whether partially shipped holds should return only unshipped units by citing the spec. This is close to the exact behavior the rubric wants: reading the test body and resolving the partial-shipment question before editing.",
+      "evidence": [
+        15,
+        40,
+        55
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "strong",
+      "analysis": "Before opening the implementation file, they stated a specific, falsifiable mechanism: the sweep releases the original unit count instead of the remaining count. This is a mechanism-level hypothesis, not just a location, and it exactly matches the actual bug.",
+      "evidence": [
+        75
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "strong",
+      "analysis": "The candidate narrated each step of their reasoning — the diff numbers, the spec-driven question, the hypothesis, the confirmation on reading the code, and the fix rationale — so the transcript alone tracks their path with no silent gaps.",
+      "evidence": [
+        40,
+        75,
+        110,
+        185
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "strong",
+      "analysis": "After confirming in src/sweep.ts that release used hold.units rather than hold.units minus shipped, they edited and saved the file to compute the remaining count, directly executing the stated hypothesis with no unrelated changes.",
+      "evidence": [
+        110,
+        130,
+        140
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "strong",
+      "analysis": "They reran the full test suite after the edit and confirmed it passed before declaring success, rather than assuming the fix worked from inspection alone.",
+      "evidence": [
+        170
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "strong",
+      "analysis": "Their closing statement correctly identifies the phantom-stock mechanism — releasing the original count for partially shipped holds — and explains that subtracting shipped units aligns released stock with what is actually held, matching the real root cause.",
+      "evidence": [
+        185
+      ]
+    }
+  ]
+}

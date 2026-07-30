@@ -28,6 +28,7 @@ import {
   apiJudgeModel,
   claudePJudgeModel,
   judgeSession,
+  promptHash,
   type Assessment,
   type JudgeModel,
 } from '../judge.js';
@@ -45,6 +46,10 @@ export interface GauntletOptions {
   quick?: boolean;
   /** Regenerate the simulated-candidate cache (costs generator calls). */
   simulate?: boolean;
+  /** Reuse stored run outputs whose prompt_hash matches the current prompt
+   *  — resume an interrupted run, or re-score cheaply after non-prompt
+   *  changes. A prompt change invalidates the cache automatically. */
+  resume?: boolean;
   /** Injectable for the gauntlet's own tests. */
   judgeModel?: JudgeModel;
   log?: (line: string) => void;
@@ -115,11 +120,29 @@ export async function runGauntlet(opts: GauntletOptions): Promise<Scorecard> {
   mkdirSync(outDir, { recursive: true });
 
   const citation = { kept: 0, total: 0 };
-  let promptHash: string | null = null;
+  let promptHash2: string | null = null;
   let counter = 0;
+
+  const currentHash = promptHash(readFileSync(templatePath, 'utf8'));
 
   const judge = async (id: string, events: TraceEvent[], problem: PersonaFixture['problem']) => {
     counter += 1;
+    const runFile = path.join(outDir, `${id}.json`);
+    if (opts.resume && existsSync(runFile)) {
+      try {
+        const cached = JSON.parse(readFileSync(runFile, 'utf8')) as Assessment | { status: string };
+        if (cached.status === 'assessed' && (cached as Assessment).prompt_hash === currentHash) {
+          log(`  [${counter}] ${id} (cached)`);
+          promptHash2 = (cached as Assessment).prompt_hash;
+          const c = countCitations(cached as Assessment);
+          citation.kept += c.kept;
+          citation.total += c.total;
+          return cached as Assessment;
+        }
+      } catch {
+        /* unreadable cache — re-judge */
+      }
+    }
     log(`  [${counter}] judging ${id}...`);
     const result = await judgeSession({
       sessionId: `gauntlet-${id}`,
@@ -132,7 +155,7 @@ export async function runGauntlet(opts: GauntletOptions): Promise<Scorecard> {
     // Store every raw result — failure inspection is the iteration loop.
     writeFileSync(path.join(outDir, `${id}.json`), JSON.stringify(result, null, 2));
     if (result.status === 'assessed') {
-      promptHash = result.prompt_hash;
+      promptHash2 = result.prompt_hash;
       const c = countCitations(result);
       citation.kept += c.kept;
       citation.total += c.total;
@@ -348,7 +371,7 @@ export async function runGauntlet(opts: GauntletOptions): Promise<Scorecard> {
     ran_at: new Date().toISOString(),
     mode,
     model: modelName,
-    prompt_hash: promptHash,
+    prompt_hash: promptHash2,
     metrics,
     citation,
     pass: metrics.every((m) => m.pass),

@@ -1,0 +1,72 @@
+{
+  "session_id": "gauntlet-code-diver-dsa",
+  "status": "assessed",
+  "judged_at": 1785435902013,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Establishes how duplicate values and reused indices behave in findPairs before designing.",
+    "approach": "States the algorithm and its complexity — e.g. a hashmap pass making it O(n) versus the naive O(n^2) — BEFORE writing code.",
+    "communicate": "Talks through the pair-collection logic while implementing it.",
+    "implement": "Implementation follows the stated algorithm for collecting unique index pairs.",
+    "verify": "Dry-runs findPairs on an example with duplicates and re-runs the suite including the large-input test.",
+    "reflect": "Restates the complexity and where the hashmap approach would break."
+  },
+  "solved": true,
+  "summary": "The candidate skipped straight to coding after seeing the initial test failure, made two edits to findPairs.ts, saved, and re-ran the suite once, which passed. There was almost no verbal reasoning, no stated algorithm or complexity discussion, and no reflection before ending the session.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "weak",
+      "analysis": "The candidate moved directly from a failing test run to coding with no discussion of how duplicate values or index reuse should be handled, despite the problem statement flagging these as contract points. No question was asked and no assumption was stated aloud before committing to an implementation.",
+      "evidence": [
+        15
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "weak",
+      "analysis": "The only stated intent was a vague 'let me just start writing this,' with no algorithm, complexity target, or data-structure choice named before editing began. This falls short of even a location-level plan, let alone the hashmap-vs-brute-force tradeoff the problem calls for.",
+      "evidence": [
+        15
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "weak",
+      "analysis": "Aside from the single opening line, there is no narration during the two edit events or the final test run — the transcript gives no insight into what logic was being written or why. An interviewer would have had to interrupt to know what was happening during the ~120 seconds of editing.",
+      "evidence": [
+        30,
+        70
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "adequate",
+      "analysis": "Two edits followed by a save and a passing test run suggest a reasonably direct path to a working solution without visible thrashing or contradicted edits. However, since no plan was ever stated, it's impossible to confirm the implementation matches a deliberate design choice rather than trial-and-error.",
+      "evidence": [
+        30,
+        70,
+        90
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "adequate",
+      "analysis": "The candidate did re-run the full test suite after their edit and confirmed a pass before ending, which is the minimal verification step. There's no evidence of a manual dry-run against a duplicate-value case or explicit attention to the large-input timing test beyond the aggregate pass result.",
+      "evidence": [
+        140
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "weak",
+      "analysis": "The session ended immediately after the passing run with no articulation of the algorithm used, its complexity, or why it satisfies the duplicate/index-reuse requirements. Nothing connects the green test run to an understood mechanism.",
+      "evidence": [
+        150
+      ]
+    }
+  ]
+}

@@ -6,7 +6,12 @@ the idea was captured while losing why it mattered.
 
 ---
 
-## 1. `narrated_hypothesis` label
+## 1. `narrated_hypothesis` label — SUPERSEDED by the dimension judge
+
+The judge design (2026-07-30) made this obsolete in its original form:
+narration now feeds `communicate` and `approach` verdicts directly, and
+positive credit exists via `strong`. The surviving idea is the DISPOSITION
+axis (item 7). Kept for the record.
 
 **What:** A positive label for stating a theory about the cause before touching code.
 
@@ -179,9 +184,14 @@ spec. Note the recursion risk: a model grading a model, unaudited.
 
 ---
 
-## 9. Generated-expectation quality is on the critical path
+## 9. ~~Generated-expectation quality is on the critical path~~ SHIPPED 2026-07-31
 
-**What:** Nothing checks that the generator's per-dimension expectations are
+Resolved by `checkExpectations()` in server/src/validate.ts: all six dimensions
+required, >= 8 words, no vague stems, vocabulary tied to the spec or planted
+bug. Verified against a real generation (debugging-1785433362606 passed with
+six concrete expectations). Kept for the record.
+
+**What (original):** Nothing checks that the generator's per-dimension expectations are
 concrete.
 
 **Why:** Under the judge design, feedback quality is downstream of expectation

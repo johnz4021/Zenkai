@@ -1,0 +1,75 @@
+{
+  "session_id": "gauntlet-methodical-debugging",
+  "status": "assessed",
+  "judged_at": 1785435738270,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": true,
+  "summary": "The candidate quickly read the failing test, correctly diagnosed that the sweep was releasing original counts instead of remaining counts, and implemented and verified the fix in under three minutes. The whole session was well-narrated and each stage cleanly matched the ground-truth bug.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "strong",
+      "analysis": "The candidate opened the failing test and explicitly called out the discrepancy between released units and units still held, then asked whether partially shipped holds should return only unshipped units and resolved it against the spec before touching code. This directly matches the expected clarifying question for this bug.",
+      "evidence": [
+        15,
+        40,
+        55
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "strong",
+      "analysis": "Before opening the implicated file, the candidate stated a precise mechanism-level hypothesis: the sweep releases the original count rather than the remaining count. This is exactly the mechanism named in the ground truth, stated proactively rather than discovered after the fact.",
+      "evidence": [
+        75
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "strong",
+      "analysis": "The candidate narrated the diff reading, the hypothesis formation, the confirmation upon opening sweep.ts, and the final explanation of why the fix works, giving a transcript that fully explains the path taken without requiring interviewer intervention.",
+      "evidence": [
+        40,
+        75,
+        110,
+        185
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "strong",
+      "analysis": "The edit directly targeted the release computation to subtract shipped units from the original count, matching the stated hypothesis with no scope creep or unrelated changes.",
+      "evidence": [
+        130,
+        140
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "strong",
+      "analysis": "After editing and saving, the candidate re-ran the full test suite and confirmed a pass before declaring success, treating the green run as confirmation rather than the goal itself.",
+      "evidence": [
+        170
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "strong",
+      "analysis": "The final statement ties the fix back to the mechanism — phantom stock from releasing full original counts — and explains why subtracting shipped units resolves it, going beyond just noting the test passed.",
+      "evidence": [
+        185
+      ]
+    }
+  ]
+}

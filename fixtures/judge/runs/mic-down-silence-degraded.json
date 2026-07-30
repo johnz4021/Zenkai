@@ -1,0 +1,64 @@
+{
+  "session_id": "gauntlet-mic-down-silence-degraded",
+  "status": "assessed",
+  "judged_at": 1785436284225,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": true,
+  "summary": "The candidate ran the failing suite, read the expiry test, and made two edits to src/sweep.ts before saving and re-running the tests, which then passed. Almost the entire session after the first 10 seconds has no microphone data, so reasoning, hypothesis, and reflection cannot be verified from speech — only the file activity and test outcomes are observable.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "unassessable",
+      "analysis": "The microphone was off from +10s onward, so any clarifying questions or stated assumptions before editing are unobservable. The only pre-gap window shows just a test run with no clarification opportunity yet exercised.",
+      "evidence": []
+    },
+    {
+      "dimension": "approach",
+      "verdict": "unassessable",
+      "analysis": "Whether they named a mechanism (e.g. original vs remaining unit count) before editing sweep.ts cannot be known since the evidence gap covers the entire period between opening the test file and making the edits. No non-speech artifact (comment, plan note) fills this gap.",
+      "evidence": []
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "unassessable",
+      "analysis": "Speech data is unavailable for essentially the whole working session (gap from +10s to the end), so narration quality cannot be judged one way or the other per the reliability rule.",
+      "evidence": []
+    },
+    {
+      "dimension": "implement",
+      "verdict": "adequate",
+      "analysis": "The candidate went from reading the expiry test straight to editing the correct file, src/sweep.ts, which is exactly where the planted bug lives, and iterated with a second edit before saving. The edits are scoped to the right file and the fix resolved the failing suite, though the exploratory/narrative connection to a stated plan is not observable.",
+      "evidence": [
+        120,
+        200,
+        220
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "strong",
+      "analysis": "After saving the changes, the candidate re-ran the full test suite and confirmed it passed before ending the session, rather than declaring success immediately after editing. A full-suite green run also implicitly checks that other behaviors (like full-release expiry) were not broken by the change.",
+      "evidence": [
+        220,
+        260
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "unassessable",
+      "analysis": "The session ended immediately after the passing test run with no observable explanation of the root cause or why the fix worked, and the microphone gap means any spoken reflection is unrecoverable rather than provably absent.",
+      "evidence": []
+    }
+  ]
+}

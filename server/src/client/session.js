@@ -145,6 +145,12 @@ function render(card) {
     if (r.unreceipted) {
       html += '<p class="cite">No verifiable citation survived for this claim — weigh it accordingly.</p>';
     }
+    // "Did this match?" — your confirmations grow the judge's golden test
+    // set from real sessions. Disagreements are the most valuable signal.
+    if (r.verdict !== 'unassessable') {
+      html += '<p class="cite confirm" data-dim="' + esc(r.dimension) + '">did this match? ' +
+        '<button class="cf" data-agree="1">yes</button> <button class="cf" data-agree="0">no</button></p>';
+    }
     html += '</div>';
   }
 
@@ -171,4 +177,15 @@ function render(card) {
     document.getElementById('bugtext').style.display = 'block';
     sb.style.display = 'none';
   });
+  for (const btn of el.querySelectorAll('.confirm .cf')) {
+    btn.addEventListener('click', async (e) => {
+      const wrap = e.target.closest('.confirm');
+      await fetch('/api/card-feedback', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ dimension: wrap.dataset.dim, agree: e.target.dataset.agree === '1' }),
+      });
+      wrap.textContent = 'noted — ' + (e.target.dataset.agree === '1' ? 'confirmed' : 'disputed');
+    });
+  }
 }

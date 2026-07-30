@@ -1,0 +1,70 @@
+{
+  "session_id": "gauntlet-location-namer-debugging-consistency-3",
+  "status": "assessed",
+  "judged_at": 1785436471698,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": true,
+  "summary": "The candidate ran the tests, guessed the sweep file was the culprit, made an edit, and got a green run within about two minutes. There was no visible clarification, hypothesis, or explanation of the mechanism at any point — just a quick poke-and-check cycle that happened to land on the right file and fix.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "weak",
+      "analysis": "The candidate went straight from a failing test run to guessing at a location without reading the failing test body or asking about expected behavior for partially shipped holds. No question was raised about what 'remaining vs original units' should mean before editing.",
+      "evidence": [
+        20
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "weak",
+      "analysis": "The stated plan was only a location guess ('something in the sweep file'), not a mechanism. There is no articulation of what specifically was wrong with the sweep logic (original count vs remaining count) before editing began.",
+      "evidence": [
+        20
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "weak",
+      "analysis": "Aside from a one-line guess at the start and a one-line celebration at the end, there is no narration during the 40-second stretch of reading and editing sweep.ts. An interviewer would have had no visibility into what was being traced or why the edit was made.",
+      "evidence": [
+        60
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "adequate",
+      "analysis": "The candidate opened the correct file, made a single edit, saved it, and the previously failing suite passed — so the change was scoped and effective. However, since no mechanism was stated beforehand, it's not possible to judge how deliberately the edit targeted the actual remaining-vs-original-count defect versus trial and error.",
+      "evidence": [
+        60,
+        70
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "adequate",
+      "analysis": "They did re-run the full test suite after the edit and observed a pass before ending the session, which is a real verification step rather than a bare declaration. But there's no evidence they specifically checked the partially-shipped-hold test case or considered edge cases like full-release holds beyond the aggregate pass signal.",
+      "evidence": [
+        110
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "weak",
+      "analysis": "The closing remark is a bare acknowledgment that tests pass, with no articulation of why the sweep was releasing phantom stock or how the edit corrects the remaining-count computation. There's no connection drawn between the fix and the failure mechanism.",
+      "evidence": [
+        120
+      ]
+    }
+  ]
+}

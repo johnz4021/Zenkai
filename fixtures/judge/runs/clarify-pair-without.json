@@ -1,0 +1,72 @@
+{
+  "session_id": "gauntlet-clarify-pair-without",
+  "status": "assessed",
+  "judged_at": 1785435946070,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": true,
+  "summary": "The candidate ran the suite, read the failing expiry test, quickly diagnosed that the sweep was releasing the original unit count instead of the remaining count, made a targeted fix, and confirmed the suite passed. The session was brief and ended immediately after the green run with no closing explanation.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "adequate",
+      "analysis": "The candidate opened the failing test file and extracted the exact discrepancy (five expected vs eight actual, shipped units returning) directly from the test output rather than guessing blind. No explicit clarifying question was voiced, but the ambiguity was resolved by reading the material itself, which is the substance of what clarify demands even without an interviewer exchange.",
+      "evidence": [
+        15,
+        30
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "strong",
+      "analysis": "Before touching code, the candidate named a specific mechanism — the sweep releasing the original count instead of the remaining count — which is precisely the root cause and specific enough to be wrong. This was self-directed, not prompted by a nudge.",
+      "evidence": [
+        75
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "adequate",
+      "analysis": "The candidate narrated the key diagnostic moment (the diff) and the hypothesis before editing, giving an interviewer enough to follow the path, but there was no narration during the edit, save, or test-run steps that followed.",
+      "evidence": [
+        30,
+        75
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "strong",
+      "analysis": "The edit to src/sweep.ts followed directly from the stated hypothesis with no scattered or contradictory changes, and was saved cleanly as a single coherent action.",
+      "evidence": [
+        95,
+        105
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "adequate",
+      "analysis": "The candidate re-ran the full test suite after the fix and confirmed it passed, which is the minimum verification step, but there was no explicit check of edge cases like full-release holds or tracing the fix logic against the failing case beyond the green run.",
+      "evidence": [
+        140
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "weak",
+      "analysis": "After the tests passed, the candidate ended the session immediately without articulating why the fix addressed the phantom-stock mechanism or confirming the reasoning connects to the root cause; the outcome was left to speak for itself.",
+      "evidence": [
+        150
+      ]
+    }
+  ]
+}

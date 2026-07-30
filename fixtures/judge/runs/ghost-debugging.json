@@ -1,0 +1,64 @@
+{
+  "session_id": "gauntlet-ghost-debugging",
+  "status": "assessed",
+  "judged_at": 1785435859522,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": false,
+  "summary": "The candidate ran the test suite once, saw it fail, opened package.json, and then ended the session about ninety seconds in without ever looking at the sweep logic, stating a hypothesis, or attempting a fix. No code was changed and the failing test was never addressed.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "weak",
+      "analysis": "After the failing test run at +6s, the candidate had test output available to inspect but instead opened package.json, a file unlikely to contain reservation/sweep logic or the failing test body. No question was asked and no attempt was made to read the actual failing test or spec before the session was ended.",
+      "evidence": [
+        6,
+        20,
+        95
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "unassessable",
+      "analysis": "The session never reached a point where a plan or hypothesis would be stated — the only recorded actions are running tests and opening one unrelated file before ending the session, so there was no decision point to name a mechanism against.",
+      "evidence": []
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "weak",
+      "analysis": "Across the roughly 90 seconds of activity there is no narration of what was being read, suspected, or planned; the transcript shows only mechanical actions (test run, file open) with no verbalized reasoning to follow.",
+      "evidence": [
+        6,
+        20
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "unassessable",
+      "analysis": "No code edits were made at any point in the session, so there is nothing to assess against a stated plan.",
+      "evidence": []
+    },
+    {
+      "dimension": "verify",
+      "verdict": "unassessable",
+      "analysis": "Since no fix was attempted, there was nothing to verify; the single test run at +6s was the initial failure discovery, not a check of any change.",
+      "evidence": []
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "unassessable",
+      "analysis": "The session ended with no resolution and no explanation offered, so there is no reflection to assess.",
+      "evidence": []
+    }
+  ]
+}

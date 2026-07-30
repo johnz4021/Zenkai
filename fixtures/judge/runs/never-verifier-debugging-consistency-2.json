@@ -1,0 +1,74 @@
+{
+  "session_id": "gauntlet-never-verifier-debugging-consistency-2",
+  "status": "assessed",
+  "judged_at": 1785436577837,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": false,
+  "summary": "The candidate ran the failing suite, quickly read the failing test, and correctly verbalized the exact bug mechanism (original count vs remaining count) before editing sweep.ts. They made a single edit and save consistent with that hypothesis but ended the session immediately afterward without re-running the tests to confirm the fix worked.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "strong",
+      "analysis": "The candidate opened the failing test file before touching any code and used the test's expected-vs-actual values to reason precisely about what was wrong, rather than guessing at the file's behavior.",
+      "evidence": [
+        15,
+        35
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "strong",
+      "analysis": "Before editing anything, they named the exact mechanism — the sweep releasing the original unit count instead of remaining units — which matches the ground truth almost verbatim, well beyond a vague location guess.",
+      "evidence": [
+        55
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "strong",
+      "analysis": "They narrated the failing values from the test diff and then stated their causal hypothesis aloud, giving a transcript that explains their path from symptom to cause.",
+      "evidence": [
+        35,
+        55
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "adequate",
+      "analysis": "The edit to sweep.ts and subsequent save is consistent with the stated hypothesis and shows no thrashing, but the change was made and saved within ten seconds with no visible check of surrounding logic (e.g. full-release paths) for side effects.",
+      "evidence": [
+        80,
+        90
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "weak",
+      "analysis": "After saving the fix, the candidate declared it should work and ended the session without re-running the test suite, so there is no evidence the failing test actually turned green or that other tests remained unaffected.",
+      "evidence": [
+        100,
+        110
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "weak",
+      "analysis": "The mechanism explanation happened only pre-edit as a hypothesis; there was no post-fix reflection confirming whether the reasoning held up against actual test results, since none were run before ending the session.",
+      "evidence": [
+        100,
+        110
+      ]
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "session_id": "gauntlet-sim-anchorer-debugging",
+  "status": "assessed",
+  "judged_at": 1785436304017,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": false,
+  "summary": "The candidate fixated on holds/createHold.ts for the entire session, repeatedly revising theories (deadline calc, units field, validation) without ever opening sweep.ts where the actual bug lived. They never re-ran the test suite after the initial failure and ended the session declaring confidence with no verification.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "weak",
+      "analysis": "At 440s the candidate actually surfaced the exact right question — whether partial shipments should reduce released units — but immediately waved it off and reverted to the unstated assumption that createHold.ts was the problem, without reading the failing test or sweep.ts to resolve it. This is the textbook case of raising the right ambiguity and then acting against it.",
+      "evidence": [
+        440,
+        465
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "weak",
+      "analysis": "The only stated plan was a location guess — 'the bug's probably in the creation logic' — never a mechanism, and it was never validated against the failing test or file contents. The plan was also revised multiple times (units field, validation, expiry calc) without any of these being grounded in evidence from the actual failure.",
+      "evidence": [
+        60,
+        230,
+        280
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "strong",
+      "analysis": "The candidate narrated almost continuously — what they suspected, what they were about to edit, and their shifting confidence level — so the transcript alone traces their (misguided) path clearly, even though the content pointed the wrong way.",
+      "evidence": [
+        95,
+        230,
+        380,
+        510
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "weak",
+      "analysis": "Edits were scattered across createHold.ts under a rotating set of unconfirmed theories (deadline calc, units field, validation) with no test runs in between to check whether any edit had effect, and the actual sweep.ts file implicated in the ground truth was never opened.",
+      "evidence": [
+        118,
+        255,
+        355,
+        490
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "weak",
+      "analysis": "After the single test run at the very start of the session, the candidate never ran the suite again despite multiple saved edits, and ended the session on self-declared confidence rather than any check.",
+      "evidence": [
+        6,
+        545,
+        555
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "weak",
+      "analysis": "The closing statement is a vague expression of confidence with no articulation of root cause or why the edits would fix the failing test, and no acknowledgment of the file (sweep.ts) actually responsible for the bug.",
+      "evidence": [
+        545
+      ]
+    }
+  ]
+}

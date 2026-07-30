@@ -1,0 +1,72 @@
+{
+  "session_id": "gauntlet-location-namer-debugging-consistency-0",
+  "status": "assessed",
+  "judged_at": 1785436404468,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": true,
+  "summary": "The candidate ran the failing suite, guessed the sweep file was involved, opened it, made a single edit, and re-ran tests to a green result within about two minutes. There was no stated hypothesis, no narration during the edit, and no explanation of why the fix worked before ending the session.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "weak",
+      "analysis": "The candidate had the failing test output available but moved straight to 'poking around' in sweep.ts without reading the failing test body or asking whether partially-shipped holds should return only unshipped units. No ambiguity was surfaced or resolved before acting.",
+      "evidence": [
+        20
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "weak",
+      "analysis": "The stated plan was only a location guess ('something in the sweep file'), not a mechanism. They never articulated a hypothesis like 'the sweep releases the original count instead of the remaining count' before editing.",
+      "evidence": [
+        20
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "weak",
+      "analysis": "Aside from the opening guess and a closing remark, there is no narration during the actual investigation, editing, or reasoning about the fix — the 60s-70s edit window is silent, leaving the transcript unable to explain the path taken.",
+      "evidence": [
+        60,
+        70
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "adequate",
+      "analysis": "The edit was scoped to the correct file (sweep.ts) and the subsequent test run went green, suggesting the change was competently targeted even though no explicit plan was stated to check it against.",
+      "evidence": [
+        60,
+        70,
+        110
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "adequate",
+      "analysis": "They did re-run the full test suite after the edit and confirmed a pass before ending the session, meeting the minimal bar of checking work rather than declaring success blind.",
+      "evidence": [
+        110
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "weak",
+      "analysis": "The closing comment was a bare acknowledgment that tests passed, with no articulation of the root cause (original vs. remaining unit count) or why the edit fixed it.",
+      "evidence": [
+        120
+      ]
+    }
+  ]
+}

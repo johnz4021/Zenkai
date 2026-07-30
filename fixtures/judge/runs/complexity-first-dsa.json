@@ -1,0 +1,74 @@
+{
+  "session_id": "gauntlet-complexity-first-dsa",
+  "status": "assessed",
+  "judged_at": 1785435880655,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Establishes how duplicate values and reused indices behave in findPairs before designing.",
+    "approach": "States the algorithm and its complexity — e.g. a hashmap pass making it O(n) versus the naive O(n^2) — BEFORE writing code.",
+    "communicate": "Talks through the pair-collection logic while implementing it.",
+    "implement": "Implementation follows the stated algorithm for collecting unique index pairs.",
+    "verify": "Dry-runs findPairs on an example with duplicates and re-runs the suite including the large-input test.",
+    "reflect": "Restates the complexity and where the hashmap approach would break."
+  },
+  "solved": true,
+  "summary": "The candidate briefly restated the contract (unique index pairs, duplicates allowed), proposed a hashmap-based O(n) approach with a clear before/after complexity comparison, implemented it in one edit, and confirmed all tests including the large-input case passed. The session was short but showed a clean, well-narrated arc from plan to verified success.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "adequate",
+      "analysis": "At +25s the candidate restated the key contract details (index pairs not value pairs, duplicates allowed, one use per index) before writing any code, which addresses the substance of the clarify bar for this problem. However this was a restatement of already-given spec rather than a question resolving genuine ambiguity, so it is solid but unremarkable engagement rather than active probing.",
+      "evidence": [
+        25
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "strong",
+      "analysis": "At +45s they named a specific mechanism — a hashmap from value to indices enabling a single O(n) pass versus naive O(n^2) — before touching any code, which is exactly the mechanism-level plan the bar calls for.",
+      "evidence": [
+        45
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "strong",
+      "analysis": "The candidate narrated their reasoning at each key juncture: restating the contract at +25s, stating the algorithm at +45s, explaining the pair-emission logic at +100s, and summarizing the result at +175s. The transcript alone explains their path from problem to solution.",
+      "evidence": [
+        25,
+        45,
+        100,
+        175
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "strong",
+      "analysis": "The edit at +70s and the narrated detail at +100s about collecting earlier indices while scanning directly matches the hashmap plan stated at +45s, with no scattered or contradictory changes observed.",
+      "evidence": [
+        70,
+        100
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "strong",
+      "analysis": "After implementing, the candidate re-ran the full test suite at +160s and explicitly confirmed the large-input test passed at +175s before ending the session, rather than declaring success immediately after editing.",
+      "evidence": [
+        160,
+        175
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "adequate",
+      "analysis": "At +175s the candidate restated the achieved complexity (one pass, O(n) time, O(n) space), tying the result back to the stated plan. This confirms the mechanism worked but stops short of discussing edge cases or where the approach might break, so it meets the letter of the bar without deeper reflection.",
+      "evidence": [
+        175
+      ]
+    }
+  ]
+}
