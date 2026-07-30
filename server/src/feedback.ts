@@ -82,6 +82,8 @@ function quoteFor(events: TraceEvent[], offsetSeconds: number): Quote | null {
       return { clock, text: p.exit_code === 0 ? 'ran tests — passed' : 'ran tests — failed' };
     case 'command':
       return { clock, text: `terminal: ${String(p.command ?? '')}` };
+    case 'session_end':
+      return { clock, text: 'ended the session' };
     default:
       return { clock, text: e.type };
   }

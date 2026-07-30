@@ -168,9 +168,11 @@ export function parseAssessmentOutput(raw: string): {
 // ---- citation verification ----
 
 /** Event types that are the CANDIDATE acting. An interviewer turn is
- *  context, never evidence of candidate behavior; sensor/session events are
- *  bookkeeping. */
-const CANDIDATE_EVENT_TYPES = new Set(['utterance', 'edit', 'file_save', 'file_open', 'command', 'test_run']);
+ *  context, never evidence of candidate behavior; sensors and session_start
+ *  are bookkeeping. session_end IS a candidate act (they clicked End
+ *  Session) — the gauntlet showed judges legitimately cite it as evidence
+ *  of absence: "ended without ever re-running the tests". */
+const CANDIDATE_EVENT_TYPES = new Set(['utterance', 'edit', 'file_save', 'file_open', 'command', 'test_run', 'session_end']);
 
 export function isCandidateEvent(e: TraceEvent): boolean {
   return CANDIDATE_EVENT_TYPES.has(e.type);
@@ -328,7 +330,20 @@ export async function judgeSession(opts: JudgeSessionOptions): Promise<JudgeResu
   try {
     parsed = parseAssessmentOutput(raw);
   } catch (e) {
-    return unassessed(`judge output invalid (not retried — schema mismatch repeats): ${String(e).slice(0, 200)}`);
+    // Two different failures hide here (learned from the gauntlet):
+    //  - JSON SYNTAX slop (an unescaped quote) is STOCHASTIC — a rerun at
+    //    temperature usually formats fine. Retry once.
+    //  - SCHEMA violations (missing dimension, unknown verdict) are prompt
+    //    bugs and repeat identically. Never retry those.
+    if (e instanceof SyntaxError) {
+      try {
+        parsed = parseAssessmentOutput(await picked.model(prompt));
+      } catch (e2) {
+        return unassessed(`judge output unparseable twice: ${String(e2).slice(0, 200)}`);
+      }
+    } else {
+      return unassessed(`judge output invalid (not retried — schema mismatch repeats): ${String(e).slice(0, 200)}`);
+    }
   }
 
   return {

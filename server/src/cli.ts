@@ -61,6 +61,15 @@ if (cmd === 'generate') {
   const dir = path.join(problemsRoot, `debugging-${Date.now()}`);
   console.log(`[prepare] ${dir}${note ? ' (targeted at current focus gap)' : ' (neutral — nothing learned yet)'}`);
   process.exit(await generateInto(dir, note));
+} else if (cmd === 'eval-judge') {
+  const { runGauntlet, renderScorecard } = await import('./eval/gauntlet.js');
+  const scorecard = await runGauntlet({
+    repoRoot,
+    quick: process.argv.includes('--quick'),
+    simulate: process.argv.includes('--simulate'),
+  });
+  console.log(renderScorecard(scorecard));
+  process.exit(scorecard.pass ? 0 : 1);
 } else if (cmd === 'rejudge' || cmd === 'judge') {
   // Judging is a pure function of the stored trace, so a failed or stale
   // assessment is never a lost session — re-run it any time, including the

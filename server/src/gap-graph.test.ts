@@ -228,3 +228,62 @@ describe('recordAssessment (judge era: dimensions are the gap keys)', () => {
     expect(note).toContain('Do NOT mention this note');
   });
 });
+
+describe('the full memory pipeline (deterministic: judge -> graph -> patterns)', () => {
+  // The plan's Phase 5 memory verification: a scripted 8-session arc proves
+  // pattern-finding end to end without a model call.
+  const dims = (over: Record<string, 'strong' | 'adequate' | 'weak' | 'unassessable'> = {}) =>
+    (['clarify', 'approach', 'communicate', 'implement', 'verify', 'reflect'] as const).map((k) => ({
+      dimension: k, verdict: over[k] ?? 'adequate', analysis: `${k}: ${over[k] ?? 'adequate'} this time`, evidence: [50],
+    }));
+  it('an 8-session arc: recurrence -> focus -> remediation -> reopen -> texture', () => {
+    const rec = (s: GapStore, id: string, over: Record<string, 'strong' | 'adequate' | 'weak' | 'unassessable'>, round = 'debugging') =>
+      recordAssessment(
+        s,
+        {
+          session_id: id, status: 'assessed', judged_at: (t += 1_000_000), model: 'fake',
+          prompt_hash: 'x', schema_version: 1, renderer_version: 1, expectations_used: {},
+          solved: false, summary: 's', dimensions: dims(over),
+        } as unknown as Parameters<typeof recordAssessment>[1],
+        round,
+      );
+
+    let s = emptyStore('u1');
+    // Sessions 1-3: approach keeps failing across round types; verify fails once.
+    s = rec(s, 's1', { approach: 'weak', verify: 'weak' });
+    s = rec(s, 's2', { approach: 'weak' }, 'dsa');
+    s = rec(s, 's3', { approach: 'weak' }, 'lld');
+    let view = buildGraphView(s, 's3');
+    expect(view.focus).toBe('approach'); // recurrence dominates the single verify miss
+    expect(view.session_count).toBe(3);
+    expect(view.sessions_until_patterns).toBe(0); // patterns mode reached
+
+    // Sessions 4-6: approach clean three assessable sessions -> closes.
+    s = rec(s, 's4', {});
+    s = rec(s, 's5', {});
+    s = rec(s, 's6', {});
+    view = buildGraphView(s, 's6');
+    expect(view.newly_closed).toContain('approach');
+    expect(view.closed.find((g) => g.key === 'approach')).toBeDefined();
+    // verify also closed along the way; focus moves off closed gaps.
+    expect(view.focus).not.toBe('approach');
+
+    // Session 7: approach fires again -> reopens with history intact.
+    s = rec(s, 's7', { approach: 'weak' });
+    view = buildGraphView(s, 's7');
+    expect(view.active.find((g) => g.key === 'approach')?.fired_count).toBe(4);
+
+    // Session 8: unassessable everywhere — changes nothing.
+    s = rec(s, 's8', {
+      clarify: 'unassessable', approach: 'unassessable', communicate: 'unassessable',
+      implement: 'unassessable', verify: 'unassessable', reflect: 'unassessable',
+    });
+    view = buildGraphView(s, 's8');
+    expect(view.active.find((g) => g.key === 'approach')?.closed).toBeFalsy();
+
+    // The targeting note carries texture from multiple round types.
+    const note = buildTargetNote(view, s)!;
+    expect(note).toContain('approach: weak this time');
+    expect(note).toContain('(dsa)');
+  });
+});

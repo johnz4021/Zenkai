@@ -1,0 +1,334 @@
+{
+  "brief": "You are nervous and think out loud in fragments with disfluencies (um, wait, hmm). You immediately assume the bug is in the hold-creation code because you once saw a similar bug there, and you spend most of the session editing that file WITHOUT reading the failing test diff. You never state a mechanism — only \"it feels like the holds are wrong\". Late in the session you ask the interviewer one genuine question about whether partial shipments should reduce the released units. You never re-run the tests after your edits.",
+  "events": [
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "extension",
+      "seq": 0,
+      "ts": 1700000000000,
+      "type": "session_start",
+      "payload": {}
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "extension",
+      "seq": 1,
+      "ts": 1700000006000,
+      "type": "test_run",
+      "payload": {
+        "via": "task",
+        "exit_code": 1,
+        "duration_ms": 900
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "chrome",
+      "seq": 0,
+      "ts": 1700000014000,
+      "type": "utterance",
+      "payload": {
+        "text": "okay okay, one failing... um let's see what we got here",
+        "via": "voice"
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "extension",
+      "seq": 2,
+      "ts": 1700000028000,
+      "type": "file_open",
+      "payload": {
+        "path": "src/holds/createHold.ts"
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "chrome",
+      "seq": 1,
+      "ts": 1700000045000,
+      "type": "utterance",
+      "payload": {
+        "text": "hmm, this... this feels familiar, like i've seen this before",
+        "via": "voice"
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "chrome",
+      "seq": 2,
+      "ts": 1700000060000,
+      "type": "utterance",
+      "payload": {
+        "text": "yeah i think, um, i think the bug's probably in here, in the creation logic",
+        "via": "voice"
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "extension",
+      "seq": 3,
+      "ts": 1700000078000,
+      "type": "file_open",
+      "payload": {
+        "path": "src/holds/createHold.ts"
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "chrome",
+      "seq": 3,
+      "ts": 1700000095000,
+      "type": "utterance",
+      "payload": {
+        "text": "wait, the deadline calc looks... hmm, off by something maybe",
+        "via": "voice"
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "extension",
+      "seq": 4,
+      "ts": 1700000118000,
+      "type": "edit",
+      "payload": {
+        "path": "src/holds/createHold.ts",
+        "changes": 3
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "chrome",
+      "seq": 4,
+      "ts": 1700000140000,
+      "type": "utterance",
+      "payload": {
+        "text": "let me just, um, adjust how the expiry gets set on creation",
+        "via": "voice"
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "extension",
+      "seq": 5,
+      "ts": 1700000160000,
+      "type": "edit",
+      "payload": {
+        "path": "src/holds/createHold.ts",
+        "changes": 3
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "chrome",
+      "seq": 5,
+      "ts": 1700000185000,
+      "type": "utterance",
+      "payload": {
+        "text": "it just, it feels like the holds are wrong from the start, y'know?",
+        "via": "voice"
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "extension",
+      "seq": 6,
+      "ts": 1700000210000,
+      "type": "file_save",
+      "payload": {
+        "path": "src/holds/createHold.ts",
+        "is_model_path": false
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "chrome",
+      "seq": 6,
+      "ts": 1700000230000,
+      "type": "utterance",
+      "payload": {
+        "text": "hmm wait maybe it's the units field, let me check that too",
+        "via": "voice"
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "extension",
+      "seq": 7,
+      "ts": 1700000255000,
+      "type": "edit",
+      "payload": {
+        "path": "src/holds/createHold.ts",
+        "changes": 3
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "chrome",
+      "seq": 7,
+      "ts": 1700000280000,
+      "type": "utterance",
+      "payload": {
+        "text": "yeah i'm gonna tighten up this validation, i think that's it",
+        "via": "voice"
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "extension",
+      "seq": 8,
+      "ts": 1700000305000,
+      "type": "file_save",
+      "payload": {
+        "path": "src/holds/createHold.ts",
+        "is_model_path": false
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "chrome",
+      "seq": 8,
+      "ts": 1700000330000,
+      "type": "utterance",
+      "payload": {
+        "text": "okay this should, um, this should be closer now i think",
+        "via": "voice"
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "extension",
+      "seq": 9,
+      "ts": 1700000355000,
+      "type": "edit",
+      "payload": {
+        "path": "src/holds/createHold.ts",
+        "changes": 3
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "chrome",
+      "seq": 9,
+      "ts": 1700000380000,
+      "type": "utterance",
+      "payload": {
+        "text": "hmm still feels a little off but... let's keep going",
+        "via": "voice"
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "extension",
+      "seq": 10,
+      "ts": 1700000410000,
+      "type": "file_save",
+      "payload": {
+        "path": "src/holds/createHold.ts",
+        "is_model_path": false
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "chrome",
+      "seq": 10,
+      "ts": 1700000440000,
+      "type": "utterance",
+      "payload": {
+        "text": "wait, actually — quick question, um, should partial shipments reduce the released units? like does that factor in here at all?",
+        "via": "voice"
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "chrome",
+      "seq": 11,
+      "ts": 1700000465000,
+      "type": "utterance",
+      "payload": {
+        "text": "hmm, no answer needed i guess, i'll just, um, keep assuming holds creation is the issue",
+        "via": "voice"
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "extension",
+      "seq": 11,
+      "ts": 1700000490000,
+      "type": "edit",
+      "payload": {
+        "path": "src/holds/createHold.ts",
+        "changes": 3
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "chrome",
+      "seq": 12,
+      "ts": 1700000510000,
+      "type": "utterance",
+      "payload": {
+        "text": "yeah, i think this is closer, the initial expiry logic was definitely sketchy",
+        "via": "voice"
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "extension",
+      "seq": 12,
+      "ts": 1700000530000,
+      "type": "file_save",
+      "payload": {
+        "path": "src/holds/createHold.ts",
+        "is_model_path": false
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "chrome",
+      "seq": 13,
+      "ts": 1700000545000,
+      "type": "utterance",
+      "payload": {
+        "text": "um, i think that's, that's probably good for now, i'm fairly confident on this one",
+        "via": "voice"
+      }
+    },
+    {
+      "session_id": "fixture",
+      "user_id": "u1",
+      "source": "chrome",
+      "seq": 14,
+      "ts": 1700000555000,
+      "type": "session_end",
+      "payload": {}
+    }
+  ]
+}

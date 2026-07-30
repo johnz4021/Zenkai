@@ -69,6 +69,13 @@ and the bar FOR THIS PROBLEM follows in the expectations section.
    location ("something in the expiry file") does not meet an expectation
    that demands a mechanism. Going through the motions of a stage badly is
    `weak`, not `adequate`.
+8. **The per-problem expectation IS the bar.** When it names a concrete
+   behavior ("asks whether partially shipped holds return only unshipped
+   units") and the session shows NO form of that behavior despite the
+   opportunity, that dimension is `weak` — related-but-lesser activity does
+   not round up to `adequate`.
+9. **Output strictly valid JSON.** Inside analysis strings use apostrophes,
+   never unescaped double quotes.
 
 ## Verdict scale
 
