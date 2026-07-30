@@ -90,10 +90,13 @@ export interface Classification {
 }
 
 export function findTrigger(events: TraceEvent[], rubric: Rubric): TraceEvent | null {
+  // v1-rubric path only (deleted in the judge migration); v2 manifests
+  // without trigger/window never reach the classifier.
+  if (!rubric.trigger) return null;
   const ordered = [...events].sort((a, b) => a.ts - b.ts);
   for (const ev of ordered) {
-    if (ev.type !== rubric.trigger.event) continue;
-    if (rubric.trigger.predicate === 'first_failure') {
+    if (ev.type !== rubric.trigger!.event) continue;
+    if (rubric.trigger!.predicate === 'first_failure') {
       if (isFailingRun(ev)) return ev;
     } else {
       return ev;
@@ -107,19 +110,18 @@ export function extractWindow(
   rubric: Rubric,
   trigger: TraceEvent,
 ): TraceEvent[] {
+  const w = rubric.window ?? {};
   const start = trigger.ts;
-  const hardEnd = rubric.window.duration_ms
-    ? start + rubric.window.duration_ms
-    : Number.POSITIVE_INFINITY;
+  const hardEnd = w.duration_ms ? start + w.duration_ms : Number.POSITIVE_INFINITY;
   // Do not let `until` slam the window shut immediately (e.g. an instant
   // re-run just to re-read the failure output).
-  const earliestClose = start + (rubric.window.min_duration_ms ?? 0);
+  const earliestClose = start + (w.min_duration_ms ?? 0);
 
   const inRange = events
     .filter((e) => e.ts > start && e.ts <= hardEnd)
     .sort((a, b) => a.ts - b.ts);
 
-  const until = rubric.window.until;
+  const until = w.until;
   if (!until) return inRange;
   const stopIdx = inRange.findIndex((e) => e.type === until && e.ts >= earliestClose);
   return stopIdx === -1 ? inRange : inRange.slice(0, stopIdx + 1);
@@ -207,12 +209,11 @@ export function windowBounds(
   trigger: TraceEvent,
   windowEvents: TraceEvent[],
 ): WindowBounds {
-  const hardEnd = rubric.window.duration_ms
-    ? trigger.ts + rubric.window.duration_ms
-    : Number.POSITIVE_INFINITY;
+  const w = rubric.window ?? {};
+  const hardEnd = w.duration_ms ? trigger.ts + w.duration_ms : Number.POSITIVE_INFINITY;
   const last = windowEvents[windowEvents.length - 1];
   const closedByUntil =
-    rubric.window.until !== undefined && last !== undefined && last.type === rubric.window.until;
+    w.until !== undefined && last !== undefined && last.type === w.until;
   if (closedByUntil) return { start_ts: trigger.ts, end_ts: last.ts, end_reason: 'until' };
 
   // The hard cap is only a real boundary once we KNOW the clock passed it —

@@ -51,12 +51,20 @@ export interface RubricWindow {
 
 export interface Rubric {
   round_type: RoundType;
-  trigger: RubricTrigger;
-  window: RubricWindow;
-  /** v1: the spec-change label set. Future round types may extend this. */
-  labels: readonly SpecChangeLabel[];
-  /** Human-readable: what a strong candidate does in this window. */
-  expectation: string;
+  /** v1 fields (trigger/window/labels/expectation) — superseded by the
+   *  judge design but kept optional so pre-v2 manifests still parse. */
+  trigger?: RubricTrigger;
+  window?: RubricWindow;
+  labels?: readonly SpecChangeLabel[];
+  expectation?: string;
+  /**
+   * v2 (judge design): per-problem expectations for the universal dimension
+   * spine. Written by the GENERATOR — this is what "good" looks like on THIS
+   * problem, e.g. approach: "names the stale-entry mechanism, not just 'the
+   * expiry index'". Missing keys (or a missing map, for pre-v2 manifests)
+   * fall back to DEFAULT_EXPECTATIONS via resolveExpectations().
+   */
+  dimensions?: Partial<Record<import('./dimensions.js').DimensionKey, string>>;
 }
 
 export interface GeneratedProblem {
