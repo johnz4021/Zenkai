@@ -50,6 +50,12 @@ async function generateInto(
   }
   const report = validateProblem(targetDir);
   console.log(JSON.stringify({ ok: report.ok, failures: report.failures }, null, 2));
+  if (report.ok) {
+    // Disk marker the queue derives "ready" from — the app can restart and
+    // recover item status without trusting its own memory.
+    const { writeFileSync: wf } = await import('node:fs');
+    wf(path.join(targetDir, '.validated'), new Date().toISOString());
+  }
   return report.ok ? 0 : 2;
 }
 
@@ -149,11 +155,11 @@ if (cmd === 'generate') {
   // problems dir (the generic pool stays untouched — queue items reference
   // problem dirs explicitly).
   const { loadTarget } = await import('./intake.js');
-  const { positional } = parseFlags(process.argv.slice(3));
+  const { positional, flags } = parseFlags(process.argv.slice(3));
   const [targetId, specId] = positional;
   const t = targetId ? loadTarget(repoRoot, targetId) : null;
   if (!t) {
-    console.error('usage: cli.ts generate-for <target-id> [spec-id]');
+    console.error('usage: cli.ts generate-for <target-id> [spec-id] [--into <dir>]');
     process.exit(64);
   }
   const spec = specId ? t.specs.find((s) => s.id === specId) : t.specs[0];
@@ -171,9 +177,20 @@ if (cmd === 'generate') {
     .filter(Boolean)
     .join('\n\n');
   const { targetDir: tDir } = await import('./intake.js');
-  const dir = path.join(tDir(repoRoot, t.id), 'problems', `${spec.id}-${Date.now().toString(36)}`);
+  // --into pins the output dir (queue items know their dir up front, so
+  // status can be derived from disk); default keeps the ad-hoc behavior.
+  const dir = flags.into
+    ? path.resolve(flags.into)
+    : path.join(tDir(repoRoot, t.id), 'problems', `${spec.id}-${Date.now().toString(36)}`);
   console.log(`[generate-for] ${t.id} / ${spec.id} → ${dir}`);
-  process.exit(await generateInto(dir, undefined, brief, spec));
+  // Gap-graph emphasis travels into queue-driven generation the same way
+  // prepare's does — via the target note.
+  const store = loadStore(path.join(repoRoot, 'gaps'), userId);
+  const note = buildTargetNote(buildGraphView(store), store);
+  process.exit(await generateInto(dir, note, brief, spec));
+} else if (cmd === 'app') {
+  const { runApp } = await import('./app.js');
+  runApp({ port: 3300, sessionPort: 3200, userId });
 } else if (cmd === 'prepare') {
   // Targeting note comes either from the env (set by the session that just
   // ended) or is derived here from the stored gap graph.
@@ -369,7 +386,8 @@ if (cmd === 'generate') {
       '  cli.ts pool              list unused problems\n' +
       '  cli.ts session [dir]     run a session (picks from pool if dir omitted)\n' +
       '  cli.ts target <add|list|infer> ...   season-program targets\n' +
-      '  cli.ts generate-for <target-id> [spec-id]   generate from a confirmed spec',
+      '  cli.ts generate-for <target-id> [spec-id]   generate from a confirmed spec\n' +
+      '  cli.ts app               run the home app (:3300) - targets, queues, launch',
   );
   process.exit(64);
 }

@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-const CLIENT_FILES = ['session.js', 'voice.js', 'presence.js'];
+const CLIENT_FILES = ['session.js', 'voice.js', 'presence.js', 'app.js'];
 
 /** A named client script, or null for anything not explicitly listed. */
 export function clientScript(name = 'session.js'): string | null {
