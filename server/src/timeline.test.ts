@@ -126,6 +126,41 @@ describe('eventAtOffset (citation resolution)', () => {
   });
 });
 
+describe('editor-down reliability annotation', () => {
+  // Regression: a session whose extension never connected recorded 67
+  // utterances and zero editor events. That reads identically to a candidate
+  // who never opened a file, and the judge would write weak implement/verify
+  // gaps into the memory layer on the strength of an instrument failure.
+  it('announces instrument failure when the extension contributed nothing', () => {
+    const out = renderTimeline([
+      ev('session_start', 0, {}, 'chrome'),
+      ev('utterance', 10, { text: 'let me look at the ledger' }, 'chrome'),
+      ev('utterance', 40, { text: 'still reading' }, 'chrome'),
+      ev('session_end', 60, {}, 'chrome'),
+    ]);
+    expect(out).toContain('RELIABILITY: the editor sent NO events');
+    expect(out).toContain('unassessable');
+  });
+
+  it('stays silent when the editor produced even one event', () => {
+    const out = renderTimeline([
+      ev('session_start', 0, {}, 'chrome'),
+      ev('utterance', 10, { text: 'running it' }, 'chrome'),
+      ev('test_run', 12, { exit_code: 1 }),
+    ]);
+    expect(out).not.toContain('RELIABILITY: the editor sent NO events');
+  });
+
+  it('does not count speech or interviewer turns as editor activity', () => {
+    const out = renderTimeline([
+      ev('session_start', 0, {}, 'chrome'),
+      ev('interviewer', 20, { text: 'What are you seeing?', kind: 'probe', nudge: true }, 'chrome'),
+      ev('utterance', 25, { text: 'an assertion error' }, 'chrome'),
+    ]);
+    expect(out).toContain('RELIABILITY: the editor sent NO events');
+  });
+});
+
 describe('real traces render sanely (no ground-truth claim — render check only)', () => {
   const tracesDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'traces');
   it('every stored trace renders without throwing and attributes speakers', () => {

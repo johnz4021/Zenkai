@@ -217,9 +217,11 @@ if (cmd === 'generate') {
     problemDir = picked.dir;
     console.log(`[session] problem: ${path.basename(problemDir)} (from pool)`);
   }
-  markUsed(problemDir, sessionId);
-
+  // Marked only once the session is actually up. Marking first burned a
+  // pooled problem every time a start failed (port already held by a live
+  // session), and the pool is ~5 minutes of generation per entry.
   await runSession({
+    onReady: () => markUsed(problemDir, sessionId),
     repoRoot,
     problemDir,
     sessionId,

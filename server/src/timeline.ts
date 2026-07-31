@@ -122,6 +122,25 @@ const shortPath = (p: unknown): string => {
   return parts.slice(-2).join('/') || s;
 };
 
+/** Event types that can only originate from the IDE extension. */
+const IDE_EVENTS = new Set<string>([
+  'file_open', 'file_save', 'edit', 'test_run', 'command',
+]);
+
+/**
+ * True when the extension contributed nothing at all.
+ *
+ * A session wired to a dead trace socket looks EXACTLY like a candidate who
+ * never opened a file or ran a test — and the judge, reading it at face
+ * value, will confidently score implement and verify `weak` and write those
+ * gaps into the memory layer. Silence from a broken instrument must never
+ * read as evidence, so the timeline says so out loud and the judge marks
+ * those dimensions unassessable instead.
+ */
+function ideDown(events: TraceEvent[]): boolean {
+  return !events.some((e) => IDE_EVENTS.has(e.type));
+}
+
 export function renderTimeline(events: TraceEvent[]): string {
   if (events.length === 0) return '(empty session — no events recorded)';
   const sorted = [...events].sort((a, b) => a.ts - b.ts || a.seq - b.seq);
@@ -188,6 +207,12 @@ export function renderTimeline(events: TraceEvent[]): string {
   const header = [
     `SESSION TIMELINE (${durationMin} min, offsets from session start)`,
     compressed > 0 ? `NOTE: ${compressed} low-signal editor events were compressed into ranges to fit.` : null,
+    ideDown(sorted)
+      ? 'RELIABILITY: the editor sent NO events for this entire session — no file opens, ' +
+        'edits, saves or test runs were recorded. This is instrument failure, not candidate ' +
+        'behavior. Judge only what the speech shows; anything that would be evidenced by ' +
+        'editor activity is unassessable.'
+      : null,
     '',
   ]
     .filter((x): x is string => x !== null)

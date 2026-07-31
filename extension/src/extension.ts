@@ -110,6 +110,21 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   // ---- test runs: spawned, observed, first-class ----
+  // One line saying what happened, for the timeline the judge reads. Vitest
+  // prints `Tests  1 failed | 15 passed`; python's unittest prints `Ran 16
+  // tests` then `OK`/`FAILED (failures=1)`. Matching only the vitest shape
+  // left python rounds with a blank summary, so match both and fall back to
+  // the last non-empty line rather than emitting nothing.
+  const summarizeRun = (tail: string): string => {
+    const vitest = tail.match(/^Tests.*$/m);
+    if (vitest) return vitest[0];
+    const ran = tail.match(/^Ran \d+ tests?.*$/m)?.[0];
+    const verdict = tail.match(/^(OK|FAILED)\b.*$/m)?.[0];
+    if (ran || verdict) return [ran, verdict].filter(Boolean).join(' — ');
+    const lines = tail.trimEnd().split('\n').filter((l) => l.trim());
+    return lines[lines.length - 1] ?? '';
+  };
+
   // Output goes to a visible channel: a spawned run prints nowhere by
   // default, and an invisible failing suite made the whole round illegible.
   const testOutput = vscode.window.createOutputChannel('Test Results');
@@ -140,7 +155,7 @@ export function activate(context: vscode.ExtensionContext): void {
         exit_code: code,
         duration_ms: Date.now() - t0,
       };
-      emitter.emit('test_run', { ...payload, summary: (tail.match(/Tests.*$/m) ?? [''])[0] });
+      emitter.emit('test_run', { ...payload, summary: summarizeRun(tail) });
       statusItem.text = code === 0 ? '$(check) Tests passed — Run again' : '$(x) Tests failed — Run again';
       // A failing suite is the round's opening move — put it on screen.
       if (code !== 0) testOutput.show(true);

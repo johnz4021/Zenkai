@@ -68,6 +68,19 @@ export interface Rubric {
 
 export interface GeneratedProblem {
   round_type: RoundType;
+  /**
+   * Language runtime the problem's tests need. The IDE image ships node;
+   * anything else is installed into the container at session start.
+   * Absent = 'node' (every problem generated before this existed).
+   */
+  runtime?: 'node' | 'python';
+  /**
+   * Command the extension's Run Tests button spawns, relative to the
+   * problem root. Absent = the vitest default, so pre-existing manifests
+   * keep working. A failing exit code is the round's trigger, so this
+   * command MUST exit non-zero when the planted bug is present.
+   */
+  test_command?: string;
   /** Repo files are written by the generator agent, which self-validates. */
   repo_path: string;
   /** Declared model paths for `is_model_path` on file_save events. */

@@ -72,6 +72,10 @@ export interface Unassessed {
   status: 'unassessed';
   judged_at: number;
   reason: string;
+  /** What the judge actually said, when it said something we could not use.
+   *  Present only on parse/schema failures — the evidence needed to fix the
+   *  prompt or the schema without re-running a session that already ended. */
+  raw_output?: string;
 }
 
 export type JudgeResult = Assessment | Unassessed;
@@ -142,6 +146,17 @@ export function parseAssessmentOutput(raw: string): {
   };
   if (typeof o.solved !== 'boolean') throw new Error('missing/invalid solved');
   if (typeof o.summary !== 'string') throw new Error('missing/invalid summary');
+  // Seen live even through a forced tool call: the API validates the TOP
+  // LEVEL of a tool's input schema but not nested types, and the model
+  // stringified the dimensions array — with a stray `}` after it, so a naive
+  // re-parse fails too. The content inside was a complete, correct
+  // assessment. Normalize: take the first balanced JSON array out of the
+  // string and ignore whatever trails it.
+  if (typeof o.dimensions === 'string') {
+    const arr = o.dimensions.match(/\[[\s\S]*\]/);
+    if (!arr) throw new Error('dimensions is a string with no array inside');
+    o.dimensions = JSON.parse(arr[0]) as unknown;
+  }
   if (!Array.isArray(o.dimensions)) throw new Error('missing dimensions array');
 
   const seen = new Set<string>();
@@ -240,25 +255,94 @@ export function claudePJudgeModel(model = 'sonnet'): JudgeModel {
   return (prompt) => runClaudeP(prompt, model);
 }
 
+/**
+ * A well-formed assessment is ~1300 tokens: six analyses of 2-4 sentences,
+ * a summary, and short evidence arrays. The ceiling only binds when the judge
+ * goes off-script — which it does when the inputs contradict each other (a
+ * mis-wired session once handed it a Python timeline and a TypeScript spec,
+ * and it spent the whole budget narrating the mismatch).
+ *
+ * 8000 is ~6x a normal answer. The retry exists because truncation costs an
+ * entire session's feedback, which is far more expensive than one extra call:
+ * a second attempt at triple the ceiling either lands or proves the input is
+ * genuinely pathological.
+ */
+const JUDGE_MAX_TOKENS = 8_000;
+
+/**
+ * The assessment schema, expressed as a tool the judge must call.
+ *
+ * Asking prose-mode for "ONLY a JSON object" cost two real sessions: one to a
+ * truncated object, one to a syntax error 430 characters in. Both are the same
+ * defect — hand-serialized JSON is the model's problem to get right, and a
+ * single stray quote inside an analysis sentence destroys a whole round of
+ * feedback. Forcing a tool call moves serialization into the API, so malformed
+ * JSON stops being a failure mode we can experience at all.
+ *
+ * parseAssessmentOutput still runs on the result: this guarantees SHAPE, not
+ * that every dimension is present and every verdict is legal.
+ */
+const ASSESSMENT_TOOL = {
+  name: 'record_assessment',
+  description: 'Record the assessment of this interview session.',
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      solved: { type: 'boolean', description: 'Did the candidate fix the planted bug?' },
+      summary: { type: 'string', description: "2-3 sentences: the session's shape in plain language." },
+      dimensions: {
+        type: 'array',
+        description: 'Exactly one entry per dimension, in order.',
+        items: {
+          type: 'object',
+          properties: {
+            dimension: { type: 'string', enum: [...DIMENSIONS] },
+            verdict: { type: 'string', enum: ['strong', 'adequate', 'weak', 'unassessable'] },
+            analysis: { type: 'string', description: '2-4 sentences, specific to what THEY did, in your words. For unassessable: why.' },
+            evidence: { type: 'array', items: { type: 'number' }, description: 'Offsets in seconds from session start.' },
+          },
+          required: ['dimension', 'verdict', 'analysis', 'evidence'],
+        },
+      },
+    },
+    required: ['solved', 'summary', 'dimensions'],
+  },
+};
+
 export function apiJudgeModel(model = 'claude-sonnet-5'): JudgeModel {
   return async (prompt) => {
     const { default: Anthropic } = await import('@anthropic-ai/sdk');
     const client = new Anthropic({ timeout: JUDGE_TIMEOUT_MS });
-    const msg = await client.messages.create({
-      model,
-      // Live smoke finding: 2000 intermittently truncated the JSON mid-object
-      // (six analyses plus summary), and a truncated object parses as "no
-      // JSON" → UNASSESSED. 4000 leaves generous headroom.
-      max_tokens: 4_000,
-      messages: [{ role: 'user', content: prompt }],
-    });
-    if (msg.stop_reason === 'max_tokens') {
-      throw new Error('judge output truncated at max_tokens');
+    const call = async (maxTokens: number) => {
+      const msg = await client.messages.create({
+        model,
+        max_tokens: maxTokens,
+        messages: [{ role: 'user', content: prompt }],
+        tools: [ASSESSMENT_TOOL],
+        tool_choice: { type: 'tool', name: ASSESSMENT_TOOL.name },
+      });
+      const call = msg.content.find(
+        (b): b is Extract<typeof b, { type: 'tool_use' }> => b.type === 'tool_use',
+      );
+      return {
+        truncated: msg.stop_reason === 'max_tokens',
+        // Re-serializing an object the API already validated cannot produce
+        // malformed JSON; parseAssessmentOutput then checks the semantics.
+        text: call ? JSON.stringify(call.input) : '',
+      };
+    };
+    let res = await call(JUDGE_MAX_TOKENS);
+    if (res.truncated) {
+      console.warn(
+        `[judge] output truncated at ${JUDGE_MAX_TOKENS} tokens — retrying at ${JUDGE_MAX_TOKENS * 3}`,
+      );
+      res = await call(JUDGE_MAX_TOKENS * 3);
     }
-    return msg.content
-      .filter((b) => b.type === 'text')
-      .map((b) => (b as { text: string }).text)
-      .join('');
+    if (res.truncated) {
+      throw new Error(`judge output truncated at ${JUDGE_MAX_TOKENS * 3} max_tokens`);
+    }
+    if (!res.text) throw new Error('judge returned no tool call');
+    return res.text;
   };
 }
 
@@ -302,11 +386,15 @@ export async function judgeSession(opts: JudgeSessionOptions): Promise<JudgeResu
     expectations,
   });
 
-  const unassessed = (reason: string): Unassessed => ({
+  // The raw output goes into the record on failure. Without it, diagnosing a
+  // malformed assessment means reproducing a nondeterministic model call
+  // against a session that already ended — we lost two rounds that way.
+  const unassessed = (reason: string, raw?: string): Unassessed => ({
     session_id: opts.sessionId,
     status: 'unassessed',
     judged_at: now(),
     reason,
+    ...(raw ? { raw_output: raw.slice(0, 20_000) } : {}),
   });
 
   let raw: string;
@@ -336,13 +424,18 @@ export async function judgeSession(opts: JudgeSessionOptions): Promise<JudgeResu
     //  - SCHEMA violations (missing dimension, unknown verdict) are prompt
     //    bugs and repeat identically. Never retry those.
     if (e instanceof SyntaxError) {
+      let retryRaw = '';
       try {
-        parsed = parseAssessmentOutput(await picked.model(prompt));
+        retryRaw = await picked.model(prompt);
+        parsed = parseAssessmentOutput(retryRaw);
       } catch (e2) {
-        return unassessed(`judge output unparseable twice: ${String(e2).slice(0, 200)}`);
+        return unassessed(`judge output unparseable twice: ${String(e2).slice(0, 200)}`, retryRaw || raw);
       }
     } else {
-      return unassessed(`judge output invalid (not retried — schema mismatch repeats): ${String(e).slice(0, 200)}`);
+      return unassessed(
+        `judge output invalid (not retried — schema mismatch repeats): ${String(e).slice(0, 200)}`,
+        raw,
+      );
     }
   }
 

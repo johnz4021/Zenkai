@@ -55,6 +55,10 @@ export interface SessionConfig {
   intentCheck?: IntentCheck | null;
   /** Voice on/off. Rollback is a restart with IP_VOICE=0 (feature flag). */
   voice?: boolean;
+  /** Called once the server is listening — the point after which this session
+   *  really exists. The caller marks the problem used here, so a start that
+   *  fails on the port check leaves the pool untouched. */
+  onReady?: () => void;
 }
 
 /** Nominal round length — what the interviewer's time pressure counts down. */
@@ -77,7 +81,8 @@ function sh(cmd: string, args: string[], opts: { cwd?: string } = {}): string {
 }
 
 /** Generator installs deps on the host (darwin); the container needs linux
- * natives (rollup/esbuild). Marker file keeps this idempotent. */
+ * natives (rollup/esbuild). Marker file keeps this idempotent. Node only —
+ * python problems carry no node_modules. */
 function ensureLinuxDeps(problemDir: string): void {
   const marker = path.join(problemDir, '.linux-deps-ok');
   if (existsSync(marker)) return;
@@ -85,6 +90,27 @@ function ensureLinuxDeps(problemDir: string): void {
   sh('docker', ['run', '--rm', '-v', `${problemDir}:/app`, '-w', '/app', 'node:22-slim',
     'npm', 'install', '--no-fund', '--no-audit']);
   writeFileSync(marker, String(Date.now()));
+}
+
+/**
+ * The IDE image ships node and nothing else. A problem declaring another
+ * runtime gets it installed into the running container as root before the
+ * candidate can reach the Run Tests button — if this fails, the round has
+ * no trigger at all and the whole session is unassessable, so it throws
+ * rather than letting the session start broken.
+ */
+function ensureRuntime(runtime: 'node' | 'python'): void {
+  if (runtime === 'node') return;
+  console.log(`[session] installing ${runtime} runtime in the container...`);
+  const res = spawnSync(
+    'docker',
+    ['exec', '-u', '0', CONTAINER, 'bash', '-lc',
+     'apt-get update -qq && apt-get install -y -qq python3'],
+    { encoding: 'utf8' },
+  );
+  if (res.status !== 0) {
+    throw new Error(`could not install ${runtime} in the container: ${res.stderr?.slice(0, 300)}`);
+  }
 }
 
 /**
@@ -135,12 +161,43 @@ function ensureExtensionBuilt(repoRoot: string): string {
   return dist;
 }
 
+/**
+ * Refuse to start if a previous session still owns our port — BEFORE anything
+ * destructive happens.
+ *
+ * The listen() call already reported EADDRINUSE, but it ran ~450 lines in,
+ * after `docker rm -f` had destroyed the live session's container and a new
+ * one had booted on the IDE port. The old server proxies blindly to that IDE
+ * port, so the browser kept working and served the NEW container: the
+ * candidate practiced problem B inside a session that believed it was running
+ * problem A, the new container's extension posted traces to a port nobody was
+ * listening on (losing every edit and test run), and the judge was handed a
+ * timeline and a spec from two different problems. Cost: one real session.
+ *
+ * Checking first turns a silently corrupted round into a two-line error.
+ */
+export function assertPortFree(port: number): void {
+  const who = spawnSync('lsof', ['-tiTCP:' + port, '-sTCP:LISTEN'], {
+    encoding: 'utf8',
+  }).stdout.trim().split('\n').filter(Boolean)[0];
+  if (!who) return;
+  throw new Error(
+    `port ${port} is already in use by pid ${who} — a previous session is still running.\n` +
+      `Nothing has been changed. Stop it first:  kill ${who}`,
+  );
+}
+
 export async function runSession(cfg: SessionConfig): Promise<void> {
+  // First statement in the function, on purpose: everything below this line
+  // mutates state the running session owns.
+  assertPortFree(cfg.port);
+
   const problem = JSON.parse(
     readFileSync(path.join(cfg.problemDir, 'problem.json'), 'utf8'),
   ) as GeneratedProblem;
 
-  ensureLinuxDeps(cfg.problemDir);
+  const runtime = problem.runtime ?? 'node';
+  if (runtime === 'node') ensureLinuxDeps(cfg.problemDir);
   const extDist = ensureExtensionBuilt(cfg.repoRoot);
   const ideDataDir = ensureIdeDataDir(cfg.repoRoot);
 
@@ -150,7 +207,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
   // ---- IDE container ----
   spawnSync('docker', ['rm', '-f', CONTAINER], { encoding: 'utf8' });
-  const testCmd = `${BUNDLED_NODE} /home/workspace/problem/node_modules/vitest/vitest.mjs run`;
+  // The problem declares how its tests run; the vitest default keeps every
+  // manifest written before `test_command` existed working unchanged.
+  const testCmd =
+    problem.test_command ??
+    `${BUNDLED_NODE} /home/workspace/problem/node_modules/vitest/vitest.mjs run`;
   sh('docker', [
     'run', '-d', '--name', CONTAINER,
     '-p', `${cfg.idePort}:3000`,
@@ -170,6 +231,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     '--extensions-dir', '/ext',
     '--user-data-dir', '/ipdata',
   ]);
+  ensureRuntime(runtime);
 
   // ---- one server: chrome + api + trace ingest + IDE proxy ----
   const proxy = httpProxy.createProxyServer({
@@ -602,6 +664,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     });
     server.listen(cfg.port, resolve);
   });
+  cfg.onReady?.();
   // Unprompted pressure beats. Only once the round is genuinely underway —
   // before the first failing run there is nothing to apply pressure about.
   if (interviewer) {

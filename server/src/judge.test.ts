@@ -80,6 +80,27 @@ describe('parseAssessmentOutput (schema is the gate)', () => {
   it('rejects non-JSON entirely', () => {
     expect(() => parseAssessmentOutput('I think they did fine overall.')).toThrow(/no JSON/);
   });
+
+  // Live failure (sess-1785461200029): even through a forced tool call the
+  // API validates only the TOP level of the input schema, and the model sent
+  // dimensions as a stringified array — with a stray `}` trailing it. The
+  // string held a complete, correct assessment; discarding it cost a session.
+  it('normalizes a stringified dimensions array, ignoring trailing garbage', () => {
+    const good = JSON.parse(GOOD_OUTPUT);
+    const wrapped = JSON.stringify({
+      solved: good.solved,
+      summary: good.summary,
+      dimensions: JSON.stringify(good.dimensions) + '}',
+    });
+    const parsed = parseAssessmentOutput(wrapped);
+    expect(parsed.dimensions).toHaveLength(6);
+    expect(parsed.dimensions[1]!.verdict).toBe('strong');
+  });
+
+  it('a stringified dimensions field with no array inside still fails loudly', () => {
+    const bad = JSON.stringify({ solved: true, summary: 'x', dimensions: 'they did well' });
+    expect(() => parseAssessmentOutput(bad)).toThrow(/no array inside/);
+  });
 });
 
 describe('verifyCitations (attribution is the likely failure)', () => {
@@ -158,6 +179,42 @@ describe('judgeSession pipeline', () => {
     });
     expect(result.status).toBe('unassessed');
     expect(calls).toBe(2);
+  });
+
+  // A live session died to `SyntaxError ... at position 430` and the output
+  // that caused it was never written down, so the only way to see it was to
+  // re-run a nondeterministic model against a session that had already ended.
+  // Whatever the judge says that we cannot use, we keep.
+  it('keeps the raw output when the model emits malformed JSON', async () => {
+    const slop = '{"solved": false, "summary": "he said "yes" out loud", "dimensions": []}';
+    const result = await judgeSession({
+      sessionId: 's1', events: EVENTS, problem: PROBLEM, templatePath: TEMPLATE,
+      judgeModel: async () => slop,
+    });
+    expect(result.status).toBe('unassessed');
+    if (result.status === 'unassessed') {
+      expect(result.reason).toContain('unparseable twice');
+      expect(result.raw_output).toBe(slop);
+    }
+  });
+
+  it('keeps the raw output when the model breaks the schema', async () => {
+    const wrong = JSON.stringify({ solved: false, summary: 'ok', dimensions: [] });
+    const result = await judgeSession({
+      sessionId: 's1', events: EVENTS, problem: PROBLEM, templatePath: TEMPLATE,
+      judgeModel: async () => wrong,
+    });
+    expect(result.status).toBe('unassessed');
+    if (result.status === 'unassessed') expect(result.raw_output).toBe(wrong);
+  });
+
+  it('records no raw output when the model never spoke', async () => {
+    const result = await judgeSession({
+      sessionId: 's1', events: EVENTS, problem: PROBLEM, templatePath: TEMPLATE,
+      judgeModel: async () => { throw new Error('api down'); },
+    });
+    expect(result.status).toBe('unassessed');
+    if (result.status === 'unassessed') expect(result.raw_output).toBeUndefined();
   });
 
   it('a timeout followed by success assesses normally', async () => {
