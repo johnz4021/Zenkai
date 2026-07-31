@@ -231,3 +231,53 @@ the mute is the two-minute one.
 
 **Effort:** human ~2-3 days / CC ~1 hr. **Priority:** P2 before any user in a
 shared space, which for a college senior is most of them.
+
+---
+
+## 11. Cross-target pace arbitration
+
+**What:** Each target's queue paces independently against its own interview date.
+Nothing arbitrates between targets: a candidate with Palantir in 5 days and Stripe
+in 30 sees two paces that may jointly exceed what a human can do, and the app
+serializes sessions without prioritizing the nearer date.
+
+**Why deferred:** per-target queues were an explicit decision (2026-07-31 planning
+Q&A) and single-target is the September reality. The arbitration question is a data
+model question (a season-level scheduler over per-target queues) best answered
+after real multi-target use.
+
+**Where to start:** `queue.ts` `repace()` currently takes one target; a season-level
+pass would sort next-up items across targets by `daysLeft` and demote the far ones.
+
+**Effort:** human ~2 days / CC ~1 hr. **Priority:** P3 until a second live target exists.
+
+---
+
+## 12. Generation spend is now queue-driven and unmetered
+
+**What:** The app auto-kicks one opus generation per completed queue item (the
+prepareNext successor). A 12-item queue is ~12 generations ≈ real money, invisible
+to the user.
+
+**Why it matters more than before:** pre-queue, generation happened once per session
+end. Now completing items steadily drains spend with no cap and no display. Bundle
+with TODO #5 (session spend cap): one budget object, two consumers (voice, generation),
+warn at 80%.
+
+**Effort:** human ~half day / CC ~30 min. **Priority:** P2, before any paying user.
+
+---
+
+## 13. Drills (deferred from the season-program build)
+
+**What:** 2-5 minute reps between full rounds — the queue's second item size.
+Deferred by explicit decision (2026-07-31): rounds-only queue ships first.
+
+**Why:** a rounds-only 3-week queue is 10-15 items and dead days between them; drills
+are what make the daily-open habit real. Needs its own generator, a judge-lite grading
+path, and a surface (~2-3 days CC when picked up).
+
+**Where to start:** the CEO plan (ceo-plans/2026-07-31-season-program.md) has the
+framing; queue.ts already models items generically (kind field would be additive).
+
+**Priority:** P2 after the queue proves itself in real use.
