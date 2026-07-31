@@ -174,48 +174,134 @@ function refreshQueue(target: Target, userId: string, now: number): Queue | null
   return fresh;
 }
 
+/**
+ * The page (design review 2026-07-31, approved mockups firstrun-E-attach +
+ * variant-C/A). Two sections, client-toggled: #entry — the first-run screen
+ * where the screen IS the input — and #seasons, the day-by-day timeline.
+ * Markup here is skeleton + the entry form (real <label for> everywhere —
+ * the shipped placeholder-as-label pattern was a hard-rule violation);
+ * everything stateful renders client-side from /api/state.
+ */
 export function appPage(): string {
   return /* html */ `<!doctype html>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>interview prep</title>
 <style>
-  :root { --accent: #7c5cff; --line: #2a2a2e; --dim: #9a9aa2; }
+  :root { --accent: #7c5cff; --line: #2a2a2e; --dim: #9a9aa2; --ok: #4caf7d; }
   * { box-sizing: border-box; }
-  body { margin: 0 auto; max-width: 760px; padding: 24px 16px; font: 13px/1.5 ui-monospace, monospace; background: #17171a; color: #e6e6ea; }
-  h1 { font-size: 13px; font-weight: normal; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
-  h2 { font-size: 13px; font-weight: normal; margin: 0; }
-  .target { border: 1px solid var(--line); padding: 14px; margin: 14px 0; }
+  body { margin: 0 auto; max-width: 760px; padding: 32px 16px 48px; font: 13px/1.5 ui-monospace, monospace; background: #17171a; color: #e6e6ea; }
+  .micro { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--dim); margin: 0 0 18px; }
   .meta { color: var(--dim); }
-  .item { display: flex; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); align-items: baseline; }
-  .item .st { width: 88px; color: var(--dim); }
-  .item.ready .st { color: var(--accent); }
-  .item.done .st { color: #4caf7d; }
-  .item .note { color: var(--accent); }
-  button { background: none; border: 1px solid var(--line); color: #e6e6ea; padding: 4px 10px; font: inherit; cursor: pointer; }
-  button.primary { border-color: var(--accent); }
-  button:disabled { opacity: .5; cursor: default; }
-  input, textarea { width: 100%; background: none; border: 1px solid var(--line); color: inherit; font: inherit; padding: 6px 8px; margin: 4px 0; }
-  textarea { min-height: 70px; }
-  #newform, #inferbox { border: 1px solid var(--line); padding: 14px; margin: 14px 0; }
-  .rationale { color: var(--dim); white-space: pre-wrap; }
-  .specbox { border: 1px solid var(--line); padding: 10px; margin: 8px 0; }
   .err { color: #e6a23c; }
-  .banner { border: 1px solid var(--accent); padding: 10px 14px; margin: 14px 0; }
+  a { color: inherit; }
+  button { background: none; border: 1px solid var(--line); color: #e6e6ea; padding: 6px 12px; font: inherit; cursor: pointer; min-height: 32px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  :is(button, input, textarea, a, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input, textarea { width: 100%; background: none; border: 1px solid var(--line); color: inherit; font: inherit; padding: 8px 10px; }
+  label { display: block; margin: 16px 0 4px; }
+  .banner { border: 1px solid var(--accent); padding: 10px 14px; margin: 0 0 18px; }
+
+  /* ---- entry (first run) ---- */
+  #entry h2 { font-size: 15px; font-weight: normal; margin: 0 0 6px; }
+  #e-desc { min-height: 110px; }
+  .optrow { display: flex; gap: 16px; }
+  .optrow > div { flex: 1; }
+  #refbox { border: 1px solid var(--line); padding: 12px 14px; margin-top: 16px; }
+  #refbox .help { color: var(--dim); margin: 2px 0 10px; }
+  .linkrow { display: flex; gap: 8px; }
+  .linkrow input { flex: 1; }
+  #e-attachlist { margin-top: 4px; }
+  .attach { display: flex; gap: 10px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line); }
+  .attach .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .attach .kind { color: var(--dim); }
+  .attach button { border: 0; color: var(--dim); padding: 0 6px; min-height: 0; }
+  #e-build { width: 100%; margin-top: 20px; padding: 12px; min-height: 44px; }
+  .closing { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 14px; color: var(--dim); }
+  .findings p { margin: 6px 0; }
+  .rationale { color: var(--dim); white-space: pre-wrap; }
+  .specbox { border: 1px solid var(--line); padding: 12px 14px; margin: 10px 0; }
+  .progress { height: 2px; background: var(--line); margin: 14px 0; overflow: hidden; }
+  .progress .fill { height: 100%; background: var(--accent); width: 30%; animation: slide 1.6s ease-in-out infinite alternate; }
+  @keyframes slide { from { margin-left: 0; } to { margin-left: 70%; } }
+
+  /* ---- season timeline ---- */
+  .season { margin-bottom: 40px; }
+  .season .daysleft { font-size: 34px; line-height: 1.15; margin: 0; font-weight: normal; }
+  .season .daysleft b { font-weight: normal; }
+  .seasonbar { height: 2px; background: var(--line); margin: 12px 0 6px; }
+  .seasonbar .fill { height: 100%; background: var(--accent); }
+  .paceline { display: flex; justify-content: space-between; color: var(--dim); margin-bottom: 20px; }
+  ol.runway { list-style: none; margin: 0; padding: 0; }
+  .runway li { display: flex; gap: 14px; border-top: 1px solid var(--line); padding: 8px 0; align-items: baseline; }
+  .runway .date { width: 74px; flex: none; color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .runway .dot { flex: none; width: 10px; text-align: center; color: var(--dim); }
+  .runway .body { flex: 1; min-width: 0; }
+  .runway li.past { opacity: .55; }
+  .runway li.past .dot.done { color: var(--ok); }
+  .runway li.empty .body { color: var(--dim); }
+  .runway li.today { padding: 14px 0; opacity: 1; }
+  .runway li.today .date, .runway li.today .dot { color: var(--accent); }
+  .runway li.today .title { font-size: 15px; }
+  .runway .metaline { color: var(--dim); margin-top: 2px; }
+  .runway .aimed { color: var(--accent); margin-top: 4px; }
+  .runway li.today .body { display: flex; gap: 14px; align-items: center; }
+  .runway li.today .grow { flex: 1; min-width: 0; }
+  .runway li.today button.primary { min-width: 92px; min-height: 44px; }
+  .runway li.future { color: #c9c9cf; }
+  .runway li.collapsed .body { color: var(--dim); }
+  .runway li.interview { border-top: 1px solid var(--line); padding: 14px 0; color: var(--accent); }
+  .addlink { margin-top: 10px; display: inline-block; color: var(--dim); }
+
+  /* ---- desktop only (design decision D7: stated, not broken) ---- */
+  #narrow { display: none; }
+  @media (max-width: 700px) {
+    #narrow { display: block; padding: 40vh 24px 0; text-align: left; }
+    #page { display: none; }
+  }
 </style>
-<h1>interview prep — your season</h1>
-<div id="banner"></div>
-<div id="targets"><p class="meta">loading…</p></div>
-<div id="newform">
-  <h2>new target</h2>
-  <p class="meta">What are you interviewing for? Finding out what the round looks like is part of the prep — recruiter emails, Blind/LeetCode threads, anything you've got.</p>
-  <input id="nt-label" placeholder="label — e.g. Palantir SWE (new grad)" />
-  <input id="nt-date" placeholder="interview date YYYY-MM-DD (optional)" />
-  <textarea id="nt-desc" placeholder="describe the round(s): format, length, what the recruiter said…"></textarea>
-  <textarea id="nt-context" placeholder="paste reference material (optional): a found question, an email, notes from someone who sat it"></textarea>
-  <button id="nt-add" class="primary">add target</button>
-  <p class="err" id="nt-err"></p>
+<div id="narrow">
+  <p class="micro">interview prep</p>
+  <p>This runs practice sessions in a real code editor, so it lives on your laptop. Open it there.</p>
 </div>
-<div id="inferbox" style="display:none"></div>
+<div id="page">
+  <p class="micro">interview prep</p>
+  <div id="banner" aria-live="polite"></div>
+
+  <section id="entry" hidden>
+    <div id="entry-form">
+      <h2><label for="e-desc" style="margin:0">What are you interviewing for?</label></h2>
+      <textarea id="e-desc" placeholder="Palantir new grad. They said the OA is 90 minutes, HackerRank, coding + SQL + an API task."></textarea>
+      <div class="optrow">
+        <div>
+          <label for="e-date">Interview date <span class="meta">(optional)</span></label>
+          <input id="e-date" placeholder="2026-09-15" />
+        </div>
+        <div>
+          <label for="e-company">Company <span class="meta">(optional)</span></label>
+          <input id="e-company" placeholder="Palantir" />
+        </div>
+      </div>
+      <div id="refbox">
+        <label for="e-link" style="margin-top:0">Reference material</label>
+        <p class="help">a question from this round, a repo, a thread — this is what makes the generated problems feel real</p>
+        <div class="linkrow">
+          <input id="e-link" placeholder="paste a link — github.com/user/repo, a Blind thread, a writeup" />
+          <button id="e-addlink" type="button">add</button>
+          <button id="e-browse" type="button">browse files</button>
+          <input id="e-file" type="file" multiple hidden aria-hidden="true" />
+        </div>
+        <div id="e-attachlist"></div>
+      </div>
+      <button id="e-build" class="primary" type="button">Build my plan</button>
+      <p class="err" id="e-err" aria-live="polite"></p>
+      <p class="closing">We'll look up what this round actually is and show you the sources before anything gets used.</p>
+    </div>
+    <div id="entry-flow" hidden aria-live="polite"></div>
+  </section>
+
+  <section id="seasons" hidden></section>
+</div>
 <script src="/client/app.js"></script>
 `;
 }
