@@ -22,7 +22,7 @@ import path from 'node:path';
 import httpProxy from 'http-proxy';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
-import { isFailingRun } from '@interview-prep/shared';
+import { isFailingRun, resolveRoundSpec } from '@interview-prep/shared';
 import { judgeSession } from './judge.js';
 import { buildAssessmentCard } from './feedback.js';
 import { buildGraphView, buildTargetNote, loadStore, recordAssessment, saveStore } from './gap-graph.js';
@@ -424,7 +424,8 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     let gapStore = loadStore(gapsDir, cfg.userId);
     if (result.status === 'assessed') {
       // Unassessed writes NOTHING — a judge failure must not become history.
-      gapStore = recordAssessment(gapStore, result, problem.round_type);
+      const spec = resolveRoundSpec(problem);
+      gapStore = recordAssessment(gapStore, result, spec.label, spec.memory_tags);
       saveStore(gapsDir, gapStore);
     }
 

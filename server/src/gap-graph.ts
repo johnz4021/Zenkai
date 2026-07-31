@@ -49,6 +49,13 @@ export interface GapInstance {
   analysis?: string;
   verdict?: Verdict;
   round_type_at?: string;
+  /**
+   * Closed-vocabulary round tags (MEMORY_TAGS) — what counting is allowed
+   * to group by. Free-form round labels would fragment a thin history into
+   * buckets of one; tags keep "is my verify gap specific to timed rounds?"
+   * a countable question. Absent on pre-spec instances.
+   */
+  memory_tags?: string[];
 }
 
 export interface SessionRecord {
@@ -108,7 +115,7 @@ export function recordSession(
   record: SessionRecord,
   evidenceByLabel: Record<string, GapInstance['evidence']>,
   /** Judge-era texture merged into each fired instance (analysis, verdict, round). */
-  metaByKey?: Record<string, Pick<GapInstance, 'analysis' | 'verdict' | 'round_type_at'>>,
+  metaByKey?: Record<string, Pick<GapInstance, 'analysis' | 'verdict' | 'round_type_at' | 'memory_tags'>>,
 ): GapStore {
   const next: GapStore = JSON.parse(JSON.stringify(store)) as GapStore;
   next.sessions.push(record);
@@ -175,11 +182,13 @@ export function recordAssessment(
   store: GapStore,
   assessment: Assessment,
   roundType: string,
+  /** Closed-vocabulary tags from the round's spec (MEMORY_TAGS). */
+  memoryTags?: string[],
 ): GapStore {
   const fired: string[] = [];
   const uninformative: string[] = [];
   const evidenceByKey: Record<string, GapInstance['evidence']> = {};
-  const metaByKey: Record<string, Pick<GapInstance, 'analysis' | 'verdict' | 'round_type_at'>> = {};
+  const metaByKey: Record<string, Pick<GapInstance, 'analysis' | 'verdict' | 'round_type_at' | 'memory_tags'>> = {};
 
   for (const d of assessment.dimensions) {
     if (d.verdict === 'unassessable' || (d.verdict === 'weak' && d.evidence_stripped)) {
@@ -198,6 +207,7 @@ export function recordAssessment(
         analysis: d.analysis,
         verdict: d.verdict,
         round_type_at: roundType,
+        ...(memoryTags && memoryTags.length > 0 ? { memory_tags: memoryTags } : {}),
       };
     }
     // adequate/strong: not a gap; contributes to the streak by absence.

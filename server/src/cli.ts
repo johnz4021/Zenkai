@@ -173,7 +173,9 @@ if (cmd === 'generate') {
   // --record writes into the gap graph; plain rejudge is a dry look.
   let store = loadStore(path.join(repoRoot, 'gaps'), userId);
   if (process.argv.includes('--record') && result.status === 'assessed') {
-    store = recordAssessment(store, result, problem.round_type);
+    const { resolveRoundSpec } = await import('@interview-prep/shared');
+    const spec = resolveRoundSpec(problem);
+    store = recordAssessment(store, result, spec.label, spec.memory_tags);
     saveStore(path.join(repoRoot, 'gaps'), store);
     console.error('[rejudge] recorded into the gap graph');
   }

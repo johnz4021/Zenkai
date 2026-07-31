@@ -14,6 +14,7 @@
  */
 
 import type { TraceEventType } from './trace.js';
+import { DEFAULT_DEBUGGING_SPEC } from './round-spec.js';
 
 export type RoundType = 'dsa' | 'lld' | 'debugging' | 'decomp';
 
@@ -67,7 +68,18 @@ export interface Rubric {
 }
 
 export interface GeneratedProblem {
+  /**
+   * v1/v2 category — superseded by `round_spec` (capabilities, not
+   * categories) but kept required so every pre-spec manifest still parses
+   * and memory's legacy `round_type_at` keeps its meaning.
+   */
   round_type: RoundType;
+  /**
+   * v3 (season program): the capability-based round shape. Absent on every
+   * manifest generated before it existed — resolveRoundSpec() falls back to
+   * DEFAULT_DEBUGGING_SPEC, which describes exactly what those rounds were.
+   */
+  round_spec?: import('./round-spec.js').RoundSpec;
   /**
    * Language runtime the problem's tests need. The IDE image ships node;
    * anything else is installed into the container at session start.
@@ -97,4 +109,15 @@ export interface GeneratedProblem {
   /** Scripted mutation schedule — deterministic, never LLM-timed. */
   mutations: { offset_ms: number; new_spec: string }[];
   rubric: Rubric;
+}
+
+/**
+ * The one way to read a problem's round shape. Session runner, validator,
+ * and generator all resolve through here so a pre-spec manifest and a v3
+ * manifest are indistinguishable downstream.
+ */
+export function resolveRoundSpec(
+  problem: Pick<GeneratedProblem, 'round_spec'>,
+): import('./round-spec.js').RoundSpec {
+  return problem.round_spec ?? DEFAULT_DEBUGGING_SPEC;
 }
