@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { checkExpectations, checkManifest, normalizeTestName, parseVitestJson } from './validate.js';
-import type { GeneratedProblem } from '@interview-prep/shared';
+import {
+  checkExpectations,
+  checkManifest,
+  checkSuiteAgainstKind,
+  normalizeTestName,
+  parseUnittestOutput,
+  parseVitestJson,
+} from './validate.js';
+import type { GeneratedProblem, RoundSpec } from '@interview-prep/shared';
 
 const report = (failures: { status: string; fullName: string }[][]) =>
   JSON.stringify({
@@ -112,5 +119,150 @@ describe('checkManifest', () => {
       },
     } as GeneratedProblem;
     expect(checkExpectations(bad).some((f) => f.includes('no vocabulary'))).toBe(true);
+  });
+});
+
+describe('parseUnittestOutput', () => {
+  // Both formats exist in the wild: 3.10 prints `test_x (mod.Class)`,
+  // 3.11+ prints `test_x (mod.Class.test_x)`. The container ships 3.10;
+  // the host may run either.
+  it('parses the 3.10 line shape', () => {
+    const out = [
+      'test_deposits_accumulate (test_ledger.TestDeposits) ... ok',
+      'test_fast_path_agrees (test_ledger.TestSnapshots) ... FAIL',
+      '',
+      'Ran 2 tests in 0.001s',
+      'FAILED (failures=1)',
+    ].join('\n');
+    const { failed, total } = parseUnittestOutput(out);
+    expect(total).toBe(2);
+    expect(failed).toEqual(['test_ledger > TestSnapshots > test_fast_path_agrees']);
+  });
+
+  it('parses the 3.11+ line shape without doubling the test name', () => {
+    const out = [
+      'test_fast_path_agrees (test_ledger.TestSnapshots.test_fast_path_agrees) ... FAIL',
+      'Ran 1 test in 0.000s',
+    ].join('\n');
+    expect(parseUnittestOutput(out).failed).toEqual([
+      'test_ledger > TestSnapshots > test_fast_path_agrees',
+    ]);
+  });
+
+  it('counts ERROR as failed and skipped as not-failed', () => {
+    const out = [
+      'test_a (m.C) ... ERROR',
+      'test_b (m.C) ... skipped "reason"',
+      'test_c (m.C) ... ok',
+      'Ran 3 tests in 0.001s',
+    ].join('\n');
+    const { failed, total } = parseUnittestOutput(out);
+    expect(total).toBe(3);
+    expect(failed).toEqual(['m > C > test_a']);
+  });
+
+  it('the manifest naming convention matches the parsed name via normalize', () => {
+    // python-debugging-001's manifest names "TestSnapshotAcceleratedReads >
+    // test_the_fast_read_path..." while the parser emits the module too.
+    const observed = normalizeTestName('test_ledger > TestSnapshots > test_fast_path_agrees');
+    const claimed = normalizeTestName('TestSnapshots > test_fast_path_agrees');
+    expect(observed.includes(claimed)).toBe(true);
+  });
+});
+
+describe('checkSuiteAgainstKind', () => {
+  const withSpec = (kind: RoundSpec['check']['kind'], min?: number): GeneratedProblem =>
+    ({
+      round_type: 'debugging',
+      repo_path: '.',
+      model_paths: [],
+      spec: 'x'.repeat(120),
+      mutations: [],
+      rubric: { round_type: 'debugging' },
+      round_spec: {
+        id: 't',
+        label: 'T',
+        capabilities: {
+          interviewer: false,
+          can_run_tests: kind !== 'diff_present',
+          time_limit_ms: null,
+          starts_from: 'blank',
+          submit: 'one_shot',
+        },
+        check: { kind, min_tests: min, ...(kind === 'diff_present' ? { files_changed: ['a.ts'] } : {}) },
+        memory_tags: [],
+      },
+    }) as GeneratedProblem;
+
+  it('all_failing passes only when every test fails', () => {
+    const p = withSpec('all_failing', 3);
+    expect(checkSuiteAgainstKind(p, ['a', 'b', 'c'], 3)).toEqual([]);
+    expect(checkSuiteAgainstKind(p, ['a', 'b'], 3).join()).toMatch(/1 of 3 pass/);
+    expect(checkSuiteAgainstKind(p, ['a'], 1).join()).toMatch(/only 1 tests/);
+  });
+
+  it('all_passing passes only on a green suite of sufficient size', () => {
+    const p = withSpec('all_passing', 4);
+    expect(checkSuiteAgainstKind(p, [], 6)).toEqual([]);
+    expect(checkSuiteAgainstKind(p, ['x'], 6).join()).toMatch(/green suite/);
+  });
+
+  it('legacy manifests (no round_spec) still enforce one_failing_test', () => {
+    const legacy = { ...withSpec('all_failing'), round_spec: undefined } as GeneratedProblem;
+    expect(checkSuiteAgainstKind(legacy, ['a', 'b'], 10).join()).toMatch(/exactly 1 failing/);
+    expect(checkSuiteAgainstKind(legacy, ['a'], 4).join()).toMatch(/requires >= 8/);
+  });
+
+  it('diff_present asserts nothing about the suite', () => {
+    expect(checkSuiteAgainstKind(withSpec('diff_present'), ['a', 'b'], 2)).toEqual([]);
+  });
+});
+
+describe('checkManifest spec dispatch', () => {
+  const minimal = (over: Partial<GeneratedProblem>): GeneratedProblem =>
+    ({
+      round_type: 'debugging',
+      repo_path: '.',
+      model_paths: [],
+      spec:
+        'A scheduling service assigns workers to shifts; assignments respect availability windows and maximum weekly hours, and overlapping shifts for one worker are rejected by the planner.',
+      mutations: [],
+      rubric: {
+        round_type: 'debugging',
+        dimensions: {
+          clarify: 'Asks whether availability windows are inclusive of their boundary instants before designing the planner checks.',
+          approach: 'States which invariant the planner enforces first — overlapping shifts rejection — and why ordering matters.',
+          communicate: 'Narrates the worker-assignment walkthrough while writing each planner rule.',
+          implement: 'Builds the availability and weekly-hours checks as separate planner predicates.',
+          verify: 'Dry-runs an overlapping-shifts scenario against the planner before declaring the rules complete.',
+          reflect: 'Explains which planner invariant is riskiest and how the shifts model would break without it.',
+        },
+      },
+      ...over,
+    }) as GeneratedProblem;
+
+  it('an all_failing manifest needs no planted_bug', () => {
+    const p = minimal({
+      round_spec: {
+        id: 'oa',
+        label: 'OA',
+        capabilities: { interviewer: false, can_run_tests: true, time_limit_ms: 60_000, starts_from: 'blank', submit: 'one_shot' },
+        check: { kind: 'all_failing', min_tests: 5 },
+        memory_tags: ['from_scratch', 'autograded'],
+      },
+    });
+    expect(checkManifest(p, '/nonexistent')).toEqual([]);
+  });
+
+  it('a legacy manifest still requires its planted_bug', () => {
+    const p = minimal({});
+    expect(checkManifest(p, '/nonexistent').join()).toMatch(/planted_bug missing/);
+  });
+
+  it('an out-of-vocabulary spec is rejected at the manifest gate', () => {
+    const p = minimal({
+      round_spec: { id: 'x', label: 'X', capabilities: {}, check: { kind: 'vibes' }, memory_tags: [] } as never,
+    });
+    expect(checkManifest(p, '/nonexistent').join()).toMatch(/round_spec:/);
   });
 });
