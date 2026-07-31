@@ -18,7 +18,7 @@
  * pedagogy claim.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Target } from './intake.js';
 import { targetDir } from './intake.js';
@@ -28,12 +28,22 @@ export interface QueueItem {
   id: string;
   label: string;
   spec_id: string;
-  status: 'pending' | 'generating' | 'ready' | 'done' | 'skipped';
+  /** `failed` is derived from a .failed marker (generation exited non-zero
+   *  or was orphaned by an app restart) — retryable, never terminal. */
+  status: 'pending' | 'generating' | 'ready' | 'done' | 'skipped' | 'failed';
   problem_dir?: string;
   session_id?: string;
   /** Display-only note set by re-pacing ("focus: verify"). Generation-time
    *  emphasis travels through the target note, not this field. */
   note?: string;
+  /** Named at plan build (one LLM call for the whole queue) so the future
+   *  reads as a plan, not scaffolding. Fed into this item's generation
+   *  brief so the problem built matches the promise. */
+  planned_title?: string;
+  /** ISO date stamped when the item flipped to done — pins the item to a
+   *  calendar day in the past band. Derived from the assessment file's
+   *  mtime, so it survives an app restart like everything else. */
+  done_at?: string;
 }
 
 export interface Queue {
@@ -98,24 +108,31 @@ export function proposeQueue(target: Target, now: number): Queue {
  * calls this on every scan; it is idempotent and safe after a restart.
  *
  *   problem_dir/.validated exists      generating → ready
+ *   problem_dir/.failed (no .validated) generating → failed (retryable)
  *   problem_dir/.used exists           its session started → session_id
- *   assessments/<session>.json exists  → done
+ *   assessments/<session>.json exists  → done (+ done_at from file mtime)
  */
 export function reconcileWithDisk(root: string, queue: Queue): Queue {
   const next: Queue = JSON.parse(JSON.stringify(queue)) as Queue;
   for (const item of next.items) {
     if (!item.problem_dir) continue;
     const dir = path.isAbsolute(item.problem_dir) ? item.problem_dir : path.join(root, item.problem_dir);
-    if (item.status === 'generating' && existsSync(path.join(dir, '.validated'))) {
-      item.status = 'ready';
+    if (item.status === 'generating' || item.status === 'failed') {
+      if (existsSync(path.join(dir, '.validated'))) {
+        item.status = 'ready';
+      } else if (existsSync(path.join(dir, '.failed'))) {
+        item.status = 'failed';
+      }
     }
     const usedFile = path.join(dir, '.used');
     if ((item.status === 'ready' || item.status === 'generating') && existsSync(usedFile)) {
       item.session_id = readFileSync(usedFile, 'utf8').split('\n')[0];
     }
     if (item.session_id && item.status !== 'done') {
-      if (existsSync(path.join(root, 'assessments', `${item.session_id}.json`))) {
+      const assessment = path.join(root, 'assessments', `${item.session_id}.json`);
+      if (existsSync(assessment)) {
         item.status = 'done';
+        item.done_at = localDate(statSync(assessment).mtimeMs);
       }
     }
   }
@@ -129,7 +146,9 @@ export function reconcileWithDisk(root: string, queue: Queue): Queue {
  */
 export function repace(queue: Queue, target: Target, view: GraphView | null, now: number): Queue {
   const next: Queue = JSON.parse(JSON.stringify(queue)) as Queue;
-  const remaining = next.items.filter((i) => i.status === 'pending' || i.status === 'generating' || i.status === 'ready').length;
+  const remaining = next.items.filter(
+    (i) => i.status === 'pending' || i.status === 'generating' || i.status === 'ready' || i.status === 'failed',
+  ).length;
   const days = daysLeft(target.interview_date, now);
   if (days !== null && remaining > 0) {
     // Weeks stays fractional on purpose: 3 items with one day left is an
@@ -146,4 +165,97 @@ export function repace(queue: Queue, target: Target, view: GraphView | null, now
 /** The single item the candidate should do next. */
 export function nextUp(queue: Queue): QueueItem | null {
   return queue.items.find((i) => i.status === 'ready') ?? queue.items.find((i) => i.status === 'pending') ?? null;
+}
+
+// ---- day bucketing (the timeline's spine) ----
+
+/** Calendar date in the USER'S timezone. UTC slicing flips "today" at 5pm
+ *  on the US west coast, which is exactly when students practice. */
+export function localDate(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+export type DayRow =
+  | { kind: 'day'; date: string | null; today: boolean; past: boolean; items: QueueItem[] }
+  | { kind: 'collapsed'; count: number; span_days: number }
+  | { kind: 'interview'; date: string };
+
+const PAST_DAYS_SHOWN = 4;
+const FUTURE_DAYS_SHOWN = 8;
+
+/**
+ * The dated, forward-only runway (design decision D2). Past days show what
+ * happened — done items pinned to their done_at date, empty days as neutral
+ * rows, never a debt. TODAY holds the single next item. Remaining items
+ * spread evenly across the remaining days; a season longer than the visible
+ * budget collapses its far stretch into one row. Pure; no clock reads.
+ */
+export function bucketIntoDays(queue: Queue, target: Target, now: number): DayRow[] {
+  const today = localDate(now);
+  const remaining = queue.items.filter(
+    (i) => i.status === 'ready' || i.status === 'generating' || i.status === 'failed' || i.status === 'pending',
+  );
+  // The item that belongs on TODAY: startable beats in-flight beats queued.
+  const todayItem =
+    remaining.find((i) => i.status === 'ready') ??
+    remaining.find((i) => i.status === 'generating') ??
+    remaining.find((i) => i.status === 'failed') ??
+    remaining[0] ??
+    null;
+  const future = remaining.filter((i) => i !== todayItem);
+
+  const rows: DayRow[] = [];
+
+  // ---- past band: the last few calendar days, done items pinned ----
+  const done = queue.items.filter((i) => i.status === 'done');
+  for (let back = PAST_DAYS_SHOWN; back >= 1; back--) {
+    const date = localDate(now - back * 86_400_000);
+    const items = done.filter((i) => i.done_at === date);
+    // A past day with nothing is neutral history — rendered, not hidden,
+    // and never red (D2: the failure mode was debt, not dates).
+    rows.push({ kind: 'day', date: target.interview_date ? date : null, today: false, past: true, items });
+  }
+  // Done work older than the band still counts — the season progress bar
+  // carries it; these rows would just be scroll.
+
+  rows.push({ kind: 'day', date: target.interview_date ? today : null, today: true, past: false, items: todayItem ? [todayItem] : [] });
+
+  // ---- future: spread remaining items evenly over remaining days ----
+  const days = daysLeft(target.interview_date, now);
+  if (days === null) {
+    // Undated target: no calendar to spread over — a flat ordered list.
+    for (const item of future) {
+      rows.push({ kind: 'day', date: null, today: false, past: false, items: [item] });
+    }
+    return rows;
+  }
+
+  const futureDays = Math.max(1, days - 1); // tomorrow .. day before the interview
+  const interval = future.length > 0 ? Math.max(1, Math.floor(futureDays / (future.length + 1))) : 1;
+  const schedule = new Map<number, QueueItem>(); // day offset from today -> item
+  future.forEach((item, idx) => {
+    schedule.set(Math.min(futureDays, (idx + 1) * interval), item);
+  });
+
+  let shownThrough = 0;
+  for (let offset = 1; offset <= futureDays && shownThrough < FUTURE_DAYS_SHOWN; offset++) {
+    const item = schedule.get(offset);
+    rows.push({
+      kind: 'day',
+      date: localDate(now + offset * 86_400_000),
+      today: false,
+      past: false,
+      items: item ? [item] : [],
+    });
+    shownThrough = offset;
+  }
+
+  const hidden = [...schedule.keys()].filter((o) => o > shownThrough);
+  if (hidden.length > 0) {
+    rows.push({ kind: 'collapsed', count: hidden.length, span_days: futureDays - shownThrough });
+  }
+
+  rows.push({ kind: 'interview', date: target.interview_date! });
+  return rows;
 }

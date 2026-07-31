@@ -16,13 +16,15 @@
  */
 
 import { spawn } from 'node:child_process';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateRoundSpec, type RoundSpec } from '@interview-prep/shared';
+import { validateRoundSpec, type GeneratedProblem, type RoundSpec } from '@interview-prep/shared';
 import { listTargets, loadTarget, pickSpecInferrer, saveTarget, slugify, targetDir, type SpecDraft, type Target } from './intake.js';
-import { loadQueue, nextUp, proposeQueue, reconcileWithDisk, repace, saveQueue, type Queue } from './queue.js';
-import { buildGraphView, loadStore } from './gap-graph.js';
+import { bucketIntoDays, loadQueue, nextUp, proposeQueue, reconcileWithDisk, repace, saveQueue, type Queue, type QueueItem } from './queue.js';
+import { buildGraphView, gapDescription, loadStore } from './gap-graph.js';
+import { pickTopicNamer } from './plan-topics.js';
 import { clientScript } from './chrome.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -57,6 +59,11 @@ function sessionLive(port: number): Promise<boolean> {
   });
 }
 
+/** Problem dirs with a generation child alive in THIS app process. Used
+ *  only to tell "in progress" from "orphaned" — all authoritative state
+ *  stays on disk (.validated / .failed markers). */
+const liveGenerations = new Set<string>();
+
 function spawnDetached(args: string[], env: Record<string, string> = {}): void {
   const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), ...args], {
     cwd: repoRoot,
@@ -65,6 +72,72 @@ function spawnDetached(args: string[], env: Record<string, string> = {}): void {
     env: { ...process.env, ...env },
   });
   child.unref();
+}
+
+/** Generation spawn with failure bookkeeping: a non-zero exit writes a
+ *  .failed marker into the item dir so reconcile derives `failed` and the
+ *  timeline can offer retry — a silent stuck "generating" row was the
+ *  design review's exact never-silent rule. */
+function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
+  const args = ['generate-for', target.id, item.spec_id, '--into', dir];
+  if (item.planned_title) args.push('--title', item.planned_title);
+  liveGenerations.add(dir);
+  const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), ...args], {
+    cwd: repoRoot,
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env },
+  });
+  child.unref();
+  child.on('close', (code) => {
+    liveGenerations.delete(dir);
+    if (code !== 0 && !existsSync(path.join(dir, '.validated'))) {
+      writeFileSync(path.join(dir, '.failed'), `exit ${code} at ${new Date().toISOString()}\n`);
+      console.warn(`[app] generation failed for ${item.id} (exit ${code})`);
+    }
+  });
+}
+
+/** App restart while a generation was mid-flight leaves items 'generating'
+ *  with no child and no marker — indistinguishable from progress. Mark them
+ *  failed once at boot so the timeline offers retry instead of spinning
+ *  forever. */
+function sweepOrphanedGenerations(): void {
+  for (const t of listTargets(repoRoot)) {
+    const q = loadQueue(repoRoot, t.id);
+    if (!q) continue;
+    for (const item of q.items) {
+      if (item.status !== 'generating' || !item.problem_dir) continue;
+      const dir = path.isAbsolute(item.problem_dir) ? item.problem_dir : path.join(repoRoot, item.problem_dir);
+      if (liveGenerations.has(dir)) continue;
+      if (!existsSync(path.join(dir, '.validated')) && !existsSync(path.join(dir, '.failed'))) {
+        writeFileSync(path.join(dir, '.failed'), `orphaned by app restart at ${new Date().toISOString()}\n`);
+        console.warn(`[app] ${t.id}/${item.id} orphaned by restart — marked failed (retryable)`);
+      }
+    }
+  }
+}
+
+/** Display title for an item: the generated problem's own name wins, the
+ *  planned title promises it, the spec's first sentence is the legacy
+ *  fallback. Never the "label — round N" string (the twelve-identical-rows
+ *  bug the redesign exists to kill). */
+function resolveTitle(item: QueueItem): string | null {
+  if (item.problem_dir) {
+    const dir = path.isAbsolute(item.problem_dir) ? item.problem_dir : path.join(repoRoot, item.problem_dir);
+    const manifest = path.join(dir, 'problem.json');
+    if (existsSync(manifest)) {
+      try {
+        const p = JSON.parse(readFileSync(manifest, 'utf8')) as GeneratedProblem;
+        if (p.title) return p.title;
+        const sentence = p.spec?.split(/[.!?]/)[0]?.trim();
+        if (sentence) return sentence.length > 60 ? `${sentence.slice(0, 57)}…` : sentence;
+      } catch {
+        /* half-written manifest mid-generation */
+      }
+    }
+  }
+  return item.planned_title ?? null;
 }
 
 /** Reconcile a target's queue with disk, re-pace, persist if changed, and
@@ -82,14 +155,19 @@ function refreshQueue(target: Target, userId: string, now: number): Queue | null
   })();
   const fresh = repace(reconcileWithDisk(repoRoot, stored), target, view, now);
 
-  const inFlight = fresh.items.some((i) => i.status === 'generating' || i.status === 'ready');
+  // `failed` deliberately does NOT count as in-flight: it needs a human
+  // retry, and it must not dam the queue behind it either — but auto-kick
+  // stays off while one exists so retry doesn't race a fresh spawn.
+  const inFlight = fresh.items.some(
+    (i) => i.status === 'generating' || i.status === 'ready' || i.status === 'failed',
+  );
   const pending = fresh.items.find((i) => i.status === 'pending');
   if (!inFlight && pending) {
     const dir = path.join(targetDir(repoRoot, target.id), 'problems', pending.id);
     pending.status = 'generating';
     pending.problem_dir = dir;
     console.log(`[app] generating ${target.id}/${pending.id} (queue-driven)`);
-    spawnDetached(['generate-for', target.id, pending.spec_id, '--into', dir]);
+    spawnGeneration(target, pending, dir);
   }
 
   if (JSON.stringify(fresh) !== JSON.stringify(stored)) saveQueue(repoRoot, fresh);
@@ -166,15 +244,48 @@ export function runApp(cfg: AppConfig): http.Server {
       if (url === '/api/state') {
         const now = Date.now();
         const live = await sessionLive(cfg.sessionPort);
-        const targets = listTargets(repoRoot).map((t) => {
-          const queue = refreshQueue(t, cfg.userId, now);
-          return {
-            target: { id: t.id, label: t.label, interview_date: t.interview_date ?? null, specs: t.specs.map((s) => ({ id: s.id, label: s.label })) },
-            queue,
-            next: queue ? nextUp(queue) : null,
-          };
+        // The candidate's active gap, as a sentence — TODAY's "aimed at:"
+        // line. The raw key ("clarify") explained nothing on the old page.
+        const focus = (() => {
+          try {
+            const view = buildGraphView(loadStore(path.join(repoRoot, 'gaps'), cfg.userId));
+            return view.focus ? { key: view.focus, description: gapDescription(view.focus) } : null;
+          } catch {
+            return null;
+          }
+        })();
+        const targets = listTargets(repoRoot)
+          .map((t) => {
+            const queue = refreshQueue(t, cfg.userId, now);
+            const withTitles = queue
+              ? {
+                  ...queue,
+                  items: queue.items.map((i) => ({ ...i, title: resolveTitle(i) })),
+                }
+              : null;
+            return {
+              target: {
+                id: t.id,
+                label: t.label,
+                interview_date: t.interview_date ?? null,
+                specs: t.specs.map((s) => ({ id: s.id, label: s.label, capabilities: s.capabilities })),
+              },
+              queue: withTitles,
+              next: queue ? nextUp(queue) : null,
+              days: queue
+                ? bucketIntoDays(withTitles as unknown as Queue, t, now)
+                : null,
+            };
+          })
+          // Nearest interview first; undated targets last.
+          .sort((a, b) => (a.target.interview_date ?? '9999') < (b.target.interview_date ?? '9999') ? -1 : 1);
+        return json(200, {
+          targets,
+          focus,
+          today: new Date(now).toISOString(),
+          session_live: live,
+          session_url: `http://localhost:${cfg.sessionPort}/session`,
         });
-        return json(200, { targets, session_live: live, session_url: `http://localhost:${cfg.sessionPort}/session` });
       }
       if (url === '/api/target' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { label?: string; date?: string; description?: string; context?: string };
@@ -244,8 +355,45 @@ export function runApp(cfg: AppConfig): http.Server {
         if (failures.length > 0) return json(400, { error: failures.join('; ') });
         t.specs = [...t.specs.filter((s) => s.id !== b.spec!.id), b.spec];
         saveTarget(repoRoot, t);
-        if (!loadQueue(repoRoot, t.id)) saveQueue(repoRoot, proposeQueue(t, Date.now()));
+        if (!loadQueue(repoRoot, t.id)) {
+          const queue = proposeQueue(t, Date.now());
+          // Name every planned round now (D-impl): one cheap call, and each
+          // title later travels into that item's generation brief. Failure
+          // degrades to quiet rows — naming never blocks the plan.
+          try {
+            const brief = [
+              `Round: ${b.spec.label}.`,
+              b.spec.emphasis ? `Emphasis: ${b.spec.emphasis}.` : '',
+              t.description ? `The candidate describes it as: ${t.description}` : '',
+              t.research?.confirmed ? `Confirmed research findings:\n${t.research.summary}` : '',
+            ].filter(Boolean).join('\n');
+            const titles = await pickTopicNamer(path.join(repoRoot, 'prompts', 'plan-topics.md'))(
+              brief,
+              queue.items.length,
+            );
+            queue.items.forEach((item, i) => (item.planned_title = titles[i]));
+          } catch (e) {
+            console.warn(`[app] topic naming failed (quiet rows): ${String(e).slice(0, 200)}`);
+          }
+          saveQueue(repoRoot, queue);
+        }
         return json(200, { ok: true, specs: t.specs.map((s) => s.id) });
+      }
+      if (url === '/api/retry' && req.method === 'POST') {
+        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
+        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        const q = t ? loadQueue(repoRoot, t.id) : null;
+        const item = q?.items.find((i) => i.id === b.item_id);
+        if (!t || !q || !item?.problem_dir || item.status !== 'failed') {
+          return json(400, { error: 'item is not in a failed state' });
+        }
+        const dir = path.isAbsolute(item.problem_dir) ? item.problem_dir : path.join(repoRoot, item.problem_dir);
+        rmSync(path.join(dir, '.failed'), { force: true });
+        item.status = 'generating';
+        saveQueue(repoRoot, q);
+        console.log(`[app] retrying generation for ${t.id}/${item.id}`);
+        spawnGeneration(t, item, dir);
+        return json(200, { ok: true });
       }
       if (url === '/api/skip' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
@@ -286,6 +434,7 @@ export function runApp(cfg: AppConfig): http.Server {
       return json(500, { error: String(e).slice(0, 300) });
     }
   });
+  sweepOrphanedGenerations();
   server.listen(cfg.port, () => {
     console.log(`[app] open http://localhost:${cfg.port}/`);
   });

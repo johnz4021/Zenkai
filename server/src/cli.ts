@@ -190,6 +190,9 @@ if (cmd === 'generate') {
   }
   const brief = [
     `Round: ${spec.label}.`,
+    // A planned title is a COMMITMENT: the timeline already shows it, so
+    // the generated problem must be that system, not a re-roll.
+    flags.title ? `Planned title for THIS problem (build exactly this system, and set the manifest "title" to it): ${flags.title}` : '',
     spec.emphasis ? `Emphasis: ${spec.emphasis}.` : '',
     t.description ? `The candidate describes it as: ${t.description}` : '',
     t.context ? `Reference material from the candidate:\n${t.context}` : '',

@@ -45,6 +45,7 @@ Write `problem.json` at the repo root:
   "repo_path": ".",
   "model_paths": ["<files defining the data model, if any>"],
   "round_spec": {{ROUND_SPEC_JSON}},
+  "title": "<short human name for this problem, 3-8 words naming the system and its mechanism, e.g. 'Field depot reservation ledger'. If the round brief includes a planned title, this must match it.>",
   "spec": "<150-300 words: the problem statement handed to the candidate. Describe intended behavior and what they must do. Never reveal solution structure or (for bug rounds) the bug's location.>",
   "mutations": [],
   "rubric": {

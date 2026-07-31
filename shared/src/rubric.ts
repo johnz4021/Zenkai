@@ -81,6 +81,13 @@ export interface GeneratedProblem {
    */
   round_spec?: import('./round-spec.js').RoundSpec;
   /**
+   * Short human name for THIS problem ("Field depot reservation ledger").
+   * Rendered on the season timeline; absent on manifests generated before
+   * it existed (display falls back to the item's planned title, then the
+   * spec's first sentence).
+   */
+  title?: string;
+  /**
    * Language runtime the problem's tests need. The IDE image ships node;
    * anything else is installed into the container at session start.
    * Absent = 'node' (every problem generated before this existed).

@@ -8,7 +8,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { RoundSpec } from '@interview-prep/shared';
 import type { Target } from './intake.js';
-import { daysLeft, nextUp, proposeQueue, reconcileWithDisk, repace, saveQueue, loadQueue } from './queue.js';
+import { bucketIntoDays, daysLeft, localDate, nextUp, proposeQueue, reconcileWithDisk, repace, saveQueue, loadQueue } from './queue.js';
 import type { GraphView } from './gap-graph.js';
 
 const NOW = Date.parse('2026-08-01T12:00:00');
@@ -131,5 +131,99 @@ describe('daysLeft', () => {
     expect(daysLeft('2026-08-01', NOW)).toBe(1);
     expect(daysLeft('not-a-date', NOW)).toBeNull();
     expect(daysLeft(undefined, NOW)).toBeNull();
+  });
+});
+
+describe('failed derivation + done_at pinning', () => {
+  it('.failed with no .validated derives failed; .validated wins over .failed', () => {
+    const root = scratch();
+    const pdir = path.join(root, 'p1');
+    mkdirSync(pdir, { recursive: true });
+    const t = target({ interview_date: '2026-08-15' });
+    const q = proposeQueue(t, NOW);
+    q.items[0]!.status = 'generating';
+    q.items[0]!.problem_dir = pdir;
+
+    writeFileSync(path.join(pdir, '.failed'), 'exit 1');
+    expect(reconcileWithDisk(root, q).items[0]!.status).toBe('failed');
+
+    writeFileSync(path.join(pdir, '.validated'), 'now');
+    expect(reconcileWithDisk(root, q).items[0]!.status).toBe('ready');
+  });
+
+  it('done stamps done_at from the assessment file', () => {
+    const root = scratch();
+    const pdir = path.join(root, 'p1');
+    mkdirSync(pdir, { recursive: true });
+    mkdirSync(path.join(root, 'assessments'), { recursive: true });
+    const t = target({ interview_date: '2026-08-15' });
+    const q = proposeQueue(t, NOW);
+    q.items[0]!.status = 'ready';
+    q.items[0]!.problem_dir = pdir;
+    writeFileSync(path.join(pdir, '.validated'), 'now');
+    writeFileSync(path.join(pdir, '.used'), 'sess-x\n');
+    writeFileSync(path.join(root, 'assessments', 'sess-x.json'), '{}');
+    const out = reconcileWithDisk(root, q).items[0]!;
+    expect(out.status).toBe('done');
+    expect(out.done_at).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
+describe('bucketIntoDays — the timeline spine (D2: dated, forward-only)', () => {
+  const dated = () => target({ interview_date: '2026-08-15' }); // 14 days from NOW
+
+  it('renders past band, TODAY, future days, and the interview terminal row', () => {
+    const q = proposeQueue(dated(), NOW);
+    const rows = bucketIntoDays(q, dated(), NOW);
+    const days = rows.filter((r) => r.kind === 'day');
+    expect(days.filter((r) => r.kind === 'day' && r.past)).toHaveLength(4);
+    expect(days.filter((r) => r.kind === 'day' && r.today)).toHaveLength(1);
+    expect(rows[rows.length - 1]).toEqual({ kind: 'interview', date: '2026-08-15' });
+  });
+
+  it('TODAY prefers a startable item over queued ones', () => {
+    const q = proposeQueue(dated(), NOW);
+    q.items[2]!.status = 'ready';
+    const rows = bucketIntoDays(q, dated(), NOW);
+    const today = rows.find((r) => r.kind === 'day' && r.today) as Extract<(typeof rows)[0], { kind: 'day' }>;
+    expect(today.items[0]!.id).toBe('item-3');
+  });
+
+  it('past emptiness is neutral rows, never a warning shape', () => {
+    const q = proposeQueue(dated(), NOW);
+    const rows = bucketIntoDays(q, dated(), NOW);
+    const pastEmpty = rows.filter((r) => r.kind === 'day' && r.past && r.items.length === 0);
+    expect(pastEmpty.length).toBeGreaterThan(0);
+    expect(JSON.stringify(rows)).not.toMatch(/overdue|missed|late/);
+  });
+
+  it('a long season collapses its far stretch instead of scrolling forever', () => {
+    const far = target({ interview_date: '2026-10-30' }); // ~90 days
+    const q = proposeQueue(far, NOW); // capped at 12 items
+    const rows = bucketIntoDays(q, far, NOW);
+    const collapsed = rows.find((r) => r.kind === 'collapsed');
+    expect(collapsed).toBeDefined();
+    expect((collapsed as { count: number }).count).toBeGreaterThan(0);
+    // Visible future day rows stay within the display budget.
+    expect(rows.filter((r) => r.kind === 'day' && !r.past && !r.today).length).toBeLessThanOrEqual(8);
+  });
+
+  it('undated target: flat ordered list, no dates, no interview row', () => {
+    const t = target();
+    const rows = bucketIntoDays(proposeQueue(t, NOW), t, NOW);
+    expect(rows.every((r) => r.kind === 'day')).toBe(true);
+    expect(rows.filter((r) => r.kind === 'day' && r.date !== null)).toHaveLength(0);
+  });
+
+  it('done items pin to their done_at day in the past band', () => {
+    const t = dated();
+    const q = proposeQueue(t, NOW);
+    q.items[0]!.status = 'done';
+    q.items[0]!.done_at = localDate(NOW - 2 * 86_400_000);
+    const rows = bucketIntoDays(q, t, NOW);
+    const pinned = rows.find(
+      (r) => r.kind === 'day' && r.past && r.items.some((i) => i.id === 'item-1'),
+    ) as Extract<(typeof rows)[0], { kind: 'day' }>;
+    expect(pinned.date).toBe(localDate(NOW - 2 * 86_400_000));
   });
 });
