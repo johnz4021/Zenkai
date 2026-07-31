@@ -187,83 +187,153 @@ export function appPage(): string {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>interview prep</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
 <style>
-  :root { --accent: #7c5cff; --line: #2a2a2e; --dim: #9a9aa2; --ok: #4caf7d; }
+  :root {
+    --accent: #7c5cff; --accent-dim: rgba(124, 92, 255, .35);
+    --line: #2a2a2e; --line-soft: #232327;
+    --dim: #9a9aa2; --bright: #e6e6ea; --ok: #4caf7d;
+    --bg: #17171a;
+    --rail: 93px; /* x of the timeline spine: date col 74 + gap 14 + dot half */
+  }
   * { box-sizing: border-box; }
-  body { margin: 0 auto; max-width: 760px; padding: 32px 16px 48px; font: 13px/1.5 ui-monospace, monospace; background: #17171a; color: #e6e6ea; }
-  .micro { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--dim); margin: 0 0 18px; }
-  nav { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 18px; }
-  nav a { text-decoration: none; }
-  nav .micro { margin: 0; }
-  #nav-new { color: var(--dim); }
-  a.plancard { display: block; border: 1px solid var(--line); padding: 14px; margin: 12px 0; text-decoration: none; }
-  .plancard h2 { font-size: 15px; font-weight: normal; margin: 0 0 4px; }
-  .plancard .bar { height: 2px; background: var(--line); margin: 10px 0 6px; }
-  .plancard .bar .fill { height: 100%; background: var(--accent); }
-  .plancard .nextline { color: var(--dim); }
-  .plancard.setup { color: var(--dim); }
-  .plancard.setup .go { color: var(--accent); }
-  .backlink { display: inline-block; color: var(--dim); text-decoration: none; margin-bottom: 14px; }
+  html { background: var(--bg); }
+  body {
+    margin: 0 auto; max-width: 760px; padding: 40px 20px 64px;
+    font: 13px/1.55 'IBM Plex Mono', ui-monospace, monospace;
+    background: var(--bg); color: var(--bright);
+    min-height: 100vh;
+  }
+  /* Atmosphere: a faint violet aura at the crown and film grain over the
+     field — depth without decoration; both invisible until you look. */
+  body::before {
+    content: ''; position: fixed; inset: 0; pointer-events: none; z-index: -1;
+    background: radial-gradient(60% 40% at 50% -10%, rgba(124, 92, 255, .07), transparent 70%);
+  }
+  body::after {
+    content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 9;
+    opacity: .035; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  ::selection { background: var(--accent); color: #fff; }
+
+  .micro { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .18em; color: var(--dim); margin: 0 0 18px; }
   .meta { color: var(--dim); }
   .err { color: #e6a23c; }
   a { color: inherit; }
-  button { background: none; border: 1px solid var(--line); color: #e6e6ea; padding: 6px 12px; font: inherit; cursor: pointer; min-height: 32px; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  :is(button, input, textarea, a, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  input, textarea { width: 100%; background: none; border: 1px solid var(--line); color: inherit; font: inherit; padding: 8px 10px; }
-  label { display: block; margin: 16px 0 4px; }
-  .banner { border: 1px solid var(--accent); padding: 10px 14px; margin: 0 0 18px; }
+  nav { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 26px; }
+  nav a { text-decoration: none; }
+  nav .micro { margin: 0; transition: color .18s; }
+  nav a:hover .micro { color: var(--bright); }
+  #nav-new { color: var(--dim); font-size: 12px; transition: color .18s; }
+  #nav-new:hover { color: var(--accent); }
 
-  /* ---- entry (first run) ---- */
-  #entry h2 { font-size: 15px; font-weight: normal; margin: 0 0 6px; }
-  #e-desc { min-height: 110px; }
-  .optrow { display: flex; gap: 16px; }
+  button {
+    background: none; border: 1px solid var(--line); color: var(--bright);
+    padding: 6px 14px; font: inherit; cursor: pointer; min-height: 32px;
+    transition: border-color .18s, background .18s, box-shadow .18s;
+  }
+  button:hover { border-color: #45454c; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 500; }
+  button.primary:hover { box-shadow: 0 0 22px var(--accent-dim); }
+  :is(button, input, textarea, a, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input, textarea {
+    width: 100%; background: rgba(255, 255, 255, .015); border: 1px solid var(--line);
+    color: inherit; font: inherit; padding: 9px 11px; transition: border-color .18s;
+  }
+  input:hover, textarea:hover { border-color: #3a3a40; }
+  input:focus, textarea:focus { border-color: var(--accent-dim); }
+  label { display: block; margin: 18px 0 5px; font-weight: 500; }
+  .banner { border: 1px solid var(--accent); background: rgba(124, 92, 255, .06); padding: 10px 14px; margin: 0 0 20px; }
+
+  /* ---- entrance choreography: one orchestrated load per page, never on
+         polls; fully off under reduced motion ---- */
+  @keyframes rise { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+  .animate .runway li, .animate a.plancard, .animate .season > * { animation: rise .45s cubic-bezier(.2, .7, .2, 1) both; animation-delay: calc(var(--i, 0) * 32ms); }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+
+  /* ---- entry (make a plan) ---- */
+  #entry h2 { font-size: 16px; font-weight: 500; margin: 0 0 8px; }
+  #e-desc { min-height: 118px; }
+  .optrow { display: flex; gap: 18px; }
   .optrow > div { flex: 1; }
-  #refbox { border: 1px solid var(--line); padding: 12px 14px; margin-top: 16px; }
+  #refbox { border: 1px solid var(--line); padding: 14px 16px; margin-top: 20px; background: rgba(255, 255, 255, .012); }
   #refbox .help { color: var(--dim); margin: 2px 0 10px; }
   .linkrow { display: flex; gap: 8px; }
   .linkrow input { flex: 1; }
   #e-attachlist { margin-top: 4px; }
-  .attach { display: flex; gap: 10px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--line); }
+  .attach { display: flex; gap: 10px; align-items: baseline; padding: 7px 0; border-top: 1px solid var(--line-soft); }
   .attach .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .attach .kind { color: var(--dim); }
+  .attach .kind { color: var(--dim); font-size: 12px; }
   .attach button { border: 0; color: var(--dim); padding: 0 6px; min-height: 0; }
-  #e-build { width: 100%; margin-top: 20px; padding: 12px; min-height: 44px; }
-  .closing { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 14px; color: var(--dim); }
-  .findings p { margin: 6px 0; }
+  .attach button:hover { color: var(--bright); }
+  #e-build { width: 100%; margin-top: 24px; padding: 13px; min-height: 44px; letter-spacing: .02em; }
+  .closing { border-top: 1px solid var(--line); margin-top: 28px; padding-top: 15px; color: var(--dim); }
+  .findings p { margin: 7px 0; }
   .rationale { color: var(--dim); white-space: pre-wrap; }
-  .specbox { border: 1px solid var(--line); padding: 12px 14px; margin: 10px 0; }
-  .progress { height: 2px; background: var(--line); margin: 14px 0; overflow: hidden; }
-  .progress .fill { height: 100%; background: var(--accent); width: 30%; animation: slide 1.6s ease-in-out infinite alternate; }
+  .specbox { border: 1px solid var(--line); padding: 13px 15px; margin: 10px 0; background: rgba(255, 255, 255, .012); }
+  .progress { height: 2px; background: var(--line); margin: 16px 0; overflow: hidden; }
+  .progress .fill { height: 100%; background: var(--accent); width: 30%; animation: slide 1.5s ease-in-out infinite alternate; box-shadow: 0 0 8px var(--accent-dim); }
   @keyframes slide { from { margin-left: 0; } to { margin-left: 70%; } }
 
-  /* ---- season timeline ---- */
-  .season { margin-bottom: 40px; }
-  .season .daysleft { font-size: 34px; line-height: 1.15; margin: 0; font-weight: normal; }
-  .season .daysleft b { font-weight: normal; }
-  .seasonbar { height: 2px; background: var(--line); margin: 12px 0 6px; }
-  .seasonbar .fill { height: 100%; background: var(--accent); }
-  .paceline { display: flex; justify-content: space-between; color: var(--dim); margin-bottom: 20px; }
-  ol.runway { list-style: none; margin: 0; padding: 0; }
-  .runway li { display: flex; gap: 14px; border-top: 1px solid var(--line); padding: 8px 0; align-items: baseline; }
-  .runway .date { width: 74px; flex: none; color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
-  .runway .dot { flex: none; width: 10px; text-align: center; color: var(--dim); }
+  /* ---- all plans (index) ---- */
+  a.plancard {
+    display: block; border: 1px solid var(--line); padding: 16px; margin: 12px 0;
+    text-decoration: none; background: rgba(255, 255, 255, .012);
+    transition: border-color .18s, transform .18s;
+  }
+  a.plancard:hover { border-color: #45454c; transform: translateY(-1px); }
+  .plancard h2 { font-size: 16px; font-weight: 500; margin: 0 0 4px; }
+  .plancard .bar { height: 2px; background: var(--line); margin: 12px 0 8px; }
+  .plancard .bar .fill { height: 100%; background: var(--accent); }
+  .plancard .nextline { color: var(--dim); }
+  .plancard.setup { color: var(--dim); }
+  .plancard.setup .go { color: var(--accent); }
+  .backlink { display: inline-block; color: var(--dim); text-decoration: none; margin-bottom: 16px; transition: color .18s; }
+  .backlink:hover { color: var(--bright); }
+
+  /* ---- season timeline: the countdown instrument ---- */
+  .season { margin-bottom: 44px; }
+  .season .daysleft { font-size: 17px; font-weight: 400; line-height: 1.2; margin: 0; color: var(--dim); }
+  .season .daysleft b { font-size: 54px; font-weight: 600; letter-spacing: -.03em; color: var(--bright); display: inline-block; margin-right: 6px; vertical-align: -4px; text-shadow: 0 0 34px var(--accent-dim); }
+  .seasonbar { height: 2px; background: var(--line); margin: 16px 0 7px; }
+  .seasonbar .fill { height: 100%; background: var(--accent); box-shadow: 0 0 8px var(--accent-dim); transition: width .8s cubic-bezier(.2, .7, .2, 1); }
+  .paceline { display: flex; justify-content: space-between; color: var(--dim); font-size: 12px; margin-bottom: 26px; }
+
+  ol.runway { list-style: none; margin: 0; padding: 0; position: relative; }
+  /* The spine: one continuous rail the whole season hangs from. */
+  ol.runway::before { content: ''; position: absolute; left: var(--rail); top: 10px; bottom: 10px; width: 1px; background: var(--line); }
+  .runway li { display: flex; gap: 14px; border-top: 1px solid var(--line-soft); padding: 9px 0; align-items: baseline; position: relative; }
+  .runway li:first-child { border-top: 0; }
+  .runway .date { width: 74px; flex: none; color: var(--dim); font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .08em; }
+  .runway .dot { flex: none; width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid var(--line); background: var(--bg); align-self: center; z-index: 1; position: relative; left: -1px; }
   .runway .body { flex: 1; min-width: 0; }
-  .runway li.past { opacity: .55; }
-  .runway li.past .dot.done { color: var(--ok); }
+  .runway li.past { opacity: .5; }
+  .runway li.past .dot.done { border-color: var(--ok); background: var(--ok); }
+  .runway li.past .body .ok { color: var(--ok); margin-right: 6px; }
   .runway li.empty .body { color: var(--dim); }
-  .runway li.today { padding: 14px 0; opacity: 1; }
-  .runway li.today .date, .runway li.today .dot { color: var(--accent); }
-  .runway li.today .title { font-size: 15px; }
-  .runway .metaline { color: var(--dim); margin-top: 2px; }
-  .runway .aimed { color: var(--accent); margin-top: 4px; }
-  .runway li.today .body { display: flex; gap: 14px; align-items: center; }
+  .runway li.today { padding: 18px 0; opacity: 1; border-top-color: var(--line); }
+  .runway li.today .date { color: var(--accent); }
+  .runway li.today .dot { border-color: var(--accent); background: var(--accent); box-shadow: 0 0 14px var(--accent-dim); }
+  .runway li.today .title { font-size: 16px; font-weight: 500; }
+  .runway .metaline { color: var(--dim); margin-top: 3px; font-size: 12px; }
+  .runway .aimed { color: var(--accent); margin-top: 6px; font-style: italic; }
+  .runway li.today .body { display: flex; gap: 16px; align-items: center; }
   .runway li.today .grow { flex: 1; min-width: 0; }
-  .runway li.today button.primary { min-width: 92px; min-height: 44px; }
+  .runway li.today button.primary { min-width: 96px; min-height: 44px; }
   .runway li.future { color: #c9c9cf; }
+  .runway li.future.empty { padding: 5px 0; }
+  .runway li.future.empty .dot { width: 5px; height: 5px; border-width: 1px; left: 2px; }
   .runway li.collapsed .body { color: var(--dim); }
-  .runway li.interview { border-top: 1px solid var(--line); padding: 14px 0; color: var(--accent); }
-  .addlink { margin-top: 10px; display: inline-block; color: var(--dim); }
+  .runway li.collapsed .dot { border-style: dashed; background: transparent; }
+  .runway li.interview { padding: 16px 0; color: var(--accent); border-top: 1px solid var(--line); }
+  .runway li.interview .date { color: var(--accent); }
+  .runway li.interview .dot { border-color: var(--accent); background: transparent; box-shadow: 0 0 10px var(--accent-dim); }
+  .runway li.interview .body { font-weight: 500; letter-spacing: .02em; }
 
   /* ---- desktop only (design decision D7: stated, not broken) ---- */
   #narrow { display: none; }
@@ -374,7 +444,9 @@ export function runApp(cfg: AppConfig): http.Server {
                 specs: t.specs.map((s) => ({ id: s.id, label: s.label, capabilities: s.capabilities })),
               },
               queue: withTitles,
-              next: queue ? nextUp(queue) : null,
+              // next must come from the TITLED items — the raw queue's
+              // label is the "— round N" string the redesign banned.
+              next: withTitles ? nextUp(withTitles as unknown as Queue) : null,
               days: queue
                 ? bucketIntoDays(withTitles as unknown as Queue, t, now)
                 : null,

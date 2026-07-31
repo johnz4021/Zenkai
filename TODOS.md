@@ -281,3 +281,63 @@ path, and a surface (~2-3 days CC when picked up).
 framing; queue.ts already models items generically (kind field would be additive).
 
 **Priority:** P2 after the queue proves itself in real use.
+
+---
+
+## 14. No DESIGN.md — every UI decision restarts from principles
+
+**What:** Run `$D extract` on the two approved mockups
+(`~/.gstack/projects/interview_prep/designs/season-timeline-20260731/`) to author a real
+DESIGN.md: the token set both surfaces already share (`#17171a`, `#e6e6ea`, `#9a9aa2`,
+`#2a2a2e`, one violet accent `#7c5cff`, green `#4caf7d` for completed work only,
+hairline rules, uppercase letterspaced micro-labels, flat/shadowless).
+
+**Why:** The 2026-07-31 design review had nothing to calibrate against and rated design
+system alignment 3/10 purely for the absence. Without it, the next UI change
+re-derives the same decisions and drifts.
+
+**Blocked on:** nothing. The approved mockups exist.
+
+**Effort:** human ~1 hr / CC ~30 min. **Priority:** P2.
+
+---
+
+## 15. In-session chrome will diverge from the redesigned home app
+
+**What:** Bring `chrome.ts` `sessionPage()` and the post-session feedback card up to the
+visual language the home app establishes after the timeline redesign lands.
+
+**Why:** The design review was deliberately scoped to the home surface only (decision D1,
+2026-07-31). Once the entry point and timeline ship, the entry point and the session a
+student launches from it are designed to different standards. That is precisely how a
+product starts feeling assembled rather than designed.
+
+**Constraint:** the session chrome currently works and is the measured surface. Any change
+must not disturb the trace, the voice controls, or the card's three assessment states.
+
+**Blocked on:** the home app redesign landing first — it defines the target language.
+
+**Effort:** human ~1 day / CC ~2-3 hrs. **Priority:** P2 after the redesign.
+
+---
+
+## 16. ~~Unnamed font stack~~ SHIPPED 2026-08-01 — IBM Plex Mono
+
+Resolved in the home app: IBM Plex Mono (400/500/600 + italic) via Google Fonts,
+falling back to ui-monospace. Free and open — no licence cost. The session chrome
+(chrome.ts) still uses the bare system stack; that alignment rides with TODO #15.
+
+**What (original):** Unnamed font stack — the design is never actually the design
+
+**What:** Choose a real named monospace (Berkeley Mono, JetBrains Mono, Söhne Mono) to
+replace `ui-monospace, monospace` in `chrome.ts` and `app.ts`.
+
+**Why:** A system stack renders differently on every machine, so the approved mockups are
+never what a user actually sees. It is also the "gave up on typography" signal on the AI
+slop blacklist. Monospace is the correct genre for a tool whose sibling surface is a code
+editor; the issue is that no specific face was ever chosen.
+
+**Cost to weigh:** the good faces are paid (Berkeley Mono is a one-off licence); JetBrains
+Mono is free and open. Adds a webfont to load on a surface that currently loads none.
+
+**Effort:** human ~1 hr / CC ~20 min once the face is chosen. **Priority:** P3.

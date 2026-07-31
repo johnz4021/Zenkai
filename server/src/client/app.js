@@ -259,7 +259,7 @@ function renderSeason(row, state) {
       html += '<p class="meta"><a href="#/new" class="addlink">+ prepare for the next one</a></p></div>';
       return html;
     }
-    html += '<h2 class="daysleft"><b>' + left + '</b> days to ' + esc(t.label) + '</h2>';
+    html += '<h2 class="daysleft"><b data-count="' + left + '">' + left + '</b> days to ' + esc(t.label) + '</h2>';
     const total = row.queue ? row.queue.items.length : 0;
     const done = row.queue ? row.queue.items.filter((i) => i.status === 'done' || i.status === 'skipped').length : 0;
     const pct = total ? Math.round((done / total) * 100) : 0;
@@ -273,18 +273,18 @@ function renderSeason(row, state) {
   html += '<ol class="runway">';
   for (const d of days) {
     if (d.kind === 'interview') {
-      html += '<li class="interview"><span class="date">' + fmtDate(d.date) + '</span><span class="dot">◇</span>' +
+      html += '<li class="interview"><span class="date">' + fmtDate(d.date) + '</span><span class="dot"></span>' +
         '<span class="body">' + fmtDate(d.date) + ' — ' + esc(t.label) + '</span></li>';
       continue;
     }
     if (d.kind === 'collapsed') {
-      html += '<li class="collapsed"><span class="date"></span><span class="dot">⋮</span>' +
+      html += '<li class="collapsed"><span class="date"></span><span class="dot"></span>' +
         '<span class="body">' + d.count + ' more round' + (d.count === 1 ? '' : 's') + ' over the next ' + d.span_days + ' days</span></li>';
       continue;
     }
     const item = d.items[0] || null;
     if (d.today) {
-      html += '<li class="today" aria-current="date"><span class="date">TODAY</span><span class="dot">●</span><div class="body">';
+      html += '<li class="today" aria-current="date"><span class="date">TODAY</span><span class="dot"></span><div class="body">';
       if (!item) {
         html += '<div class="grow"><span class="title meta">nothing scheduled — the plan resumes tomorrow</span></div>';
       } else if (item.status === 'ready') {
@@ -313,18 +313,18 @@ function renderSeason(row, state) {
       const done = d.items.filter((i) => i.status === 'done');
       if (done.length) {
         for (const i of done) {
-          html += '<li class="past"><span class="date">' + fmtDate(d.date) + '</span><span class="dot done">✓</span>' +
-            '<span class="body">' + esc(itemTitle(i)) + '</span></li>';
+          html += '<li class="past"><span class="date">' + fmtDate(d.date) + '</span><span class="dot done"></span>' +
+            '<span class="body"><span class="ok">✓</span>' + esc(itemTitle(i)) + '</span></li>';
         }
       } else {
-        html += '<li class="past empty"><span class="date">' + fmtDate(d.date) + '</span><span class="dot">·</span>' +
+        html += '<li class="past empty"><span class="date">' + fmtDate(d.date) + '</span><span class="dot"></span>' +
           '<span class="body">—</span></li>';
       }
       continue;
     }
     // future
     if (item) {
-      html += '<li class="future"><span class="date">' + fmtDate(d.date) + '</span><span class="dot">○</span>' +
+      html += '<li class="future"><span class="date">' + fmtDate(d.date) + '</span><span class="dot"></span>' +
         '<span class="body">' + esc(itemTitle(item)) + '</span></li>';
     } else {
       html += '<li class="future empty"><span class="date">' + fmtDate(d.date) + '</span><span class="dot"></span>' +
@@ -428,6 +428,33 @@ function wireTimeline(container) {
   }
 }
 
+// ---- entrance choreography: staggered rise + count-up, once per page
+//      visit, never replayed by the 5s poll; off under reduced motion ----
+let lastRouteKey = '';
+const reducedMotion = Boolean(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+function choreograph(section, routeKey) {
+  const fresh = routeKey !== lastRouteKey;
+  lastRouteKey = routeKey;
+  section.classList.toggle('animate', fresh && !reducedMotion);
+  let i = 0;
+  for (const n of section.querySelectorAll('.season > *, .runway li, a.plancard')) {
+    n.style.setProperty('--i', i++);
+  }
+  if (!fresh || reducedMotion) return;
+  for (const b of section.querySelectorAll('[data-count]')) {
+    const target = Number(b.dataset.count);
+    if (!target) continue;
+    const t0 = Date.now();
+    const tick = () => {
+      const k = Math.min(1, (Date.now() - t0) / 500);
+      b.textContent = String(Math.round(target * (1 - Math.pow(1 - k, 3))));
+      if (k < 1) window.requestAnimationFrame(tick);
+    };
+    tick();
+  }
+}
+
 function render(state) {
   el('banner').innerHTML = state.session_live
     ? '<div class="banner">A session is running — <a href="' + esc(state.session_url) + '">rejoin it</a>. One session at a time.</div>'
@@ -448,9 +475,11 @@ function render(state) {
 
   if (r.page === 'index') {
     renderIndex(state);
+    choreograph(el('index'), 'index');
     return;
   }
   if (r.page === 'new') {
+    lastRouteKey = 'new';
     // Mid-flow the flow DOM owns the section — never repaint under the user.
     if (flowTargetId === null) {
       el('entry-flow').hidden = true;
@@ -467,6 +496,7 @@ function render(state) {
   const tl = el('timeline');
   tl.innerHTML = '<a href="#/" class="backlink">← all plans</a>' + renderSeason(row, state);
   wireTimeline(tl);
+  choreograph(tl, 'timeline:' + r.id);
 }
 
 async function launch(targetId, itemId) {
