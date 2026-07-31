@@ -15,11 +15,18 @@
 
 /* global document, window, fetch */
 
+// Count up untimed, count DOWN when the round carries a limit (data-limit,
+// set by the server from the round spec). The server owns enforcement; this
+// clock is display only.
 const t0 = Date.now();
+const clockEl = document.getElementById('clock');
+const limitMs = Number(clockEl.dataset.limit || 0);
 setInterval(() => {
-  const s = Math.floor((Date.now() - t0) / 1000);
-  document.getElementById('clock').textContent =
-    String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+  const elapsed = Date.now() - t0;
+  const shown = limitMs > 0 ? Math.max(0, Math.ceil((limitMs - elapsed) / 1000)) : Math.floor(elapsed / 1000);
+  clockEl.textContent =
+    String(Math.floor(shown / 60)).padStart(2, '0') + ':' + String(shown % 60).padStart(2, '0');
+  if (limitMs > 0 && limitMs - elapsed < 5 * 60_000) clockEl.style.color = '#e6a23c';
 }, 1000);
 
 async function pollStatus() {
@@ -74,6 +81,10 @@ async function pollMessages() {
     }
     if (s.thinking && !thinkingEl) thinkingEl = say('interviewer', '…', 'pending');
     if (!s.thinking && thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
+    // Server says the cap was reached: end through the SAME path as the
+    // button so the mic is released before the record closes. The server
+    // holds a grace period before finalizing on its own.
+    if (s.time_up) endSession();
   } catch {}
 }
 setInterval(pollMessages, 2000);
@@ -93,18 +104,25 @@ document.getElementById('f').addEventListener('submit', async (e) => {
   });
 });
 
-document.getElementById('end').addEventListener('click', async () => {
+// One end path for the button, the time cap, and (later) submit modes.
+let ending = false;
+async function endSession() {
+  if (ending) return;
+  ending = true;
   const btn = document.getElementById('end');
   btn.disabled = true;
-  btn.textContent = 'Classifying…';
+  btn.textContent = 'Grading…';
   // Release the mic FIRST — the session record closes with /api/end, and a
   // live mic past that point streams audio nobody will ever score.
   if (window.ipVoice) window.ipVoice.stop();
   const res = await fetch('/api/end', { method: 'POST' });
+  if (res.status === 409) { btn.textContent = 'Session ended'; return; }
   const card = await res.json();
   render(card);
   btn.textContent = 'Session ended';
-});
+}
+
+document.getElementById('end').addEventListener('click', endSession);
 
 function esc(s) { return String(s).replace(/</g, '&lt;'); }
 

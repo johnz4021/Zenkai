@@ -168,20 +168,27 @@ export function activate(context: vscode.ExtensionContext): void {
     });
   };
 
+  // IP_CAN_RUN_TESTS=0: the round's spec says the suite is not an iteration
+  // tool here (no-run rounds; one-shot rounds grade server-side at submit).
+  // The affordance is ABSENT, not disabled — a greyed-out button reads as
+  // broken, an absent one reads as the rules.
+  const canRunTests = process.env.IP_CAN_RUN_TESTS !== '0';
   const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 1_000);
   statusItem.text = '$(beaker) Run Tests';
   statusItem.command = 'interviewPrep.runTests';
-  statusItem.show();
+  if (canRunTests) statusItem.show();
   context.subscriptions.push(
     statusItem,
-    vscode.commands.registerCommand('interviewPrep.runTests', runTests),
+    vscode.commands.registerCommand('interviewPrep.runTests', () => {
+      if (canRunTests) runTests();
+    }),
   );
 
   // Kickoff run. For a debugging round the failing suite IS the problem
   // statement, and the rubric's trigger is that first failure — it must not
   // depend on the candidate discovering a status-bar button. Opt OUT with
   // IP_AUTORUN_TESTS=0 (round types where a kickoff run makes no sense).
-  if (process.env.IP_AUTORUN_TESTS !== '0') setTimeout(runTests, 3_000);
+  if (process.env.IP_AUTORUN_TESTS !== '0' && canRunTests) setTimeout(runTests, 3_000);
 }
 
 export function deactivate(): void {

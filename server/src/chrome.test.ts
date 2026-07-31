@@ -79,3 +79,40 @@ describe('session chrome', () => {
     expect(voice).not.toMatch(/elevenlabs|xi-api-key/i);
   });
 });
+
+describe('spec-driven session page (capabilities, not format branches)', () => {
+  it('an OA view drops the interviewer intro and shows the one-shot rules', () => {
+    const html = sessionPage('s', {
+      interviewer: false,
+      time_limit_ms: 20 * 60_000,
+      one_shot: true,
+      autorun: false,
+    });
+    expect(html).toContain('no interviewer this round');
+    expect(html).not.toContain('the interviewer only replies');
+    expect(html).toContain('>Submit</button>');
+    expect(html).toContain('data-limit="1200000"');
+    expect(html).toContain('runs ONCE, when you press Submit');
+    expect(html).not.toContain('runs once automatically at start');
+  });
+
+  it('the default view is exactly the debugging round the product always had', () => {
+    const html = sessionPage('s');
+    expect(html).toContain('the interviewer only replies');
+    expect(html).toContain('>End session</button>');
+    expect(html).not.toContain('data-limit');
+    expect(html).toContain('runs once automatically at start');
+  });
+
+  it('a timed-but-live view keeps the interviewer and gains the countdown', () => {
+    const html = sessionPage('s', {
+      interviewer: true,
+      time_limit_ms: 45 * 60_000,
+      one_shot: false,
+      autorun: true,
+    });
+    expect(html).toContain('data-limit="2700000"');
+    expect(html).toContain('the interviewer only replies');
+    expect(html).toContain('>End session</button>');
+  });
+});

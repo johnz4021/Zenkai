@@ -25,7 +25,29 @@ export function clientScript(name = 'session.js'): string | null {
   return readFileSync(path.join(here, 'client', name), 'utf8');
 }
 
-export function sessionPage(sessionId: string): string {
+/** What the page needs to know about the round's shape — derived from the
+ *  RoundSpec by the caller. The page renders from capabilities; it never
+ *  branches on a format name. */
+export interface SessionPageView {
+  interviewer: boolean;
+  time_limit_ms: number | null;
+  one_shot: boolean;
+  /** The kickoff suite run — true only for rounds whose trigger is a failure. */
+  autorun: boolean;
+}
+
+const DEFAULT_VIEW: SessionPageView = {
+  interviewer: true,
+  time_limit_ms: null,
+  one_shot: false,
+  autorun: true,
+};
+
+export function sessionPage(sessionId: string, view: SessionPageView = DEFAULT_VIEW): string {
+  const intro = view.interviewer
+    ? `<p class="u"><b>interviewer</b> — just talk. The mic is live (headphones recommended); think out loud freely — the interviewer only replies when you actually address it, and answers spec questions. Where the bug is, you won't get. Typing here works the same way. Mute is in the header.</p>`
+    : `<p class="u"><b>no interviewer this round</b> — it runs like an online assessment: nobody replies. The mic stays live and thinking out loud still counts; notes typed here land in your record the same way.</p>`;
+  const endLabel = view.one_shot ? 'Submit' : 'End session';
   return /* html */ `<!doctype html>
 <meta charset="utf-8" />
 <title>session ${sessionId}</title>
@@ -67,18 +89,18 @@ export function sessionPage(sessionId: string): string {
 </style>
 <header>
   <span>session <b>${sessionId}</b></span>
-  <span class="t" id="clock">00:00</span>
+  <span class="t" id="clock"${view.time_limit_ms ? ` data-limit="${view.time_limit_ms}"` : ''}>00:00</span>
   <span class="t" id="status">observing: —</span>
   <span class="t" id="voicechip">voice: —</span>
   <button id="mute" title="mute the mic">mute</button>
-  <button id="end">End session</button>
+  <button id="end">${endLabel}</button>
 </header>
 <main>
   <iframe src="/?folder=/home/workspace/problem"></iframe>
   <aside>
     <div id="log">
-      <p class="u"><b>interviewer</b> — just talk. The mic is live (headphones recommended); think out loud freely — the interviewer only replies when you actually address it, and answers spec questions. Where the bug is, you won't get. Typing here works the same way. Mute is in the header.</p>
-      <p class="u"><b>observed</b> — edits, saves, file opens, this chat, and test runs made with the <b>Run Tests</b> button in the editor's status bar. Terminal commands are not observed. Silences ≥20s with no activity anywhere count as going quiet. The suite runs once automatically at start.</p>
+      ${intro}
+      <p class="u"><b>observed</b> — edits, saves, file opens, this chat, and test runs made with the <b>Run Tests</b> button in the editor's status bar. Terminal commands are not observed. Silences ≥20s with no activity anywhere count as going quiet.${view.autorun ? ' The suite runs once automatically at start.' : ''}${view.one_shot ? ' The suite runs ONCE, when you press Submit — make it count.' : ''}</p>
     </div>
     <div id="feedback"></div>
     <form id="f"><input id="msg" autocomplete="off" placeholder="ask / note an assumption…" /><button>send</button></form>

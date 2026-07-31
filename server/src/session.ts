@@ -196,6 +196,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     readFileSync(path.join(cfg.problemDir, 'problem.json'), 'utf8'),
   ) as GeneratedProblem;
 
+  // The round's shape — everything below renders/enforces from THESE flags,
+  // never from a format name (capabilities, not categories).
+  const roundSpec = resolveRoundSpec(problem);
+  const caps = roundSpec.capabilities;
+
   const runtime = problem.runtime ?? 'node';
   if (runtime === 'node') ensureLinuxDeps(cfg.problemDir);
   const extDist = ensureExtensionBuilt(cfg.repoRoot);
@@ -220,9 +225,15 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     '-e', `IP_USER_ID=${cfg.userId}`,
     '-e', `IP_WS_URL=ws://host.docker.internal:${cfg.port}/trace`,
     '-e', `IP_TEST_CMD=${testCmd}`,
-    // Kickoff run is the DEFAULT: the debugging trigger must not depend on
-    // the candidate finding the status-bar button (learned the hard way).
-    ...(cfg.autorunTests ? [] : ['-e', 'IP_AUTORUN_TESTS=0']),
+    // Kickoff run is the DEFAULT for failure-triggered rounds: the debugging
+    // trigger must not depend on the candidate finding the status-bar button
+    // (learned the hard way). Other check kinds start green or blank — an
+    // opening wall of red is noise, not a trigger.
+    ...(cfg.autorunTests && roundSpec.check.kind === 'one_failing_test' ? [] : ['-e', 'IP_AUTORUN_TESTS=0']),
+    // No-run rounds and one-shot rounds both hide the Run Tests affordance:
+    // in one case the suite is off-limits, in the other it is not an
+    // iteration tool (it runs once, server-side, at submit).
+    ...(caps.can_run_tests && caps.submit !== 'one_shot' ? [] : ['-e', 'IP_CAN_RUN_TESTS=0']),
     '-v', `${extDist}:/ext`,
     '-v', `${ideDataDir}:/ipdata`,
     '-v', `${cfg.problemDir}:/home/workspace/problem`,
@@ -250,8 +261,12 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
   // ---- interviewer ----
   const { bug, bugFile } = bugContext(problem);
-  const interviewer =
-    cfg.interviewer === undefined
+  // The spec's interviewer:false (an OA) wins over everything: nobody
+  // replies, so the intent check has nothing to route to either. The mic
+  // stays live — think-aloud is still judge signal.
+  const interviewer = !caps.interviewer
+    ? null
+    : cfg.interviewer === undefined
       ? pickInterviewer(path.join(cfg.repoRoot, 'prompts', 'interviewer.md'))
       : cfg.interviewer;
   // The interviewer silently reads the candidate's gap history — it shapes
@@ -275,12 +290,24 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   };
   let interviewerBusy = false;
 
+  // Timed rounds: the spec's limit is BOTH the interviewer's countdown and a
+  // hard cap; untimed rounds keep the nominal 45-minute pressure horizon
+  // with no enforcement (exactly today's behavior).
+  const sessionLengthMs = caps.time_limit_ms ?? SESSION_LENGTH_MS;
+  // Set when the cap is reached. /api/messages carries it so the client can
+  // end through the normal path (mic released first); the grace timer below
+  // is the fallback for a closed tab — the record must close either way.
+  let timeUpAt: number | null = null;
+
   // ---- intent routing (OUTSIDE the busy lock — eng review issue 1) ----
   // Every utterance is classified the moment it lands; only ADDRESSED ones
   // queue for a reply. Narration never contends for the lock, and a question
   // asked while the agent is mid-turn waits instead of vanishing.
-  const intentCheck: IntentCheck | null =
-    cfg.intentCheck === undefined ? pickIntentCheck() : cfg.intentCheck;
+  const intentCheck: IntentCheck | null = !caps.interviewer
+    ? null
+    : cfg.intentCheck === undefined
+      ? pickIntentCheck()
+      : cfg.intentCheck;
   const turnQueue = new TurnQueue(2);
 
   // ---- voice (IP_VOICE flag + key present, else text-only) ----
@@ -359,7 +386,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         bugFile,
         targetNote,
         elapsedMs: now - (sessionStartedAt ?? now),
-        remainingMs: SESSION_LENGTH_MS - (now - (sessionStartedAt ?? now)),
+        remainingMs: sessionLengthMs - (now - (sessionStartedAt ?? now)),
         recentActivity: renderActivity(events, now),
         transcript: events
           .filter((e) => e.type === 'utterance' || e.type === 'interviewer')
@@ -392,6 +419,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   };
 
   let pressureTimer: NodeJS.Timeout | null = null;
+  let capTimer: NodeJS.Timeout | null = null;
 
   const readBody = (req: http.IncomingMessage): Promise<string> =>
     new Promise((resolve) => {
@@ -402,7 +430,29 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
   const finalize = async (): Promise<unknown> => {
     if (pressureTimer) clearInterval(pressureTimer);
+    if (capTimer) clearInterval(capTimer);
     voice?.close();
+
+    // One-shot rounds are graded HERE, server-side: the suite runs once, at
+    // submit, via docker exec — the extension's Run button never existed for
+    // this round, so there is no other path to a test_run in the trace.
+    if (caps.submit === 'one_shot') {
+      console.log('[session] one-shot submit — running the grading suite');
+      const t0 = Date.now();
+      const run = spawnSync(
+        'docker',
+        ['exec', CONTAINER, 'bash', '-lc', `cd /home/workspace/problem && ${testCmd}`],
+        { encoding: 'utf8', timeout: 180_000 },
+      );
+      const tail = `${run.stdout ?? ''}\n${run.stderr ?? ''}`.slice(-4_000);
+      store.emitChrome('test_run', {
+        via: 'submit',
+        exit_code: run.status,
+        duration_ms: Date.now() - t0,
+        summary: tail.trim().split('\n').filter(Boolean).slice(-2).join(' — '),
+      });
+    }
+
     store.emitChrome('session_end', {});
     const events: TraceEvent[] = store.readAll();
 
@@ -477,7 +527,14 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     if (url === '/session') {
       markCandidateContact();
       res.writeHead(200, { 'content-type': 'text/html' });
-      return res.end(sessionPage(cfg.sessionId));
+      return res.end(
+        sessionPage(cfg.sessionId, {
+          interviewer: Boolean(interviewer),
+          time_limit_ms: caps.time_limit_ms,
+          one_shot: caps.submit === 'one_shot',
+          autorun: cfg.autorunTests && roundSpec.check.kind === 'one_failing_test',
+        }),
+      );
     }
     if (url.startsWith('/client/')) {
       const name = path.basename(url); // no traversal: basename only
@@ -567,7 +624,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           untranscribed: Boolean((e.payload as { untranscribed?: boolean })?.untranscribed),
         }));
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ messages, heard, thinking: interviewerBusy }));
+      return res.end(
+        JSON.stringify({ messages, heard, thinking: interviewerBusy, time_up: timeUpAt !== null }),
+      );
     }
     if (url === '/api/card-feedback' && req.method === 'POST') {
       // Phase 6 golden-set loop: per-dimension "did this match?" from the
@@ -676,6 +735,42 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       void runInterviewer(null);
     }, PRESSURE_TICK_MS);
     pressureTimer.unref();
+  }
+
+  // Hard time cap (timed rounds only). Anchored to the candidate's arrival,
+  // never process start — the 71-idle-minutes lesson. The client is asked to
+  // end first (mic released through the normal path); a 30s grace covers the
+  // closed-tab case so the record always closes.
+  if (caps.time_limit_ms) {
+    let warned = false;
+    capTimer = setInterval(() => {
+      if (ended || sessionStartedAt === null) return;
+      const elapsed = Date.now() - sessionStartedAt;
+      if (!warned && elapsed >= sessionLengthMs * 0.8) {
+        warned = true;
+        const left = Math.max(1, Math.round((sessionLengthMs - elapsed) / 60_000));
+        store.emitChrome('interviewer', {
+          text: `${left} minute${left === 1 ? '' : 's'} remaining.`,
+          kind: 'time',
+          nudge: false,
+        });
+      }
+      if (elapsed >= sessionLengthMs && timeUpAt === null) {
+        timeUpAt = Date.now();
+        store.emitChrome('interviewer', {
+          text: "Time's up — submitting what's there now.",
+          kind: 'time',
+          nudge: false,
+        });
+        console.log('[session] time cap reached — waiting for the client to end');
+      }
+      if (timeUpAt !== null && Date.now() - timeUpAt > 30_000 && !ended) {
+        ended = true;
+        console.log('[session] grace elapsed — finalizing server-side');
+        void finalize().catch((e) => console.error('[session] cap finalize failed:', e));
+      }
+    }, 5_000);
+    capTimer.unref();
   }
 
   console.log(`[session] ${cfg.sessionId}`);
