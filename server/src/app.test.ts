@@ -18,10 +18,21 @@ describe('home app page', () => {
     expect(() => new Function(js)).not.toThrow();
   });
 
-  it('the page loads the client script and both sections', () => {
+  it('the page loads the client script and all three page sections', () => {
     expect(html).toContain('/client/app.js');
+    expect(html).toContain('id="index"');
     expect(html).toContain('id="entry"');
-    expect(html).toContain('id="seasons"');
+    expect(html).toContain('id="timeline"');
+  });
+
+  it('navigation is routes, not visibility toggles', () => {
+    expect(html).toContain('href="#/" id="nav-home"');
+    expect(html).toContain('href="#/new" id="nav-new"');
+    expect(js).toContain('function route()');
+    expect(js).toContain("addEventListener('hashchange'");
+    // The poll-stomps-navigation bug: visibility must never derive from
+    // whether targets exist.
+    expect(js).not.toContain("el('entry').hidden = hasTargets");
   });
 
   it('every intake field has a real label — placeholder-as-label is dead', () => {

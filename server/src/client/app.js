@@ -21,6 +21,27 @@
 function esc(s) { return String(s).replace(/</g, '&lt;'); }
 function el(id) { return document.getElementById(id); }
 
+// ---- routing: the route decides what's visible; the poll only fills it ----
+// #/       all plans (index)
+// #/new    make a plan (intake + flow)
+// #/t/<id> one season timeline
+// The old design derived visibility from hasTargets on every poll and
+// focusout, which yanked the user off the intake page — navigation intent
+// and data state are separate things.
+function route() {
+  const h = window.location.hash || '#/';
+  if (h.startsWith('#/new')) return { page: 'new' };
+  if (h.startsWith('#/t/')) return { page: 'timeline', id: decodeURIComponent(h.slice(4)) };
+  return { page: 'index' };
+}
+
+window.addEventListener('hashchange', () => {
+  // Leaving the intake abandons the client-side flow; the target persists
+  // on disk and surfaces on the index as "finish setting up".
+  if (!window.location.hash.startsWith('#/new')) flowTargetId = null;
+  if (lastStateJson) render(JSON.parse(lastStateJson));
+});
+
 // ---- attachments (client-side until Build my plan) ----
 // They concatenate into the target's context string — the reference
 // material IS the moat input, so it gets a real region, not a text link.
@@ -186,10 +207,11 @@ function runInfer() {
         }
         // The payoff moment: the whole season appears NOW — day 1 keeps
         // generating behind it.
+        const id = flowTargetId;
         flowTargetId = null;
-        el('entry').hidden = true;
         el('entry-flow').hidden = true;
         el('entry-form').hidden = false;
+        window.location.hash = '#/t/' + encodeURIComponent(id);
         refresh(true);
       });
     });
@@ -234,7 +256,7 @@ function renderSeason(row, state) {
     if (left === 0 || Date.parse(t.interview_date + 'T23:59:59') < Date.now()) {
       const ago = Math.max(1, Math.floor((Date.now() - Date.parse(t.interview_date + 'T00:00:00')) / 86400000));
       html += '<h2 class="daysleft">' + esc(t.label) + ' was ' + ago + ' day' + (ago === 1 ? '' : 's') + ' ago — how did it go?</h2>';
-      html += '<p class="meta"><a href="#" class="addlink" data-entry>+ prepare for the next one</a></p></div>';
+      html += '<p class="meta"><a href="#/new" class="addlink">+ prepare for the next one</a></p></div>';
       return html;
     }
     html += '<h2 class="daysleft"><b>' + left + '</b> days to ' + esc(t.label) + '</h2>';
@@ -310,7 +332,6 @@ function renderSeason(row, state) {
     }
   }
   html += '</ol>';
-  html += '<a href="#" class="addlink" data-entry>+ add another interview</a>';
   html += '</div>';
   return html;
 }
@@ -347,37 +368,105 @@ document.addEventListener('focusout', () => {
   }
 });
 
-function render(state) {
-  el('banner').innerHTML = state.session_live
-    ? '<div class="banner">A session is running — <a href="' + esc(state.session_url) + '">rejoin it</a>. One session at a time.</div>'
-    : '';
+// ---- all plans (index) ----
 
-  const hasTargets = state.targets.length > 0;
-  // Mid-flow the entry section owns the screen regardless of state.
-  if (flowTargetId !== null) return;
-  el('entry').hidden = hasTargets;
-  el('seasons').hidden = !hasTargets;
-  if (!hasTargets) return;
+function renderIndex(state) {
+  let html = '<h2 class="daysleft" style="font-size:15px">your plans</h2>';
+  for (const row of state.targets) {
+    const t = row.target;
+    if (!t.specs.length) {
+      // Orphan from an abandoned intake: visible and resumable, never dead.
+      html += '<a href="#/new" class="plancard setup" data-resume="' + esc(t.id) + '">' +
+        '<h2>' + esc(t.label) + '</h2>' +
+        '<span class="go">finish setting up →</span></a>';
+      continue;
+    }
+    const total = row.queue ? row.queue.items.length : 0;
+    const done = row.queue ? row.queue.items.filter((i) => i.status === 'done' || i.status === 'skipped').length : 0;
+    const pct = total ? Math.round((done / total) * 100) : 0;
+    let left = '';
+    if (t.interview_date) {
+      const n = Math.max(0, Math.ceil((Date.parse(t.interview_date + 'T23:59:59') - Date.now()) / 86400000));
+      left = n === 0 ? 'interview passed' : n + ' days left';
+    }
+    const nextItem = row.next;
+    const nextLine = nextItem
+      ? (nextItem.status === 'generating' ? 'building: ' : 'next: ') + esc(nextItem.title || nextItem.planned_title || nextItem.label)
+      : done === total && total > 0 ? 'season complete' : '';
+    html += '<a href="#/t/' + encodeURIComponent(t.id) + '" class="plancard">' +
+      '<h2>' + esc(t.label) + '</h2>' +
+      '<span class="meta">' + left + (left && total ? ' · ' : '') + (total ? done + '/' + total + ' done' : '') + '</span>' +
+      '<div class="bar"><div class="fill" style="width:' + pct + '%"></div></div>' +
+      '<div class="nextline">' + nextLine + '</div></a>';
+  }
+  el('index').innerHTML = html;
+  for (const a of el('index').querySelectorAll('[data-resume]')) {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      resumeIntake(a.dataset.resume);
+    });
+  }
+}
 
-  const seasons = el('seasons');
-  seasons.innerHTML = state.targets.map((row) => renderSeason(row, state)).join('');
-  for (const b of seasons.querySelectorAll('button.start')) {
+/** Re-enter the intake flow for a target created but never confirmed —
+ *  its description is already on disk; /api/infer reads it. */
+function resumeIntake(id) {
+  window.location.hash = '#/new';
+  flowTargetId = id;
+  runInfer();
+}
+
+function wireTimeline(container) {
+  for (const b of container.querySelectorAll('button.start')) {
     b.addEventListener('click', () => launch(b.dataset.t, b.dataset.i));
   }
-  for (const b of seasons.querySelectorAll('button.retry')) {
+  for (const b of container.querySelectorAll('button.retry')) {
     b.addEventListener('click', async () => {
       await fetch('/api/retry', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: b.dataset.t, item_id: b.dataset.i }) });
       refresh(true);
     });
   }
-  for (const a of seasons.querySelectorAll('[data-entry]')) {
-    a.addEventListener('click', (e) => {
-      e.preventDefault();
-      el('seasons').hidden = true;
-      el('entry').hidden = false;
-      el('e-desc').focus();
-    });
+}
+
+function render(state) {
+  el('banner').innerHTML = state.session_live
+    ? '<div class="banner">A session is running — <a href="' + esc(state.session_url) + '">rejoin it</a>. One session at a time.</div>'
+    : '';
+
+  const r = route();
+  // Data-driven redirects only — never visibility flips: with nothing set
+  // up yet, the only page that exists is the intake.
+  if (!state.targets.length && r.page !== 'new') {
+    window.location.hash = '#/new';
+    return; // hashchange re-renders
   }
+
+  el('index').hidden = r.page !== 'index';
+  el('entry').hidden = r.page !== 'new';
+  el('timeline').hidden = r.page !== 'timeline';
+  el('nav-new').hidden = r.page === 'new';
+
+  if (r.page === 'index') {
+    renderIndex(state);
+    return;
+  }
+  if (r.page === 'new') {
+    // Mid-flow the flow DOM owns the section — never repaint under the user.
+    if (flowTargetId === null) {
+      el('entry-flow').hidden = true;
+      el('entry-form').hidden = false;
+    }
+    return;
+  }
+  // timeline
+  const row = state.targets.find((x) => x.target.id === r.id);
+  if (!row) {
+    window.location.hash = '#/';
+    return;
+  }
+  const tl = el('timeline');
+  tl.innerHTML = '<a href="#/" class="backlink">← all plans</a>' + renderSeason(row, state);
+  wireTimeline(tl);
 }
 
 async function launch(targetId, itemId) {

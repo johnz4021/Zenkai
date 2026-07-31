@@ -192,6 +192,18 @@ export function appPage(): string {
   * { box-sizing: border-box; }
   body { margin: 0 auto; max-width: 760px; padding: 32px 16px 48px; font: 13px/1.5 ui-monospace, monospace; background: #17171a; color: #e6e6ea; }
   .micro { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--dim); margin: 0 0 18px; }
+  nav { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 18px; }
+  nav a { text-decoration: none; }
+  nav .micro { margin: 0; }
+  #nav-new { color: var(--dim); }
+  a.plancard { display: block; border: 1px solid var(--line); padding: 14px; margin: 12px 0; text-decoration: none; }
+  .plancard h2 { font-size: 15px; font-weight: normal; margin: 0 0 4px; }
+  .plancard .bar { height: 2px; background: var(--line); margin: 10px 0 6px; }
+  .plancard .bar .fill { height: 100%; background: var(--accent); }
+  .plancard .nextline { color: var(--dim); }
+  .plancard.setup { color: var(--dim); }
+  .plancard.setup .go { color: var(--accent); }
+  .backlink { display: inline-block; color: var(--dim); text-decoration: none; margin-bottom: 14px; }
   .meta { color: var(--dim); }
   .err { color: #e6a23c; }
   a { color: inherit; }
@@ -265,8 +277,13 @@ export function appPage(): string {
   <p>This runs practice sessions in a real code editor, so it lives on your laptop. Open it there.</p>
 </div>
 <div id="page">
-  <p class="micro">interview prep</p>
+  <nav>
+    <a href="#/" id="nav-home"><span class="micro">interview prep</span></a>
+    <a href="#/new" id="nav-new">+ new plan</a>
+  </nav>
   <div id="banner" aria-live="polite"></div>
+
+  <section id="index" hidden></section>
 
   <section id="entry" hidden>
     <div id="entry-form">
@@ -300,7 +317,7 @@ export function appPage(): string {
     <div id="entry-flow" hidden aria-live="polite"></div>
   </section>
 
-  <section id="seasons" hidden></section>
+  <section id="timeline" hidden></section>
 </div>
 <script src="/client/app.js"></script>
 `;
