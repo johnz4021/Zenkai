@@ -98,8 +98,48 @@ function startInfer(targetId) {
   inferTargetId = targetId;
   const box = document.getElementById('inferbox');
   box.style.display = 'block';
-  box.innerHTML = '<h2>round shape</h2><p class="meta">Reading your description…</p>';
   box.scrollIntoView();
+  // Research is optional and comes FIRST when wanted — its confirmed
+  // findings feed the shape inference.
+  box.innerHTML = '<h2>round shape</h2>' +
+    '<p class="meta">Optionally, look up what this round looks like from public writeups (Blind, LeetCode discuss, GitHub — cited, ~2 min). Skip if you already know.</p>' +
+    '<button id="do-research">research it first</button> ' +
+    '<button id="skip-research" class="primary">I know the round — infer the shape</button>';
+  document.getElementById('do-research').addEventListener('click', () => runResearch(targetId));
+  document.getElementById('skip-research').addEventListener('click', () => runInfer(targetId));
+}
+
+function runResearch(targetId) {
+  const box = document.getElementById('inferbox');
+  box.innerHTML = '<h2>researching…</h2><p class="meta">Searching public sources for this round\'s shape. A minute or two.</p>';
+  fetch('/api/research', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: targetId }) })
+    .then((r) => r.json())
+    .then((d) => {
+      if (d.error) {
+        box.innerHTML = '<p class="err">' + esc(d.error) + '</p><button id="skip-research" class="primary">continue without research</button>';
+        document.getElementById('skip-research').addEventListener('click', () => runInfer(targetId));
+        return;
+      }
+      let html = '<h2>what turned up — check it before it\'s used</h2>';
+      html += '<p>' + esc(d.summary) + '</p>';
+      if (!d.findings.length) html += '<p class="meta">No citable findings — the summary above is all there was.</p>';
+      for (const f of d.findings) {
+        html += '<p class="cite meta">· ' + esc(f.claim) + '<br>&nbsp;&nbsp;<a href="' + esc(f.url) + '" target="_blank" style="color:inherit">' + esc(f.url) + '</a></p>';
+      }
+      html += '<button id="confirm-research" class="primary">looks right — use it</button> ' +
+        '<button id="reject-research">ignore it</button>';
+      box.innerHTML = html;
+      document.getElementById('confirm-research').addEventListener('click', async () => {
+        await fetch('/api/research/confirm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: targetId }) });
+        runInfer(targetId);
+      });
+      document.getElementById('reject-research').addEventListener('click', () => runInfer(targetId));
+    });
+}
+
+function runInfer(targetId) {
+  const box = document.getElementById('inferbox');
+  box.innerHTML = '<h2>round shape</h2><p class="meta">Reading your description…</p>';
   fetch('/api/infer', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: targetId }) })
     .then((r) => r.json())
     .then((d) => {

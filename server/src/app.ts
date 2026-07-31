@@ -206,6 +206,34 @@ export function runApp(cfg: AppConfig): http.Server {
           return json(502, { error: `inference failed: ${String(e).slice(0, 300)}` });
         }
       }
+      if (url === '/api/research' && req.method === 'POST') {
+        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string };
+        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (!t) return json(404, { error: 'no such target' });
+        const { claudePResearcher } = await import('./research.js');
+        try {
+          const result = await claudePResearcher(path.join(repoRoot, 'prompts', 'research-round.md'))(
+            t.label,
+            t.description,
+          );
+          // Saved UNCONFIRMED: nothing downstream reads it until the
+          // candidate has seen the citations and said yes.
+          t.research = { ...result, confirmed: false };
+          saveTarget(repoRoot, t);
+          return json(200, t.research);
+        } catch (e) {
+          return json(502, { error: `research failed: ${String(e).slice(0, 300)}` });
+        }
+      }
+      if (url === '/api/research/confirm' && req.method === 'POST') {
+        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; summary?: string };
+        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (!t?.research) return json(404, { error: 'no research to confirm' });
+        if (b.summary?.trim()) t.research.summary = b.summary.trim(); // their edit wins
+        t.research.confirmed = true;
+        saveTarget(repoRoot, t);
+        return json(200, { ok: true });
+      }
       if (url === '/api/accept-spec' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; spec?: RoundSpec };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
