@@ -16,17 +16,23 @@ import { listReady, markUsed, pickProblem } from './pool.js';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
 const problemsRoot = path.join(repoRoot, 'problems');
-const templatePath = path.join(repoRoot, 'prompts', 'generate-debugging-problem.md');
+const templatePath = path.join(repoRoot, 'prompts', 'generate-round.md');
 const THEME =
-  'an inventory reservation module for a small e-commerce backend: stock levels, time-limited holds placed by checkouts, hold expiry, and conversion of holds into shipments';
+  'A debugging round: the candidate is dropped into an unfamiliar codebase with one failing test and must find and fix the root cause. Domain: an inventory reservation module for a small e-commerce backend — stock levels, time-limited holds placed by checkouts, hold expiry, and conversion of holds into shipments.';
 
 const [cmd, target] = process.argv.slice(2);
 const userId = process.env.IP_USER_ID ?? 'u1';
 
-async function generateInto(targetDir: string, targetNote?: string): Promise<number> {
+async function generateInto(
+  targetDir: string,
+  targetNote?: string,
+  brief: string = THEME,
+  spec?: import('@interview-prep/shared').RoundSpec,
+): Promise<number> {
   const result = await generateProblem({
     targetDir,
-    theme: THEME,
+    brief,
+    spec,
     targetNote,
     templatePath,
     model: 'opus',
@@ -47,9 +53,127 @@ async function generateInto(targetDir: string, targetNote?: string): Promise<num
   return report.ok ? 0 : 2;
 }
 
+/** Flag parsing for the target subcommands: --k v pairs after positionals. */
+function parseFlags(argv: string[]): { positional: string[]; flags: Record<string, string> } {
+  const positional: string[] = [];
+  const flags: Record<string, string> = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a.startsWith('--')) {
+      flags[a.slice(2)] = argv[i + 1] && !argv[i + 1]!.startsWith('--') ? argv[++i]! : 'true';
+    } else {
+      positional.push(a);
+    }
+  }
+  return { positional, flags };
+}
+
 if (cmd === 'generate') {
   const dir = path.resolve(target ?? path.join(problemsRoot, `debugging-${Date.now()}`));
   process.exit(await generateInto(dir));
+} else if (cmd === 'target') {
+  // Season-program intake, CLI-first: the same functions the home app calls.
+  const { listTargets, loadTarget, pickSpecInferrer, saveTarget, slugify, targetDir } =
+    await import('./intake.js');
+  const { readFileSync: rf } = await import('node:fs');
+  const sub = target;
+  const rest = process.argv.slice(4);
+  if (sub === 'add') {
+    const { positional, flags } = parseFlags(rest);
+    const label = positional.join(' ');
+    if (!label) {
+      console.error('usage: cli.ts target add "<label>" [--date YYYY-MM-DD] [--desc "..."] [--context-file <path>]');
+      process.exit(64);
+    }
+    const t = {
+      id: `${slugify(label)}-${Date.now().toString(36)}`,
+      label,
+      ...(flags.date ? { interview_date: flags.date } : {}),
+      description: flags.desc ?? '',
+      ...(flags['context-file'] ? { context: rf(path.resolve(flags['context-file']), 'utf8') } : {}),
+      specs: [],
+      created: new Date().toISOString(),
+    };
+    saveTarget(repoRoot, t);
+    console.log(JSON.stringify({ id: t.id, label: t.label, interview_date: t.interview_date ?? null }, null, 2));
+  } else if (sub === 'list') {
+    console.log(
+      JSON.stringify(
+        listTargets(repoRoot).map((t) => ({
+          id: t.id,
+          label: t.label,
+          interview_date: t.interview_date ?? null,
+          specs: t.specs.map((s) => s.id),
+        })),
+        null,
+        2,
+      ),
+    );
+  } else if (sub === 'infer') {
+    const { positional, flags } = parseFlags(rest);
+    const [id, ...descParts] = positional;
+    const t = id ? loadTarget(repoRoot, id) : null;
+    if (!t) {
+      console.error('usage: cli.ts target infer <target-id> "<round description>" [--accept]');
+      process.exit(64);
+    }
+    const description = descParts.join(' ') || t.description;
+    if (!description) {
+      console.error('no round description (pass one, or set --desc on the target)');
+      process.exit(64);
+    }
+    const infer = pickSpecInferrer(path.join(repoRoot, 'prompts', 'infer-round-spec.md'));
+    const context = [t.context, t.research?.confirmed ? t.research.summary : '']
+      .filter(Boolean)
+      .join('\n\n');
+    const draft = await infer(description, context);
+    console.log(JSON.stringify(draft, null, 2));
+    if (draft.unsupported) {
+      console.error(`\nNOT SUPPORTED: ${draft.unsupported}\nNothing saved.`);
+      process.exit(3);
+    }
+    if (flags.accept === 'true') {
+      // The human IS the confirm gate — --accept is that confirmation.
+      t.specs = [...t.specs.filter((s) => s.id !== draft.spec.id), draft.spec];
+      saveTarget(repoRoot, t);
+      console.error(`\naccepted → ${t.id} specs: [${t.specs.map((s) => s.id).join(', ')}]`);
+    } else {
+      console.error('\ndraft only — rerun with --accept to save it to the target');
+    }
+  } else {
+    console.error('usage: cli.ts target <add|list|infer> ...');
+    process.exit(64);
+  }
+} else if (cmd === 'generate-for') {
+  // Generate a problem for a target's confirmed spec, into the target's own
+  // problems dir (the generic pool stays untouched — queue items reference
+  // problem dirs explicitly).
+  const { loadTarget } = await import('./intake.js');
+  const { positional } = parseFlags(process.argv.slice(3));
+  const [targetId, specId] = positional;
+  const t = targetId ? loadTarget(repoRoot, targetId) : null;
+  if (!t) {
+    console.error('usage: cli.ts generate-for <target-id> [spec-id]');
+    process.exit(64);
+  }
+  const spec = specId ? t.specs.find((s) => s.id === specId) : t.specs[0];
+  if (!spec) {
+    console.error(`no confirmed spec ${specId ? `"${specId}" ` : ''}on target ${t.id} — run target infer --accept first`);
+    process.exit(2);
+  }
+  const brief = [
+    `Round: ${spec.label}.`,
+    spec.emphasis ? `Emphasis: ${spec.emphasis}.` : '',
+    t.description ? `The candidate describes it as: ${t.description}` : '',
+    t.context ? `Reference material from the candidate:\n${t.context}` : '',
+    t.research?.confirmed ? `Confirmed research findings:\n${t.research.summary}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  const { targetDir: tDir } = await import('./intake.js');
+  const dir = path.join(tDir(repoRoot, t.id), 'problems', `${spec.id}-${Date.now().toString(36)}`);
+  console.log(`[generate-for] ${t.id} / ${spec.id} → ${dir}`);
+  process.exit(await generateInto(dir, undefined, brief, spec));
 } else if (cmd === 'prepare') {
   // Targeting note comes either from the env (set by the session that just
   // ended) or is derived here from the stored gap graph.
@@ -243,7 +367,9 @@ if (cmd === 'generate') {
       '  cli.ts prepare           generate next problem targeted at your gap graph\n' +
       '  cli.ts validate <dir>\n' +
       '  cli.ts pool              list unused problems\n' +
-      '  cli.ts session [dir]     run a session (picks from pool if dir omitted)',
+      '  cli.ts session [dir]     run a session (picks from pool if dir omitted)\n' +
+      '  cli.ts target <add|list|infer> ...   season-program targets\n' +
+      '  cli.ts generate-for <target-id> [spec-id]   generate from a confirmed spec',
   );
   process.exit(64);
 }

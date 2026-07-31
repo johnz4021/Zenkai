@@ -88,6 +88,22 @@ export const DEFAULT_DEBUGGING_SPEC: RoundSpec = {
   memory_tags: ['has_existing_code', 'live_interviewer'],
 };
 
+/**
+ * Tags are DERIVED, never authored — by code from capabilities, not by the
+ * inference model. One less thing an LLM can get wrong, and the tag
+ * semantics stay stable no matter who wrote the spec.
+ */
+export function deriveMemoryTags(caps: RoundCapabilities): MemoryTag[] {
+  const tags: MemoryTag[] = [];
+  if (caps.starts_from === 'repo') tags.push('has_existing_code');
+  if (caps.starts_from === 'blank') tags.push('from_scratch');
+  if (caps.starts_from === 'diff') tags.push('review');
+  if (caps.time_limit_ms !== null) tags.push('time_boxed');
+  if (caps.submit === 'one_shot') tags.push('autograded');
+  if (caps.interviewer) tags.push('live_interviewer');
+  return tags;
+}
+
 const CHECK_KINDS = new Set(['one_failing_test', 'all_failing', 'all_passing', 'diff_present']);
 const STARTS_FROM = new Set(['repo', 'blank', 'diff']);
 const SUBMITS = new Set(['iterate', 'one_shot']);

@@ -25,3 +25,5 @@ feedback/
 *.tsbuildinfo
 shared/dist/
 .ide-data/
+targets/
+feedback/
