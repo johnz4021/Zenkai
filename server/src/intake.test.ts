@@ -92,3 +92,18 @@ describe('slugify', () => {
     expect(slugify('***')).toBe('target');
   });
 });
+
+describe('draftToSpec tolerates model-typed "optional strings" (live failure)', () => {
+  const base = {
+    id: 'x', label: 'X round', interviewer: false, can_run_tests: true,
+    time_limit_minutes: 60, starts_from: 'blank' as const, submit: 'one_shot' as const,
+    check_kind: 'all_failing' as const, rationale: 'r', unsupported: '',
+  };
+  it('null emphasis, numeric-string minutes, array unsupported', () => {
+    const d = draftToSpec({ ...base, emphasis: null, time_limit_minutes: '60' } as never);
+    expect(d.spec.emphasis).toBeUndefined();
+    expect(d.spec.capabilities.time_limit_ms).toBe(60 * 60_000);
+    const d2 = draftToSpec({ ...base, unsupported: ['needs a canvas'] } as never);
+    expect(d2.unsupported).toBe('needs a canvas');
+  });
+});

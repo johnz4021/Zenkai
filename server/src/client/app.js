@@ -132,7 +132,7 @@ function runResearch() {
     '<p class="meta">Public writeups only — you\'ll see every source before anything gets used. A minute or two.</p>' +
     '<div class="progress"><div class="fill"></div></div>' +
     '<a href="#" id="skip-research" class="meta">skip — I know the round</a>');
-  el('skip-research').addEventListener('click', (e) => { e.preventDefault(); runInfer(); });
+  el('skip-research').addEventListener('click', (e) => { e.preventDefault(); runClarify(null); });
   fetch('/api/research', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: flowTargetId }) })
     .then((r) => r.json())
     .then((d) => {
@@ -142,12 +142,12 @@ function runResearch() {
           '<button id="re-research" type="button">try again</button> ' +
           '<button id="skip2" class="primary" type="button">continue without research</button>');
         el('re-research').addEventListener('click', runResearch);
-        el('skip2').addEventListener('click', runInfer);
+        el('skip2').addEventListener('click', () => runClarify(null));
         return;
       }
       if (!d.findings || !d.findings.length) {
         flow('<p class="meta">Nothing solid found publicly — going with what you told me.</p>');
-        window.setTimeout(runInfer, 900);
+        window.setTimeout(() => runClarify(null), 900);
         return;
       }
       let html = '<h2>What turned up — check it before it\'s used</h2><p>' + esc(d.summary) + '</p><div class="findings">';
@@ -159,62 +159,131 @@ function runResearch() {
       flow(html);
       el('use-research').addEventListener('click', async () => {
         await fetch('/api/research/confirm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: flowTargetId }) });
-        runInfer();
+        runClarify(null);
       });
-      el('drop-research').addEventListener('click', runInfer);
+      el('drop-research').addEventListener('click', () => runClarify(null));
     });
 }
 
-function runInfer() {
+function specShapeLine(c) {
+  return (c.interviewer ? 'live interviewer' : 'no interviewer (OA)') + ' · ' +
+    (c.time_limit_ms ? Math.round(c.time_limit_ms / 60000) + ' min' : 'untimed') + ' · ' +
+    'starts from ' + esc(c.starts_from) + ' · ' +
+    (c.submit === 'one_shot' ? 'graded once at submit' : 'iterate freely');
+}
+
+function runClarify(answers) {
   flow('<h2>Working out the round\'s shape…</h2><div class="progress"><div class="fill"></div></div>');
-  fetch('/api/infer', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: flowTargetId }) })
+  fetch('/api/clarify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: flowTargetId, answers: answers || undefined }) })
     .then((r) => r.json())
     .then((d) => {
       if (d.error) {
         flow('<p class="err">' + esc(d.error) + '</p><p class="meta">Your description is saved.</p>' +
-          '<button id="re-infer" class="primary" type="button">try again</button>');
-        el('re-infer').addEventListener('click', runInfer);
+          '<button id="re-clarify" class="primary" type="button">try again</button>');
+        el('re-clarify').addEventListener('click', () => runClarify(answers));
         return;
       }
-      draft = d;
-      if (d.unsupported) {
-        flow('<h2>Can\'t run this round honestly</h2><p>' + esc(d.unsupported) + '</p>' +
-          '<p class="meta">Rather than fake it, this round isn\'t offered. Edit the description if that\'s wrong.</p>' +
-          '<button id="back-edit" type="button">edit description</button>');
-        el('back-edit').addEventListener('click', backToForm);
-        return;
-      }
-      const c = d.spec.capabilities;
-      flow('<h2>Confirm the shape</h2>' +
-        '<div class="specbox"><p><b>' + esc(d.spec.label) + '</b></p><p class="meta">' +
-        (c.interviewer ? 'live interviewer' : 'no interviewer (OA)') + ' · ' +
-        (c.time_limit_ms ? Math.round(c.time_limit_ms / 60000) + ' min' : 'untimed') + ' · ' +
-        'starts from ' + esc(c.starts_from) + ' · ' +
-        (c.submit === 'one_shot' ? 'graded once at submit' : 'iterate freely') +
-        (d.spec.emphasis ? ' · emphasis: ' + esc(d.spec.emphasis) : '') + '</p></div>' +
-        '<p class="rationale">' + esc(d.rationale) + '</p>' +
-        '<button id="accept" class="primary" type="button">looks right — build my plan</button> ' +
-        '<button id="back-edit" type="button">edit description</button>');
-      el('back-edit').addEventListener('click', backToForm);
-      el('accept').addEventListener('click', async () => {
-        flow('<h2>Building your plan…</h2><div class="progress"><div class="fill"></div></div>');
-        const r = await fetch('/api/accept-spec', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: flowTargetId, spec: draft.spec }) });
-        const s = await r.json();
-        if (s.error) {
-          flow('<p class="err">' + esc(s.error) + '</p><button id="re-infer" class="primary" type="button">back</button>');
-          el('re-infer').addEventListener('click', runInfer);
-          return;
-        }
-        // The payoff moment: the whole season appears NOW — day 1 keeps
-        // generating behind it.
-        const id = flowTargetId;
-        flowTargetId = null;
-        el('entry-flow').hidden = true;
-        el('entry-form').hidden = false;
-        window.location.hash = '#/t/' + encodeURIComponent(id);
-        refresh(true);
-      });
+      // One answer round-trip max: after answers, or with none needed, confirm.
+      if (d.questions && d.questions.length && !answers) renderQuestions(d);
+      else renderConfirm(d.drafts);
     });
+}
+
+/** 0-3 structured questions from the reasoner. Options, a recommended tag,
+ *  a free-text escape per question, and a global "use your best guess". */
+function renderQuestions(d) {
+  let html = '<h2>Quick check before the plan gets built</h2>' +
+    '<p class="meta">The research raised something worth settling — wrong answers here cost you generated rounds of the wrong shape.</p>';
+  d.questions.forEach((q, qi) => {
+    html += '<div class="q" data-qi="' + qi + '"><p class="qtext">' + esc(q.question) + '</p>' +
+      '<p class="meta qwhy">' + esc(q.why) + '</p>';
+    q.options.forEach((op, oi) => {
+      const rec = q.recommended && q.recommended === op.label;
+      html += '<label class="opt"><input type="radio" name="q' + qi + '" value="' + oi + '"' + (rec ? ' checked' : '') + ' />' +
+        '<span>' + esc(op.label) + (rec ? ' <em class="rec">recommended</em>' : '') +
+        (op.detail ? '<br /><span class="meta">' + esc(op.detail) + '</span>' : '') + '</span></label>';
+    });
+    html += '<label class="opt"><input type="radio" name="q' + qi + '" value="other" />' +
+      '<span>something else: <input type="text" class="otherbox" data-qi="' + qi + '" placeholder="say it in a few words" /></span></label>';
+    html += '</div>';
+  });
+  html += '<button id="q-submit" class="primary" type="button">that\'s right — build the plan</button> ' +
+    '<button id="q-skip" type="button">use your best guess</button>';
+  flow(html);
+  for (const box of el('entry-flow').querySelectorAll('.otherbox')) {
+    box.addEventListener('focus', () => {
+      const radios = el('entry-flow').querySelectorAll('input[name="q' + box.dataset.qi + '"]');
+      radios[radios.length - 1].checked = true;
+    });
+  }
+  el('q-skip').addEventListener('click', () => renderConfirm(d.drafts));
+  el('q-submit').addEventListener('click', () => {
+    const answers = d.questions.map((q, qi) => {
+      const picked = el('entry-flow').querySelector('input[name="q' + qi + '"]:checked');
+      if (!picked) return { question: q.question, answer: '(no answer — use your best guess)' };
+      if (picked.value === 'other') {
+        const box = el('entry-flow').querySelector('.otherbox[data-qi="' + qi + '"]');
+        return { question: q.question, answer: box.value.trim() || '(no answer — use your best guess)' };
+      }
+      return { question: q.question, answer: q.options[Number(picked.value)].label };
+    });
+    runClarify(answers);
+  });
+}
+
+/** The confirm gate, now over one OR MORE drafts. Each can be dropped;
+ *  unsupported drafts render as honest declines and are never accepted. */
+function renderConfirm(allDrafts) {
+  drafts = allDrafts || [];
+  const usable = drafts.filter((x) => !x.unsupported);
+  let html = '<h2>' + (usable.length > 1 ? 'Confirm your rounds — the plan covers all of them' : 'Confirm the shape') + '</h2>';
+  drafts.forEach((x, i) => {
+    if (x.unsupported) {
+      html += '<div class="specbox dropped"><p><b>' + esc(x.spec.label) + '</b> — can\'t run honestly</p>' +
+        '<p class="meta">' + esc(x.unsupported) + '</p></div>';
+      return;
+    }
+    html += '<div class="specbox" data-di="' + i + '"><p><b>' + esc(x.spec.label) + '</b>' +
+      (usable.length > 1 ? ' <label class="keep"><input type="checkbox" checked data-di="' + i + '" /> include</label>' : '') +
+      '</p><p class="meta">' + specShapeLine(x.spec.capabilities) +
+      (x.spec.emphasis ? ' · emphasis: ' + esc(x.spec.emphasis) : '') + '</p>' +
+      '<p class="rationale">' + esc(x.rationale) + '</p></div>';
+  });
+  if (usable.length === 0) {
+    html += '<p class="meta">Rather than fake it, none of this is offered. Edit the description if that\'s wrong.</p>' +
+      '<button id="back-edit" type="button">edit description</button>';
+    flow(html);
+    el('back-edit').addEventListener('click', backToForm);
+    return;
+  }
+  html += '<button id="accept" class="primary" type="button">looks right — build my plan</button> ' +
+    '<button id="back-edit" type="button">edit description</button>';
+  flow(html);
+  el('back-edit').addEventListener('click', backToForm);
+  el('accept').addEventListener('click', async () => {
+    const kept = drafts.filter((x, i) => {
+      if (x.unsupported) return false;
+      const cb = el('entry-flow').querySelector('input[type="checkbox"][data-di="' + i + '"]');
+      return !cb || cb.checked;
+    }).map((x) => x.spec);
+    if (!kept.length) return;
+    flow('<h2>Building your plan…</h2><div class="progress"><div class="fill"></div></div>');
+    const r = await fetch('/api/accept-spec', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: flowTargetId, specs: kept }) });
+    const s = await r.json();
+    if (s.error) {
+      flow('<p class="err">' + esc(s.error) + '</p><button id="re-confirm" class="primary" type="button">back</button>');
+      el('re-confirm').addEventListener('click', () => renderConfirm(drafts));
+      return;
+    }
+    // The payoff moment: the whole season appears NOW — day 1 keeps
+    // generating behind it.
+    const id = flowTargetId;
+    flowTargetId = null;
+    el('entry-flow').hidden = true;
+    el('entry-form').hidden = false;
+    window.location.hash = '#/t/' + encodeURIComponent(id);
+    refresh(true);
+  });
 }
 
 function backToForm() {
@@ -246,7 +315,7 @@ function itemTitle(item) {
 
 function renderSeason(row, state) {
   const t = row.target;
-  const caps = (t.specs[0] || {}).capabilities;
+  const capsOf = (item) => ((t.specs.find((x) => x.id === item.spec_id) || t.specs[0] || {}).capabilities);
   const days = row.days || [];
   let html = '<div class="season">';
 
@@ -289,7 +358,7 @@ function renderSeason(row, state) {
         html += '<div class="grow"><span class="title meta">nothing scheduled — the plan resumes tomorrow</span></div>';
       } else if (item.status === 'ready') {
         html += '<div class="grow"><div class="title">' + esc(itemTitle(item)) + '</div>' +
-          '<div class="metaline">' + metaLine(caps) + '</div>' +
+          '<div class="metaline">' + metaLine(capsOf(item)) + '</div>' +
           (state.focus ? '<div class="aimed">aimed at: ' + esc(state.focus.description) + '</div>' : '') + '</div>';
         if (!state.session_live) {
           html += '<button class="primary start" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">Start</button>';
@@ -415,7 +484,7 @@ function renderIndex(state) {
 function resumeIntake(id) {
   window.location.hash = '#/new';
   flowTargetId = id;
-  runInfer();
+  runClarify(null);
 }
 
 function wireTimeline(container) {

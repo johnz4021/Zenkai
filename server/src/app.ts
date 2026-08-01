@@ -325,6 +325,16 @@ export function appPage(): string {
   .findings p { margin: 7px 0; }
   .rationale { color: var(--dim); white-space: pre-wrap; }
   .specbox { border: 1px solid var(--line); padding: 13px 15px; margin: 10px 0; background: rgba(255, 255, 255, .012); }
+  .specbox.dropped { opacity: .55; }
+  .specbox .keep { display: inline-flex; gap: 6px; margin-left: 12px; color: var(--dim); font-weight: 400; }
+  .specbox .keep input { width: auto; }
+  .q { border: 1px solid var(--line); padding: 14px 16px; margin: 14px 0; background: rgba(255, 255, 255, .012); }
+  .q .qtext { margin: 0 0 2px; font-weight: 500; }
+  .q .qwhy { margin: 0 0 10px; }
+  .q .opt { display: flex; gap: 10px; align-items: baseline; padding: 7px 0; margin: 0; border-top: 1px solid var(--line-soft); cursor: pointer; }
+  .q .opt input[type="radio"] { width: auto; accent-color: var(--accent); }
+  .q .opt .rec { color: var(--accent); font-style: normal; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; margin-left: 6px; }
+  .q .otherbox { width: 260px; display: inline-block; padding: 4px 8px; margin-left: 6px; }
   .progress { height: 2px; background: var(--line); margin: 16px 0; overflow: hidden; }
   .progress .fill { height: 100%; background: var(--accent); width: 30%; animation: slide 1.5s ease-in-out infinite alternate; box-shadow: 0 0 8px var(--accent-dim); }
   @keyframes slide { from { margin-left: 0; } to { margin-left: 70%; } }
@@ -538,19 +548,43 @@ export function runApp(cfg: AppConfig): http.Server {
         saveTarget(repoRoot, t);
         return json(200, { id: t.id });
       }
-      if (url === '/api/infer' && req.method === 'POST') {
-        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; description?: string };
+      if (url === '/api/clarify' && req.method === 'POST') {
+        // The intake reasoner: sees everything intake knows, returns 0-3
+        // structured questions + 1+ round drafts. The research findings
+        // stop being flattened into a use-it/ignore-it binary — a
+        // contradiction between the description and the sources becomes a
+        // QUESTION, and multiple real rounds become multiple specs.
+        const b = JSON.parse((await readBody(req)) || '{}') as {
+          target_id?: string;
+          answers?: { question: string; answer: string }[];
+        };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
         if (!t) return json(404, { error: 'no such target' });
-        const description = b.description?.trim() || t.description;
-        if (!description) return json(400, { error: 'describe the round first' });
-        const infer = pickSpecInferrer(path.join(repoRoot, 'prompts', 'infer-round-spec.md'));
-        const context = [t.context, t.research?.confirmed ? t.research.summary : ''].filter(Boolean).join('\n\n');
+        if (!t.description) return json(400, { error: 'describe the round first' });
+        const { pickClarifier } = await import('./clarify.js');
+        const findings = t.research?.confirmed
+          ? [t.research.summary, ...t.research.findings.map((f) => `- ${f.claim} (${f.url})`)].join('\n')
+          : '';
         try {
-          const draft = await infer(description, context);
-          return json(200, draft);
+          const result = await pickClarifier(path.join(repoRoot, 'prompts', 'clarify-intake.md'))({
+            description: t.description,
+            context: t.context ?? '',
+            findings,
+            answers: b.answers,
+          });
+          return json(200, result);
         } catch (e) {
-          return json(502, { error: `inference failed: ${String(e).slice(0, 300)}` });
+          // Gate failure or model failure: fall back to plain single-spec
+          // inference rather than showing broken questions.
+          console.warn(`[app] clarify failed, falling back to infer: ${String(e).slice(0, 200)}`);
+          try {
+            const infer = pickSpecInferrer(path.join(repoRoot, 'prompts', 'infer-round-spec.md'));
+            const context = [t.context, findings].filter(Boolean).join('\n\n');
+            const draft = await infer(t.description, context);
+            return json(200, { questions: [], drafts: [draft] });
+          } catch (e2) {
+            return json(502, { error: `inference failed: ${String(e2).slice(0, 300)}` });
+          }
         }
       }
       if (url === '/api/research' && req.method === 'POST') {
@@ -582,38 +616,48 @@ export function runApp(cfg: AppConfig): http.Server {
         return json(200, { ok: true });
       }
       if (url === '/api/accept-spec' && req.method === 'POST') {
-        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; spec?: RoundSpec };
+        const b = JSON.parse((await readBody(req)) || '{}') as {
+          target_id?: string;
+          spec?: RoundSpec;          // legacy single-spec shape
+          specs?: RoundSpec[];       // multi-round accept
+        };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
-        if (!t || !b.spec) return json(400, { error: 'target_id and spec required' });
+        const incoming = b.specs ?? (b.spec ? [b.spec] : []);
+        if (!t || incoming.length === 0) return json(400, { error: 'target_id and spec(s) required' });
         // The confirm gate re-proves the vocabulary server-side — the client
-        // may have let the user edit the draft.
-        const failures = validateRoundSpec(b.spec);
-        if (failures.length > 0) return json(400, { error: failures.join('; ') });
-        t.specs = [...t.specs.filter((s) => s.id !== b.spec!.id), b.spec];
+        // may have let the user edit the drafts.
+        for (const spec of incoming) {
+          const failures = validateRoundSpec(spec);
+          if (failures.length > 0) return json(400, { error: `${spec?.id ?? 'spec'}: ${failures.join('; ')}` });
+        }
+        const ids = new Set(incoming.map((x) => x.id));
+        t.specs = [...t.specs.filter((x) => !ids.has(x.id)), ...incoming];
         saveTarget(repoRoot, t);
         if (!loadQueue(repoRoot, t.id)) {
           const queue = proposeQueue(t, Date.now());
-          // Name every planned round now (D-impl): one cheap call, and each
-          // title later travels into that item's generation brief. Failure
-          // degrades to quiet rows — naming never blocks the plan.
-          try {
-            const brief = [
-              `Round: ${b.spec.label}.`,
-              b.spec.emphasis ? `Emphasis: ${b.spec.emphasis}.` : '',
-              t.description ? `The candidate describes it as: ${t.description}` : '',
-              t.research?.confirmed ? `Confirmed research findings:\n${t.research.summary}` : '',
-            ].filter(Boolean).join('\n');
-            const titles = await pickTopicNamer(path.join(repoRoot, 'prompts', 'plan-topics.md'))(
-              brief,
-              queue.items.length,
-            );
-            queue.items.forEach((item, i) => (item.planned_title = titles[i]));
-          } catch (e) {
-            console.warn(`[app] topic naming failed (quiet rows): ${String(e).slice(0, 200)}`);
+          // Name every planned round now (D-impl): one call PER SPEC so a
+          // multi-round queue gets titles that fit each round's shape.
+          // Failure degrades to quiet rows — naming never blocks the plan.
+          const namer = pickTopicNamer(path.join(repoRoot, 'prompts', 'plan-topics.md'));
+          for (const spec of t.specs) {
+            const mine = queue.items.filter((i) => i.spec_id === spec.id);
+            if (mine.length === 0) continue;
+            try {
+              const brief = [
+                `Round: ${spec.label}.`,
+                spec.emphasis ? `Emphasis: ${spec.emphasis}.` : '',
+                t.description ? `The candidate describes it as: ${t.description}` : '',
+                t.research?.confirmed ? `Confirmed research findings:\n${t.research.summary}` : '',
+              ].filter(Boolean).join('\n');
+              const titles = await namer(brief, mine.length);
+              mine.forEach((item, i) => (item.planned_title = titles[i]));
+            } catch (e) {
+              console.warn(`[app] topic naming failed for ${spec.id} (quiet rows): ${String(e).slice(0, 200)}`);
+            }
           }
           saveQueue(repoRoot, queue);
         }
-        return json(200, { ok: true, specs: t.specs.map((s) => s.id) });
+        return json(200, { ok: true, specs: t.specs.map((x) => x.id) });
       }
       if (url === '/api/retry' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };

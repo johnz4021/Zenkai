@@ -133,7 +133,7 @@ const DRAFT_TOOL = {
   },
 };
 
-interface DraftToolOutput {
+export interface DraftToolOutput {
   id: string;
   label: string;
   interviewer: boolean;
@@ -147,32 +147,49 @@ interface DraftToolOutput {
   unsupported: string;
 }
 
+/** A model's "optional string" arrives as null, a number, or an array
+ *  often enough that assuming string crashes the seam (seen live: emphasis
+ *  as null through the claude -p path). Coerce; the vocabulary gate still
+ *  decides validity. */
+function asText(v: unknown): string {
+  if (typeof v === 'string') return v.trim();
+  if (v === null || v === undefined) return '';
+  if (Array.isArray(v)) return v.map((x) => String(x)).join('; ').trim();
+  return String(v).trim();
+}
+
 /** Flat tool output → RoundSpec, tags derived, gate applied. Exported for
  *  tests and for the claude -p fallback (same shape, parsed from JSON). */
 export function draftToSpec(out: DraftToolOutput): SpecDraft {
+  const minutes =
+    out.time_limit_minutes === null || out.time_limit_minutes === undefined
+      ? null
+      : Number(out.time_limit_minutes);
   const capabilities = {
     interviewer: out.interviewer,
     can_run_tests: out.can_run_tests,
-    time_limit_ms: out.time_limit_minutes === null ? null : Math.round(out.time_limit_minutes * 60_000),
+    time_limit_ms: minutes === null || Number.isNaN(minutes) ? null : Math.round(minutes * 60_000),
     starts_from: out.starts_from,
     submit: out.submit,
   };
+  const emphasis = asText(out.emphasis);
   const spec: RoundSpec = {
-    id: slugify(out.id || out.label),
-    label: out.label,
+    id: slugify(asText(out.id) || asText(out.label)),
+    label: asText(out.label),
     capabilities,
     check: { kind: out.check_kind },
     memory_tags: deriveMemoryTags(capabilities),
-    ...(out.emphasis?.trim() ? { emphasis: out.emphasis.trim() } : {}),
+    ...(emphasis ? { emphasis } : {}),
   };
   const failures = validateRoundSpec(spec);
   if (failures.length > 0) {
     throw new Error(`inferred spec failed the vocabulary gate: ${failures.join('; ')}`);
   }
+  const unsupported = asText(out.unsupported);
   return {
     spec,
-    rationale: out.rationale,
-    ...(out.unsupported?.trim() ? { unsupported: out.unsupported.trim() } : {}),
+    rationale: asText(out.rationale),
+    ...(unsupported ? { unsupported } : {}),
   };
 }
 
