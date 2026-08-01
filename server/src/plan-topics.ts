@@ -17,7 +17,10 @@ import { readFileSync } from 'node:fs';
 
 export type TopicNamer = (roundBrief: string, count: number) => Promise<string[]>;
 
-const BANNED = /\b(round|problem|practice|session)\b|\d+\s*$/i;
+// Filler is banned as a TERMINAL pattern, not as vocabulary: "practice
+// session 1" is filler; "Session cache — concurrent key invalidation" is a
+// legitimate system (live false positive that quiet-rowed a whole spec).
+const BANNED = /\b(round|problem|practice|session|drill)s?\s*#?\d*\s*$|\d+\s*$/i;
 
 /** Mechanical gate on the model's titles: exactly N, 3-8 words, pairwise
  *  distinct, none of the banned filler. Throws with the reason — the caller

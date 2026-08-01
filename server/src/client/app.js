@@ -293,6 +293,15 @@ function backToForm() {
 
 // ---- season timeline ----
 
+/** Days until an ISO date, or null when absent/garbled — a stored bad
+ *  date must degrade to "no date", never render "NaN days". */
+function daysUntil(iso) {
+  if (!iso) return null;
+  const t = Date.parse(iso + 'T23:59:59');
+  if (Number.isNaN(t)) return null;
+  return Math.max(0, Math.ceil((t - Date.now()) / 86400000));
+}
+
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 function fmtDate(iso) {
   if (!iso) return '';
@@ -320,8 +329,9 @@ function renderSeason(row, state) {
   let html = '<div class="season">';
 
   // Header: the days-remaining number is the page's loudest fact.
-  if (t.interview_date) {
-    const left = Math.max(0, Math.ceil((Date.parse(t.interview_date + 'T23:59:59') - Date.now()) / 86400000));
+  const leftDays = daysUntil(t.interview_date);
+  if (t.interview_date && leftDays !== null) {
+    const left = leftDays;
     if (left === 0 || Date.parse(t.interview_date + 'T23:59:59') < Date.now()) {
       const ago = Math.max(1, Math.floor((Date.now() - Date.parse(t.interview_date + 'T00:00:00')) / 86400000));
       html += '<h2 class="daysleft">' + esc(t.label) + ' was ' + ago + ' day' + (ago === 1 ? '' : 's') + ' ago — how did it go?</h2>';
@@ -373,7 +383,8 @@ function renderSeason(row, state) {
           '<button class="retry" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">retry</button>';
       } else {
         html += '<div class="grow"><div class="title">' + esc(itemTitle(item)) + '</div>' +
-          '<div class="metaline">queued</div></div>';
+          '<div class="metaline">not built yet — generating takes about 5 minutes</div></div>' +
+          '<button class="primary gen" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">Generate</button>';
       }
       html += '</div></li>';
       continue;
@@ -456,10 +467,8 @@ function renderIndex(state) {
     const done = row.queue ? row.queue.items.filter((i) => i.status === 'done' || i.status === 'skipped').length : 0;
     const pct = total ? Math.round((done / total) * 100) : 0;
     let left = '';
-    if (t.interview_date) {
-      const n = Math.max(0, Math.ceil((Date.parse(t.interview_date + 'T23:59:59') - Date.now()) / 86400000));
-      left = n === 0 ? 'interview passed' : n + ' days left';
-    }
+    const n = daysUntil(t.interview_date);
+    if (n !== null) left = n === 0 ? 'interview passed' : n + ' days left';
     const nextItem = row.next;
     const nextLine = nextItem
       ? (nextItem.status === 'generating' ? 'building: ' : 'next: ') + esc(nextItem.title || nextItem.planned_title || nextItem.label)
@@ -490,6 +499,15 @@ function resumeIntake(id) {
 function wireTimeline(container) {
   for (const b of container.querySelectorAll('button.start')) {
     b.addEventListener('click', () => launch(b.dataset.t, b.dataset.i));
+  }
+  for (const b of container.querySelectorAll('button.gen')) {
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      const r = await fetch('/api/generate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: b.dataset.t, item_id: b.dataset.i }) });
+      const s = await r.json();
+      if (s.error) { el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>'; b.disabled = false; return; }
+      refresh(true);
+    });
   }
   for (const b of container.querySelectorAll('button.retry')) {
     b.addEventListener('click', async () => {
@@ -534,8 +552,7 @@ function setTitle(r, state) {
   if (r.page === 'timeline') {
     const row = state.targets.find((x) => x.target.id === r.id);
     if (row) {
-      const d = row.target.interview_date;
-      const n = d ? Math.max(0, Math.ceil((Date.parse(d + 'T23:59:59') - Date.now()) / 86400000)) : null;
+      const n = daysUntil(row.target.interview_date);
       document.title = (n === null ? '' : n + ' days · ') + row.target.label;
       return;
     }

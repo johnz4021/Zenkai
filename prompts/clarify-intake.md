@@ -85,6 +85,9 @@ and a one-sentence `why`.
 - `emphasis` carries topical hints for problem generation, from the input only.
 - Do not stretch thin input: draft the most common shape for what was described and
   say in `rationale` what you assumed.
+- Coherence: `can_run_tests: false` cannot pair with a test-based `check_kind`
+  (one_failing_test / all_failing / all_passing). A round about READING code still
+  runs its tests — reading-heavy is an `emphasis`, not can_run_tests=false.
 
 ## If ANSWERS are present below
 

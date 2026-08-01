@@ -56,6 +56,12 @@ export function parseVitestJson(jsonText: string): { failed: string[]; total: nu
 export function normalizeTestName(name: string): string {
   return name
     .replace(/\s*>\s*/g, ' ')
+    // Python's dotted path (tests.test_dashboard.WatchlistTest.test_x) is a
+    // THIRD notation for the same name — a live learning-round generation
+    // failed validation on exactly this. Dots normalize like separators;
+    // both sides go through here, so names containing literal dots still
+    // compare consistently.
+    .replace(/\./g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();

@@ -26,7 +26,7 @@ describe('gateTopics', () => {
   });
 
   it('rejects banned filler and trailing numbering', () => {
-    expect(() => gateTopics(['Practice problem set one', ...good.slice(0, 2)], 3)).toThrow(/banned/);
+    expect(() => gateTopics(['Timed coding practice', ...good.slice(0, 2)], 3)).toThrow(/banned/);
     expect(() => gateTopics(['Booking ledger part 2', ...good.slice(0, 2)], 3)).toThrow(/banned/);
   });
 
@@ -39,5 +39,20 @@ describe('gateTopics', () => {
 
   it('rejects non-arrays instead of guessing', () => {
     expect(() => gateTopics('Rate limiter', 1)).toThrow(/not an array/);
+  });
+});
+
+describe('banned-filler is terminal, not vocabulary (live false positive)', () => {
+  it('domain terms containing the words pass', () => {
+    const ok = [
+      'Session cache — concurrent key invalidation',
+      'Problem report ingester — dedup pipeline',
+      'Round-robin scheduler — fair task rotation',
+    ];
+    expect(gateTopics(ok, 3)).toEqual(ok);
+  });
+  it('terminal filler still dies', () => {
+    expect(() => gateTopics(['Async practice session', ...good.slice(0, 2)], 3)).toThrow(/banned/);
+    expect(() => gateTopics(['Debugging drill 3', ...good.slice(0, 2)], 3)).toThrow(/banned/);
   });
 });

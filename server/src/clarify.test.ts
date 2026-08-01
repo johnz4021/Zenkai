@@ -87,3 +87,20 @@ describe('gateClarify', () => {
     expect(out.drafts).toHaveLength(1);
   });
 });
+
+describe('per-draft leniency (live failure)', () => {
+  it('one incoherent draft is dropped; its coherent sibling survives', () => {
+    const out = gateClarify({
+      questions: [],
+      rounds: [round(), round({ id: 'reading-round', can_run_tests: false, check_kind: 'all_passing' })],
+    });
+    expect(out.drafts).toHaveLength(1);
+    expect(out.drafts[0]!.spec.id).toBe('palantir-oa');
+  });
+
+  it('all drafts incoherent still fails loudly — the fallback path needs the signal', () => {
+    expect(() =>
+      gateClarify({ questions: [], rounds: [round({ can_run_tests: false, check_kind: 'all_passing' })] }),
+    ).toThrow(/every draft failed/);
+  });
+});

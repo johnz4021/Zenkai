@@ -266,3 +266,11 @@ describe('checkManifest spec dispatch', () => {
     expect(checkManifest(p, '/nonexistent').join()).toMatch(/round_spec:/);
   });
 });
+
+describe('normalizeTestName — the third notation (live failure)', () => {
+  it('python dotted paths match the parser\'s " > " form', () => {
+    const claimed = 'tests.test_dashboard.WatchlistTest.test_each_row_carries_the_snapshot_of_its_own_device';
+    const observed = 'tests > test_dashboard > WatchlistTest > test_each_row_carries_the_snapshot_of_its_own_device';
+    expect(normalizeTestName(claimed)).toBe(normalizeTestName(observed));
+  });
+});

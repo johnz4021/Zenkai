@@ -150,8 +150,24 @@ export function gateClarify(raw: unknown): ClarifyResult {
   const rounds = coerceArray(o.rounds ?? []);
   if (rounds.length === 0) throw new Error('clarify: no rounds — best-guess drafts are mandatory');
   if (rounds.length > 4) throw new Error(`clarify: ${rounds.length} rounds (max 4)`);
-  // Each draft passes the same vocabulary gate as single-spec inference.
-  const drafts = rounds.map((r) => draftToSpec(r as DraftToolOutput));
+  // Each draft passes the same vocabulary gate as single-spec inference —
+  // but one incoherent draft must not sink its coherent siblings. A live
+  // learning-round intake emitted [good draft, can_run_tests=false +
+  // all_passing], the whole result was discarded, and the flow fell back
+  // to single-spec inference, losing the questions AND the good draft.
+  const drafts: SpecDraft[] = [];
+  const dropped: string[] = [];
+  for (const r of rounds) {
+    try {
+      drafts.push(draftToSpec(r as DraftToolOutput));
+    } catch (e) {
+      dropped.push(String(e).slice(0, 120));
+    }
+  }
+  if (drafts.length === 0) {
+    throw new Error(`clarify: every draft failed the gate: ${dropped.join(' | ')}`);
+  }
+  if (dropped.length > 0) console.warn(`[clarify] dropped ${dropped.length} incoherent draft(s): ${dropped.join(' | ')}`);
   // Distinct ids — round-robin scheduling keys on spec id.
   const ids = new Set(drafts.map((d) => d.spec.id));
   if (ids.size !== drafts.length) throw new Error('clarify: duplicate round ids');

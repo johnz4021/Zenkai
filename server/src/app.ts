@@ -155,21 +155,10 @@ function refreshQueue(target: Target, userId: string, now: number): Queue | null
   })();
   const fresh = repace(reconcileWithDisk(repoRoot, stored), target, view, now);
 
-  // `failed` deliberately does NOT count as in-flight: it needs a human
-  // retry, and it must not dam the queue behind it either — but auto-kick
-  // stays off while one exists so retry doesn't race a fresh spawn.
-  const inFlight = fresh.items.some(
-    (i) => i.status === 'generating' || i.status === 'ready' || i.status === 'failed',
-  );
-  const pending = fresh.items.find((i) => i.status === 'pending');
-  if (!inFlight && pending) {
-    const dir = path.join(targetDir(repoRoot, target.id), 'problems', pending.id);
-    pending.status = 'generating';
-    pending.problem_dir = dir;
-    console.log(`[app] generating ${target.id}/${pending.id} (queue-driven)`);
-    spawnGeneration(target, pending, dir);
-  }
-
+  // Generation is USER-INITIATED (user decision 2026-08-01: no auto-kick).
+  // The app never spends a generation the candidate didn't ask for —
+  // /api/generate is the only path in. This also caps the unmetered-spend
+  // exposure TODOS #12 describes.
   if (JSON.stringify(fresh) !== JSON.stringify(stored)) saveQueue(repoRoot, fresh);
   return fresh;
 }
@@ -536,10 +525,16 @@ export function runApp(cfg: AppConfig): http.Server {
       if (url === '/api/target' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { label?: string; date?: string; description?: string; context?: string };
         if (!b.label?.trim()) return json(400, { error: 'label required' });
+        // "AUg 20" stored verbatim rendered as "NaN days to Palantir". The
+        // date is optional; a garbled one is an error, never silent data.
+        const date = b.date?.trim() ?? '';
+        if (date && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00`)))) {
+          return json(400, { error: `couldn't read that date — write it like 2026-08-20 (got "${date}")` });
+        }
         const t: Target = {
           id: `${slugify(b.label)}-${Date.now().toString(36)}`,
           label: b.label.trim(),
-          ...(b.date?.trim() ? { interview_date: b.date.trim() } : {}),
+          ...(date ? { interview_date: date } : {}),
           description: b.description?.trim() ?? '',
           ...(b.context?.trim() ? { context: b.context.trim() } : {}),
           specs: [],
@@ -597,11 +592,16 @@ export function runApp(cfg: AppConfig): http.Server {
             t.label,
             t.description,
           );
+          // RE-LOAD before saving: research runs for minutes, and the user
+          // can skip ahead and accept specs meanwhile. Saving the snapshot
+          // loaded at request start wiped t.specs in a live QA run — the
+          // classic load-await-save race. Merge into the freshest copy.
+          const fresh = loadTarget(repoRoot, b.target_id!) ?? t;
           // Saved UNCONFIRMED: nothing downstream reads it until the
           // candidate has seen the citations and said yes.
-          t.research = { ...result, confirmed: false };
-          saveTarget(repoRoot, t);
-          return json(200, t.research);
+          fresh.research = { ...result, confirmed: false };
+          saveTarget(repoRoot, fresh);
+          return json(200, fresh.research);
         } catch (e) {
           return json(502, { error: `research failed: ${String(e).slice(0, 300)}` });
         }
@@ -658,6 +658,25 @@ export function runApp(cfg: AppConfig): http.Server {
           saveQueue(repoRoot, queue);
         }
         return json(200, { ok: true, specs: t.specs.map((x) => x.id) });
+      }
+      if (url === '/api/generate' && req.method === 'POST') {
+        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
+        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        const q = t ? loadQueue(repoRoot, t.id) : null;
+        const item = q?.items.find((i) => i.id === b.item_id);
+        if (!t || !q || !item || item.status !== 'pending') {
+          return json(400, { error: 'item is not pending' });
+        }
+        if (q.items.some((i) => i.status === 'generating')) {
+          return json(409, { error: 'a problem is already generating — one at a time' });
+        }
+        const dir = path.join(targetDir(repoRoot, t.id), 'problems', item.id);
+        item.status = 'generating';
+        item.problem_dir = dir;
+        saveQueue(repoRoot, q);
+        console.log(`[app] generating ${t.id}/${item.id} (user-initiated)`);
+        spawnGeneration(t, item, dir);
+        return json(200, { ok: true });
       }
       if (url === '/api/retry' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
