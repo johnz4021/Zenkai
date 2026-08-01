@@ -187,6 +187,7 @@ export function appPage(): string {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>interview prep</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'%3E%3Crect width='18' height='18' fill='%2317171a'/%3E%3Cline x1='9' y1='2.5' x2='9' y2='15.5' stroke='%232a2a2e' stroke-width='1.4'/%3E%3Ccircle cx='9' cy='6' r='3' fill='%237c5cff'/%3E%3Ccircle cx='9' cy='13.5' r='2.4' fill='none' stroke='%237c5cff' stroke-width='1.4'/%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
@@ -223,12 +224,45 @@ export function appPage(): string {
   .meta { color: var(--dim); }
   .err { color: #e6a23c; }
   a { color: inherit; }
-  nav { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 26px; }
+  /* ---- masthead: the one persistent chrome, sticky over the grain ---- */
+  nav {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 16px; margin: 0 -20px 30px; padding: 0 20px 16px;
+    position: sticky; top: 0; z-index: 10;
+    background: var(--bg); border-bottom: 1px solid var(--line-soft);
+  }
   nav a { text-decoration: none; }
-  nav .micro { margin: 0; transition: color .18s; }
-  nav a:hover .micro { color: var(--bright); }
+  .brand { display: flex; align-items: center; gap: 11px; }
+  .brand svg { display: block; overflow: visible; }
+  .brand .rail { stroke: #3d3d46; }  /* lifted off --line: at 18px the mark must read as one connected runway, not two floating dots */
+  .brand .here { fill: var(--accent); transition: filter .25s; }
+  .brand .goal { fill: none; stroke: var(--accent); }
+  #nav-home:hover .here { filter: drop-shadow(0 0 5px var(--accent)); }
+  .brand .word { font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: .2em; color: var(--bright); transition: color .18s; }
+  #nav-home:hover .word { color: #fff; }
+  .navright { display: flex; align-items: center; gap: 18px; }
+  #nav-live { display: none; align-items: center; gap: 7px; color: var(--accent); font-size: 12px; }
+  #nav-live.on { display: flex; }
+  #nav-live .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 1.8s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; box-shadow: 0 0 0 0 var(--accent-dim); } 50% { opacity: .55; box-shadow: 0 0 0 4px transparent; } }
   #nav-new { color: var(--dim); font-size: 12px; transition: color .18s; }
   #nav-new:hover { color: var(--accent); }
+
+  /* ---- first paint: the shape of the page before data lands ---- */
+  #boot { padding-top: 6px; }
+  #boot .sk { height: 11px; background: var(--line-soft); margin: 16px 0; animation: breathe 1.5s ease-in-out infinite; }
+  #boot .sk:nth-child(1) { width: 42%; height: 30px; }
+  #boot .sk:nth-child(2) { width: 100%; animation-delay: .1s; }
+  #boot .sk:nth-child(3) { width: 78%; animation-delay: .2s; }
+  #boot .sk:nth-child(4) { width: 88%; animation-delay: .3s; }
+  @keyframes breathe { 0%, 100% { opacity: .5; } 50% { opacity: .22; } }
+
+  /* ---- scrollbar: part of the instrument, not the OS ---- */
+  * { scrollbar-width: thin; scrollbar-color: #33333a var(--bg); }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: #2f2f36; border: 3px solid var(--bg); border-radius: 5px; }
+  ::-webkit-scrollbar-thumb:hover { background: #43434c; }
 
   button {
     background: none; border: 1px solid var(--line); color: var(--bright);
@@ -348,10 +382,21 @@ export function appPage(): string {
 </div>
 <div id="page">
   <nav>
-    <a href="#/" id="nav-home"><span class="micro">interview prep</span></a>
-    <a href="#/new" id="nav-new">+ new plan</a>
+    <a href="#/" id="nav-home" class="brand" aria-label="interview prep — all plans">
+      <svg width="18" height="20" viewBox="0 0 18 20" aria-hidden="true">
+        <line class="rail" x1="9" y1="2" x2="9" y2="18" stroke-width="1.4" />
+        <circle class="here" cx="9" cy="6" r="3" />
+        <circle class="goal" cx="9" cy="15.5" r="2.4" stroke-width="1.4" />
+      </svg>
+      <span class="word">interview prep</span>
+    </a>
+    <span class="navright">
+      <a href="#/t/" id="nav-live" aria-live="polite"><span class="pulse"></span>session live</a>
+      <a href="#/new" id="nav-new">+ new plan</a>
+    </span>
   </nav>
   <div id="banner" aria-live="polite"></div>
+  <div id="boot"><div class="sk"></div><div class="sk"></div><div class="sk"></div><div class="sk"></div></div>
 
   <section id="index" hidden></section>
 

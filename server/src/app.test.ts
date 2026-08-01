@@ -83,3 +83,41 @@ describe('home app page', () => {
     expect(js).toContain('pendingState');
   });
 });
+
+describe('product identity', () => {
+  const html = appPage();
+  const js = clientScript('app.js') ?? '';
+
+  it('ships a mark and a wordmark, not a bare micro-label', () => {
+    expect(html).toContain('class="brand"');
+    expect(html).toContain('<svg width="18" height="20"');
+    expect(html).toContain('class="word"');
+    expect(html).toContain('aria-label="interview prep — all plans"');
+  });
+
+  it('the tab is identifiable: favicon plus per-route titles', () => {
+    expect(html).toContain('rel="icon"');
+    expect(html).toMatch(/image\/svg\+xml/);
+    expect(js).toContain('function setTitle');
+    expect(js).toContain('document.title');
+    // The countdown belongs in the tab for a season.
+    expect(js).toContain("' days · '");
+  });
+
+  it('first paint has shape — a skeleton, not a blank page', () => {
+    expect(html).toContain('id="boot"');
+    expect(html).toMatch(/class="sk"/);
+    expect(js).toContain("el('boot')");
+  });
+
+  it('session status lives in the masthead; the banner is for errors only', () => {
+    expect(html).toContain('id="nav-live"');
+    expect(js).toContain("el('nav-live').classList.toggle('on'");
+    expect(js).not.toContain('A session is running');
+  });
+
+  it('the scrollbar belongs to the instrument, not the OS', () => {
+    expect(html).toContain('::-webkit-scrollbar');
+    expect(html).toContain('scrollbar-color');
+  });
+});

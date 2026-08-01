@@ -355,6 +355,8 @@ async function refresh(force) {
     lastStateJson = text;
     render(JSON.parse(text));
   } catch {
+    const boot = el('boot');
+    if (boot) boot.remove();
     el('banner').innerHTML = '<div class="banner">app server unreachable — retrying</div>';
   }
 }
@@ -455,12 +457,36 @@ function choreograph(section, routeKey) {
   }
 }
 
+/** The tab is one of thirty. Name the page, and for a season put the
+ *  countdown itself in the title — the days remaining are readable
+ *  without switching to the tab. */
+function setTitle(r, state) {
+  if (r.page === 'new') { document.title = 'new plan · interview prep'; return; }
+  if (r.page === 'timeline') {
+    const row = state.targets.find((x) => x.target.id === r.id);
+    if (row) {
+      const d = row.target.interview_date;
+      const n = d ? Math.max(0, Math.ceil((Date.parse(d + 'T23:59:59') - Date.now()) / 86400000)) : null;
+      document.title = (n === null ? '' : n + ' days · ') + row.target.label;
+      return;
+    }
+  }
+  document.title = 'your plans · interview prep';
+}
+
 function render(state) {
-  el('banner').innerHTML = state.session_live
-    ? '<div class="banner">A session is running — <a href="' + esc(state.session_url) + '">rejoin it</a>. One session at a time.</div>'
-    : '';
+  // Persistent status lives in the masthead; the banner is for genuine
+  // problems only. A full-width bar on every page for a usually-false
+  // condition was pure vertical tax.
+  el('nav-live').classList.toggle('on', Boolean(state.session_live));
+  el('nav-live').href = state.session_url || '#/';
+  el('banner').innerHTML = '';
+
+  const boot = el('boot');
+  if (boot) boot.remove();
 
   const r = route();
+  setTitle(r, state);
   // Data-driven redirects only — never visibility flips: with nothing set
   // up yet, the only page that exists is the intake.
   if (!state.targets.length && r.page !== 'new') {
