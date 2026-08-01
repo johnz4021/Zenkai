@@ -461,7 +461,7 @@ function choreograph(section, routeKey) {
  *  countdown itself in the title — the days remaining are readable
  *  without switching to the tab. */
 function setTitle(r, state) {
-  if (r.page === 'new') { document.title = 'new plan · interview prep'; return; }
+  if (r.page === 'new') { document.title = 'new plan · Zenkai'; return; }
   if (r.page === 'timeline') {
     const row = state.targets.find((x) => x.target.id === r.id);
     if (row) {
@@ -471,7 +471,7 @@ function setTitle(r, state) {
       return;
     }
   }
-  document.title = 'your plans · interview prep';
+  document.title = 'your plans · Zenkai';
 }
 
 function render(state) {

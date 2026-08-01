@@ -90,9 +90,15 @@ describe('product identity', () => {
 
   it('ships a mark and a wordmark, not a bare micro-label', () => {
     expect(html).toContain('class="brand"');
-    expect(html).toContain('<svg width="18" height="20"');
     expect(html).toContain('class="word"');
-    expect(html).toContain('aria-label="interview prep — all plans"');
+    expect(html).toContain('>Zenkai<');
+    expect(html).toContain('aria-label="Zenkai — all plans"');
+    // The identity sheet's ascent ring: two plates out of register, a
+    // vector escaping through the break in the ring.
+    expect(html).toContain('class="plate-mag"');
+    expect(html).toContain('class="plate-cyan"');
+    expect(html).toContain('class="vector"');
+    expect(html).toContain('stroke-dasharray="118 33"');
   });
 
   it('the tab is identifiable: favicon plus per-route titles', () => {
@@ -102,6 +108,7 @@ describe('product identity', () => {
     expect(js).toContain('document.title');
     // The countdown belongs in the tab for a season.
     expect(js).toContain("' days · '");
+    expect(js).toContain('Zenkai');
   });
 
   it('first paint has shape — a skeleton, not a blank page', () => {

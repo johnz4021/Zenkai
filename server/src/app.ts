@@ -186,14 +186,21 @@ export function appPage(): string {
   return /* html */ `<!doctype html>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>interview prep</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18'%3E%3Crect width='18' height='18' fill='%2317171a'/%3E%3Cline x1='9' y1='2.5' x2='9' y2='15.5' stroke='%232a2a2e' stroke-width='1.4'/%3E%3Ccircle cx='9' cy='6' r='3' fill='%237c5cff'/%3E%3Ccircle cx='9' cy='13.5' r='2.4' fill='none' stroke='%237c5cff' stroke-width='1.4'/%3E%3C/svg%3E" />
+<title>Zenkai</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' fill='none'%3E%3Crect width='64' height='64' fill='%2317171a'/%3E%3Ccircle cx='32' cy='32' r='24' stroke='%230088b0' stroke-width='8' stroke-dasharray='118 33'/%3E%3Cpath d='M18 46 L52 12' stroke='%23e6e6ea' stroke-width='8'/%3E%3Cpath d='M40 12 L52 12 L52 24' stroke='%23e6e6ea' stroke-width='8' stroke-linejoin='miter'/%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Source+Serif+4:opsz,wght@8..60,600&display=swap" rel="stylesheet" />
 <style>
   :root {
-    --accent: #7c5cff; --accent-dim: rgba(124, 92, 255, .35);
+    /* Brand plates, exactly as drawn on the identity sheet (Direction 2). */
+    --plate-cyan: #0088b0; --plate-mag: #d6006c;
+    /* UI derivations: both plates lifted for contrast on the dark ground.
+       Cyan is the FORWARD axis (today, action, the interview itself);
+       magenta is the ATTENTION axis (your gap, failures). Green still
+       owns "done" — neither plate can carry completion. */
+    --accent: #17a9d4; --accent-dim: rgba(23, 169, 212, .35);
+    --mag: #e82b86; --mag-dim: rgba(232, 43, 134, .3);
     --line: #2a2a2e; --line-soft: #232327;
     --dim: #9a9aa2; --bright: #e6e6ea; --ok: #4caf7d;
     --bg: #17171a;
@@ -211,7 +218,7 @@ export function appPage(): string {
      field — depth without decoration; both invisible until you look. */
   body::before {
     content: ''; position: fixed; inset: 0; pointer-events: none; z-index: -1;
-    background: radial-gradient(60% 40% at 50% -10%, rgba(124, 92, 255, .07), transparent 70%);
+    background: radial-gradient(60% 40% at 50% -10%, rgba(23, 169, 212, .07), transparent 70%);
   }
   body::after {
     content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 9;
@@ -222,7 +229,7 @@ export function appPage(): string {
 
   .micro { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .18em; color: var(--dim); margin: 0 0 18px; }
   .meta { color: var(--dim); }
-  .err { color: #e6a23c; }
+  .err { color: var(--mag); }
   a { color: inherit; }
   /* ---- masthead: the one persistent chrome, sticky over the grain ---- */
   nav {
@@ -232,13 +239,21 @@ export function appPage(): string {
     background: var(--bg); border-bottom: 1px solid var(--line-soft);
   }
   nav a { text-decoration: none; }
-  .brand { display: flex; align-items: center; gap: 11px; }
+  /* Lockup: mark and wordmark side by side (identity sheet, Direction 2).
+     The wordmark is the one serif in the product - an editorial voice
+     against the instrument's monospace chrome. */
+  .brand { display: flex; align-items: center; gap: 13px; }
   .brand svg { display: block; overflow: visible; }
-  .brand .rail { stroke: #3d3d46; }  /* lifted off --line: at 18px the mark must read as one connected runway, not two floating dots */
-  .brand .here { fill: var(--accent); transition: filter .25s; }
-  .brand .goal { fill: none; stroke: var(--accent); }
-  #nav-home:hover .here { filter: drop-shadow(0 0 5px var(--accent)); }
-  .brand .word { font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: .2em; color: var(--bright); transition: color .18s; }
+  .brand .plate-mag { stroke: var(--plate-mag); }
+  .brand .plate-cyan { stroke: var(--plate-cyan); }
+  .brand .vector { stroke: var(--bright); }  /* reversed for the dark ground, per the sheet's own reversed-on-black variant */
+  .brand svg .plate-cyan, .brand svg .vector { transition: filter .3s; }
+  #nav-home:hover .plate-cyan { filter: drop-shadow(0 0 6px var(--accent-dim)); }
+  .brand .word {
+    font-family: 'Source Serif 4', serif; font-size: 25px; font-weight: 600;
+    letter-spacing: -.01em; line-height: 1; color: var(--bright);
+    transition: color .18s;
+  }
   #nav-home:hover .word { color: #fff; }
   .navright { display: flex; align-items: center; gap: 18px; }
   #nav-live { display: none; align-items: center; gap: 7px; color: var(--accent); font-size: 12px; }
@@ -355,7 +370,7 @@ export function appPage(): string {
   .runway li.today .dot { border-color: var(--accent); background: var(--accent); box-shadow: 0 0 14px var(--accent-dim); }
   .runway li.today .title { font-size: 16px; font-weight: 500; }
   .runway .metaline { color: var(--dim); margin-top: 3px; font-size: 12px; }
-  .runway .aimed { color: var(--accent); margin-top: 6px; font-style: italic; }
+  .runway .aimed { color: var(--mag); margin-top: 6px; font-style: italic; }  /* the gap is the attention axis */
   .runway li.today .body { display: flex; gap: 16px; align-items: center; }
   .runway li.today .grow { flex: 1; min-width: 0; }
   .runway li.today button.primary { min-width: 96px; min-height: 44px; }
@@ -377,18 +392,19 @@ export function appPage(): string {
   }
 </style>
 <div id="narrow">
-  <p class="micro">interview prep</p>
+  <p class="micro">Zenkai</p>
   <p>This runs practice sessions in a real code editor, so it lives on your laptop. Open it there.</p>
 </div>
 <div id="page">
   <nav>
-    <a href="#/" id="nav-home" class="brand" aria-label="interview prep — all plans">
-      <svg width="18" height="20" viewBox="0 0 18 20" aria-hidden="true">
-        <line class="rail" x1="9" y1="2" x2="9" y2="18" stroke-width="1.4" />
-        <circle class="here" cx="9" cy="6" r="3" />
-        <circle class="goal" cx="9" cy="15.5" r="2.4" stroke-width="1.4" />
+    <a href="#/" id="nav-home" class="brand" aria-label="Zenkai — all plans">
+      <svg width="32" height="32" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+        <circle class="plate-mag" cx="32" cy="32" r="24" stroke-width="5" stroke-dasharray="118 33" transform="translate(3.4 2.8)" />
+        <circle class="plate-cyan" cx="32" cy="32" r="24" stroke-width="5" stroke-dasharray="118 33" />
+        <path class="vector" d="M18 46 L52 12" stroke-width="5" />
+        <path class="vector" d="M40 12 L52 12 L52 24" stroke-width="5" stroke-linejoin="miter" />
       </svg>
-      <span class="word">interview prep</span>
+      <span class="word">Zenkai</span>
     </a>
     <span class="navright">
       <a href="#/t/" id="nav-live" aria-live="polite"><span class="pulse"></span>session live</a>
