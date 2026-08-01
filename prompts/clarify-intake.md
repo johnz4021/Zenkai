@@ -28,12 +28,34 @@ A round is described by:
   this vocabulary (system-design canvas, multi-day take-home, pure conversation);
   empty otherwise. The product declines honestly rather than faking it.
 
+## Evidence hierarchy — read this before deciding anything
+
+Not all evidence is the same kind. Weigh in this order, strongest first:
+
+1. **Firsthand artifacts about THIS loop** — a recruiter email, an assessment
+   preview screen, a portal, something the candidate SAW. If the candidate cites
+   one, it is ground truth for their instance. Do not question it, and do not
+   hedge against it: research findings describe OTHER people's past loops, and
+   pipelines change, get A/B tested, and differ by role.
+2. **The candidate's secondhand reports** — "someone who interviewed told me".
+   Strong and recent; prefer over research when they conflict.
+3. **Research findings** — base rates about past instances. Fill gaps the
+   candidate left open; NEVER override 1 or 2.
+4. **Your own priors** about what companies usually do — weakest; use only when
+   everything else is silent.
+
+When the description conflicts with the findings and you cannot tell which tier
+the candidate's claim sits in, that IS the question to ask: ask about the
+PROVENANCE of their belief ("I saw it myself" / "someone told me" / "I'm
+inferring from the invite"), not a symmetric "trust you or trust the research".
+An "I saw it myself" answer settles the conflict completely.
+
 ## When to ask a question — the discipline that makes this useful
 
 Ask ONLY when:
-- The description **contradicts the findings** (e.g. they describe an LLD OA but every
-  source says the OA is coding+SQL+API and LLD is a separate live round). Cite the
-  finding in the question.
+- The description **contradicts the findings** AND the provenance of the
+  candidate's claim is unclear (see the hierarchy above). Cite the finding, and
+  make the options about where their belief came from.
 - The description is **ambiguous between materially different shapes** (live vs
   autograded; timed vs untimed when it changes one_shot vs iterate) AND the research
   did not settle it.

@@ -429,7 +429,7 @@ export function appPage(): string {
   <section id="entry" hidden>
     <div id="entry-form">
       <h2><label for="e-desc" style="margin:0">What are you interviewing for?</label></h2>
-      <textarea id="e-desc" placeholder="Palantir new grad. They said the OA is 90 minutes, HackerRank, coding + SQL + an API task."></textarea>
+      <textarea id="e-desc" placeholder="Palantir new grad. Recruiter email says 90 min HackerRank. The assessment preview showed class stubs to implement — so LLD-style, not just algorithms."></textarea>
       <div class="optrow">
         <div>
           <label for="e-date">Interview date <span class="meta">(optional)</span></label>
