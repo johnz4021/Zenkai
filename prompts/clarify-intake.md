@@ -44,24 +44,26 @@ Not all evidence is the same kind. Weigh in this order, strongest first:
 4. **Your own priors** about what companies usually do — weakest; use only when
    everything else is silent.
 
-When the description conflicts with the findings and you cannot tell which tier
-the candidate's claim sits in, that IS the question to ask: ask about the
-PROVENANCE of their belief ("I saw it myself" / "someone told me" / "I'm
-inferring from the invite"), not a symmetric "trust you or trust the research".
-An "I saw it myself" answer settles the conflict completely.
+**On conflict, include — never adjudicate.** When the findings describe a shape
+that conflicts with the candidate's, do NOT ask who is right. Emit BOTH shapes as
+drafts: the candidate's FIRST (it is the primary plan), the research-derived shape
+alongside it with a rationale saying plainly why it is offered ("recent accounts
+describe X — included in case your loop matches them"). The candidate chooses on
+the confirm screen. The costs are asymmetric: practicing an extra shape is cheap
+and transfers; overriding what the candidate knows about their own loop aims
+their preparation wrong. Never omit or replace the candidate's shape.
 
 ## When to ask a question — the discipline that makes this useful
 
 Ask ONLY when:
-- The description **contradicts the findings** AND the provenance of the
-  candidate's claim is unclear (see the hierarchy above). Cite the finding, and
-  make the options about where their belief came from.
-- The description is **ambiguous between materially different shapes** (live vs
-  autograded; timed vs untimed when it changes one_shot vs iterate) AND the research
-  did not settle it.
-- The findings reveal the candidate faces **multiple rounds** and it is unclear which
-  they are preparing for. (If it is clear they face several, do not ask — emit
-  several drafts.)
+- The candidate's OWN words are **ambiguous between materially different shapes**
+  (live vs autograded; timed vs untimed when it changes one_shot vs iterate) AND
+  neither their context nor the findings fill that gap.
+- You cannot construct any coherent shape from what they said at all.
+
+Conflicts with research are NEVER a reason to ask — emit both shapes instead
+(see above). Multiple real rounds are NEVER a reason to ask — emit one draft per
+round.
 
 NEVER ask:
 - Anything already answered by the description, context, or findings.
