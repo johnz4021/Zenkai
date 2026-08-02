@@ -51,6 +51,30 @@ export function extractFirstJsonObject(raw: string): string | null {
   return null;
 }
 
+/**
+ * Recover a usable URL from what models actually emit.
+ *
+ * Measured, not guessed: a live Ramp probe retrieved genuinely useful
+ * round detail and reported ZERO findings, because the gate required a
+ * literal ^https?:// and dropped everything else in silence. Scheme-less
+ * hosts, markdown links, and `source`/`link` key aliases are all common.
+ * Recovering them is not loosening the citation rule — every survivor is
+ * still an auditable URL; we just stop discarding the ones we have.
+ */
+export function normalizeCitation(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  let s = v.trim();
+  if (!s) return null;
+  // [label](url) or a bare (url)
+  const md = s.match(/\((https?:\/\/[^\s)]+)\)/) ?? s.match(/\]\(([^\s)]+)\)/);
+  if (md?.[1]) s = md[1];
+  s = s.replace(/^<|>$/g, '').replace(/[.,;]+$/, '').trim();
+  if (/^https?:\/\//i.test(s)) return s;
+  // Bare host/path — require a dotted host so prose never becomes a "URL".
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)+(\/\S*)?$/i.test(s)) return `https://${s}`;
+  return null;
+}
+
 export function parseResearchOutput(raw: string): ResearchResult {
   const match = extractFirstJsonObject(raw);
   if (!match) throw new Error('no JSON in research output');
@@ -58,14 +82,15 @@ export function parseResearchOutput(raw: string): ResearchResult {
   if (typeof o.summary !== 'string') throw new Error('missing summary');
   const findings = Array.isArray(o.findings)
     ? o.findings
-        .filter(
-          (f): f is { claim: string; url: string } =>
-            typeof (f as { claim?: unknown }).claim === 'string' &&
-            typeof (f as { url?: unknown }).url === 'string' &&
-            /^https?:\/\//.test((f as { url: string }).url),
-        )
+        .map((f) => {
+          const x = f as { claim?: unknown; url?: unknown; source?: unknown; link?: unknown };
+          const claim = typeof x.claim === 'string' ? x.claim.trim() : '';
+          const url = normalizeCitation(x.url ?? x.source ?? x.link);
+          return claim && url ? { claim, url } : null;
+        })
         // A claim without a real citation is exactly the thing this agent
         // exists to prevent — drop it rather than pass it along.
+        .filter((f): f is { claim: string; url: string } => f !== null)
         .slice(0, 12)
     : [];
   return { summary: o.summary.trim(), findings };

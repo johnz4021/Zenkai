@@ -4,7 +4,7 @@
  * that the candidate can audit every line.
  */
 import { describe, expect, it } from 'vitest';
-import { parseResearchOutput } from './research.js';
+import { normalizeCitation, parseResearchOutput } from './research.js';
 
 describe('parseResearchOutput', () => {
   it('keeps cited findings and the summary', () => {
@@ -58,5 +58,34 @@ describe('parseResearchOutput', () => {
   it('handles braces inside string values', () => {
     const raw = JSON.stringify({ summary: 'uses {curly} notation', findings: [] }) + ' trailing }';
     expect(parseResearchOutput(raw).summary).toBe('uses {curly} notation');
+  });
+});
+
+describe('normalizeCitation — recovering citations we already had (live failure)', () => {
+  it('accepts the shapes models actually emit', () => {
+    expect(normalizeCitation('https://leetcode.com/discuss/1')).toBe('https://leetcode.com/discuss/1');
+    expect(normalizeCitation('leetcode.com/discuss/interview/123')).toBe('https://leetcode.com/discuss/interview/123');
+    expect(normalizeCitation('[LeetCode](https://leetcode.com/discuss/1)')).toBe('https://leetcode.com/discuss/1');
+    expect(normalizeCitation('<https://blind.com/p/1>')).toBe('https://blind.com/p/1');
+    expect(normalizeCitation('https://example.com/a,')).toBe('https://example.com/a');
+  });
+
+  it('still refuses prose — the citation rule is not loosened', () => {
+    expect(normalizeCitation('glassdoor said so')).toBeNull();
+    expect(normalizeCitation('a 2025 Blind thread')).toBeNull();
+    expect(normalizeCitation('')).toBeNull();
+    expect(normalizeCitation(42)).toBeNull();
+  });
+
+  it('parse keeps findings whose key is source or link, not url', () => {
+    const out = parseResearchOutput(JSON.stringify({
+      summary: 's',
+      findings: [
+        { claim: 'a', source: 'https://leetcode.com/discuss/1' },
+        { claim: 'b', url: 'blind.com/post/2' },
+        { claim: 'c', url: 'no citation here' },
+      ],
+    }));
+    expect(out.findings.map((f) => f.url)).toEqual(['https://leetcode.com/discuss/1', 'https://blind.com/post/2']);
   });
 });
