@@ -42,7 +42,8 @@ export type IntakeClarifier = (input: {
   answers?: { question: string; answer: string }[];
 }) => Promise<ClarifyResult>;
 
-const ROUND_FIELDS = {
+/** Shared with the adapt reasoner — one vocabulary, two prompts. */
+export const ROUND_FIELDS = {
   id: { type: 'string' },
   label: { type: 'string' },
   interviewer: { type: 'boolean' },
@@ -100,7 +101,7 @@ const CLARIFY_TOOL = {
 
 /** Nested-array normalization (the judge's stringified-field lesson: the
  *  API validates only the top level of a tool schema). */
-function coerceArray(v: unknown): unknown[] {
+export function coerceArray(v: unknown): unknown[] {
   if (Array.isArray(v)) return v;
   if (typeof v === 'string') {
     const m = v.match(/\[[\s\S]*\]/);

@@ -8,6 +8,8 @@
  *                                        │
  *                                        ▼
  *                              target.json specs[] ──► generation
+ *                                        ▲
+ *   candidate pastes new info ──► adapt (diff, approved) — append-only
  *
  * The draft is never trusted: validateRoundSpec gates it mechanically, tags
  * are derived in code, and nothing reaches generation without the candidate
@@ -33,8 +35,15 @@ export interface Target {
   description: string;
   /** Pasted reference material: recruiter email, a found question, notes. */
   context?: string;
-  /** Confirmed round shapes. Only confirmed specs generate problems. */
+  /** Confirmed round shapes. Only confirmed specs generate problems.
+   *  APPEND-ONLY once items reference them: adaptation adds specs and
+   *  re-points future items; it never edits or removes one, so history
+   *  keeps describing what actually ran. */
   specs: RoundSpec[];
+  /** Applied adaptations, newest last — the audit trail the timeline
+   *  renders ("Aug 5 — new: LLD round · 4 rounds re-shaped") and the
+   *  recovery record reconcileAdaptation repairs from. See adapt.ts. */
+  adaptations?: import('./adapt.js').AdaptRecord[];
   created: string;
 }
 

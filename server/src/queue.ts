@@ -44,6 +44,11 @@ export interface QueueItem {
    *  calendar day in the past band. Derived from the assessment file's
    *  mtime, so it survives an app restart like everything else. */
   done_at?: string;
+  /** Set by an applied adaptation on a READY item whose spec was
+   *  superseded: the built problem no longer matches the plan's shape.
+   *  Advisory — the item stays launchable; the timeline offers a rebuild
+   *  and the candidate decides. Cleared by /api/rebuild. */
+  stale?: boolean;
 }
 
 export interface Queue {
