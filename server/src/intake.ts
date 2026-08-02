@@ -33,12 +33,6 @@ export interface Target {
   description: string;
   /** Pasted reference material: recruiter email, a found question, notes. */
   context?: string;
-  /** Research-agent output, confirm-gated before inference may use it. */
-  research?: {
-    summary: string;
-    findings: { claim: string; url: string }[];
-    confirmed?: boolean;
-  };
   /** Confirmed round shapes. Only confirmed specs generate problems. */
   specs: RoundSpec[];
   created: string;

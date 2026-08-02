@@ -1,17 +1,8 @@
 /**
- * Intake reasoner — the step between research and the spec confirm.
- *
- * The research agent's findings used to be flattened into a use-it /
- * ignore-it button: the live Palantir run found that the candidate's
- * described round shape "does not appear anywhere in the public record"
- * (the LLD element belongs to the live onsite; the OA is coding+SQL+API),
- * and the UI's only response was a binary. The most valuable thing the
- * system learned was discarded, and twelve rounds of a disputed shape got
- * planned.
+ * Intake reasoner — the step between the description and the spec confirm.
  *
  * This module is ONE reasoning call (not an agent — no loop, no tools):
- * it reads the description, the pasted context, and the confirmed
- * findings, and returns
+ * it reads the description and the pasted context, and returns
  *
  *   questions[]   0-3 structured clarifications, options + recommendation
  *   drafts[]      1+ round specs — one description MAY be several rounds
@@ -48,7 +39,6 @@ export interface ClarifyResult {
 export type IntakeClarifier = (input: {
   description: string;
   context: string;
-  findings: string;
   answers?: { question: string; answer: string }[];
 }) => Promise<ClarifyResult>;
 
@@ -184,7 +174,6 @@ function buildPrompt(
   return readFileSync(templatePath, 'utf8')
     .replace(/\{\{DESCRIPTION\}\}/g, input.description)
     .replace(/\{\{CONTEXT\}\}/g, input.context || '(none provided)')
-    .replace(/\{\{FINDINGS\}\}/g, input.findings || '(no research was run or nothing was found)')
     .replace(/\{\{ANSWERS\}\}/g, answers || '(none yet)');
 }
 

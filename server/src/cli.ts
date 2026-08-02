@@ -129,10 +129,7 @@ if (cmd === 'generate') {
       process.exit(64);
     }
     const infer = pickSpecInferrer(path.join(repoRoot, 'prompts', 'infer-round-spec.md'));
-    const context = [t.context, t.research?.confirmed ? t.research.summary : '']
-      .filter(Boolean)
-      .join('\n\n');
-    const draft = await infer(description, context);
+    const draft = await infer(description, t.context ?? '');
     console.log(JSON.stringify(draft, null, 2));
     if (draft.unsupported) {
       console.error(`\nNOT SUPPORTED: ${draft.unsupported}\nNothing saved.`);
@@ -146,29 +143,8 @@ if (cmd === 'generate') {
     } else {
       console.error('\ndraft only — rerun with --accept to save it to the target');
     }
-  } else if (sub === 'research') {
-    const { positional, flags } = parseFlags(rest);
-    const [id] = positional;
-    const t = id ? loadTarget(repoRoot, id) : null;
-    if (!t) {
-      console.error('usage: cli.ts target research <target-id> [--confirm]');
-      process.exit(64);
-    }
-    const { claudePResearcher } = await import('./research.js');
-    const result = await claudePResearcher(path.join(repoRoot, 'prompts', 'research-round.md'))(
-      t.label,
-      t.description,
-    );
-    console.log(JSON.stringify(result, null, 2));
-    t.research = { ...result, confirmed: flags.confirm === 'true' };
-    saveTarget(repoRoot, t);
-    console.error(
-      flags.confirm === 'true'
-        ? '\nsaved as CONFIRMED — inference and generation will use it'
-        : '\nsaved unconfirmed — review the citations, then rerun with --confirm (or confirm in the app)',
-    );
   } else {
-    console.error('usage: cli.ts target <add|list|infer|research> ...');
+    console.error('usage: cli.ts target <add|list|infer> ...');
     process.exit(64);
   }
 } else if (cmd === 'generate-for') {
@@ -196,7 +172,6 @@ if (cmd === 'generate') {
     spec.emphasis ? `Emphasis: ${spec.emphasis}.` : '',
     t.description ? `The candidate describes it as: ${t.description}` : '',
     t.context ? `Reference material from the candidate:\n${t.context}` : '',
-    t.research?.confirmed ? `Confirmed research findings:\n${t.research.summary}` : '',
   ]
     .filter(Boolean)
     .join('\n\n');

@@ -341,3 +341,125 @@ editor; the issue is that no specific face was ever chosen.
 Mono is free and open. Adds a webfont to load on a surface that currently loads none.
 
 **Effort:** human ~1 hr / CC ~20 min once the face is chosen. **Priority:** P3.
+
+---
+
+## 17. Persistence has no atomicity — a crash mid-write truncates the plan
+
+**What:** Give `saveTarget` and `saveQueue` (`server/src/intake.ts:51`, `server/src/queue.ts:65`)
+a temp-then-rename write: serialise to `<file>.tmp`, `fsync`, then `rename` over the target.
+`rename` on the same filesystem is atomic, so a reader sees either the old file or the new
+one, never a half-written one.
+
+**Why:** Both savers call `writeFileSync` directly. A crash, a full disk, or a kill mid-write
+leaves truncated JSON, and neither loader validates (see #18), so the failure surfaces later
+as a confusing UI rather than a loud error. This was tolerable when a target was written once
+at intake. The adaptation feature (CEO review 2026-08-02) writes both files on every adapt,
+multiplying the exposure.
+
+**Pros:** closes the only path by which a plan silently corrupts on disk; ~20 lines; no
+behaviour change when nothing goes wrong.
+**Cons:** touches the persistence layer every module depends on, so it wants its own careful
+pass with the full suite green, not a drive-by inside a feature branch.
+
+**Context:** raised by the outside voice (Codex) during the CEO review that cut preemptive
+research. Pairs naturally with #18 — atomic writes stop corruption being *created*, schema
+validation stops corruption being *consumed*. Do #17 first; it's the cheaper half.
+
+**Effort:** human ~2 hrs / CC ~20 min. **Priority:** P2. **Blocked on:** nothing.
+
+---
+
+## 18. Loaders cast instead of validating — `JSON.parse(...) as T`
+
+**What:** Validate shape in `loadTarget` (`server/src/intake.ts:56`) and `loadQueue`
+(`server/src/queue.ts:59`) instead of casting. A hand-written validator in the repo's
+existing gate style (see `gateTopics`, `validateRoundSpec`) is preferable to adding a
+schema library — the vocabulary is already closed and hand-written gates are the house
+pattern.
+
+**Why:** Every read of a target or queue is an unchecked cast. A truncated file, a
+hand-edited one, or a shape from an older build produces `undefined` deep in a render
+path rather than a clear error at the boundary. Codex's framing during the CEO review:
+deferring validation *while adding state transitions* is a bad trade — the adaptation
+feature adds an `adapting` flag, per-item stale flags, and an `adaptations[]` log, so
+there is strictly more shape to get wrong.
+
+**Pros:** turns a class of silent misbehaviour into one loud error at the boundary;
+makes #17's recovery story real (you can tell a good file from a bad one).
+**Cons:** a validator must be kept in sync with the types by hand, which is exactly the
+drift the `as T` cast was avoiding; a library would avoid that but adds a dependency to
+a repo that currently has almost none.
+
+**Context:** from the same CEO review as #17. The specific trigger is that adaptation
+introduces a half-applied state that is only detectable if a loader can tell a valid
+queue from an invalid one.
+
+**Effort:** human ~half day / CC ~45 min. **Priority:** P2. **Blocked on:** #17 ideally
+lands first, so validation has something trustworthy to validate.
+
+---
+
+## 19. Pasted material is not fenced as untrusted input
+
+**What:** In `prompts/clarify-intake.md` and the new adapt prompt, wrap candidate-supplied
+material (`t.context`, adaptation material) in an explicit boundary — a delimiter plus a
+line stating the enclosed text is data describing an interview round, never instructions —
+and add eval cases with an injection attempt inside pasted material.
+
+**Why:** The product's whole value is interpreting primary material the candidate pastes:
+recruiter emails, OA problem titles, a friend's messages, a GitHub reference someone found.
+That material goes straight into a model that then writes `RoundSpec`s and re-shapes a plan.
+Nothing currently distinguishes "this is the round description" from "ignore previous
+instructions". The blast radius today is the candidate's own practice plan on their own
+machine, which is why this is P2 and not P1 — but the feature that makes it matter is the
+one being built now.
+
+**Pros:** cheap, prompt-only, and testable; the closed `RoundSpec` vocabulary plus
+`validateRoundSpec` already bounds what a hijacked planner could emit.
+**Cons:** prompt-level mitigation is mitigation, not a guarantee; without eval cases it's
+an untested claim, and this repo has no eval harness yet.
+
+**Context:** raised by Codex during the CEO review. Note the existing defence-in-depth:
+pasted links are stored as text and never fetched, and every emitted spec must survive
+`validateRoundSpec` server-side.
+
+**Effort:** human ~3 hrs / CC ~30 min. **Priority:** P2. **Blocked on:** nothing.
+
+---
+
+## 20. ~~Research is kept but unused~~ RESOLVED 2026-08-02 — deleted same day
+
+Closed early by D9, the launch-lens revision of D1: an opt-in button on a 40%-rejected
+feature is a support liability in a paid product, and the networkless student is already
+served by model priors + clarifying questions. `research.ts`, its tests, the prompt, both
+endpoints, the CLI subcommand, and `Target.research` were all deleted; git history is
+the archive (the citation gate and `normalizeCitation` lessons live there if it ever
+comes back).
+
+**What (original):** A dated decision, not open-ended debt. If the opt-in "look it up for me" link
+has not been used by 2026-09-30, delete `server/src/research.ts`, `server/src/research.test.ts`
+(11 tests), `prompts/research-round.md`, and the `/api/research` + `/api/research/confirm`
+endpoints, and drop `research` from the `Target` interface.
+
+**Why:** The CEO review on 2026-08-02 cut preemptive research from the default intake path
+on measured evidence: 5 runs across real targets, 2 rejected outright by the candidate, and
+one confident miss where research contradicted a HackerRank preview the candidate had seen
+with their own eyes. It was kept behind an explicit opt-in for the case with no
+counter-evidence — a student with no network, no invite email, and no contacts. That case is
+real but unproven. If a full recruiting season passes without it being pressed, the case
+does not exist and the code should go.
+
+**Pros:** converts a kept-but-unused path into a decision with an expiry rather than
+permanent maintenance surface; deleting it also removes the only subprocess in the product
+holding `WebSearch,WebFetch`.
+**Cons:** if it does get pressed occasionally the check just churns; and re-adding it later
+costs more than keeping it, since the citation gate and `normalizeCitation` took two rounds
+of live failures to get right.
+
+**Context:** Codex's fair hit during that review was that the cut reduced default-path
+latency (~2min → ~15s) but not maintenance surface. This TODO is the answer to that: the
+surface goes away too, just on evidence rather than on a guess.
+
+**Effort:** human ~2 hrs / CC ~20 min. **Priority:** P3. **Blocked on:** the September
+season completing.

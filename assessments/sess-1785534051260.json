@@ -1,0 +1,60 @@
+{
+  "session_id": "sess-1785534051260",
+  "status": "assessed",
+  "judged_at": 1785541688333,
+  "model": "sonnet (claude -p)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Settles the suite's ambiguous edges from the visible tests before coding — reads the back-to-back test to confirm that windows touching at a boundary do not overlap, and the sweep test to confirm a hold lapses at exactly holdExpiresAt rather than one minute later.",
+    "approach": "States a mechanism before writing code — one occupancy predicate (an occupying state that is not a stale hold) shared by hold, isAvailable and scheduleFor, plus a private expire-stale pass run at the top of every mutating method — not merely 'a Map of bookings'.",
+    "communicate": "Narrates the transition table and the occupancy rule while building — which states occupy a window, and why a RETURNED booking releases the remainder of its window — so the design is auditable with no interviewer answering.",
+    "implement": "Enforces the lifecycle as one explicit transition check rather than scattered conditionals, drives both ASSET_UNAVAILABLE and HOLDER_CONFLICT off the same half-open overlap test, and keeps the expiry rule in one place instead of duplicating it per method.",
+    "verify": "Runs npm test and then, before the single submission, hand-checks the boundary cases the suite pins tightly — a hold confirmed at holdExpiresAt versus one minute earlier, a check-out at exactly start, an early check-in freeing the remainder of the window — instead of submitting on a green run alone.",
+    "reflect": "Explains which invariant each rejection code protects — why HOLDER_CONFLICT needs a scan across assets while ASSET_UNAVAILABLE does not — and names which part of the design would strain first if a booking could cover several assets."
+  },
+  "solved": false,
+  "summary": "The candidate opened the problem's package.json twice in the first 30 seconds of a 94-minute session, then the timeline shows no further candidate activity at all until the interviewer's time warnings. The session auto-submitted at the deadline and the test run failed, with no visible reading of the spec, planning, editing, or verification in between.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "unassessable",
+      "analysis": "The only candidate actions before the deadline were opening package.json twice; there is no evidence they ever opened ledger.ts, ledger.test.ts, or engaged with the boundary/expiry ambiguities the problem calls out. No direction was ever committed to, so there is nothing to judge clarifying behavior against.",
+      "evidence": []
+    },
+    {
+      "dimension": "approach",
+      "verdict": "unassessable",
+      "analysis": "No plan, hypothesis, or even a stated intent appears anywhere in the timeline. Since no non-trivial decision point was ever reached in the visible record, there is no approach to assess.",
+      "evidence": []
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "weak",
+      "analysis": "After the two file opens in the first 30 seconds, there is no further candidate speech or action logged for roughly 75 minutes, and no narration appears anywhere in the session. An interviewer following only the candidate's own actions would have had no way to know what, if anything, they were doing during almost the entire session.",
+      "evidence": [
+        29,
+        5616
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "unassessable",
+      "analysis": "No edits or code changes are recorded anywhere in the timeline, so there is no implementation to evaluate against a stated plan that also never appeared.",
+      "evidence": []
+    },
+    {
+      "dimension": "verify",
+      "verdict": "unassessable",
+      "analysis": "The only test run in the record happens at +5616s immediately after the interviewer's forced end-of-time submission, not as a candidate-initiated check of their own work. With no implementation ever visible, there was nothing for the candidate to verify.",
+      "evidence": []
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "unassessable",
+      "analysis": "The session ends at the same moment the failing test result appears, with the candidate immediately clicking End Session. No resolution point was reached and no reflection on cause or fix is present in the record.",
+      "evidence": []
+    }
+  ]
+}

@@ -49,9 +49,17 @@ describe('home app page', () => {
 
   it('one violet primary action and the muted closing line — no numbered steps', () => {
     expect(html).toContain('Build my plan');
-    expect(html).toContain('show you the sources before anything gets used');
+    expect(html).toContain('you confirm every round before anything gets built');
     // The rejected slop pattern must not creep back in.
     expect(html).not.toMatch(/how it works/i);
+  });
+
+  it('research is gone from the product (CEO review 2026-08-02, D9)', () => {
+    // The cut is a decision, not an accident — pin it so it can only be
+    // reversed deliberately.
+    expect(js).not.toContain('runResearch');
+    expect(js).not.toContain('/api/research');
+    expect(html).not.toMatch(/look(ing)? up/i);
   });
 
   it('desktop-only is stated, not broken (D7)', () => {

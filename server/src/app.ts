@@ -442,7 +442,7 @@ export function appPage(): string {
       </div>
       <button id="e-build" class="primary" type="button">Build my plan</button>
       <p class="err" id="e-err" aria-live="polite"></p>
-      <p class="closing">We'll look up what this round actually is and show you the sources before anything gets used.</p>
+      <p class="closing">Everything you paste shapes the plan — and you confirm every round before anything gets built.</p>
     </div>
     <div id="entry-flow" hidden aria-live="polite"></div>
   </section>
@@ -545,10 +545,9 @@ export function runApp(cfg: AppConfig): http.Server {
       }
       if (url === '/api/clarify' && req.method === 'POST') {
         // The intake reasoner: sees everything intake knows, returns 0-3
-        // structured questions + 1+ round drafts. The research findings
-        // stop being flattened into a use-it/ignore-it binary — a
-        // contradiction between the description and the sources becomes a
-        // QUESTION, and multiple real rounds become multiple specs.
+        // structured questions + 1+ round drafts. A contradiction inside
+        // what the candidate provided becomes a QUESTION, and multiple
+        // real rounds become multiple specs.
         const b = JSON.parse((await readBody(req)) || '{}') as {
           target_id?: string;
           answers?: { question: string; answer: string }[];
@@ -557,14 +556,10 @@ export function runApp(cfg: AppConfig): http.Server {
         if (!t) return json(404, { error: 'no such target' });
         if (!t.description) return json(400, { error: 'describe the round first' });
         const { pickClarifier } = await import('./clarify.js');
-        const findings = t.research?.confirmed
-          ? [t.research.summary, ...t.research.findings.map((f) => `- ${f.claim} (${f.url})`)].join('\n')
-          : '';
         try {
           const result = await pickClarifier(path.join(repoRoot, 'prompts', 'clarify-intake.md'))({
             description: t.description,
             context: t.context ?? '',
-            findings,
             answers: b.answers,
           });
           return json(200, result);
@@ -574,46 +569,12 @@ export function runApp(cfg: AppConfig): http.Server {
           console.warn(`[app] clarify failed, falling back to infer: ${String(e).slice(0, 200)}`);
           try {
             const infer = pickSpecInferrer(path.join(repoRoot, 'prompts', 'infer-round-spec.md'));
-            const context = [t.context, findings].filter(Boolean).join('\n\n');
-            const draft = await infer(t.description, context);
+            const draft = await infer(t.description, t.context ?? '');
             return json(200, { questions: [], drafts: [draft] });
           } catch (e2) {
             return json(502, { error: `inference failed: ${String(e2).slice(0, 300)}` });
           }
         }
-      }
-      if (url === '/api/research' && req.method === 'POST') {
-        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string };
-        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
-        if (!t) return json(404, { error: 'no such target' });
-        const { claudePResearcher } = await import('./research.js');
-        try {
-          const result = await claudePResearcher(path.join(repoRoot, 'prompts', 'research-round.md'))(
-            t.label,
-            t.description,
-          );
-          // RE-LOAD before saving: research runs for minutes, and the user
-          // can skip ahead and accept specs meanwhile. Saving the snapshot
-          // loaded at request start wiped t.specs in a live QA run — the
-          // classic load-await-save race. Merge into the freshest copy.
-          const fresh = loadTarget(repoRoot, b.target_id!) ?? t;
-          // Saved UNCONFIRMED: nothing downstream reads it until the
-          // candidate has seen the citations and said yes.
-          fresh.research = { ...result, confirmed: false };
-          saveTarget(repoRoot, fresh);
-          return json(200, fresh.research);
-        } catch (e) {
-          return json(502, { error: `research failed: ${String(e).slice(0, 300)}` });
-        }
-      }
-      if (url === '/api/research/confirm' && req.method === 'POST') {
-        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; summary?: string };
-        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
-        if (!t?.research) return json(404, { error: 'no research to confirm' });
-        if (b.summary?.trim()) t.research.summary = b.summary.trim(); // their edit wins
-        t.research.confirmed = true;
-        saveTarget(repoRoot, t);
-        return json(200, { ok: true });
       }
       if (url === '/api/accept-spec' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as {
@@ -647,7 +608,6 @@ export function runApp(cfg: AppConfig): http.Server {
                 `Round: ${spec.label}.`,
                 spec.emphasis ? `Emphasis: ${spec.emphasis}.` : '',
                 t.description ? `The candidate describes it as: ${t.description}` : '',
-                t.research?.confirmed ? `Confirmed research findings:\n${t.research.summary}` : '',
               ].filter(Boolean).join('\n');
               const titles = await namer(brief, mine.length);
               mine.forEach((item, i) => (item.planned_title = titles[i]));

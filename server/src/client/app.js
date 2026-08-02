@@ -4,8 +4,10 @@
  *
  * Two views, server-driven from /api/state:
  *   entry   — first run: the screen IS the input. Build my plan runs
- *             research (cited, confirm-gated) → spec confirm → the season
- *             appears immediately, before the first problem finishes.
+ *             clarify (0-3 questions, best-guess drafts) → spec confirm →
+ *             the season appears immediately, before the first problem
+ *             finishes. No research step: the plan is built from what the
+ *             candidate knows and pastes (CEO review 2026-08-02).
  *   seasons — the dated forward-only runway. TODAY holds the page's only
  *             primary action; the past is neutral history, never debt.
  *
@@ -89,7 +91,7 @@ function buildContext() {
   ).join('\n\n');
 }
 
-// ---- first-run flow: build → research → confirm → spec → season ----
+// ---- first-run flow: build → clarify → confirm → season ----
 
 let flowTargetId = null;
 let draft = null;
@@ -124,46 +126,8 @@ el('e-build').addEventListener('click', async () => {
   btn.textContent = 'Build my plan';
   if (s.error) { err.textContent = s.error; return; }
   flowTargetId = s.id;
-  runResearch();
+  runClarify(null);
 });
-
-function runResearch() {
-  flow('<h2>Looking up this round…</h2>' +
-    '<p class="meta">Public writeups only — you\'ll see every source before anything gets used. A minute or two.</p>' +
-    '<div class="progress"><div class="fill"></div></div>' +
-    '<a href="#" id="skip-research" class="meta">skip — I know the round</a>');
-  el('skip-research').addEventListener('click', (e) => { e.preventDefault(); runClarify(null); });
-  fetch('/api/research', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: flowTargetId }) })
-    .then((r) => r.json())
-    .then((d) => {
-      if (!el('entry-flow').innerHTML.includes('Looking up')) return; // user skipped
-      if (d.error) {
-        flow('<p class="err">' + esc(d.error) + '</p>' +
-          '<button id="re-research" type="button">try again</button> ' +
-          '<button id="skip2" class="primary" type="button">continue without research</button>');
-        el('re-research').addEventListener('click', runResearch);
-        el('skip2').addEventListener('click', () => runClarify(null));
-        return;
-      }
-      if (!d.findings || !d.findings.length) {
-        flow('<p class="meta">Nothing solid found publicly — going with what you told me.</p>');
-        window.setTimeout(() => runClarify(null), 900);
-        return;
-      }
-      let html = '<h2>What turned up — check it before it\'s used</h2><p>' + esc(d.summary) + '</p><div class="findings">';
-      for (const f of d.findings) {
-        html += '<p class="meta">· ' + esc(f.claim) + '<br>&nbsp;&nbsp;<a href="' + esc(f.url) + '" target="_blank" rel="noreferrer">' + esc(f.url) + '</a></p>';
-      }
-      html += '</div><button id="use-research" class="primary" type="button">looks right — use it</button> ' +
-        '<button id="drop-research" type="button">ignore it</button>';
-      flow(html);
-      el('use-research').addEventListener('click', async () => {
-        await fetch('/api/research/confirm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: flowTargetId }) });
-        runClarify(null);
-      });
-      el('drop-research').addEventListener('click', () => runClarify(null));
-    });
-}
 
 function specShapeLine(c) {
   return (c.interviewer ? 'live interviewer' : 'no interviewer (OA)') + ' · ' +
@@ -193,7 +157,7 @@ function runClarify(answers) {
  *  a free-text escape per question, and a global "use your best guess". */
 function renderQuestions(d) {
   let html = '<h2>Quick check before the plan gets built</h2>' +
-    '<p class="meta">The research raised something worth settling — wrong answers here cost you generated rounds of the wrong shape.</p>';
+    '<p class="meta">Your description leaves something worth settling — wrong answers here cost you generated rounds of the wrong shape.</p>';
   d.questions.forEach((q, qi) => {
     html += '<div class="q" data-qi="' + qi + '"><p class="qtext">' + esc(q.question) + '</p>' +
       '<p class="meta qwhy">' + esc(q.why) + '</p>';

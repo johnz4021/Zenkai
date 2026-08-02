@@ -18,7 +18,7 @@ const round = (over: Record<string, unknown> = {}) => ({
   submit: 'one_shot',
   check_kind: 'all_failing',
   emphasis: '',
-  rationale: 'Autograded HackerRank per the findings.',
+  rationale: 'Autograded HackerRank per the recruiter email.',
   unsupported: '',
   ...over,
 });
