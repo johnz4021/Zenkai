@@ -49,6 +49,11 @@ export interface AdaptDraft extends SpecDraft {
 export interface AdaptDiff {
   /** Append-only: never contains an id already on the target. */
   new_specs: RoundSpec[];
+  /** Spec ids this adapt retires for FUTURE items. Persisted into the
+   *  record: retirement must outlive the adapt, or the next one
+   *  resurrects a replaced round into the rotation (live bug, 2026-08-02:
+   *  a second adapt re-pointed items back at the superseded live round). */
+  superseded: string[];
   repointed: {
     item_id: string;
     from_spec_id: string;
@@ -72,12 +77,21 @@ export interface AdaptRecord {
   material_excerpt: string;
   summary: string;
   new_spec_ids: string[];
+  /** Retired-for-future spec ids — read by every LATER planAdaptation so
+   *  supersession is permanent without ever editing the spec itself. */
+  superseded?: string[];
   repointed: { item_id: string; from: string; to: string }[];
   flagged: string[];
   skipped: { item_id: string; reason: string }[];
 }
 
 const EXCERPT_MAX = 280;
+
+/** Specs retired by past adaptations — permanently out of the rotation,
+ *  though still on the target for the history that ran under them. */
+export function retiredSpecIds(target: Target): Set<string> {
+  return new Set((target.adaptations ?? []).flatMap((r) => r.superseded ?? []));
+}
 
 /** Enough of the material to recognize the source later — never the whole
  *  message (it may be a real person's words; the plan is not an archive). */
@@ -93,14 +107,19 @@ export function excerptOf(material: string): string {
  * null), and a draft may not reuse an existing spec id — append-only means
  * a "changed" round arrives under a new id.
  */
-export function gateAdapt(raw: unknown, existingSpecs: RoundSpec[]): AdaptDraft[] {
+export function gateAdapt(raw: unknown, existingSpecs: RoundSpec[], allSpecIds?: string[]): AdaptDraft[] {
   const o = raw as { rounds?: unknown };
   const rounds = coerceArray(o.rounds ?? []);
   // Zero rounds is a VALID answer: "the material changes nothing". Forcing
   // a fake draft here would add a spec and churn the queue for a no-op.
   if (rounds.length === 0) return [];
   if (rounds.length > 4) throw new Error(`adapt: ${rounds.length} rounds (max 4)`);
-  const existingIds = new Set(existingSpecs.map((s) => s.id));
+  // Two universes on purpose: `supersedes` must target an ACTIVE spec
+  // (existingSpecs — what the model was shown), while id collisions are
+  // checked against EVERY id that ever existed — a retired id can never
+  // be reused, or its history would point at the wrong round.
+  const existingIds = new Set(allSpecIds ?? existingSpecs.map((s) => s.id));
+  const activeIds = new Set(existingSpecs.map((s) => s.id));
   const drafts: AdaptDraft[] = [];
   const dropped: string[] = [];
   for (const r of rounds) {
@@ -108,7 +127,7 @@ export function gateAdapt(raw: unknown, existingSpecs: RoundSpec[]): AdaptDraft[
       const x = r as DraftToolOutput & { supersedes?: unknown };
       const supersedes =
         typeof x.supersedes === 'string' && x.supersedes.trim() ? x.supersedes.trim() : null;
-      if (supersedes !== null && !existingIds.has(supersedes)) {
+      if (supersedes !== null && !activeIds.has(supersedes)) {
         throw new Error(`adapt: supersedes unknown spec "${supersedes}"`);
       }
       const draft = draftToSpec(x);
@@ -143,11 +162,19 @@ export function planAdaptation(target: Target, queue: Queue, drafts: AdaptDraft[
   // No drafts → no diff. Never re-balance the queue as a side effect of a
   // no-op adapt: a "nothing changed" paste must change nothing.
   if (drafts.length === 0) {
-    return { new_specs: [], repointed: [], flagged: [], skipped: [], summary: 'no changes — the plan already matches' };
+    return { new_specs: [], superseded: [], repointed: [], flagged: [], skipped: [], summary: 'no changes — the plan already matches' };
   }
   const superseded = new Set(drafts.map((d) => d.supersedes).filter((s): s is string => s !== null));
+  // Retirement is PERMANENT: specs superseded by any earlier adapt stay
+  // out of the rotation, or adapt #2 quietly resurrects what adapt #1
+  // replaced (this happened live — items round-robined back onto the old
+  // live-interviewer round).
+  const retired = new Set([
+    ...(target.adaptations ?? []).flatMap((r) => r.superseded ?? []),
+    ...superseded,
+  ]);
   const activeSpecs = [
-    ...target.specs.filter((s) => !superseded.has(s.id)),
+    ...target.specs.filter((s) => !retired.has(s.id)),
     ...drafts.map((d) => d.spec),
   ];
   const repointed: AdaptDiff['repointed'] = [];
@@ -179,6 +206,7 @@ export function planAdaptation(target: Target, queue: Queue, drafts: AdaptDraft[
   ].filter(Boolean);
   return {
     new_specs: drafts.map((d) => d.spec),
+    superseded: [...superseded],
     repointed,
     flagged,
     skipped: [],
@@ -239,6 +267,7 @@ export function applyAdaptation(
     material_excerpt: excerptOf(materialExcerpt),
     summary: diff.summary,
     new_spec_ids: diff.new_specs.map((s) => s.id),
+    superseded: diff.superseded ?? [],
     repointed: applied,
     flagged: flaggedApplied,
     skipped,
@@ -276,7 +305,13 @@ export function reconcileAdaptation(target: Target, queue: Queue): Queue | null 
 
 // ---- the adapter call (one reasoning call, mirroring clarify.ts) ----
 
-export type Adapter = (input: { specs: RoundSpec[]; material: string }) => Promise<AdaptDraft[]>;
+export type Adapter = (input: {
+  /** ACTIVE specs only — what the model sees and may supersede. */
+  specs: RoundSpec[];
+  /** Every spec id that ever existed — the collision universe. */
+  allSpecIds?: string[];
+  material: string;
+}) => Promise<AdaptDraft[]>;
 
 function specLine(s: RoundSpec): string {
   const c = s.capabilities;
@@ -337,7 +372,7 @@ export function apiAdapter(templatePath: string, model = 'claude-sonnet-5'): Ada
       (b): b is Extract<typeof b, { type: 'tool_use' }> => b.type === 'tool_use',
     );
     if (!call) throw new Error('adapt: no tool call');
-    return gateAdapt(call.input, input.specs);
+    return gateAdapt(call.input, input.specs, input.allSpecIds);
   };
 }
 
@@ -361,7 +396,7 @@ export function claudePAdapter(templatePath: string, model = 'sonnet'): Adapter 
         try {
           const match = stdout.match(/\{[\s\S]*\}/);
           if (!match) throw new Error('adapt: no JSON in output');
-          resolve(gateAdapt(JSON.parse(match[0]), input.specs));
+          resolve(gateAdapt(JSON.parse(match[0]), input.specs, input.allSpecIds));
         } catch (e) {
           reject(e);
         }

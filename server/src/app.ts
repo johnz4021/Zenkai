@@ -24,7 +24,7 @@ import { validateRoundSpec, type GeneratedProblem, type RoundSpec } from '@inter
 import { listTargets, loadTarget, pickSpecInferrer, saveTarget, slugify, targetDir, type SpecDraft, type Target } from './intake.js';
 import { bucketIntoDays, loadQueue, nextUp, proposeQueue, reconcileWithDisk, repace, saveQueue, type Queue, type QueueItem } from './queue.js';
 import { buildGraphView, gapDescription, loadStore } from './gap-graph.js';
-import { applyAdaptation, pickAdapter, planAdaptation, reconcileAdaptation, type AdaptDiff } from './adapt.js';
+import { applyAdaptation, pickAdapter, planAdaptation, reconcileAdaptation, retiredSpecIds, type AdaptDiff } from './adapt.js';
 import { pickTopicNamer } from './plan-topics.js';
 import { clientScript } from './chrome.js';
 
@@ -655,8 +655,13 @@ export function runApp(cfg: AppConfig): http.Server {
         const q = loadQueue(repoRoot, t.id);
         if (!q) return json(400, { error: 'no plan yet — build one first, then adapt it' });
         try {
+          // The model sees only ACTIVE rounds — a retired spec is history,
+          // not a supersession target; retired ids stay in the collision
+          // universe so they can never be reused.
+          const retired = retiredSpecIds(t);
           const drafts = await pickAdapter(path.join(repoRoot, 'prompts', 'adapt-plan.md'))({
-            specs: t.specs,
+            specs: t.specs.filter((s) => !retired.has(s.id)),
+            allSpecIds: t.specs.map((s) => s.id),
             material,
           });
           const diff = planAdaptation(t, q, drafts);

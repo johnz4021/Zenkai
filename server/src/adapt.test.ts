@@ -89,6 +89,16 @@ describe('gateAdapt', () => {
       .toThrow(/append-only/);
   });
 
+  it('a RETIRED id can never be reused, and a retired spec cannot be superseded', () => {
+    // Active universe: onsite. Collision universe includes the retired oa.
+    const active = [spec('onsite')];
+    const allIds = ['oa', 'onsite'];
+    expect(() => gateAdapt({ rounds: [rawRound({ id: 'oa', supersedes: null })] }, active, allIds))
+      .toThrow(/append-only/);
+    expect(() => gateAdapt({ rounds: [rawRound({ supersedes: 'oa' })] }, active, allIds))
+      .toThrow(/unknown spec/);
+  });
+
   it('one incoherent draft is dropped; its coherent sibling survives', () => {
     const drafts = gateAdapt(
       { rounds: [rawRound(), rawRound({ id: 'broken', can_run_tests: false, supersedes: null })] },
@@ -137,6 +147,22 @@ describe('planAdaptation', () => {
     const q = queue([item('i1', 'oa', 'failed')]);
     const diff = planAdaptation(target(), q, [draftOf()]);
     expect(diff.repointed.map((r) => r.item_id)).toEqual(['i1']);
+  });
+
+  it('a later adapt never resurrects a spec an earlier one retired (live bug)', () => {
+    // Adapt 1: lld-round superseded oa. Adapt 2 adds a new round without
+    // mentioning oa — oa must STAY retired, not rejoin the round-robin.
+    const q1 = queue([item('i1', 'oa', 'pending'), item('i2', 'oa', 'pending')]);
+    const first = applyAdaptation(target(), q1, planAdaptation(target(), q1, [draftOf()]), 'n', NOW);
+    const second = planAdaptation(first.target, first.queue, [
+      gateAdapt({ rounds: [rawRound({ id: 'sql-round', label: 'SQL round', supersedes: null })] }, first.target.specs)[0]!,
+    ]);
+    const landed = new Set([
+      ...first.queue.items.map((i) => i.spec_id),
+      ...second.repointed.map((r) => r.to_spec_id),
+    ]);
+    expect(second.superseded).toEqual([]);
+    expect(landed.has('oa')).toBe(false); // retired stays retired
   });
 
   it('zero drafts → empty diff — a no-op paste never re-balances the queue', () => {
