@@ -357,6 +357,17 @@ export function appPage(): string {
   .seasonbar .fill { height: 100%; background: var(--accent); box-shadow: 0 0 8px var(--accent-dim); transition: width .8s cubic-bezier(.2, .7, .2, 1); }
   .paceline { display: flex; justify-content: space-between; color: var(--dim); font-size: 12px; margin-bottom: 26px; }
 
+  /* adaptation: the last change + the door for new information */
+  .adaptrow { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; font-size: 12px; margin: -14px 0 22px; }
+  .adaptrow .addlearn { color: var(--dim); text-decoration: none; border-bottom: 1px dotted var(--line); white-space: nowrap; }
+  .adaptrow .addlearn:hover { color: var(--accent); border-bottom-color: var(--accent-dim); }
+  .adaptpanel { border: 1px solid var(--line); padding: 15px; margin: 0 0 24px; background: rgba(255, 255, 255, .012); }
+  .adaptpanel .learnbox { width: 100%; min-height: 96px; resize: vertical; }
+  .adaptpanel .btnrow { margin-top: 12px; }
+  .adaptpanel .adaptsum { font-weight: 500; margin-bottom: 10px; }
+  .adaptpanel .repoint b { color: var(--bright); }
+  .stale { color: var(--mag); }
+
   ol.runway { list-style: none; margin: 0; padding: 0; position: relative; }
   /* The spine: one continuous rail the whole season hangs from. */
   ol.runway::before { content: ''; position: absolute; left: var(--rail); top: 10px; bottom: 10px; width: 1px; background: var(--line); }

@@ -313,6 +313,13 @@ function renderSeason(row, state) {
     html += '<h2 class="daysleft">' + esc(t.label) + '</h2><p class="meta">no date set</p>';
   }
 
+  // The adaptation surface: what changed last, and the door for what you
+  // just learned. The plan re-shapes only through an approved preview.
+  html += '<div class="adaptrow">' +
+    (row.adaptation ? '<span class="meta">' + fmtDate(row.adaptation.at.slice(0, 10)) + ' — ' + esc(row.adaptation.summary) + '</span>' : '<span></span>') +
+    '<a href="#" class="addlearn" data-t="' + esc(t.id) + '">+ add what you learned</a></div>' +
+    '<div class="adaptpanel" data-t="' + esc(t.id) + '" hidden></div>';
+
   html += '<ol class="runway">';
   for (const d of days) {
     if (d.kind === 'interview') {
@@ -333,7 +340,11 @@ function renderSeason(row, state) {
       } else if (item.status === 'ready') {
         html += '<div class="grow"><div class="title">' + esc(itemTitle(item)) + '</div>' +
           '<div class="metaline">' + metaLine(capsOf(item)) + '</div>' +
+          (item.stale ? '<div class="metaline stale">built for the old round shape — still startable, or rebuild it to match the plan</div>' : '') +
           (state.focus ? '<div class="aimed">aimed at: ' + esc(state.focus.description) + '</div>' : '') + '</div>';
+        if (item.stale) {
+          html += '<button class="rebuild" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">rebuild</button> ';
+        }
         if (!state.session_live) {
           html += '<button class="primary start" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">Start</button>';
         }
@@ -369,7 +380,8 @@ function renderSeason(row, state) {
     // future
     if (item) {
       html += '<li class="future"><span class="date">' + fmtDate(d.date) + '</span><span class="dot"></span>' +
-        '<span class="body">' + esc(itemTitle(item)) + '</span></li>';
+        '<span class="body">' + esc(itemTitle(item)) +
+        (item.stale ? ' <span class="stale">— built for the old shape</span>' : '') + '</span></li>';
     } else {
       html += '<li class="future empty"><span class="date">' + fmtDate(d.date) + '</span><span class="dot"></span>' +
         '<span class="body"></span></li>';
@@ -479,6 +491,121 @@ function wireTimeline(container) {
       refresh(true);
     });
   }
+  for (const b of container.querySelectorAll('button.rebuild')) {
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      const r = await fetch('/api/rebuild', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: b.dataset.t, item_id: b.dataset.i }) });
+      const s = await r.json();
+      if (s.error) { el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>'; b.disabled = false; return; }
+      refresh(true);
+    });
+  }
+  for (const a of container.querySelectorAll('a.addlearn')) {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (!adapt || adapt.tid !== a.dataset.t) adapt = { tid: a.dataset.t, phase: 'input', material: '' };
+      renderAdaptPanel(container);
+    });
+  }
+  renderAdaptPanel(container);
+}
+
+// ---- adapt: "add what you learned" → diff preview → approve → apply ----
+// The panel state lives OUTSIDE the DOM so the 5s poll can re-render the
+// timeline without losing a half-typed paste or an unapproved preview
+// (same survival trick as flowTargetId on the entry page).
+let adapt = null; // { tid, phase: 'input'|'busy'|'preview'|'error', material, result, error }
+
+function rerender() {
+  if (lastStateJson) render(JSON.parse(lastStateJson));
+}
+
+function renderAdaptPanel(container) {
+  const panel = container.querySelector('.adaptpanel');
+  if (!panel) return;
+  if (!adapt || adapt.tid !== panel.dataset.t) { panel.hidden = true; panel.innerHTML = ''; return; }
+  panel.hidden = false;
+  const cancel = () => { adapt = null; rerender(); };
+  if (adapt.phase === 'input' || adapt.phase === 'error') {
+    panel.innerHTML = '<textarea class="learnbox" placeholder="paste it raw — an invite email, problem titles from the assessment, what a friend who interviewed told you"></textarea>' +
+      (adapt.phase === 'error' ? '<p class="err">' + esc(adapt.error) + '</p>' : '') +
+      '<div class="btnrow"><button class="primary do-preview" type="button">see what changes</button> ' +
+      '<button class="do-cancel" type="button">cancel</button></div>';
+    const box = panel.querySelector('.learnbox');
+    box.value = adapt.material || '';
+    box.addEventListener('input', () => { adapt.material = box.value; });
+    panel.querySelector('.do-preview').addEventListener('click', () => previewAdapt(adapt.tid));
+    panel.querySelector('.do-cancel').addEventListener('click', cancel);
+    return;
+  }
+  if (adapt.phase === 'busy') {
+    panel.innerHTML = '<p class="meta">reading it…</p><div class="progress"><div class="fill"></div></div>';
+    return;
+  }
+  // preview — the confirm gate: nothing is written until "re-shape".
+  const d = adapt.result.diff;
+  if (!d.new_specs.length && !d.repointed.length && !d.flagged.length) {
+    panel.innerHTML = '<p class="meta">nothing to change — the plan already matches what you pasted.</p>' +
+      '<div class="btnrow"><button class="do-cancel" type="button">close</button></div>';
+    panel.querySelector('.do-cancel').addEventListener('click', cancel);
+    return;
+  }
+  let html = '<p class="adaptsum">' + esc(d.summary) + '</p>';
+  for (const s of adapt.result.drafts) {
+    if (s.unsupported) {
+      html += '<div class="specbox dropped"><p><b>' + esc(s.spec.label) + '</b> — can\'t run honestly</p>' +
+        '<p class="meta">' + esc(s.unsupported) + '</p></div>';
+      continue;
+    }
+    html += '<div class="specbox"><p><b>' + esc(s.spec.label) + '</b> <span class="meta">' +
+      (s.supersedes ? 'replaces ' + esc(s.supersedes) : 'additional round') + '</span></p>' +
+      '<p class="meta">' + specShapeLine(s.spec.capabilities) + '</p>' +
+      '<p class="rationale">' + esc(s.rationale) + '</p></div>';
+  }
+  for (const r of d.repointed) {
+    html += '<p class="meta repoint">' + esc(r.old_title) + ' → <b>' + esc(r.new_title || r.new_label) + '</b></p>';
+  }
+  if (d.flagged.length) {
+    html += '<p class="meta">' + d.flagged.length + ' already-built problem' + (d.flagged.length === 1 ? '' : 's') +
+      ' no longer match' + (d.flagged.length === 1 ? 'es' : '') + ' — you\'ll be offered a rebuild on each.</p>';
+  }
+  html += '<div class="btnrow"><button class="primary do-apply" type="button">re-shape the plan</button> ' +
+    '<button class="do-cancel" type="button">discard</button></div>';
+  panel.innerHTML = html;
+  panel.querySelector('.do-apply').addEventListener('click', () => applyAdapt(adapt.tid));
+  panel.querySelector('.do-cancel').addEventListener('click', cancel);
+}
+
+async function previewAdapt(tid) {
+  if (!adapt || adapt.phase === 'busy') return; // in-flight guard
+  adapt.phase = 'busy';
+  rerender();
+  const r = await fetch('/api/adapt', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: tid, material: adapt.material || '' }) });
+  const d = await r.json();
+  if (!adapt || adapt.tid !== tid) return; // cancelled meanwhile
+  if (d.error) { adapt.phase = 'error'; adapt.error = d.error; } else { adapt.phase = 'preview'; adapt.result = d; }
+  rerender();
+}
+
+async function applyAdapt(tid) {
+  if (!adapt || adapt.phase === 'busy') return;
+  const diff = adapt.result.diff;
+  const excerpt = (adapt.material || '').slice(0, 280);
+  adapt.phase = 'busy';
+  rerender();
+  const r = await fetch('/api/adapt/apply', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: tid, diff, material_excerpt: excerpt }) });
+  const d = await r.json();
+  if (d.error) {
+    if (adapt && adapt.tid === tid) { adapt.phase = 'error'; adapt.error = d.error; rerender(); }
+    return;
+  }
+  if (d.record && d.record.skipped.length) {
+    el('banner').innerHTML = '<div class="banner">' + d.record.skipped.length +
+      ' round(s) didn\'t change — they moved on while you were deciding (' +
+      esc(d.record.skipped.map((s) => s.reason).join(', ')) + ')</div>';
+  }
+  adapt = null;
+  refresh(true);
 }
 
 // ---- entrance choreography: staggered rise + count-up, once per page

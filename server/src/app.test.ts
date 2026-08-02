@@ -54,6 +54,19 @@ describe('home app page', () => {
     expect(html).not.toMatch(/how it works/i);
   });
 
+  it('adaptation is preview-then-apply — the model never writes unapproved', () => {
+    expect(js).toContain("'/api/adapt'");
+    expect(js).toContain("'/api/adapt/apply'");
+    expect(js).toContain('add what you learned');
+    expect(js).toContain('nothing to change');
+  });
+
+  it('a stale ready problem is offered a rebuild, never silently swapped', () => {
+    expect(js).toContain('button.rebuild');
+    expect(js).toContain('built for the old round shape');
+    expect(html).toContain('.adaptpanel');
+  });
+
   it('research is gone from the product (CEO review 2026-08-02, D9)', () => {
     // The cut is a decision, not an accident — pin it so it can only be
     // reversed deliberately.
