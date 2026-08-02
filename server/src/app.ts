@@ -24,6 +24,7 @@ import { validateRoundSpec, type GeneratedProblem, type RoundSpec } from '@inter
 import { listTargets, loadTarget, pickSpecInferrer, saveTarget, slugify, targetDir, type SpecDraft, type Target } from './intake.js';
 import { bucketIntoDays, loadQueue, nextUp, proposeQueue, reconcileWithDisk, repace, saveQueue, type Queue, type QueueItem } from './queue.js';
 import { buildGraphView, gapDescription, loadStore } from './gap-graph.js';
+import { applyAdaptation, pickAdapter, planAdaptation, reconcileAdaptation, type AdaptDiff } from './adapt.js';
 import { pickTopicNamer } from './plan-topics.js';
 import { clientScript } from './chrome.js';
 
@@ -153,7 +154,11 @@ function refreshQueue(target: Target, userId: string, now: number): Queue | null
       return null;
     }
   })();
-  const fresh = repace(reconcileWithDisk(repoRoot, stored), target, view, now);
+  // Crash repair first (D3): an adapt writes target.json before
+  // queue.json, so a death between the writes leaves the record ahead of
+  // the queue — re-apply the recorded re-points before anything renders.
+  const healed = reconcileAdaptation(target, stored) ?? stored;
+  const fresh = repace(reconcileWithDisk(repoRoot, healed), target, view, now);
 
   // Generation is USER-INITIATED (user decision 2026-08-01: no auto-kick).
   // The app never spends a generation the candidate didn't ask for —
@@ -504,6 +509,11 @@ export function runApp(cfg: AppConfig): http.Server {
                 specs: t.specs.map((s) => ({ id: s.id, label: s.label, capabilities: s.capabilities })),
               },
               queue: withTitles,
+              // Latest adaptation only — the timeline explains why rounds
+              // changed with one line, not the whole history.
+              adaptation: t.adaptations?.length
+                ? { at: t.adaptations[t.adaptations.length - 1]!.at, summary: t.adaptations[t.adaptations.length - 1]!.summary }
+                : null,
               // next must come from the TITLED items — the raw queue's
               // label is the "— round N" string the redesign banned.
               next: withTitles ? nextUp(withTitles as unknown as Queue) : null,
@@ -618,6 +628,121 @@ export function runApp(cfg: AppConfig): http.Server {
           saveQueue(repoRoot, queue);
         }
         return json(200, { ok: true, specs: t.specs.map((x) => x.id) });
+      }
+      if (url === '/api/adapt' && req.method === 'POST') {
+        // PREVIEW ONLY — computes a diff and writes NOTHING. No model
+        // output reaches the plan without the candidate approving the
+        // diff (D5); /api/adapt/apply is the only writer.
+        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; material?: string };
+        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (!t) return json(404, { error: 'no such target' });
+        const material = (b.material ?? '').trim();
+        if (!material) return json(400, { error: 'paste what you learned — an email, problem titles, a message' });
+        if (material.length > 256 * 1024) {
+          return json(400, { error: `that's ${Math.round(material.length / 1024)}KB — trim it to the relevant part (max 256KB)` });
+        }
+        const q = loadQueue(repoRoot, t.id);
+        if (!q) return json(400, { error: 'no plan yet — build one first, then adapt it' });
+        try {
+          const drafts = await pickAdapter(path.join(repoRoot, 'prompts', 'adapt-plan.md'))({
+            specs: t.specs,
+            material,
+          });
+          const diff = planAdaptation(t, q, drafts);
+          // Name the re-pointed rounds NOW so the preview shows old → new
+          // titles, not placeholders. Failure degrades to quiet rows.
+          const namer = pickTopicNamer(path.join(repoRoot, 'prompts', 'plan-topics.md'));
+          const bySpec = new Map<string, typeof diff.repointed>();
+          for (const r of diff.repointed) {
+            bySpec.set(r.to_spec_id, [...(bySpec.get(r.to_spec_id) ?? []), r]);
+          }
+          const allSpecs = [...t.specs, ...diff.new_specs];
+          for (const [specId, rows] of bySpec) {
+            const spec = allSpecs.find((s) => s.id === specId);
+            if (!spec) continue;
+            try {
+              const brief = [
+                `Round: ${spec.label}.`,
+                spec.emphasis ? `Emphasis: ${spec.emphasis}.` : '',
+                `The candidate just learned: ${material.slice(0, 2000)}`,
+              ].filter(Boolean).join('\n');
+              const titles = await namer(brief, rows.length);
+              rows.forEach((r, i) => (r.new_title = titles[i]));
+            } catch (e) {
+              console.warn(`[app] adapt naming failed for ${specId} (quiet rows): ${String(e).slice(0, 200)}`);
+            }
+          }
+          return json(200, {
+            diff,
+            drafts: drafts.map((d) => ({
+              spec: d.spec,
+              rationale: d.rationale,
+              supersedes: d.supersedes,
+              ...(d.unsupported ? { unsupported: d.unsupported } : {}),
+            })),
+          });
+        } catch (e) {
+          return json(502, { error: `couldn't read the material: ${String(e).slice(0, 300)}` });
+        }
+      }
+      if (url === '/api/adapt/apply' && req.method === 'POST') {
+        // The only writer. Re-proves the vocabulary server-side (the
+        // client held the diff), re-loads fresh state, and writes
+        // target.json FIRST (specs + record = the commit marker), then
+        // queue.json — reconcileAdaptation repairs a death in between.
+        const b = JSON.parse((await readBody(req)) || '{}') as {
+          target_id?: string;
+          diff?: AdaptDiff;
+          material_excerpt?: string;
+        };
+        const diff = b.diff;
+        if (!b.target_id || !diff || !Array.isArray(diff.new_specs) || !Array.isArray(diff.repointed) || !Array.isArray(diff.flagged)) {
+          return json(400, { error: 'target_id and a complete diff required' });
+        }
+        const t = loadTarget(repoRoot, b.target_id);
+        const q = t ? loadQueue(repoRoot, t.id) : null;
+        if (!t || !q) return json(404, { error: 'no such target or plan' });
+        for (const spec of diff.new_specs) {
+          const failures = validateRoundSpec(spec);
+          if (failures.length > 0) return json(400, { error: `${spec?.id ?? 'spec'}: ${failures.join('; ')}` });
+          if (t.specs.some((s) => s.id === spec.id)) {
+            return json(400, { error: `spec "${spec.id}" already exists — specs are append-only` });
+          }
+        }
+        const known = new Set([...t.specs, ...diff.new_specs].map((s) => s.id));
+        for (const r of diff.repointed) {
+          if (!known.has(r.to_spec_id)) return json(400, { error: `re-point targets unknown spec "${r.to_spec_id}"` });
+        }
+        const applied = applyAdaptation(t, q, diff, b.material_excerpt ?? '', Date.now());
+        saveTarget(repoRoot, applied.target);
+        saveQueue(repoRoot, applied.queue);
+        const record = applied.target.adaptations![applied.target.adaptations!.length - 1]!;
+        console.log(`[app] adapted ${t.id}: ${record.summary}`);
+        return json(200, { ok: true, record });
+      }
+      if (url === '/api/rebuild' && req.method === 'POST') {
+        // A stale READY item: built under a superseded shape, never
+        // launched — no candidate work exists in it, so regenerating in
+        // place is safe. The dir is wiped so the old .validated marker
+        // can't flip the item back to ready before generation runs.
+        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
+        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        const q = t ? loadQueue(repoRoot, t.id) : null;
+        const item = q?.items.find((i) => i.id === b.item_id);
+        if (!t || !q || !item?.problem_dir || item.status !== 'ready' || !item.stale) {
+          return json(400, { error: 'item is not a stale ready problem' });
+        }
+        if (q.items.some((i) => i.status === 'generating')) {
+          return json(409, { error: 'a problem is already generating — one at a time' });
+        }
+        const dir = path.isAbsolute(item.problem_dir) ? item.problem_dir : path.join(repoRoot, item.problem_dir);
+        rmSync(dir, { recursive: true, force: true });
+        delete item.stale;
+        item.status = 'generating';
+        saveQueue(repoRoot, q);
+        console.log(`[app] rebuilding ${t.id}/${item.id} under spec ${item.spec_id}`);
+        spawnGeneration(t, item, dir);
+        return json(200, { ok: true });
       }
       if (url === '/api/generate' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
