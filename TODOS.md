@@ -495,3 +495,38 @@ lookup added to an existing code path, not a new subsystem.
 **Effort:** human ~half day / CC ~30 min. **Priority:** P3.
 **Depends on:** the external-practice bridge shipping, and invented titles actually
 being observed in real plans.
+
+---
+
+## 22. Session architecture is single-tenant — a production blocker, not a bug
+
+**What:** `const CONTAINER = 'ip-session'` (`server/src/session.ts`) plus hardcoded ports
+3200 (session server) and 3100 (openvscode) make sessions **globally single-tenant** — one
+session per *machine*, not per user. Two users would collide on the container name, and
+session startup's `docker rm -f ip-session` would destroy the other person's live interview.
+
+**Why it isn't urgent:** for local single-user this design is correct and earned its keep
+during the 2026-08-02 QA — killing the app mid-generation left the detached generator
+running and disk-derived state recovered it cleanly. Process isolation is the right call.
+
+**What production needs:** per-session container names and dynamic port allocation; a
+routing proxy mapping session id → container; a lifecycle manager with idle timeout
+(teardown-on-grade landed in `fa3b7e6`, but nothing reaps a session abandoned by a closed
+tab); per-user resource caps. None of this invalidates the current architecture — it is the
+same shape with identity added.
+
+**Effort:** human ~1 wk / CC ~3-4 hrs. **Priority:** P2, blocking any second user.
+
+---
+
+## 23. Drills would fill the quiet days the timeline now names
+
+**What:** see #13. The 2026-08-02 QA made the gap concrete and visible: with 3 rounds/week
+over an 18-day runway, the runway is mostly empty days. Those now render honestly as
+"· N quiet days ·" rows (D4) instead of a wall of blank dated rows — which makes the hole
+easier to see, not smaller.
+
+**Why here:** #13 framed drills as a habit mechanism. The QA adds the evidence: the
+timeline's own shape now points at exactly where they go.
+
+**Effort / priority:** unchanged from #13 (P2, ~2-3 hrs CC).
