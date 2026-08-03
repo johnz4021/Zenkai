@@ -16,7 +16,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +25,7 @@ import { listTargets, loadTarget, pickSpecInferrer, saveTarget, slugify, targetD
 import { bucketIntoDays, loadQueue, nextUp, proposeQueue, reconcileWithDisk, repace, saveQueue, type Queue, type QueueItem } from './queue.js';
 import { buildGraphView, gapDescription, loadStore } from './gap-graph.js';
 import { applyAdaptation, pickAdapter, planAdaptation, reconcileAdaptation, retiredSpecIds, type AdaptDiff } from './adapt.js';
+import { clearGeneratingMarker, generationProgress, pidAlive, readGeneratingMarker, sweepVerdict, writeGeneratingMarker } from './generation-state.js';
 import { pickTopicNamer } from './plan-topics.js';
 import { clientScript } from './chrome.js';
 
@@ -120,6 +121,7 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
   const args = ['generate-for', target.id, item.spec_id, '--into', dir];
   if (item.planned_title) args.push('--title', item.planned_title);
   liveGenerations.add(dir);
+  mkdirSync(dir, { recursive: true });
   const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), ...args], {
     cwd: repoRoot,
     detached: true,
@@ -127,8 +129,13 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
     env: { ...process.env },
   });
   child.unref();
+  // Disk-derived liveness (ISSUE-003): the marker carries {pid, started_at}
+  // so an app restart can tell a healthy detached generation from a true
+  // orphan — and the UI gets an honest start time.
+  if (child.pid) writeGeneratingMarker(dir, child.pid);
   child.on('close', (code) => {
     liveGenerations.delete(dir);
+    clearGeneratingMarker(dir);
     if (code !== 0 && !existsSync(path.join(dir, '.validated'))) {
       writeFileSync(path.join(dir, '.failed'), `exit ${code} at ${new Date().toISOString()}\n`);
       console.warn(`[app] generation failed for ${item.id} (exit ${code})`);
@@ -136,11 +143,12 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
   });
 }
 
-/** App restart while a generation was mid-flight leaves items 'generating'
- *  with no child and no marker — indistinguishable from progress. Mark them
- *  failed once at boot so the timeline offers retry instead of spinning
- *  forever. */
-function sweepOrphanedGenerations(): void {
+/** App restart while a generation was mid-flight: probe the marker's pid
+ *  before judging (ISSUE-003 — the old sweep trusted an in-memory Set that
+ *  restarts empty, and marked HEALTHY generations failed while their agent
+ *  kept writing; a retry click then would have double-generated into the
+ *  same directory). Liveness is injectable for tests. */
+function sweepOrphanedGenerations(isAlive: (pid: number) => boolean = pidAlive): void {
   for (const t of listTargets(repoRoot)) {
     const q = loadQueue(repoRoot, t.id);
     if (!q) continue;
@@ -148,9 +156,21 @@ function sweepOrphanedGenerations(): void {
       if (item.status !== 'generating' || !item.problem_dir) continue;
       const dir = path.isAbsolute(item.problem_dir) ? item.problem_dir : path.join(repoRoot, item.problem_dir);
       if (liveGenerations.has(dir)) continue;
-      if (!existsSync(path.join(dir, '.validated')) && !existsSync(path.join(dir, '.failed'))) {
+      const marker = readGeneratingMarker(dir);
+      const verdict = sweepVerdict({
+        marker,
+        alive: marker ? isAlive(marker.pid) : false,
+        hasTerminalMarker:
+          existsSync(path.join(dir, '.validated')) || existsSync(path.join(dir, '.failed')),
+      });
+      if (verdict === 'clear-marker') {
+        clearGeneratingMarker(dir);
+      } else if (verdict === 'fail') {
+        clearGeneratingMarker(dir);
         writeFileSync(path.join(dir, '.failed'), `orphaned by app restart at ${new Date().toISOString()}\n`);
         console.warn(`[app] ${t.id}/${item.id} orphaned by restart — marked failed (retryable)`);
+      } else {
+        console.log(`[app] ${t.id}/${item.id} still generating (pid ${marker!.pid} alive) — left alone`);
       }
     }
   }
@@ -371,6 +391,8 @@ export function appPage(): string {
   .q .otherbox { width: 260px; display: inline-block; padding: 4px 8px; margin-left: 6px; }
   .progress { height: 2px; background: var(--line); margin: 16px 0; overflow: hidden; }
   .progress .fill { height: 100%; background: var(--accent); width: 30%; animation: slide 1.5s ease-in-out infinite alternate; box-shadow: 0 0 8px var(--accent-dim); }
+  /* Determinate variant: width measures real elapsed vs the 8-min wall. */
+  .progress .fill.det { animation: none; transition: width 1s linear; }
   @keyframes slide { from { margin-left: 0; } to { margin-left: 70%; } }
 
   /* ---- all plans (index) ---- */
@@ -558,7 +580,22 @@ export function runApp(cfg: AppConfig): http.Server {
             const withTitles = queue
               ? {
                   ...queue,
-                  items: queue.items.map((i) => ({ ...i, title: resolveTitle(i) })),
+                  items: queue.items.map((i) => {
+                    const dir =
+                      i.status === 'generating' && i.problem_dir
+                        ? path.isAbsolute(i.problem_dir)
+                          ? i.problem_dir
+                          : path.join(repoRoot, i.problem_dir)
+                        : null;
+                    return {
+                      ...i,
+                      title: resolveTitle(i),
+                      // Honest progress (ISSUE-007): start time from the
+                      // .generating marker, live file count, and a phase —
+                      // replaces the decorative infinite bar.
+                      ...(dir ? { generating: generationProgress(dir) } : {}),
+                    };
+                  }),
                 }
               : null;
             return {
@@ -797,6 +834,13 @@ export function runApp(cfg: AppConfig): http.Server {
         if (!t || !q || !item?.problem_dir || item.status !== 'ready' || !item.stale) {
           return json(400, { error: 'item is not a stale ready problem' });
         }
+        {
+          const rd = path.isAbsolute(item.problem_dir) ? item.problem_dir : path.join(repoRoot, item.problem_dir);
+          const gm = readGeneratingMarker(rd);
+          if (gm && pidAlive(gm.pid)) {
+            return json(409, { error: 'a generation is still running in that directory — give it a minute' });
+          }
+        }
         if (q.items.some((i) => i.status === 'generating')) {
           return json(409, { error: 'a problem is already generating — one at a time' });
         }
@@ -837,6 +881,13 @@ export function runApp(cfg: AppConfig): http.Server {
           return json(400, { error: 'item is not in a failed state' });
         }
         const dir = path.isAbsolute(item.problem_dir) ? item.problem_dir : path.join(repoRoot, item.problem_dir);
+        // The double-agent guard (ISSUE-003): a false 'failed' can coexist
+        // with a live detached generation for a moment — retrying then
+        // would spawn a second agent into the same directory.
+        const gm = readGeneratingMarker(dir);
+        if (gm && pidAlive(gm.pid)) {
+          return json(409, { error: 'that generation is actually still running — give it a minute' });
+        }
         rmSync(path.join(dir, '.failed'), { force: true });
         item.status = 'generating';
         saveQueue(repoRoot, q);

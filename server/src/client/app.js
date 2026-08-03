@@ -286,6 +286,45 @@ function itemTitle(item) {
   return item.title || item.planned_title || item.label;
 }
 
+// ---- generation progress (server sends {since, files, phase} while an
+//      item generates; the 8-minute wall is the generator's real timeout).
+//      The clock/bar tick client-side every second via data-since — the
+//      focus-safe poll skips identical states, which would freeze them. ----
+const GEN_WALL_MS = 8 * 60000;
+
+function genProgressLine(item) {
+  const g = item.generating || {};
+  const bits = [
+    g.phase === 'finalizing' ? 'finalizing' : 'building',
+    g.since ? '<span class="genclock" data-since="' + esc(g.since) + '"></span>' : '',
+    g.files ? g.files + ' files written' : '',
+    'usually 5–8 min',
+  ].filter(Boolean);
+  return bits.join(' · ');
+}
+
+function genProgressPct(item) {
+  const since = item.generating && item.generating.since;
+  const t = since ? Date.parse(since) : NaN;
+  if (Number.isNaN(t)) return 8; // no marker yet — a sliver, not a lie
+  return Math.min(95, Math.round(((Date.now() - t) / GEN_WALL_MS) * 100));
+}
+
+function tickGenClocks() {
+  for (const n of document.querySelectorAll('.genclock[data-since]')) {
+    const t = Date.parse(n.dataset.since);
+    if (Number.isNaN(t)) continue;
+    const ms = Math.max(0, Date.now() - t);
+    n.textContent = Math.floor(ms / 60000) + 'm ' + String(Math.floor((ms % 60000) / 1000)).padStart(2, '0') + 's';
+  }
+  for (const f of document.querySelectorAll('.progress .fill.det[data-since]')) {
+    const t = Date.parse(f.dataset.since);
+    if (Number.isNaN(t)) continue;
+    f.style.width = Math.min(95, Math.round(((Date.now() - t) / GEN_WALL_MS) * 100)) + '%';
+  }
+}
+window.setInterval(tickGenClocks, 1000);
+
 function renderSeason(row, state) {
   const t = row.target;
   const capsOf = (item) => ((t.specs.find((x) => x.id === item.spec_id) || t.specs[0] || {}).capabilities);
@@ -370,16 +409,22 @@ function renderSeason(row, state) {
           html += '<button class="primary start" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">Start</button>';
         }
       } else if (item.status === 'generating') {
+        // Honest progress (QA ISSUE-007/008): elapsed from the real start
+        // marker, live file count, phase, and a bar that measures elapsed
+        // against the 8-minute generation wall — the old bar was an
+        // infinite loop that looked identical at second 5 and minute 8.
         html += '<div class="grow"><div class="title">' + esc(itemTitle(item)) + '</div>' +
-          '<div class="metaline">building this problem — about 5 minutes</div>' +
-          '<div class="progress"><div class="fill"></div></div></div>';
+          '<div class="metaline">' + genProgressLine(item) + '</div>' +
+          '<div class="progress"><div class="fill det"' +
+          (item.generating && item.generating.since ? ' data-since="' + esc(item.generating.since) + '"' : '') +
+          ' style="width:' + genProgressPct(item) + '%"></div></div></div>';
       } else if (item.status === 'failed') {
         html += '<div class="grow"><div class="title">' + esc(itemTitle(item)) + '</div>' +
           '<div class="metaline err">couldn\'t build this one</div></div>' +
           '<button class="retry" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">retry</button>';
       } else {
         html += '<div class="grow"><div class="title">' + esc(itemTitle(item)) + '</div>' +
-          '<div class="metaline">not built yet — generating takes about 5 minutes</div></div>' +
+          '<div class="metaline">not built yet — usually 5–8 minutes to generate</div></div>' +
           '<button class="primary gen" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">Generate</button>';
       }
       html += '</div></li>';
