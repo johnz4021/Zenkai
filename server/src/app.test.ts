@@ -67,6 +67,34 @@ describe('home app page', () => {
     expect(html).toContain('.adaptpanel');
   });
 
+  it('a running session can be ended from the masthead — discard, never grade (QA ISSUE-001/D1)', () => {
+    expect(html).toContain('id="nav-kill"');
+    expect(js).toContain("'/api/session-kill'");
+    expect(js).toContain('End without grading?');
+  });
+
+  it('today\'s completions and season completion render — finishing never looks empty (QA ISSUE-002)', () => {
+    expect(js).toContain("d.kind === 'done-today'");
+    expect(js).toContain("d.kind === 'complete'");
+    expect(js).toContain('season complete');
+    expect(js).toContain("d.kind === 'quiet'");
+  });
+
+  it('generation progress is measured, not decorative (QA ISSUE-007/008)', () => {
+    expect(js).toContain('genclock');
+    expect(js).toContain('usually 5–8 min');
+    expect(js).toContain('GEN_WALL_MS');
+    // The lying static estimate is gone for good.
+    expect(js).not.toContain('about 5 minutes');
+    expect(js).not.toContain('takes a minute to boot');
+  });
+
+  it('Start speaks at the click point (QA ISSUE-006)', () => {
+    expect(js).toContain("btn.textContent = 'Starting…'");
+    expect(js).toContain('launchline');
+    expect(js).toContain("couldn't start — is Docker running?");
+  });
+
   it('research is gone from the product (CEO review 2026-08-02, D9)', () => {
     // The cut is a decision, not an accident — pin it so it can only be
     // reversed deliberately.

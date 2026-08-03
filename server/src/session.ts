@@ -27,6 +27,7 @@ import { judgeSession } from './judge.js';
 import { buildAssessmentCard } from './feedback.js';
 import { buildGraphView, buildTargetNote, loadStore, recordAssessment, saveStore } from './gap-graph.js';
 import { clientScript, sessionPage } from './chrome.js';
+import { injectWorkbenchDefaults } from './workbench-inject.js';
 import { TraceStore } from './trace-store.js';
 import {
   TurnQueue,
@@ -138,23 +139,30 @@ function ensureRuntime(runtime: 'node' | 'python'): void {
  * parents (root-owned parents are what broke extension registration in
  * spike 2).
  */
+/** The seeded IDE settings, comment keys stripped. Written to the user-data
+ *  dir (reaches the remote extension host) AND injected into the workbench
+ *  boot HTML by the proxy (reaches the UI — the lever the KNOWN ISSUE named;
+ *  see workbench-inject.ts). */
+function loadIdeSettings(repoRoot: string): Record<string, unknown> {
+  const settings = JSON.parse(
+    readFileSync(path.join(repoRoot, 'server', 'ide-settings.json'), 'utf8'),
+  ) as Record<string, unknown>;
+  for (const k of Object.keys(settings)) if (k.startsWith('//')) delete settings[k];
+  return settings;
+}
+
 function ensureIdeDataDir(repoRoot: string): string {
   const dataDir = path.join(repoRoot, '.ide-data');
   const userDir = path.join(dataDir, 'User');
   const machineDir = path.join(dataDir, 'Machine');
   mkdirSync(userDir, { recursive: true });
   mkdirSync(machineDir, { recursive: true });
-  const settings = JSON.parse(
-    readFileSync(path.join(repoRoot, 'server', 'ide-settings.json'), 'utf8'),
-  ) as Record<string, unknown>;
-  for (const k of Object.keys(settings)) if (k.startsWith('//')) delete settings[k];
-  const body = JSON.stringify(settings, null, 2);
-  // KNOWN ISSUE: neither scope currently reaches the workbench UI — VS Code
-  // Web reads workbench settings from browser IndexedDB. Verified failing on
-  // clean browser state for User/, Machine/, and product.json
-  // configurationDefaults. See server/ide-settings.json for the full note and
-  // the remaining fix (pre-boot injection through our proxy). Kept because
-  // this dir also gives us logs/workspaceStorage at a known path.
+  const body = JSON.stringify(loadIdeSettings(repoRoot), null, 2);
+  // These file scopes never reached the workbench UI (VS Code Web reads
+  // workbench settings from browser IndexedDB) — the UI path is now the
+  // proxy's boot-HTML injection (workbench-inject.ts). Kept because they DO
+  // reach the remote extension host, and this dir gives us logs +
+  // workspaceStorage at a known host path.
   writeFileSync(path.join(userDir, 'settings.json'), body);
   writeFileSync(path.join(machineDir, 'settings.json'), body);
   return dataDir;
@@ -163,6 +171,28 @@ function ensureIdeDataDir(repoRoot: string): string {
 /** The debugging trigger: a test run that actually failed (shared predicate). */
 function hasFailingRun(events: TraceEvent[]): boolean {
   return events.some(isFailingRun);
+}
+
+/** Buffer a small GET from the IDE (used only for the workbench boot HTML,
+ *  which is a few hundred KB). Rejects on non-200 so the caller falls back
+ *  to the transparent proxy. */
+function fetchIdeHtml(port: number, urlPath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = http.get({ host: '127.0.0.1', port, path: urlPath, timeout: 5_000 }, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error(`ide ${res.statusCode}`));
+      }
+      let body = '';
+      res.on('data', (d) => (body += d));
+      res.on('end', () => resolve(body));
+    });
+    r.on('error', reject);
+    r.on('timeout', () => {
+      r.destroy();
+      reject(new Error('ide timeout'));
+    });
+  });
 }
 
 function ensureExtensionBuilt(repoRoot: string): string {
@@ -225,11 +255,16 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
   // ---- IDE container ----
   spawnSync('docker', ['rm', '-f', CONTAINER], { encoding: 'utf8' });
+  // Per-session workspace path (QA ISSUE-005): VS Code Web keys workbench
+  // state (open tabs, layout) by folder URI in BROWSER IndexedDB — a
+  // constant path meant every round opened on the previous round's tabs.
+  // A fresh URI per session starts the workbench clean.
+  const workspacePath = `/home/workspace/p-${cfg.sessionId}`;
   // The problem declares how its tests run; the vitest default keeps every
   // manifest written before `test_command` existed working unchanged.
   const testCmd =
     problem.test_command ??
-    `${BUNDLED_NODE} /home/workspace/problem/node_modules/vitest/vitest.mjs run`;
+    `${BUNDLED_NODE} ${workspacePath}/node_modules/vitest/vitest.mjs run`;
   sh('docker', [
     'run', '-d', '--name', CONTAINER,
     '-p', `${cfg.idePort}:3000`,
@@ -249,13 +284,15 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     ...(caps.can_run_tests && caps.submit !== 'one_shot' ? [] : ['-e', 'IP_CAN_RUN_TESTS=0']),
     '-v', `${extDist}:/ext`,
     '-v', `${ideDataDir}:/ipdata`,
-    '-v', `${cfg.problemDir}:/home/workspace/problem`,
+    '-v', `${cfg.problemDir}:${workspacePath}`,
     IDE_IMAGE,
     '--without-connection-token', '--host', '0.0.0.0',
     '--extensions-dir', '/ext',
     '--user-data-dir', '/ipdata',
   ]);
   ensureRuntime(runtime);
+
+  const ideSettings = loadIdeSettings(cfg.repoRoot);
 
   // ---- one server: chrome + api + trace ingest + IDE proxy ----
   const proxy = httpProxy.createProxyServer({
@@ -454,7 +491,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       const t0 = Date.now();
       const run = spawnSync(
         'docker',
-        ['exec', CONTAINER, 'bash', '-lc', `cd /home/workspace/problem && ${testCmd}`],
+        ['exec', CONTAINER, 'bash', '-lc', `cd ${workspacePath} && ${testCmd}`],
         { encoding: 'utf8', timeout: 180_000 },
       );
       const tail = `${run.stdout ?? ''}\n${run.stderr ?? ''}`.slice(-4_000);
@@ -552,6 +589,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           one_shot: caps.submit === 'one_shot',
           autorun: cfg.autorunTests && roundSpec.check.kind === 'one_failing_test',
           back_url: backUrl,
+          workspace_path: workspacePath,
         }),
       );
     }
@@ -674,6 +712,19 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       writeFileSync(file, JSON.stringify(confirms, null, 2));
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ ok: true }));
+    }
+    if (req.method === 'GET' && (url === '/' || url.startsWith('/?'))) {
+      // Workbench boot HTML: the ONE channel through which settings reach
+      // the VS Code Web UI (ide-settings KNOWN ISSUE — file scopes land in
+      // browser-side IndexedDB territory the server can't touch). Inject
+      // our defaults; any failure falls back to the transparent proxy.
+      try {
+        const html = await fetchIdeHtml(cfg.idePort, url);
+        res.writeHead(200, { 'content-type': 'text/html' });
+        return res.end(injectWorkbenchDefaults(html, ideSettings));
+      } catch {
+        /* IDE still booting or unexpected response — proxy as before */
+      }
     }
     if (url === '/api/end' && req.method === 'POST') {
       if (ended) {

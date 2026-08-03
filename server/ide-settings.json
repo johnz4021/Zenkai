@@ -23,5 +23,8 @@
   "//editor": "Deterministic editing surface: no AI autocomplete during an interview.",
   "editor.inlineSuggest.enabled": false,
   "editor.suggest.preview": false,
-  "files.autoSave": "off"
+  "files.autoSave": "off",
+
+  "//recommendations": "QA ISSUE-009: a stock 'install the Python extension?' modal popped mid-interview.",
+  "extensions.ignoreRecommendations": true
 }

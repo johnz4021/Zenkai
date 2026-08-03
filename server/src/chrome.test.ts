@@ -13,6 +13,34 @@ describe('session chrome', () => {
   const html = sessionPage('sess-test');
   const js = clientScript() ?? '';
 
+  it('the page has a way home — never strand a graded candidate (QA ISSUE-004)', () => {
+    const withBack = sessionPage('sess-test', {
+      interviewer: true, time_limit_ms: null, one_shot: false, autorun: true,
+      back_url: 'http://localhost:3300/#/t/tid',
+    });
+    expect(withBack).toContain('id="back"');
+    expect(withBack).toContain('← back to plan');
+    // The card reuses the header link; the ended layout swallows the dead
+    // editor pane.
+    expect(js).toContain('cardback');
+    expect(withBack).toContain('body.ended main iframe { display: none; }');
+  });
+
+  it('the clock and both polls stop when the session ends (QA ISSUE-012)', () => {
+    expect(js).toContain('function stopSessionLoops()');
+    expect(js).toContain('clearInterval(clockTimer)');
+    expect(js).toContain('clearInterval(statusTimer)');
+    expect(js).toContain('clearInterval(messagesTimer)');
+  });
+
+  it('the workspace folder is per-session, never the constant path (QA ISSUE-005)', () => {
+    const v = sessionPage('sess-test', {
+      interviewer: true, time_limit_ms: null, one_shot: false, autorun: true,
+      workspace_path: '/home/workspace/p-sess-test',
+    });
+    expect(v).toContain('/?folder=/home/workspace/p-sess-test');
+  });
+
   it('has a parseable client script', () => {
     expect(() => new Function(js)).not.toThrow();
   });
