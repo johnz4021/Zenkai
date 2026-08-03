@@ -44,11 +44,17 @@ async function generateInto(
       2,
     ),
   );
+  // The generator owns its own marker's lifetime: the app's close handler
+  // cannot be relied on (an app restart mid-generation orphans it, leaving
+  // a stale .generating next to a finished problem forever).
+  const { clearGeneratingMarker } = await import('./generation-state.js');
   if (!result.ok) {
+    clearGeneratingMarker(targetDir);
     console.error('--- stderr ---\n' + result.stderr.slice(0, 2000));
     return 1;
   }
   const report = validateProblem(targetDir);
+  clearGeneratingMarker(targetDir);
   console.log(JSON.stringify({ ok: report.ok, failures: report.failures }, null, 2));
   if (report.ok) {
     // Disk marker the queue derives "ready" from — the app can restart and
