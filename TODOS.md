@@ -280,6 +280,12 @@ path, and a surface (~2-3 days CC when picked up).
 **Where to start:** the CEO plan (ceo-plans/2026-07-31-season-program.md) has the
 framing; queue.ts already models items generically (kind field would be additive).
 
+**Amendment (2026-08-02, external-bridge CEO review, decision T2):** the drills build
+also owns the debrief→gap-graph ingestion deferred from the external-practice bridge:
+external items store a single-slot `debrief` note, and mapping self-reported notes to
+dimension evidence (polarity, weight, idempotency) belongs here, where judge-lite
+grading gives self-reported signal a principled design.
+
 **Priority:** P2 after the queue proves itself in real use.
 
 ---
@@ -463,3 +469,29 @@ surface goes away too, just on evidence rather than on a guess.
 
 **Effort:** human ~2 hrs / CC ~20 min. **Priority:** P3. **Blocked on:** the September
 season completing.
+
+---
+
+## 21. Curated LC-slug allowlist — mechanical gate for model-emitted problem titles
+
+**What:** Bundle a static list of ~500 famous LeetCode problem slugs (Blind 75,
+NeetCode 150, top-liked). In `gateExternal`, model-emitted titles/links ship only when
+the slug matches the list; misses fall to the topic+count fallback shape. Replaces
+model self-attestation with a genuinely mechanical gate.
+
+**Why:** The external-bridge CEO review (2026-08-02, decision T1) kept model-attested
+titles over the outside voice's objection that self-attestation is "just another model
+claim" shipping invented problems with product authority. This is the hardening that
+retires that residual risk without reversing T1 — attestation stays the UX, the
+allowlist becomes the proof.
+
+**Pros:** mechanical, not model-bounded; a tiny static file; also validates the url
+slug for free. **Cons:** a corpus to curate and occasionally refresh; the tail beyond
+the list still falls back (by design).
+
+**Context:** the bridge's gate already has the fallback machinery, so this is one
+lookup added to an existing code path, not a new subsystem.
+
+**Effort:** human ~half day / CC ~30 min. **Priority:** P3.
+**Depends on:** the external-practice bridge shipping, and invented titles actually
+being observed in real plans.
