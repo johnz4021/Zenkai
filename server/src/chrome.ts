@@ -128,7 +128,23 @@ export function sessionPage(sessionId: string, view: SessionPageView = DEFAULT_V
   const chip = document.getElementById('voicechip');
   const muteBtn = document.getElementById('mute');
   fetch('/api/status').then(r => r.json()).then(s => {
-    if (!s.voice || !s.voice.enabled) { chip.textContent = 'voice: off'; muteBtn.style.display = 'none'; return; }
+    if (!s.voice || !s.voice.enabled) {
+      // Name the cause. "voice: off" alone reads as a broken feature — it was
+      // a missing credential, and nothing on the page said so.
+      const why = s.voice && s.voice.reason;
+      chip.textContent =
+        why === 'no_key' ? 'voice: off (no API key)'
+        : why === 'disabled' ? 'voice: off (disabled for this round)'
+        : 'voice: off';
+      chip.title =
+        why === 'no_key'
+          ? 'Set ELEVENLABS_API_KEY in .env at the repo root (auto-loaded), then restart the app server. The interviewer still works — text only.'
+          : why === 'disabled'
+          ? 'This session was started with IP_VOICE=0.'
+          : '';
+      muteBtn.style.display = 'none';
+      return;
+    }
     const v = startVoice({ onState: (c) => { chip.textContent = 'voice: ' + c; } });
     window.ipVoice = v;
     muteBtn.addEventListener('click', () => muteBtn.classList.toggle('on', v.toggleMute()));

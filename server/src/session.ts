@@ -361,8 +361,23 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   const turnQueue = new TurnQueue(2);
 
   // ---- voice (IP_VOICE flag + key present, else text-only) ----
+  // The REASON matters as much as the state: "voice: off" with no cause is
+  // what made a missing credential look like a broken feature. Each cause
+  // gets its own name so the chip can say something actionable.
   const elevenKey = process.env.ELEVENLABS_API_KEY ?? process.env.IP_ELEVENLABS_KEY ?? '';
-  const voiceEnabled = (cfg.voice ?? true) && elevenKey.length > 0;
+  const voiceOffReason: 'disabled' | 'no_key' | null =
+    cfg.voice === false ? 'disabled' : elevenKey.length === 0 ? 'no_key' : null;
+  const voiceEnabled = voiceOffReason === null;
+  if (voiceOffReason === 'no_key') {
+    console.warn(
+      '[session] voice OFF — no ELEVENLABS_API_KEY (or IP_ELEVENLABS_KEY) in this process.\n' +
+        '          The interviewer still runs, text-only. Put the key in .env at the repo\n' +
+        '          root (auto-loaded) or export it before starting the app server — sessions\n' +
+        '          inherit the APP server\'s environment, not your current shell.',
+    );
+  } else if (voiceOffReason === 'disabled') {
+    console.log('[session] voice OFF — IP_VOICE=0 for this session');
+  }
   const voice = voiceEnabled
     ? new VoiceRuntime(
         {
@@ -621,7 +636,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           trigger_armed: hasFailingRun(events),
           voice: voice
             ? { enabled: true, budget: voice.budget.state(), health: voice.health }
-            : { enabled: false },
+            : { enabled: false, reason: voiceOffReason },
         }),
       );
     }

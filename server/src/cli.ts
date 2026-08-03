@@ -6,6 +6,7 @@
  *   validate <dir>   mechanical check on a generated problem
  *   session [dir]    run a live session; picks from the pool when dir is omitted
  */
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generateProblem } from './generate.js';
@@ -15,6 +16,27 @@ import { listReady, markUsed, pickProblem } from './pool.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
+
+/**
+ * Load repo-root `.env` before anything reads process.env.
+ *
+ * Every entry point comes through this file, and the app passes its own env
+ * to the sessions and generators it spawns, so loading once here reaches the
+ * whole tree. Native (Node 20.12+) — no dependency for a dozen lines of
+ * parsing. A shell export still wins: loadEnvFile does not overwrite
+ * variables that are already set.
+ *
+ * Why this exists: voice silently ran text-only because ELEVENLABS_API_KEY
+ * lived in one terminal tab and the app server was started from another.
+ */
+const envFile = path.join(repoRoot, '.env');
+if (existsSync(envFile)) {
+  try {
+    process.loadEnvFile(envFile);
+  } catch (e) {
+    console.warn(`[cli] .env present but unreadable: ${String(e).slice(0, 160)}`);
+  }
+}
 const problemsRoot = path.join(repoRoot, 'problems');
 const templatePath = path.join(repoRoot, 'prompts', 'generate-round.md');
 const THEME =

@@ -13,6 +13,17 @@ describe('session chrome', () => {
   const html = sessionPage('sess-test');
   const js = clientScript() ?? '';
 
+  it('a disabled voice chip names its cause and the remedy', () => {
+    // "voice: off" with no reason read as a broken feature when it was a
+    // missing credential — the user could not tell which, or how to fix it.
+    expect(html).toContain('no API key');
+    expect(html).toContain('ELEVENLABS_API_KEY');
+    expect(html).toContain('disabled for this round');
+    // And it must say the interviewer still works, so text-only doesn't
+    // look like total failure.
+    expect(html).toMatch(/interviewer still works/i);
+  });
+
   it('the page has a way home — never strand a graded candidate (QA ISSUE-004)', () => {
     const withBack = sessionPage('sess-test', {
       interviewer: true, time_limit_ms: null, one_shot: false, autorun: true,
