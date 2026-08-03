@@ -551,7 +551,7 @@ function resumeIntake(id) {
 
 function wireTimeline(container) {
   for (const b of container.querySelectorAll('button.start')) {
-    b.addEventListener('click', () => launch(b.dataset.t, b.dataset.i));
+    b.addEventListener('click', () => launch(b.dataset.t, b.dataset.i, b));
   }
   for (const b of container.querySelectorAll('button.gen')) {
     b.addEventListener('click', async () => {
@@ -780,16 +780,42 @@ function render(state) {
   choreograph(tl, 'timeline:' + r.id);
 }
 
-async function launch(targetId, itemId) {
+// Feedback lands ON the button, not in a banner 480px away (QA ISSUE-006:
+// click Start, nothing changes where you're looking). The button carries
+// the state; an inline metaline under it carries the words; the timeout —
+// previously a silent give-up — surfaces an actionable error.
+function launchStatus(btn, text, isError) {
+  const host = btn.parentElement.querySelector('.grow') || btn.parentElement;
+  let line = host.querySelector('.launchline');
+  if (!line) {
+    line = document.createElement('div');
+    line.className = 'metaline launchline';
+    host.appendChild(line);
+  }
+  line.textContent = text;
+  line.classList.toggle('err', Boolean(isError));
+}
+
+async function launch(targetId, itemId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
   const r = await fetch('/api/launch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: targetId, item_id: itemId }) });
   const s = await r.json();
-  if (s.error) { el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>'; return; }
-  el('banner').innerHTML = '<div class="banner">Starting your session — the environment takes a minute to boot…</div>';
+  if (s.error) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Start'; launchStatus(btn, s.error, true); }
+    else el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>';
+    return;
+  }
+  if (btn) launchStatus(btn, 'booting the environment — a few seconds…');
   const until = Date.now() + 180000;
   const tick = async () => {
     const live = (await (await fetch('/api/session-live')).json()).live;
     if (live) { window.location.href = s.url; return; }
-    if (Date.now() < until) window.setTimeout(tick, 2000);
+    if (Date.now() < until) { window.setTimeout(tick, 2000); return; }
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Start';
+      launchStatus(btn, "couldn't start — is Docker running? Try again.", true);
+    }
   };
   tick();
 }
