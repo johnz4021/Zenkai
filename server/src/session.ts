@@ -600,7 +600,8 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         res.writeHead(404);
         return res.end('no such client file');
       }
-      res.writeHead(200, { 'content-type': 'text/javascript' });
+      // See app.ts: no build step means no cache busting, so never store.
+      res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'no-store' });
       return res.end(body);
     }
     if (url === '/api/status') {

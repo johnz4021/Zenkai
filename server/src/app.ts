@@ -558,7 +558,11 @@ export function runApp(cfg: AppConfig): http.Server {
           res.writeHead(404);
           return res.end('no such client file');
         }
-        res.writeHead(200, { 'content-type': 'text/javascript' });
+        // no-store: the client is served from source with no build step or
+        // content hash, so a cached copy silently outlives a code change and
+        // meets payloads it cannot parse (found in QA — a stale app.js threw
+        // on a new row kind and reported itself as a dead server).
+        res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'no-store' });
         return res.end(body);
       }
       if (url === '/api/state') {

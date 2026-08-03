@@ -480,17 +480,35 @@ function userIsTyping() {
 }
 
 async function refresh(force) {
+  // Fetch and render fail for completely different reasons, and conflating
+  // them sent this QA hunting a healthy server: a render TypeError (stale
+  // cached client meeting a newer payload) reported itself as "app server
+  // unreachable". Each failure now names itself.
+  let text;
   try {
     const r = await fetch('/api/state');
-    const text = await r.text();
-    if (!force && text === lastStateJson) return;
-    if (userIsTyping()) { pendingState = text; return; } // never yank focus
-    lastStateJson = text;
-    render(JSON.parse(text));
+    text = await r.text();
   } catch {
     const boot = el('boot');
     if (boot) boot.remove();
     el('banner').innerHTML = '<div class="banner">app server unreachable — retrying</div>';
+    return;
+  }
+  if (!force && text === lastStateJson) return;
+  if (userIsTyping()) { pendingState = text; return; } // never yank focus
+  lastStateJson = text;
+  try {
+    render(JSON.parse(text));
+    el('banner').innerHTML = ''; // recovered — clear any stale error
+  } catch (e) {
+    const boot = el('boot');
+    if (boot) boot.remove();
+    el('banner').innerHTML =
+      '<div class="banner">this page is out of date — reload to pick up the latest version' +
+      ' <button id="hardreload" type="button">reload</button></div>';
+    const rb = el('hardreload');
+    if (rb) rb.addEventListener('click', () => window.location.reload(true));
+    console.error('[zenkai] render failed', e);
   }
 }
 
