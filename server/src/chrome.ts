@@ -34,6 +34,14 @@ export interface SessionPageView {
   one_shot: boolean;
   /** The kickoff suite run — true only for rounds whose trigger is a failure. */
   autorun: boolean;
+  /** Where "← back to plan" points — the app's timeline for this round's
+   *  target when known, the app root otherwise. QA ISSUE-004: the session
+   *  page had zero links; a graded candidate was stranded on :3200. */
+  back_url?: string | null;
+  /** Container path the IDE opens. Per-session (QA ISSUE-005): VS Code Web
+   *  keys workbench state by folder URI in browser IndexedDB, so a constant
+   *  path resurrects the previous round's tabs. */
+  workspace_path?: string;
 }
 
 const DEFAULT_VIEW: SessionPageView = {
@@ -57,6 +65,8 @@ export function sessionPage(sessionId: string, view: SessionPageView = DEFAULT_V
   body { margin: 0; font: 13px/1.45 ui-monospace, monospace; background: #17171a; color: #e6e6ea; display: flex; flex-direction: column; height: 100vh; }
   header { display: flex; align-items: center; gap: 16px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
   header .t { color: var(--dim); }
+  header a#back { color: var(--dim); text-decoration: none; }
+  header a#back:hover { color: #e6e6ea; }
   header button { background: none; border: 1px solid var(--line); color: #e6e6ea; padding: 5px 12px; font: inherit; cursor: pointer; }
   header #mute { margin-left: auto; color: var(--dim); }
   header #mute.on { color: #e6e6ea; border-color: #e6e6ea; }
@@ -86,8 +96,14 @@ export function sessionPage(sessionId: string, view: SessionPageView = DEFAULT_V
   .focus { border: 1px solid var(--accent); padding: 10px; margin-top: 14px; }
   .focus .k { color: var(--accent); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
   .meta { color: var(--dim); margin-top: 12px; }
+  /* After grading the container is gone — the iframe is a dead pane. The
+     card takes the full width and the way home gets prominent. */
+  body.ended main iframe { display: none; }
+  body.ended aside { width: auto; flex: 1; border-left: 0; max-width: 720px; margin: 0 auto; }
+  .cardback { display: inline-block; margin-top: 18px; color: var(--accent); text-decoration: none; }
 </style>
 <header>
+  ${view.back_url ? `<a id="back" href="${view.back_url}">← back to plan</a>` : ''}
   <span>session <b>${sessionId}</b></span>
   <span class="t" id="clock"${view.time_limit_ms ? ` data-limit="${view.time_limit_ms}"` : ''}>00:00</span>
   <span class="t" id="status">observing: —</span>
@@ -96,7 +112,7 @@ export function sessionPage(sessionId: string, view: SessionPageView = DEFAULT_V
   <button id="end">${endLabel}</button>
 </header>
 <main>
-  <iframe src="/?folder=/home/workspace/problem"></iframe>
+  <iframe src="/?folder=${view.workspace_path ?? '/home/workspace/problem'}"></iframe>
   <aside>
     <div id="log">
       ${intro}

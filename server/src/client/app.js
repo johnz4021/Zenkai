@@ -657,6 +657,7 @@ function render(state) {
   // condition was pure vertical tax.
   el('nav-live').classList.toggle('on', Boolean(state.session_live));
   el('nav-live').href = state.session_url || '#/';
+  el('nav-kill').classList.toggle('on', Boolean(state.session_live));
   el('banner').innerHTML = '';
 
   const boot = el('boot');
@@ -715,6 +716,18 @@ async function launch(targetId, itemId) {
   };
   tick();
 }
+
+// Masthead "end session" — discard, never grade (QA D1). Submit inside the
+// session remains the one graded path; this is the escape hatch for false
+// starts, so they can't pollute the gap graph.
+el('nav-kill').addEventListener('click', async (e) => {
+  e.preventDefault();
+  if (!window.confirm('End without grading? The attempt is discarded (recoverable via rejudge).')) return;
+  const r = await fetch('/api/session-kill', { method: 'POST' });
+  const s = await r.json();
+  if (s.error) el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>';
+  refresh(true);
+});
 
 window.setInterval(refresh, 5000);
 refresh(true);

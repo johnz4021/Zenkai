@@ -362,12 +362,19 @@ if (cmd === 'generate') {
   // Marked only once the session is actually up. Marking first burned a
   // pooled problem every time a start failed (port already held by a live
   // session), and the pool is ~5 minutes of generation per entry.
+  // targets/<target-id>/problems/<item-id> — the reverse link the session
+  // page needs for "← back to plan". Pool problems have no target.
+  const targetMatch = path
+    .relative(repoRoot, problemDir)
+    .match(/^targets\/([^/]+)\/problems\//);
   await runSession({
     onReady: () => markUsed(problemDir, sessionId),
     repoRoot,
     problemDir,
     sessionId,
     userId,
+    targetId: targetMatch?.[1],
+    appUrl: process.env.IP_APP_URL,
     port: 3200,
     idePort: 3100,
     autorunTests: process.env.IP_AUTORUN_TESTS !== '0',

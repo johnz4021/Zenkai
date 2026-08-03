@@ -45,18 +45,55 @@ function readBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
-/** Is a session process currently serving? Probed, never remembered. */
-function sessionLive(port: number): Promise<boolean> {
+/** Probe the session server. `reachable` = something answered on the port;
+ *  `live` = answered AND not ended. The distinction is ISSUE-001's fix: a
+ *  graded session's server lingers to keep serving the card, and treating
+ *  its 200 as "live" soft-locked every future launch. Probed, never
+ *  remembered. */
+function probeSession(port: number): Promise<{ reachable: boolean; ended: boolean }> {
   return new Promise((resolve) => {
     const r = http.get({ host: '127.0.0.1', port, path: '/api/status', timeout: 1_000 }, (res) => {
-      res.resume();
-      resolve(res.statusCode === 200);
+      let body = '';
+      res.on('data', (d) => (body += d));
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(body) as { ended?: boolean };
+          resolve({ reachable: res.statusCode === 200, ended: Boolean(parsed.ended) });
+        } catch {
+          resolve({ reachable: res.statusCode === 200, ended: false });
+        }
+      });
     });
-    r.on('error', () => resolve(false));
+    r.on('error', () => resolve({ reachable: false, ended: false }));
     r.on('timeout', () => {
       r.destroy();
-      resolve(false);
+      resolve({ reachable: false, ended: false });
     });
+  });
+}
+
+/** Is a session actually running (not a lingering graded server)? */
+async function sessionLive(port: number): Promise<boolean> {
+  const p = await probeSession(port);
+  return p.reachable && !p.ended;
+}
+
+/** POST to the session server; ok=false on any failure. */
+function postSession(port: number, apiPath: string): Promise<{ ok: boolean }> {
+  return new Promise((resolve) => {
+    const r = http.request(
+      { host: '127.0.0.1', port, path: apiPath, method: 'POST', timeout: 5_000 },
+      (res) => {
+        res.resume();
+        res.on('end', () => resolve({ ok: (res.statusCode ?? 500) < 300 }));
+      },
+    );
+    r.on('error', () => resolve({ ok: false }));
+    r.on('timeout', () => {
+      r.destroy();
+      resolve({ ok: false });
+    });
+    r.end();
   });
 }
 
@@ -252,6 +289,9 @@ export function appPage(): string {
   .navright { display: flex; align-items: center; gap: 18px; }
   #nav-live { display: none; align-items: center; gap: 7px; color: var(--accent); font-size: 12px; }
   #nav-live.on { display: flex; }
+  #nav-kill { display: none; color: var(--dim); font-size: 12px; }
+  #nav-kill.on { display: inline; }
+  #nav-kill:hover { color: var(--mag); }
   #nav-live .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 1.8s ease-in-out infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; box-shadow: 0 0 0 0 var(--accent-dim); } 50% { opacity: .55; box-shadow: 0 0 0 4px transparent; } }
   #nav-new { color: var(--dim); font-size: 12px; transition: color .18s; }
@@ -423,6 +463,7 @@ export function appPage(): string {
     </a>
     <span class="navright">
       <a href="#/t/" id="nav-live" aria-live="polite"><span class="pulse"></span>session live</a>
+      <a href="#" id="nav-kill" title="end the running session without grading">end session</a>
       <a href="#/new" id="nav-new">+ new plan</a>
     </span>
   </nav>
@@ -811,8 +852,18 @@ export function runApp(cfg: AppConfig): http.Server {
         if (!q || !item?.problem_dir || item.status !== 'ready') {
           return json(400, { error: 'item is not ready' });
         }
-        if (await sessionLive(cfg.sessionPort)) {
+        const probe = await probeSession(cfg.sessionPort);
+        if (probe.reachable && !probe.ended) {
           return json(409, { error: 'a session is already running — finish or end it first' });
+        }
+        if (probe.reachable && probe.ended) {
+          // A graded session's server lingers to serve its card; reap it so
+          // the port is free for the new session.
+          await postSession(cfg.sessionPort, '/api/shutdown');
+          for (let i = 0; i < 10; i++) {
+            if (!(await probeSession(cfg.sessionPort)).reachable) break;
+            await new Promise((r) => setTimeout(r, 500));
+          }
         }
         const sessionId = `sess-${Date.now()}`;
         // IP_PREPARE_NEXT=0: the queue drives generation now; the legacy
@@ -822,11 +873,20 @@ export function runApp(cfg: AppConfig): http.Server {
           IP_SESSION_ID: sessionId,
           IP_USER_ID: cfg.userId,
           IP_PREPARE_NEXT: '0',
+          IP_APP_URL: `http://localhost:${cfg.port}`,
         });
         return json(200, { session_id: sessionId, url: `http://localhost:${cfg.sessionPort}/session` });
       }
       if (url === '/api/session-live') {
         return json(200, { live: await sessionLive(cfg.sessionPort) });
+      }
+      if (url === '/api/session-kill' && req.method === 'POST') {
+        // The masthead's "end session" (QA D1): abandon = discard, never
+        // grade. The session server tears down its container and exits;
+        // the trace stays on disk for a CLI rejudge.
+        const r = await postSession(cfg.sessionPort, '/api/abandon');
+        if (!r.ok) return json(502, { error: 'no session responded — it may already be gone' });
+        return json(200, { ok: true });
       }
       res.writeHead(404);
       return res.end('not found');

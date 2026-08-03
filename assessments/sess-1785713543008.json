@@ -1,0 +1,74 @@
+{
+  "session_id": "sess-1785713543008",
+  "status": "assessed",
+  "judged_at": 1785713687246,
+  "model": "sonnet (claude -p)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 1,
+  "expectations_used": {
+    "clarify": "Pins the spec down from the visible tests instead of guessing: reads `tests/test_floorplan.py` to settle that the donut plan counts 2 (the ring plus the walled-in cell), that corner-touching cells stay separate so the checkerboard is 8 zones, and that `[[], []]` is a `ValueError` while `[]` is 0; reads `tests/test_docks.py` to settle that `(0,3)` and `(3,6)` are compatible but `(2,2,4)` is rejected; and reads the 400x400 and 50,000-element tests as the statement that flood-filling by naive recursion, scanning every candidate rate, or comparing every pair of bookings is out of scope, before writing code that assumes otherwise.",
+    "approach": "States the mechanism for each part before coding it — for Part 1 that zones are found by scanning for an unvisited `'#'` and draining it with an explicit stack (or queue) of `(row, col)` against a separate visited structure, because the grid must survive the call and a 160,000-cell zone will not survive Python's recursion limit; for Part 2 that the search is over rate values in `[1, max(loads)]` with a feasibility test that sums `ceil(load / rate)` in one linear pass; for Part 3 that bookings are sorted by end time and filled in with `best[i] = max(best[i-1], value + best[j])` where `j` is the last booking ending at or before this one's start, located by binary search — not 'DFS the grid', 'binary search it', or 'use DP'.",
+    "communicate": "Leaves a legible trail while working rather than going quiet for a stretch: says which part is in flight and why that order, writes the traversal scheme / feasibility predicate / recurrence into `NOTES.md` before or as the code lands, and when a test fails says what the failure implies about the rule — e.g. that a `RecursionError` on the 400x400 plan means the traversal has to carry its own stack, or that `min_pick_rate([10], 3) == 4` means a part-empty aisle still burns a whole shift — instead of silently editing until it goes green.",
+    "implement": "Delivers all three functions: an iterative flood fill that counts one zone per unvisited shelving cell, steps only in the four orthogonal directions, and marks visited outside the caller's grid so the plan comes back byte-identical; a binary search on rate bounded above by `max(loads)` whose feasibility check is one linear ceiling-sum pass with no per-rate list building; and an end-sorted prefix DP over the bookings that locates each predecessor by binary search rather than rescanning, on a copy so the caller's order is preserved — with the `ValueError` paths (ragged rows, zero-width rows, unknown cell symbol, empty `loads`, non-positive load, `shifts` below 1 or below the aisle count, a non-triple booking, `end <= start`, negative value) raised before any traversal, search or planning begins.",
+    "verify": "Dry-runs before the one submission: re-reads each expectation against the code (does `count_zones([])` return 0 without falling into the width check; does the enclosed cell in the donut plan really get counted as its own zone; does `max_dock_value` treat `(0,3)` and `(3,6)` as compatible rather than clashing), confirms the three large tests pass on their own rather than assuming they will, and checks the whole 49-test suite green in one run rather than per-file.",
+    "reflect": "Accounts for the finished state in `NOTES.md`: names the running time of each part (O(rows * cols) traversal, O(n log(max load)) search, O(n log n) sort-and-DP), names the reading it chose where the prose was open — such as treating a walled-in aisle cell as belonging to no zone while the shelving around it stays one zone — and says plainly which parts are complete and what is left if time ran out."
+  },
+  "solved": false,
+  "summary": "A 97-second session: the candidate opened all three warehouse files, then edited floorplan.py four times in rapid succession within about ten seconds, ran the suite once, saw it fail, and immediately ended the session with no further action on the failure and no work on picking.py or docks.py.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "weak",
+      "analysis": "The candidate opened floorplan.py at 36s and was already editing it by 46s, a ten-second gap with no visible reading of tests/test_floorplan.py or NOTES.md to pin down the corner-touching or enclosed-cell rules the spec leaves open. No question was raised and no test file was opened before code changed.",
+      "evidence": [
+        36,
+        46
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "weak",
+      "analysis": "There is no stated mechanism before the first edit — the candidate moved from opening the file to editing it in ten seconds with nothing in the timeline indicating a chosen traversal scheme (iterative stack, visited-set discipline) or any plan for the other two parts.",
+      "evidence": [
+        46
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "weak",
+      "analysis": "Across the whole session there is no narration accompanying the file opens, the four edits, or the test run — the transcript shows only actions, so an interviewer would have had no way to follow the candidate's reasoning without interrupting.",
+      "evidence": [
+        46,
+        56,
+        97
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "weak",
+      "analysis": "Only floorplan.py (Part 1) received any edits, and all four edits landed within ten seconds of the file being opened; picking.py and docks.py were opened but never touched, so two of the three required functions were never attempted, and the one part that was attempted failed the suite.",
+      "evidence": [
+        46,
+        47,
+        48,
+        56,
+        97
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "weak",
+      "analysis": "The candidate ran the suite exactly once, saw it fail, and ended the session at the same timestamp with no attempt to read the failure output, isolate which test failed, or make a corrective edit.",
+      "evidence": [
+        97
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "unassessable",
+      "analysis": "The session ended the instant the test run failed, with no resolution reached and no prompt from an interviewer for an explanation, so there is nothing to judge on this dimension.",
+      "evidence": []
+    }
+  ]
+}

@@ -55,6 +55,11 @@ export interface SessionConfig {
   intentCheck?: IntentCheck | null;
   /** Voice on/off. Rollback is a restart with IP_VOICE=0 (feature flag). */
   voice?: boolean;
+  /** The target this round belongs to (derived from problemDir); with appUrl
+   *  it builds the page's "← back to plan" link. Absent for pool problems. */
+  targetId?: string;
+  /** The home app's origin (IP_APP_URL) — where "back to plan" points. */
+  appUrl?: string;
   /** Called once the server is listening — the point after which this session
    *  really exists. The caller marks the problem used here, so a start that
    *  fails on the port check leaves the pool untouched. */
@@ -71,6 +76,14 @@ const PRESSURE_TICK_MS = 30_000;
 const IDE_IMAGE = 'gitpod/openvscode-server:latest';
 const CONTAINER = 'ip-session';
 const BUNDLED_NODE = '/home/.openvscode-server/node';
+
+/** The one way the IDE container dies. Called after grading, on abandon, on
+ *  shutdown, and from the signal handlers — a session that ends by ANY path
+ *  must not leave a live container behind (QA ISSUE-001: it did, and every
+ *  finished round soft-locked the product until a terminal intervened). */
+function teardownContainer(): void {
+  spawnSync('docker', ['rm', '-f', CONTAINER], { encoding: 'utf8' });
+}
 
 function sh(cmd: string, args: string[], opts: { cwd?: string } = {}): string {
   const res = spawnSync(cmd, args, { encoding: 'utf8', ...opts });
@@ -526,6 +539,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     const url = req.url ?? '/';
     if (url === '/session') {
       markCandidateContact();
+      const backUrl = cfg.appUrl
+        ? cfg.targetId
+          ? `${cfg.appUrl}/#/t/${encodeURIComponent(cfg.targetId)}`
+          : `${cfg.appUrl}/#/`
+        : null;
       res.writeHead(200, { 'content-type': 'text/html' });
       return res.end(
         sessionPage(cfg.sessionId, {
@@ -533,6 +551,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           time_limit_ms: caps.time_limit_ms,
           one_shot: caps.submit === 'one_shot',
           autorun: cfg.autorunTests && roundSpec.check.kind === 'one_failing_test',
+          back_url: backUrl,
         }),
       );
     }
@@ -554,6 +573,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       return res.end(
         JSON.stringify({
           session_id: cfg.sessionId,
+          // A graded/abandoned session answering 200 is NOT a live session.
+          // The app reads this to decide whether Start is available (QA
+          // ISSUE-001: without it, one finished round soft-locked every
+          // future launch until someone opened a terminal).
+          ended,
           counts,
           trigger_armed: hasFailingRun(events),
           voice: voice
@@ -660,11 +684,46 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       try {
         const card = await finalize();
         res.writeHead(200, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify(card));
+        res.end(JSON.stringify(card));
       } catch (e) {
         res.writeHead(500, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ error: String(e) }));
+        res.end(JSON.stringify({ error: String(e) }));
       }
+      // Grading done (one-shot docker exec included) — the container has no
+      // further job. The HTTP server stays up so the rendered card and
+      // "did this match?" keep working; the next launch reaps it via
+      // /api/shutdown.
+      setImmediate(teardownContainer);
+      return;
+    }
+    if (url === '/api/shutdown' && req.method === 'POST') {
+      // Reap path for a lingering ended server (the app calls this before
+      // starting the next session). Idempotent.
+      teardownContainer();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      setImmediate(() => process.exit(0));
+      return;
+    }
+    if (url === '/api/abandon' && req.method === 'POST') {
+      // The in-app "end session" (QA D1): DISCARD, never grade. A false
+      // start must not pollute the gap graph with an all-unassessable
+      // session — Submit remains the one graded path. The trace stays on
+      // disk, so a CLI rejudge can recover a genuine attempt.
+      if (!ended) {
+        ended = true;
+        if (pressureTimer) clearInterval(pressureTimer);
+        if (capTimer) clearInterval(capTimer);
+        voice?.close();
+        // Closed trace vocabulary: abandonment is a session_end with a flag,
+        // not a new event type.
+        store.emitChrome('session_end', { abandoned: true });
+      }
+      teardownContainer();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, abandoned: true }));
+      setImmediate(() => process.exit(0));
+      return;
     }
     proxy.web(req, res);
   });
@@ -778,7 +837,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   console.log('[session] Ctrl+C tears down the container');
 
   const teardown = () => {
-    spawnSync('docker', ['rm', '-f', CONTAINER], { encoding: 'utf8' });
+    teardownContainer();
     process.exit(0);
   };
   process.on('SIGINT', teardown);

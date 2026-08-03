@@ -1,0 +1,6 @@
+{
+  "session_id": "sess-1785700644998",
+  "status": "unassessed",
+  "judged_at": 1785709810002,
+  "reason": "judge timed out twice: Error: claude -p judge timed out"
+}

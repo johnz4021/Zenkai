@@ -21,7 +21,7 @@
 const t0 = Date.now();
 const clockEl = document.getElementById('clock');
 const limitMs = Number(clockEl.dataset.limit || 0);
-setInterval(() => {
+const clockTimer = setInterval(() => {
   const elapsed = Date.now() - t0;
   const shown = limitMs > 0 ? Math.max(0, Math.ceil((limitMs - elapsed) / 1000)) : Math.floor(elapsed / 1000);
   clockEl.textContent =
@@ -41,7 +41,7 @@ async function pollStatus() {
       (s.trigger_armed ? 'trigger armed ✓' : 'waiting for first failing test run');
   } catch {}
 }
-setInterval(pollStatus, 3000);
+const statusTimer = setInterval(pollStatus, 3000);
 pollStatus();
 
 // Interviewer turns arrive here, whether they answer something we asked or
@@ -87,8 +87,17 @@ async function pollMessages() {
     if (s.time_up) endSession();
   } catch {}
 }
-setInterval(pollMessages, 2000);
+const messagesTimer = setInterval(pollMessages, 2000);
 pollMessages();
+
+// The session is over: the clock, the observer line, and the interviewer
+// poll all describe a room that no longer exists — stop them (QA ISSUE-012,
+// the timer kept counting behind the graded card).
+function stopSessionLoops() {
+  clearInterval(clockTimer);
+  clearInterval(statusTimer);
+  clearInterval(messagesTimer);
+}
 
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -115,6 +124,7 @@ async function endSession() {
   // Release the mic FIRST — the session record closes with /api/end, and a
   // live mic past that point streams audio nobody will ever score.
   if (window.ipVoice) window.ipVoice.stop();
+  stopSessionLoops();
   const res = await fetch('/api/end', { method: 'POST' });
   if (res.status === 409) { btn.textContent = 'Session ended'; return; }
   const card = await res.json();
@@ -127,6 +137,10 @@ document.getElementById('end').addEventListener('click', endSession);
 function esc(s) { return String(s).replace(/</g, '&lt;'); }
 
 function render(card) {
+  stopSessionLoops();
+  // The container is torn down after grading — the editor pane is dead.
+  // The card takes the room, and the way home gets prominent (ISSUE-004).
+  document.body.classList.add('ended');
   document.getElementById('log').style.display = 'none';
   document.getElementById('f').style.display = 'none';
   const el = document.getElementById('feedback');
@@ -135,10 +149,17 @@ function render(card) {
 
   // Three DISTINCT states — assessed / per-dimension unassessable /
   // assessment failed. Collapsing any pair reads as success.
+  // The header back-link is the single source of the way home; the card
+  // reuses its href so there is exactly one plumbing path for it.
+  const backHref = (document.getElementById('back') || {}).href || null;
+  const backLink = backHref
+    ? '<a class="cardback" href="' + backHref + '">← back to your plan</a>'
+    : '';
+
   if (card.state === 'unassessed') {
     html += '<h2>Session not assessed</h2>';
     html += '<div class="row"><p class="desc">' + esc(card.reason) + '</p></div>';
-    el.innerHTML = html;
+    el.innerHTML = html + backLink;
     return;
   }
 
@@ -189,6 +210,7 @@ function render(card) {
   if (card.mode === 'observations') {
     html += '<p class="meta">Session ' + (3 - card.sessions_until_patterns) + ' of 3 before patterns emerge. These are single-session observations, not yet patterns.</p>';
   }
+  html += backLink;
   el.innerHTML = html;
   const sb = document.getElementById('showbug');
   if (sb) sb.addEventListener('click', () => {
