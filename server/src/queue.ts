@@ -183,6 +183,16 @@ export function localDate(ms: number): string {
 
 export type DayRow =
   | { kind: 'day'; date: string | null; today: boolean; past: boolean; items: QueueItem[] }
+  /** Rounds finished TODAY, pinned directly above the TODAY row (QA
+   *  ISSUE-002: the past band starts at yesterday and TODAY shows only
+   *  remaining work, so today's completions were invisible — finishing a
+   *  season rendered as an empty timeline). */
+  | { kind: 'done-today'; items: QueueItem[] }
+  /** Every item done/skipped — the season's terminal state. Replaces an
+   *  empty TODAY row so completion never reads as "nothing scheduled". */
+  | { kind: 'complete'; done_count: number }
+  /** A run of ≥2 empty future days compressed to one quiet row (D4). */
+  | { kind: 'quiet'; count: number }
   | { kind: 'collapsed'; count: number; span_days: number }
   | { kind: 'interview'; date: string };
 
@@ -224,6 +234,17 @@ export function bucketIntoDays(queue: Queue, target: Target, now: number): DayRo
   // Done work older than the band still counts — the season progress bar
   // carries it; these rows would just be scroll.
 
+  // ---- today's completions, pinned above TODAY (QA ISSUE-002) ----
+  const doneToday = done.filter((i) => i.done_at === today);
+  if (doneToday.length > 0) rows.push({ kind: 'done-today', items: doneToday });
+
+  // ---- season complete: nothing left anywhere ----
+  if (remaining.length === 0) {
+    rows.push({ kind: 'complete', done_count: done.length });
+    if (target.interview_date) rows.push({ kind: 'interview', date: target.interview_date });
+    return rows;
+  }
+
   rows.push({ kind: 'day', date: target.interview_date ? today : null, today: true, past: false, items: todayItem ? [todayItem] : [] });
 
   // ---- future: spread remaining items evenly over remaining days ----
@@ -244,9 +265,10 @@ export function bucketIntoDays(queue: Queue, target: Target, now: number): DayRo
   });
 
   let shownThrough = 0;
+  const futureRows: Extract<DayRow, { kind: 'day' }>[] = [];
   for (let offset = 1; offset <= futureDays && shownThrough < FUTURE_DAYS_SHOWN; offset++) {
     const item = schedule.get(offset);
-    rows.push({
+    futureRows.push({
       kind: 'day',
       date: localDate(now + offset * 86_400_000),
       today: false,
@@ -255,6 +277,24 @@ export function bucketIntoDays(queue: Queue, target: Target, now: number): DayRo
     });
     shownThrough = offset;
   }
+  // D4: a run of ≥2 empty future days reads as blank scroll, not a plan —
+  // compress each run to one quiet row. Days with items keep their dates,
+  // and a lone empty day stays a dated row.
+  let run: Extract<DayRow, { kind: 'day' }>[] = [];
+  const flushRun = () => {
+    if (run.length >= 2) rows.push({ kind: 'quiet', count: run.length });
+    else rows.push(...run);
+    run = [];
+  };
+  for (const r of futureRows) {
+    if (r.items.length === 0) {
+      run.push(r);
+      continue;
+    }
+    flushRun();
+    rows.push(r);
+  }
+  flushRun();
 
   const hidden = [...schedule.keys()].filter((o) => o > shownThrough);
   if (hidden.length > 0) {

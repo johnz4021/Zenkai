@@ -215,6 +215,56 @@ describe('bucketIntoDays — the timeline spine (D2: dated, forward-only)', () =
     expect(rows.filter((r) => r.kind === 'day' && r.date !== null)).toHaveLength(0);
   });
 
+  it('rounds finished TODAY pin above the TODAY row — never invisible (QA ISSUE-002)', () => {
+    const t = dated();
+    const q = proposeQueue(t, NOW);
+    q.items[0]!.status = 'done';
+    q.items[0]!.done_at = localDate(NOW);
+    const rows = bucketIntoDays(q, t, NOW);
+    const dtIdx = rows.findIndex((r) => r.kind === 'done-today');
+    const todayIdx = rows.findIndex((r) => r.kind === 'day' && r.today);
+    expect(dtIdx).toBeGreaterThan(-1);
+    expect(todayIdx).toBe(dtIdx + 1);
+    expect((rows[dtIdx] as Extract<(typeof rows)[0], { kind: 'done-today' }>).items[0]!.id).toBe('item-1');
+    // TODAY still offers the next action alongside today's wins.
+    expect((rows[todayIdx] as Extract<(typeof rows)[0], { kind: 'day' }>).items).toHaveLength(1);
+  });
+
+  it('finishing the whole season today renders complete, not emptiness (the QA repro)', () => {
+    const t = dated();
+    const q = proposeQueue(t, NOW);
+    for (const i of q.items) {
+      i.status = 'done';
+      i.done_at = localDate(NOW);
+    }
+    const rows = bucketIntoDays(q, t, NOW);
+    const complete = rows.find((r) => r.kind === 'complete');
+    expect(complete).toBeDefined();
+    expect((complete as { done_count: number }).done_count).toBe(q.items.length);
+    // No empty TODAY row claiming "nothing scheduled" on the best day.
+    expect(rows.some((r) => r.kind === 'day' && r.today)).toBe(false);
+    expect(rows.some((r) => r.kind === 'done-today')).toBe(true);
+    expect(rows[rows.length - 1]).toEqual({ kind: 'interview', date: '2026-08-15' });
+  });
+
+  it('runs of 2+ empty future days compress to one quiet row; lone empties stay dated (D4)', () => {
+    const t = dated();
+    const q = proposeQueue(t, NOW);
+    q.items = q.items.slice(0, 2); // sparse queue → multi-day gaps (the Palantir shape)
+    const rows = bucketIntoDays(q, t, NOW);
+    const quiet = rows.filter((r) => r.kind === 'quiet');
+    expect(quiet.length).toBeGreaterThan(0);
+    for (const qr of quiet) expect((qr as { count: number }).count).toBeGreaterThanOrEqual(2);
+    // No run of 2+ consecutive empty future day rows survives.
+    let emptyStreak = 0;
+    for (const r of rows) {
+      if (r.kind === 'day' && !r.past && !r.today && r.items.length === 0) {
+        emptyStreak++;
+        expect(emptyStreak).toBeLessThan(2);
+      } else emptyStreak = 0;
+    }
+  });
+
   it('done items pin to their done_at day in the past band', () => {
     const t = dated();
     const q = proposeQueue(t, NOW);

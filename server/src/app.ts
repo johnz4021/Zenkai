@@ -431,6 +431,14 @@ export function appPage(): string {
   .runway li.today button.primary { min-width: 96px; min-height: 44px; }
   .runway li.future { color: #c9c9cf; }
   .runway li.future.empty { padding: 5px 0; }
+  .runway li.quiet { padding: 4px 0; border-top: 1px solid var(--line-soft); }
+  .runway li.quiet .body { color: var(--dim); font-size: 11px; letter-spacing: .08em; }
+  .runway li.past.donetoday { opacity: .78; }
+  .runway li.past.donetoday .date { color: var(--ok); }
+  .runway li.today.complete .date { color: var(--ok); }
+  .runway li.today.complete .dot { border-color: var(--ok); background: var(--ok); box-shadow: 0 0 14px rgba(76, 175, 125, .35); }
+  .runway button.mini { background: none; border: 1px solid var(--line); color: var(--dim); padding: 2px 9px; font: inherit; font-size: 11px; cursor: pointer; margin-left: 10px; }
+  .runway button.mini:hover { color: var(--bright); border-color: var(--accent-dim); }
   .runway li.future.empty .dot { width: 5px; height: 5px; border-width: 1px; left: 2px; }
   .runway li.collapsed .body { color: var(--dim); }
   .runway li.collapsed .dot { border-style: dashed; background: transparent; }

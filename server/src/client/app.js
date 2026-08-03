@@ -332,6 +332,27 @@ function renderSeason(row, state) {
         '<span class="body">' + d.count + ' more round' + (d.count === 1 ? '' : 's') + ' over the next ' + d.span_days + ' days</span></li>';
       continue;
     }
+    // Today's completions, visible the moment they happen — finishing a
+    // round must never render as an emptier timeline (QA ISSUE-002).
+    if (d.kind === 'done-today') {
+      for (const i of d.items) {
+        html += '<li class="past donetoday"><span class="date">TODAY</span><span class="dot done"></span>' +
+          '<span class="body"><span class="ok">✓</span>' + esc(itemTitle(i)) + '</span></li>';
+      }
+      continue;
+    }
+    if (d.kind === 'complete') {
+      html += '<li class="today complete" aria-current="date"><span class="date">DONE</span><span class="dot"></span>' +
+        '<div class="body"><div class="grow"><div class="title">season complete — ' + d.done_count +
+        ' round' + (d.done_count === 1 ? '' : 's') + ' done</div>' +
+        '<div class="metaline">every round is judged — your feedback lives in each finished row above</div></div></div></li>';
+      continue;
+    }
+    if (d.kind === 'quiet') {
+      html += '<li class="quiet"><span class="date"></span><span class="dot"></span>' +
+        '<span class="body">· ' + d.count + ' quiet days ·</span></li>';
+      continue;
+    }
     const item = d.items[0] || null;
     if (d.today) {
       html += '<li class="today" aria-current="date"><span class="date">TODAY</span><span class="dot"></span><div class="body">';
@@ -377,11 +398,22 @@ function renderSeason(row, state) {
       }
       continue;
     }
-    // future
+    // future — actionable (QA D3): build tomorrow's problem tonight. The
+    // server's one-at-a-time and session-live 409s still guard everything.
     if (item) {
+      let action = '';
+      if (item.status === 'pending') {
+        action = ' <button class="mini gen" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">Generate</button>';
+      } else if (item.status === 'ready' && !state.session_live) {
+        action = ' <button class="mini start" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">Start</button>';
+      } else if (item.status === 'failed') {
+        action = ' <button class="mini retry" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">retry</button>';
+      } else if (item.status === 'generating') {
+        action = ' <span class="meta">building…</span>';
+      }
       html += '<li class="future"><span class="date">' + fmtDate(d.date) + '</span><span class="dot"></span>' +
         '<span class="body">' + esc(itemTitle(item)) +
-        (item.stale ? ' <span class="stale">— built for the old shape</span>' : '') + '</span></li>';
+        (item.stale ? ' <span class="stale">— built for the old shape</span>' : '') + action + '</span></li>';
     } else {
       html += '<li class="future empty"><span class="date">' + fmtDate(d.date) + '</span><span class="dot"></span>' +
         '<span class="body"></span></li>';
