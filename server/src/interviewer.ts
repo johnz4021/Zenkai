@@ -50,6 +50,19 @@ export interface InterviewerContext {
   transcript: { who: 'candidate' | 'interviewer'; text: string }[];
   /** null = unprompted pressure beat rather than a reply. */
   candidateMessage: string | null;
+  /**
+   * Set when the stuck detector fired: the ALIASED observation ("3
+   * edit-and-run cycles … in the same file"). Its presence flips the turn
+   * into scaffolding mode and arms the vocabulary guard. Never contains a
+   * path — describeStuck speaks in identity, not names.
+   */
+  stuckObservation?: string | null;
+  /**
+   * Vocabulary the stuck guard treats as safe beyond the spec and the
+   * candidate's own words — in practice the failing test's name, which is
+   * on their screen even though it also appears inside `bug`.
+   */
+  allowedExtra?: string;
 }
 
 export type Interviewer = (ctx: InterviewerContext) => Promise<InterviewerTurn>;
@@ -185,6 +198,71 @@ export function leaksGapNote(text: string): boolean {
 }
 
 /**
+ * Vocabulary guard for STUCK turns (the one-step scaffolding move).
+ *
+ * The rule the whole feature hangs on: a hint may use only words the
+ * candidate already has — the spec, the failing test's name, their own
+ * utterances. Words that exist only in the private bug knowledge are the
+ * mechanism ("re-registers", "expiry index", "stale"), and the mechanism is
+ * the one thing a step must not hand over. The filename guard cannot catch
+ * "something about ordering"; this can, because "ordering" isn't in the
+ * spec unless the spec put it there.
+ *
+ * Only armed on stuck turns. On a normal turn the same check would muzzle
+ * legitimate spec answers — exactly the over-broadening leaksBugLocation's
+ * comment warns about — but a stuck turn is not answering a question, so
+ * there is nothing legitimate for it to muzzle.
+ */
+const STEM_STOP = new Set([
+  'that', 'this', 'with', 'without', 'from', 'into', 'onto', 'over', 'under',
+  'when', 'then', 'than', 'them', 'they', 'their', 'there', 'here', 'have',
+  'been', 'because', 'still', 'only', 'also', 'does', 'will', 'would',
+  'should', 'could', 'about', 'after', 'before', 'next', 'previous', 'first',
+  'last', 'same', 'other', 'which', 'what', 'where', 'while', 'your', 'more',
+]);
+
+function stems(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const raw of text.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (raw.length < 4 || STEM_STOP.has(raw)) continue;
+    let s = raw;
+    for (const suffix of ['ing', 'ies', 'ed', 'es', 's']) {
+      if (s.length - suffix.length >= 4 && s.endsWith(suffix)) {
+        s = s.slice(0, -suffix.length);
+        break;
+      }
+    }
+    out.add(s);
+  }
+  return out;
+}
+
+/**
+ * Session-frame vocabulary that can never be a leak: it names the MEDIUM
+ * (files, tests, code), not the mechanism. The bug text inevitably contains
+ * "File:" and "…one test:", and without this baseline every observation
+ * ("the test fails the same way") would redact itself.
+ */
+const FRAME_VOCAB = new Set([
+  'file', 'test', 'suite', 'code', 'line', 'fail', 'failure', 'error',
+  'chang', 'edit', 'editor', 'minut', 'break',
+]);
+
+export function leaksImplementationVocabulary(
+  text: string,
+  forbiddenSource: string,
+  allowed: string,
+): boolean {
+  const forbidden = stems(forbiddenSource);
+  const safe = stems(allowed);
+  for (const t of stems(text)) {
+    if (FRAME_VOCAB.has(t)) continue;
+    if (forbidden.has(t) && !safe.has(t)) return true;
+  }
+  return false;
+}
+
+/**
  * Apply the leak guard to whatever the model produced.
  *
  * `prompted` matters: the canned decline only reads as a decline when it
@@ -198,14 +276,25 @@ export function guard(
   bugFile: string,
   prompted = true,
   hasTargetNote = false,
+  /** Present only on stuck turns: arms the vocabulary check. */
+  stuckVocab?: { forbidden: string; allowed: string },
 ): InterviewerTurn {
   if (!turn.say) return turn;
   const bugLeak = leaksBugLocation(turn.say, bugFile);
   // The gap-note guard only arms when a note was actually injected —
   // otherwise a turn like "you tend to..." is just conversation.
   const gapLeak = hasTargetNote && leaksGapNote(turn.say);
-  if (!bugLeak && !gapLeak) return turn;
-  return prompted
+  const vocabLeak =
+    Boolean(stuckVocab) &&
+    leaksImplementationVocabulary(turn.say, stuckVocab!.forbidden, stuckVocab!.allowed);
+  if (!bugLeak && !gapLeak && !vocabLeak) {
+    // A surviving stuck turn narrows by design (eliminate + redirect), so
+    // the record must say so whatever the model claimed.
+    return stuckVocab ? { ...turn, nudge: true } : turn;
+  }
+  // A stuck turn is always unprompted; its redaction is silence, and the
+  // caller retries with a different composition on a later tick.
+  return prompted && !stuckVocab
     ? { say: REDACTED_REPLY, kind: 'decline', nudge: false, redacted: true }
     : { say: '', kind: 'silent', nudge: false, redacted: true };
 }
@@ -268,6 +357,9 @@ export function render(template: string, ctx: InterviewerContext): string {
     ELAPSED_MIN: String(Math.round(ctx.elapsedMs / 60_000)),
     REMAINING_MIN: String(Math.max(0, Math.round(ctx.remainingMs / 60_000))),
     RECENT_ACTIVITY: ctx.recentActivity,
+    STUCK: ctx.stuckObservation
+      ? `STUCK — ${ctx.stuckObservation} Follow the stuck rules above: one move, their vocabulary only, nudge true.`
+      : 'no',
     TRANSCRIPT: transcript,
     CANDIDATE_MESSAGE:
       ctx.candidateMessage ??
@@ -278,6 +370,24 @@ export function render(template: string, ctx: InterviewerContext): string {
   return template.replace(/\{\{([A-Z_]+)\}\}/g, (whole, key: string) =>
     key in values ? (values[key] as string) : whole,
   );
+}
+
+/** The guard inputs for a stuck turn, or undefined on ordinary turns.
+ *  Forbidden = the private bug knowledge; allowed = everything the candidate
+ *  already has (spec, the failing test's name via allowedExtra, their own
+ *  words). Exported so tests exercise the exact composition the runtime uses. */
+export function stuckVocabOf(
+  ctx: InterviewerContext,
+): { forbidden: string; allowed: string } | undefined {
+  if (!ctx.stuckObservation) return undefined;
+  const candidateWords = ctx.transcript
+    .filter((t) => t.who === 'candidate')
+    .map((t) => t.text)
+    .join('\n');
+  return {
+    forbidden: `${ctx.bug}\n${ctx.bugFile}`,
+    allowed: `${ctx.spec}\n${ctx.allowedExtra ?? ''}\n${candidateWords}`,
+  };
 }
 
 /** Marker splitting the session-stable prompt half from the per-turn half. */
@@ -322,7 +432,7 @@ export function claudeInterviewer(templatePath: string, model = 'sonnet'): Inter
   const template = readFileSync(templatePath, 'utf8');
   return async (ctx) => {
     const raw = await runClaudeP(render(template, ctx), model, 45_000);
-    return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote));
+    return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx));
   };
 }
 
@@ -357,7 +467,7 @@ export function streamingInterviewer(templatePath: string, model = 'claude-sonne
         .filter((b) => b.type === 'text')
         .map((b) => (b as { text: string }).text)
         .join('');
-      return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote));
+      return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx));
     } catch (e) {
       console.warn('[interviewer] streaming failed, this turn is silent:', String(e).slice(0, 200));
       return { say: '', kind: 'silent', nudge: false };

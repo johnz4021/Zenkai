@@ -188,6 +188,79 @@ export function personaFixtures(): PersonaFixture[] {
     .end(95)
     .build();
 
+  // -- the anchored thrasher: three swings at the same file, never reads the
+  //    failing test. The stuck detector's canonical firing case; offsets sit
+  //    past its 6-minute session floor so stuck.test.ts can reuse this trace.
+  const anchoredThrasher = new TraceBuilder()
+    .start()
+    .failRun(6)
+    .open(20, `/p/${F}`)
+    .say(40, 'Has to be in here somewhere. Let me just try flipping this condition.')
+    .edit(60, `/p/${F}`)
+    .save(70, `/p/${F}`)
+    .failRun(100)
+    .say(120, 'Nope. Trying the other branch.')
+    .edit(140, `/p/${F}`)
+    .save(150, `/p/${F}`)
+    .failRun(180)
+    .say(200, 'Still eight. One more idea.')
+    .edit(220, `/p/${F}`)
+    .save(230, `/p/${F}`)
+    .failRun(260)
+    .end(420)
+    .build();
+
+  // -- the productive explorer: also three failing runs, but each attempt
+  //    opens somewhere NEW first — a fresh hypothesis every time. The trace
+  //    the detector must never fire on: this is progress, red suite or not.
+  const productiveExplorer = new TraceBuilder()
+    .start()
+    .failRun(6)
+    .open(15, '/p/test/expiry.test.ts')
+    .say(30, 'Expected five, got eight — three units too many came back.')
+    .edit(60, `/p/${F}`)
+    .save(70, `/p/${F}`)
+    .failRun(100)
+    .open(130, '/p/src/holds.ts')
+    .edit(160, '/p/src/holds.ts')
+    .save(170, '/p/src/holds.ts')
+    .failRun(200)
+    .open(230, '/p/src/registry.ts')
+    .say(250, 'The shipped quantity lives on the hold record — so the sweep must be releasing the original count, not the remaining count.')
+    .edit(280, `/p/${F}`)
+    .save(290, `/p/${F}`)
+    .failRun(320)
+    .edit(340, `/p/${F}`)
+    .save(350, `/p/${F}`)
+    .passRun(390)
+    .say(400, 'Green — remaining count it is.')
+    .end(420)
+    .build();
+
+  // -- ignores the nudge: the thrasher, given the hint, carries on exactly as
+  //    before. The interactional-mismatch case benchmarks miss when they only
+  //    model compliant learners: the episode must CONTINUE (an interviewer
+  //    turn resets nothing), and post-nudge work is prompted, not credited.
+  const ignoresTheNudge = new TraceBuilder()
+    .start()
+    .failRun(6)
+    .open(20, `/p/${F}`)
+    .edit(60, `/p/${F}`)
+    .save(70, `/p/${F}`)
+    .failRun(100)
+    .edit(140, `/p/${F}`)
+    .save(150, `/p/${F}`)
+    .failRun(180)
+    .edit(220, `/p/${F}`)
+    .save(230, `/p/${F}`)
+    .failRun(260)
+    .interviewer(400, 'Three changes in the same place and the test fails the same way each time. What should happen to a hold that has partially shipped when it expires?', true)
+    .edit(430, `/p/${F}`)
+    .save(440, `/p/${F}`)
+    .failRun(470)
+    .end(500)
+    .build();
+
   // -- DSA: states complexity before code (the round-specific bar, met) --
   const dsaComplexityFirst = new TraceBuilder()
     .start()
@@ -285,6 +358,35 @@ export function personaFixtures(): PersonaFixture[] {
         implement: A('unassessable'),
         verify: A('unassessable'),
         reflect: A('unassessable'),
+      },
+    },
+    {
+      id: 'anchored-thrasher-debugging',
+      problem: FIXTURE_DEBUGGING_PROBLEM,
+      events: anchoredThrasher,
+      behavior_class: 'approach-without-round-bar',
+      expected: {
+        clarify: A('weak'), // never opened the failing test, never asked
+        approach: A('weak'), // three swings, no mechanism ever named
+      },
+    },
+    {
+      id: 'productive-explorer-debugging',
+      problem: FIXTURE_DEBUGGING_PROBLEM,
+      events: productiveExplorer,
+      expected: {
+        approach: A('strong', 'adequate'), // names the mechanism before the fix
+        verify: A('strong', 'adequate'),
+      },
+    },
+    {
+      id: 'ignores-the-nudge-debugging',
+      problem: FIXTURE_DEBUGGING_PROBLEM,
+      events: ignoresTheNudge,
+      expected: {
+        approach: A('weak'),
+        // verify/reflect omitted: ends red mid-grind, genuinely ambiguous
+        // between weak and unassessable.
       },
     },
     {

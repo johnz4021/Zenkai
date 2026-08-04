@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import type { TraceEvent } from '@interview-prep/shared';
 import { STUCK_FLOOR_MS, describeStuck, detectStuck } from './stuck.js';
+import { personaFixtures } from './eval/personas.js';
 
 const T0 = 1_700_000_000_000;
 const A = '/p/src/sweep.ts';
@@ -153,6 +154,39 @@ describe('detectStuck — the silences that matter', () => {
 
   it('no session start yet means no clock and no hint', () => {
     expect(detectStuck(thrash().build(), at(11), null)).toBeNull();
+  });
+});
+
+describe('detectStuck — the gauntlet personas agree', () => {
+  // The judge fixtures and the detector must tell the same story about the
+  // same trace: a persona the judge scores as grinding is one the detector
+  // fires on, and vice versa. Sharing the traces keeps them from drifting.
+  const persona = (id: string) => {
+    const p = personaFixtures().find((f) => f.id === id);
+    if (!p) throw new Error(`missing persona ${id}`);
+    const startedAt = p.events[0]!.ts;
+    const endedAt = p.events[p.events.length - 1]!.ts;
+    return { events: p.events, startedAt, endedAt };
+  };
+
+  it('the anchored thrasher fires: three swings, one file, no reading', () => {
+    const { events, startedAt, endedAt } = persona('anchored-thrasher-debugging');
+    const s = detectStuck(events, endedAt, startedAt);
+    expect(s).not.toBeNull();
+    expect(s!.cycles).toBe(3);
+    expect(s!.files_touched).toBe(1);
+  });
+
+  it('the productive explorer never fires — every attempt looked somewhere new', () => {
+    const { events, startedAt, endedAt } = persona('productive-explorer-debugging');
+    expect(detectStuck(events, endedAt, startedAt)).toBeNull();
+  });
+
+  it('ignoring the nudge continues the episode — an interviewer turn resets nothing', () => {
+    const { events, startedAt, endedAt } = persona('ignores-the-nudge-debugging');
+    const s = detectStuck(events, endedAt, startedAt);
+    expect(s).not.toBeNull();
+    expect(s!.cycles).toBe(4); // the post-nudge swing joined the same streak
   });
 });
 

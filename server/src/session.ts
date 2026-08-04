@@ -28,6 +28,7 @@ import { buildAssessmentCard } from './feedback.js';
 import { buildGraphView, buildTargetNote, loadStore, recordAssessment, saveStore } from './gap-graph.js';
 import { clientScript, sessionPage } from './chrome.js';
 import { injectWorkbenchDefaults } from './workbench-inject.js';
+import { describeStuck, detectStuck, type StuckState } from './stuck.js';
 import { TraceStore } from './trace-store.js';
 import {
   TurnQueue,
@@ -438,8 +439,17 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       });
   };
 
-  /** One interviewer turn. `null` message = unprompted pressure beat. */
-  const runInterviewer = async (candidateMessage: string | null): Promise<void> => {
+  // Stuck-turn bookkeeping, keyed by the streak's start: a redacted hint is
+  // retried on a later tick (silence costs nothing), but after two failed
+  // compositions the episode is abandoned — a guard that keeps firing means
+  // the model can't phrase this one safely, and pressure resumes.
+  const stuckRedactions = new Map<number, number>();
+
+  /** One interviewer turn. `null` message = unprompted (pressure or stuck). */
+  const runInterviewer = async (
+    candidateMessage: string | null,
+    stuck: StuckState | null = null,
+  ): Promise<void> => {
     if (!interviewer || ended || interviewerBusy) return;
     interviewerBusy = true;
     try {
@@ -461,9 +471,18 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
             text: String((e.payload as { text?: string })?.text ?? ''),
           })),
         candidateMessage,
+        // The scaffolding move (one step when stuck): the observation is
+        // aliased by describeStuck — identity, never file names.
+        stuckObservation: stuck ? describeStuck(stuck, now) : null,
+        allowedExtra: problem.planted_bug?.failing_test ?? '',
       });
       if (turn.redacted) {
         console.warn('[interviewer] leak guard fired — reply replaced');
+        if (stuck && !turn.say) {
+          const n = (stuckRedactions.get(stuck.since_ms) ?? 0) + 1;
+          stuckRedactions.set(stuck.since_ms, n);
+          console.warn(`[interviewer] stuck hint redacted (${n}/2 for this episode)`);
+        }
       }
       if (!turn.say) return; // silence is a valid turn; nothing to record
       lastInterviewerTs = Date.now();
@@ -473,6 +492,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         nudge: turn.nudge,
         unprompted: candidateMessage === null,
         ...(turn.redacted ? { redacted: true } : {}),
+        // Marked so replays can tell scaffolding from pressure — this is
+        // how the K=3 threshold gets tuned from real sessions.
+        ...(stuck ? { stuck: true } : {}),
       });
     } catch (e) {
       console.warn('[interviewer] turn failed:', String(e));
@@ -851,14 +873,20 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     server.listen(cfg.port, resolve);
   });
   cfg.onReady?.();
-  // Unprompted pressure beats. Only once the round is genuinely underway —
-  // before the first failing run there is nothing to apply pressure about.
+  // Unprompted turns. Only once the round is genuinely underway — before
+  // the first failing run there is nothing to say. When the stuck detector
+  // fires, the unprompted turn IS the scaffolding move instead of a pressure
+  // beat (decision D3): one voice at a time, same 4-minute floor. Pressure
+  // aimed at someone already grinding produces flailing, not progress.
   if (interviewer) {
     pressureTimer = setInterval(() => {
       if (ended || interviewerBusy || sessionStartedAt === null) return;
-      if (!hasFailingRun(store.readAll())) return;
+      const events = store.readAll();
+      if (!hasFailingRun(events)) return;
       if (Date.now() - lastInterviewerTs < PRESSURE_INTERVAL_MS) return;
-      void runInterviewer(null);
+      const stuck = detectStuck(events, Date.now(), sessionStartedAt);
+      const episodeSpent = stuck ? (stuckRedactions.get(stuck.since_ms) ?? 0) >= 2 : false;
+      void runInterviewer(null, stuck && !episodeSpent ? stuck : null);
     }, PRESSURE_TICK_MS);
     pressureTimer.unref();
   }

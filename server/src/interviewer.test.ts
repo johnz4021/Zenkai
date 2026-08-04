@@ -9,6 +9,8 @@ import {
   bugContext,
   guard,
   leaksBugLocation,
+  leaksImplementationVocabulary,
+  stuckVocabOf,
   parseTurn,
   render,
   renderActivity,
@@ -268,5 +270,86 @@ describe('renderSplit (prompt caching seam)', () => {
       transcript: [{ who: 'candidate' as const, text: 'earlier' }],
     }).system;
     expect(a).toBe(b);
+  });
+});
+
+describe('stuck vocabulary guard — one step, their words only (validated on debugging-001)', () => {
+  // The real spec/bug pair the design was validated against. The spec the
+  // candidate reads contains extend/extending/deadline/hold/reserved; only
+  // the private bug knowledge contains re-registers/expiry index/stale/
+  // cancelling/queued/sweep.
+  const SPEC =
+    'Every hold carries a deadline. A checkout that needs more time can extend an active ' +
+    'hold; extending moves the deadline forward from the current time, and the hold\'s units ' +
+    'must stay reserved right up to the new deadline and be released only when that new ' +
+    'deadline passes.';
+  const BUG =
+    'File: src/reservationService.ts (line 66)\n' +
+    'extend() re-registers the hold in the expiry index without cancelling its previous ' +
+    'entry, so the stale entry for the original deadline is still queued and the next sweep ' +
+    'expires the hold at its old time.\n' +
+    'It breaks exactly one test: "hold expiry > keeps the units of an extended hold reserved past its original deadline".';
+  const FAILING = 'hold expiry > keeps the units of an extended hold reserved past its original deadline';
+
+  const allowed = (utterances = '') => `${SPEC}\n${FAILING}\n${utterances}`;
+
+  it('accepts the validated hint — spec vocabulary plus a trace observation', () => {
+    const hint =
+      "You've made three changes to the same file and the test fails the same way each time. " +
+      'What happens to a hold that gets extended twice?';
+    expect(leaksImplementationVocabulary(hint, BUG, allowed())).toBe(false);
+  });
+
+  it('rejects the mechanism even when no file is named', () => {
+    const mech = 'Think about what happens when the old entry is still queued in the expiry index.';
+    expect(leaksImplementationVocabulary(mech, BUG, allowed())).toBe(true);
+  });
+
+  it('rejects private vocabulary like "stale" and "sweep"', () => {
+    expect(leaksImplementationVocabulary('Could the entry be stale?', BUG, allowed())).toBe(true);
+    expect(leaksImplementationVocabulary('Have you looked at the sweep?', BUG, allowed())).toBe(true);
+  });
+
+  it('a word becomes safe once the CANDIDATE says it first', () => {
+    const hint = "You've come back to the sweep twice out loud — what have you done to test that?";
+    expect(leaksImplementationVocabulary(hint, BUG, allowed())).toBe(true);
+    expect(leaksImplementationVocabulary(hint, BUG, allowed('I think the bug is in the sweep'))).toBe(false);
+  });
+
+  it('failing-test vocabulary is safe — it is on their screen', () => {
+    const hint = 'The failing test is about an extended hold reserved past its original deadline. What is it asserting?';
+    expect(leaksImplementationVocabulary(hint, BUG, allowed())).toBe(false);
+  });
+
+  it('guard arms only on stuck turns and forces nudge true on survivors', () => {
+    const turn = { say: 'What happens to a hold that gets extended twice?', kind: 'probe' as const, nudge: false };
+    const vocab = { forbidden: BUG, allowed: allowed() };
+    expect(guard(turn, 'src/reservationService.ts', false, false, vocab)).toEqual({ ...turn, nudge: true });
+    // Same words on a NORMAL turn: untouched, nudge stays as the model set it.
+    expect(guard(turn, 'src/reservationService.ts', false, false)).toEqual(turn);
+  });
+
+  it('a leaking stuck turn redacts to SILENCE, never the canned decline', () => {
+    const leak = { say: 'Look at the expiry index entry.', kind: 'probe' as const, nudge: true };
+    const out = guard(leak, 'src/reservationService.ts', false, false, { forbidden: BUG, allowed: allowed() });
+    expect(out).toEqual({ say: '', kind: 'silent', nudge: false, redacted: true });
+  });
+
+  it('stuckVocabOf composes exactly what the runtime hands the guard', () => {
+    const v = stuckVocabOf({
+      spec: SPEC, bug: BUG, bugFile: 'src/reservationService.ts',
+      elapsedMs: 0, remainingMs: 0, recentActivity: '', candidateMessage: null,
+      transcript: [
+        { who: 'candidate', text: 'maybe the sweep?' },
+        { who: 'interviewer', text: 'never echo me: stale queued entry' },
+      ],
+      stuckObservation: '3 cycles', allowedExtra: FAILING,
+    })!;
+    expect(v.forbidden).toContain('re-registers');
+    expect(v.allowed).toContain('maybe the sweep?');
+    // The interviewer's own past words are NOT allowed vocabulary — only
+    // the candidate's. Otherwise one slip whitelists itself forever.
+    expect(v.allowed).not.toContain('never echo me');
+    expect(stuckVocabOf({ spec: SPEC, bug: BUG, bugFile: '', elapsedMs: 0, remainingMs: 0, recentActivity: '', candidateMessage: null, transcript: [] })).toBeUndefined();
   });
 });
