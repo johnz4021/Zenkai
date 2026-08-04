@@ -37,6 +37,10 @@ export function safeWorkspacePath(rootDir: string, relPath: string): string | nu
 
 /** Directories that are infrastructure, not the candidate's problem. */
 const EXCLUDED_DIRS = new Set(['node_modules', '.git', '__pycache__']);
+/** problem.json carries the rubric and (for debugging rounds) the planted
+ *  bug. The IDE surface has always exposed it via the workspace mount —
+ *  a standing leak noted there — but the panes listing is ours to filter. */
+const EXCLUDED_FILES = new Set(['problem.json']);
 
 /**
  * Relative paths of the candidate-visible files under rootDir, sorted.
@@ -56,7 +60,7 @@ export function listWorkspaceFiles(rootDir: string): string[] {
       if (e.name.startsWith('.') || EXCLUDED_DIRS.has(e.name)) continue;
       const rel = prefix ? `${prefix}/${e.name}` : e.name;
       if (e.isDirectory()) walk(path.join(dir, e.name), rel);
-      else if (e.isFile()) out.push(rel);
+      else if (e.isFile() && !(prefix === '' && EXCLUDED_FILES.has(e.name))) out.push(rel);
     }
   };
   walk(rootDir, '');

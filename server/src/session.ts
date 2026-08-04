@@ -812,7 +812,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     if (url.startsWith('/api/file') && req.method === 'GET') {
       const rel = new URL(url, 'http://x').searchParams.get('path') ?? '';
       const abs = safeWorkspacePath(cfg.problemDir, rel);
-      if (!abs) {
+      // problem.json is the manifest — rubric and planted bug. Not listed,
+      // not readable by a guessed name either.
+      if (!abs || path.basename(abs) === 'problem.json') {
         res.writeHead(400);
         return res.end('bad path');
       }
@@ -828,7 +830,14 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     if (url === '/api/file' && req.method === 'PUT') {
       const body = JSON.parse((await readBody(req)) || '{}') as { path?: string; content?: string };
       const abs = safeWorkspacePath(cfg.problemDir, body.path ?? '');
-      if (!abs || typeof body.content !== 'string' || body.content.length > 1_000_000) {
+      // problem.json write-block: overwriting the manifest would corrupt
+      // grading for the very session doing the writing.
+      if (
+        !abs ||
+        path.basename(abs) === 'problem.json' ||
+        typeof body.content !== 'string' ||
+        body.content.length > 1_000_000
+      ) {
         res.writeHead(400);
         return res.end('bad path or content');
       }

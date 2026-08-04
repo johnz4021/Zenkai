@@ -45,11 +45,13 @@ describe('listWorkspaceFiles', () => {
     mkdirSync(path.join(dir, 'node_modules/pkg'), { recursive: true });
     mkdirSync(path.join(dir, '.git'));
     writeFileSync(path.join(dir, 'src/main.py'), 'x');
+    writeFileSync(path.join(dir, 'main.py'), 'x');
+    // problem.json carries the rubric and planted bug — never listed.
     writeFileSync(path.join(dir, 'problem.json'), '{}');
     writeFileSync(path.join(dir, '.validated'), '');
     writeFileSync(path.join(dir, '.used'), '');
     writeFileSync(path.join(dir, 'node_modules/pkg/index.js'), 'x');
-    expect(listWorkspaceFiles(dir)).toEqual(['problem.json', 'src/main.py']);
+    expect(listWorkspaceFiles(dir)).toEqual(['main.py', 'src/main.py']);
   });
 });
 
