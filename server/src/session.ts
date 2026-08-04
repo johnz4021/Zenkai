@@ -22,13 +22,14 @@ import path from 'node:path';
 import httpProxy from 'http-proxy';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
-import { isFailingRun, resolveRoundSpec } from '@interview-prep/shared';
+import { isFailingRun, resolveRoundSpec, resolveSurface } from '@interview-prep/shared';
 import { judgeSession } from './judge.js';
 import { buildAssessmentCard } from './feedback.js';
 import { buildGraphView, buildTargetNote, loadStore, recordAssessment, saveStore } from './gap-graph.js';
 import { clientScript, sessionPage } from './chrome.js';
 import { injectWorkbenchDefaults } from './workbench-inject.js';
 import { describeStuck, detectStuck, type StuckState } from './stuck.js';
+import { isModelPath, listWorkspaceFiles, runGuard, safeWorkspacePath, summarizeTail } from './panes.js';
 import { TraceStore } from './trace-store.js';
 import {
   TurnQueue,
@@ -255,6 +256,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   const store = new TraceStore(tracesDir, cfg.sessionId, cfg.userId);
 
   // ---- IDE container ----
+  // Panes rounds launch the SAME container: /api/run needs docker exec, and
+  // node_modules are Linux binaries (ensureLinuxDeps installs them via
+  // docker). The openvscode process inside simply idles unused — nobody
+  // loads the workbench, so the extension never activates. Accepted idle
+  // cost over a second launch path.
   spawnSync('docker', ['rm', '-f', CONTAINER], { encoding: 'utf8' });
   // Per-session workspace path (QA ISSUE-005): VS Code Web keys workbench
   // state (open tabs, layout) by folder URI in BROWSER IndexedDB — a
@@ -294,6 +300,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   ensureRuntime(runtime);
 
   const ideSettings = loadIdeSettings(cfg.repoRoot);
+  // Hoisted install: the workspace root owns node_modules (same assumption
+  // the vitest testCmd default makes about problem dirs).
+  const monacoRoot = path.join(cfg.repoRoot, 'node_modules', 'monaco-editor', 'min', 'vs');
 
   // ---- one server: chrome + api + trace ingest + IDE proxy ----
   const proxy = httpProxy.createProxyServer({
@@ -309,6 +318,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   });
 
   let ended = false;
+  // One suite run at a time through /api/run (panes surface); the docker
+  // exec is not reentrant-safe against itself on a shared workspace.
+  let paneRunning = false;
 
   // ---- interviewer ----
   const { bug, bugFile } = bugContext(problem);
@@ -536,7 +548,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         via: 'submit',
         exit_code: run.status,
         duration_ms: Date.now() - t0,
-        summary: tail.trim().split('\n').filter(Boolean).slice(-2).join(' — '),
+        summary: summarizeTail(tail),
       });
     }
 
@@ -625,6 +637,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           time_limit_ms: caps.time_limit_ms,
           one_shot: caps.submit === 'one_shot',
           autorun: cfg.autorunTests && roundSpec.check.kind === 'one_failing_test',
+          surface: resolveSurface(caps),
+          can_run_tests: caps.can_run_tests,
+          statement: problem.spec,
           back_url: backUrl,
           workspace_path: workspacePath,
         }),
@@ -750,6 +765,133 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       writeFileSync(file, JSON.stringify(confirms, null, 2));
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ ok: true }));
+    }
+    if (url.startsWith('/vendor/monaco/') && req.method === 'GET') {
+      // Monaco's prebuilt AMD tree served straight from node_modules — the
+      // no-bundler rule holds for the panes surface too. Same traversal
+      // gate as the file API, different root.
+      const rel = url.slice('/vendor/monaco/'.length).split('?')[0]!;
+      const abs = safeWorkspacePath(monacoRoot, rel);
+      if (!abs) {
+        res.writeHead(400);
+        return res.end('bad path');
+      }
+      try {
+        const body = readFileSync(abs);
+        const type =
+          abs.endsWith('.js') ? 'text/javascript'
+          : abs.endsWith('.css') ? 'text/css'
+          : abs.endsWith('.ttf') ? 'font/ttf'
+          : 'application/octet-stream';
+        res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
+        return res.end(body);
+      } catch {
+        res.writeHead(404);
+        return res.end('no such asset');
+      }
+    }
+    // ---- panes surface API ----
+    // The panes renderer has no extension inside it, so these routes ARE its
+    // trace pipeline: the client posts edit/file_open/file_save, the run
+    // route emits test_run, and the server owns every seq (emitChrome) so
+    // client events can never collide with interviewer/sensor seqs.
+    if (url === '/api/files' && req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ files: listWorkspaceFiles(cfg.problemDir) }));
+    }
+    if (url.startsWith('/api/file') && req.method === 'GET') {
+      const rel = new URL(url, 'http://x').searchParams.get('path') ?? '';
+      const abs = safeWorkspacePath(cfg.problemDir, rel);
+      if (!abs) {
+        res.writeHead(400);
+        return res.end('bad path');
+      }
+      try {
+        const content = readFileSync(abs, 'utf8');
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ path: rel, content }));
+      } catch {
+        res.writeHead(404);
+        return res.end('no such file');
+      }
+    }
+    if (url === '/api/file' && req.method === 'PUT') {
+      const body = JSON.parse((await readBody(req)) || '{}') as { path?: string; content?: string };
+      const abs = safeWorkspacePath(cfg.problemDir, body.path ?? '');
+      if (!abs || typeof body.content !== 'string' || body.content.length > 1_000_000) {
+        res.writeHead(400);
+        return res.end('bad path or content');
+      }
+      markCandidateContact();
+      mkdirSync(path.dirname(abs), { recursive: true }); // blank scaffolds invite new files
+      writeFileSync(abs, body.content);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ ok: true }));
+    }
+    if (url === '/api/panes-event' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req)) || '{}') as {
+        type?: string;
+        payload?: Record<string, unknown>;
+      };
+      // Closed vocabulary at the door: the panes client may only produce the
+      // three activity types the extension produces. Everything else in the
+      // trace stays server-authored.
+      if (body.type !== 'edit' && body.type !== 'file_open' && body.type !== 'file_save') {
+        res.writeHead(400);
+        return res.end('event type not accepted from the panes client');
+      }
+      markCandidateContact();
+      const payload = { ...(body.payload ?? {}) };
+      if (body.type === 'file_save') {
+        payload.is_model_path = isModelPath(String(payload.path ?? ''), problem.model_paths ?? []);
+      }
+      const ev = store.emitChrome(body.type, payload);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ seq: ev.seq }));
+    }
+    if (url === '/api/run' && req.method === 'POST') {
+      const rejected = runGuard(caps, ended, paneRunning);
+      if (rejected) {
+        res.writeHead(rejected === 'busy' ? 409 : 403, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: rejected }));
+      }
+      markCandidateContact();
+      paneRunning = true;
+      const t0 = Date.now();
+      // spawn, not spawnSync: a suite can take minutes and the status /
+      // message polls must keep answering while it runs.
+      const child = spawn('docker', ['exec', CONTAINER, 'bash', '-lc', `cd ${workspacePath} && ${testCmd}`]);
+      let tail = '';
+      const keep = (chunk: Buffer) => {
+        tail = (tail + chunk.toString()).slice(-4_000);
+      };
+      child.stdout.on('data', keep);
+      child.stderr.on('data', keep);
+      const killer = setTimeout(() => child.kill('SIGKILL'), 180_000);
+      child.on('close', (code) => {
+        clearTimeout(killer);
+        paneRunning = false;
+        const summary = summarizeTail(tail);
+        // Teardown race: if the session ended mid-run, docker rm killed the
+        // exec — a post-session_end test_run would corrupt the trace's story.
+        if (!ended) {
+          store.emitChrome('test_run', {
+            via: 'panes',
+            exit_code: code,
+            duration_ms: Date.now() - t0,
+            summary,
+          });
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ exit_code: code, summary, tail }));
+      });
+      child.on('error', (e) => {
+        clearTimeout(killer);
+        paneRunning = false;
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: String(e) }));
+      });
+      return;
     }
     if (req.method === 'GET' && (url === '/' || url.startsWith('/?'))) {
       // Workbench boot HTML: the ONE channel through which settings reach

@@ -22,6 +22,11 @@ optional voice interviewer. A round is described by:
   else's change.
 - `submit` — `one_shot` when the work is graded once at the end (typical OA).
   `iterate` when re-running tests during the round is part of the work.
+- `surface` — OMIT unless the description names the editing surface itself.
+  `panes` when it names a HackerRank/CodeSignal-style browser editor; `ide` when
+  it names a real IDE or full development environment ("VS Code environment",
+  "project with a file tree and terminal"). When omitted, the session derives
+  the right surface from `starts_from`, which is almost always correct.
 - `check_kind` — how a generated problem proves itself:
   - `one_failing_test`: an existing repo with one planted bug; exactly one test fails.
     For "find and fix the bug" rounds.

@@ -21,6 +21,9 @@ A round is described by:
 - `starts_from` — `repo` (existing codebase: debugging, extend), `blank` (build from
   scaffold: most OAs, implement-these-classes), `diff` (review someone's change).
 - `submit` — `one_shot` (graded once at the end) or `iterate`.
+- `surface` — OMIT unless the description names the editing surface: `panes`
+  (HackerRank/CodeSignal-style browser editor) or `ide` (real IDE / dev
+  environment with file tree and terminal). Omitted = derived from `starts_from`.
 - `check_kind` — how a generated problem proves itself: `one_failing_test` (find-and-
   fix in a repo), `all_failing` (build against a visible suite), `all_passing`
   (extend/refactor a green repo), `diff_present` (review).

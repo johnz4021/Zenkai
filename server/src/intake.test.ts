@@ -51,6 +51,14 @@ describe('draftToSpec', () => {
     ).toThrow(/incoherent/);
   });
 
+  it('surface passes through only when the model asserted it', () => {
+    // Absent must stay absent — a written-out surface:'undefined' or a
+    // defaulted value would freeze today's derivation into every stored spec.
+    expect('surface' in draftToSpec(oaDraft).spec.capabilities).toBe(false);
+    const explicit = draftToSpec({ ...oaDraft, surface: 'ide' as const });
+    expect(explicit.spec.capabilities.surface).toBe('ide');
+  });
+
   it('unsupported passes through so the product can decline honestly', () => {
     const d = draftToSpec({
       ...oaDraft,

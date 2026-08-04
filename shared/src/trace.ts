@@ -47,8 +47,11 @@ export interface TraceEvent<P = unknown> {
 // ---- payloads for the events the v1 classifier reads ----
 
 export interface TestRunPayload {
-  /** 'task' = extension-owned task (reliable). 'terminal' = best-effort. */
-  via: 'task' | 'terminal';
+  /** 'task' = extension-owned task (reliable). 'terminal' = best-effort.
+   *  'panes' = the panes surface's server-side run route. 'submit' = the
+   *  one-shot grading run in finalize() — emitted untyped since one-shot
+   *  shipped; declared here so readers stop learning about it by surprise. */
+  via: 'task' | 'terminal' | 'panes' | 'submit';
   exit_code: number | null; // null = never completed
   duration_ms: number | null;
   /** One line of the run's tail ("Tests 1 failed | 15 passed", or python's

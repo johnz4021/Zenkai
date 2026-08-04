@@ -114,6 +114,12 @@ const DRAFT_TOOL = {
       },
       starts_from: { type: 'string', enum: ['repo', 'blank', 'diff'] },
       submit: { type: 'string', enum: ['iterate', 'one_shot'] },
+      surface: {
+        type: 'string',
+        enum: ['ide', 'panes'],
+        description:
+          'Only when the description names the editing surface (e.g. "HackerRank editor" → panes, "in an IDE / real repo environment" → ide). Omit otherwise — the default derivation from starts_from is usually right.',
+      },
       check_kind: {
         type: 'string',
         enum: ['one_failing_test', 'all_failing', 'all_passing', 'diff_present'],
@@ -144,6 +150,7 @@ export interface DraftToolOutput {
   time_limit_minutes: number | null;
   starts_from: RoundSpec['capabilities']['starts_from'];
   submit: RoundSpec['capabilities']['submit'];
+  surface?: RoundSpec['capabilities']['surface'];
   check_kind: RoundSpec['check']['kind'];
   emphasis?: string;
   rationale: string;
@@ -174,6 +181,8 @@ export function draftToSpec(out: DraftToolOutput): SpecDraft {
     time_limit_ms: minutes === null || Number.isNaN(minutes) ? null : Math.round(minutes * 60_000),
     starts_from: out.starts_from,
     submit: out.submit,
+    // Present only when the model asserted it; absent lets resolveSurface derive.
+    ...(out.surface ? { surface: out.surface } : {}),
   };
   const emphasis = asText(out.emphasis);
   const spec: RoundSpec = {

@@ -51,6 +51,7 @@ export const ROUND_FIELDS = {
   time_limit_minutes: { type: ['number', 'null'] },
   starts_from: { type: 'string', enum: ['repo', 'blank', 'diff'] },
   submit: { type: 'string', enum: ['iterate', 'one_shot'] },
+  surface: { type: 'string', enum: ['ide', 'panes'] },
   check_kind: { type: 'string', enum: ['one_failing_test', 'all_failing', 'all_passing', 'diff_present'] },
   emphasis: { type: 'string' },
   rationale: { type: 'string' },

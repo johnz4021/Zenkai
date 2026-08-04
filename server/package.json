@@ -7,6 +7,7 @@
     "@anthropic-ai/sdk": "^0.115.0",
     "@interview-prep/shared": "*",
     "http-proxy": "^1.18.1",
+    "monaco-editor": "0.52.2",
     "ws": "^8.21.1"
   }
 }

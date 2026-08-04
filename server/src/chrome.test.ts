@@ -155,3 +155,68 @@ describe('spec-driven session page (capabilities, not format branches)', () => {
     expect(html).toContain('>End session</button>');
   });
 });
+
+describe('panes surface (the HackerRank-classic renderer)', () => {
+  const oaPanes = () =>
+    sessionPage('s', {
+      interviewer: false,
+      one_shot: true,
+      autorun: false,
+      surface: 'panes',
+      can_run_tests: true,
+      statement: 'Implement the reservation ledger.',
+      time_limit_ms: 105 * 60_000,
+    });
+
+  it('replaces ONLY the workbench mount — no iframe, statement + Monaco instead', () => {
+    const html = oaPanes();
+    expect(html).not.toContain('/?folder=');
+    expect(html).toContain('id="statement"');
+    expect(html).toContain('Implement the reservation ledger.');
+    expect(html).toContain('/vendor/monaco/loader.js');
+    expect(html).toContain('<script src="/client/panes.js"></script>');
+    // The shared chrome survives the fork: Submit flow, clock, chat aside.
+    expect(html).toContain('>Submit</button>');
+    expect(html).toContain('data-limit="6300000"');
+    expect(html).toContain('id="log"');
+  });
+
+  it('the ide surface is byte-for-byte the page the product always had', () => {
+    const html = sessionPage('s', { workspace_path: '/home/workspace/p-s' });
+    expect(html).toContain('/?folder=/home/workspace/p-s');
+    expect(html).not.toContain('id="statement"');
+    expect(html).not.toContain('monaco');
+  });
+
+  it('one_shot and no-run panes rounds have NO Run button; iterate rounds do', () => {
+    expect(oaPanes()).not.toContain('id="run"');
+    const noRun = sessionPage('s', { surface: 'panes', can_run_tests: false, statement: 'x' });
+    expect(noRun).not.toContain('id="run"');
+    const iterate = sessionPage('s', { surface: 'panes', can_run_tests: true, statement: 'x' });
+    expect(iterate).toContain('id="run"');
+  });
+
+  it('the statement is escaped — LLM-generated text never becomes markup', () => {
+    const html = sessionPage('s', {
+      surface: 'panes',
+      statement: 'Beware <script>alert(1)</script> & "quotes"',
+    });
+    expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+  });
+
+  it('panes.js is a parseable classic script wired to the routes the server serves', () => {
+    const js = clientScript('panes.js') ?? '';
+    expect(() => new Function(js)).not.toThrow();
+    for (const route of ['/api/files', '/api/file', '/api/panes-event', '/api/run']) {
+      expect(js).toContain(route);
+    }
+    // The extension's 1s edit coalescing is the cadence the stuck detector
+    // was tuned on — the panes emitter must match it.
+    expect(js).toContain('1000');
+  });
+
+  it('the ended layout swallows the panes work area like it swallows the iframe', () => {
+    expect(oaPanes()).toContain('body.ended main #panes { display: none; }');
+  });
+});

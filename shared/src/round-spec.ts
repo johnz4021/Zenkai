@@ -29,6 +29,14 @@ export interface RoundCapabilities {
   starts_from: 'repo' | 'blank' | 'diff';
   /** one_shot = graded once at submit; the suite is not an iteration tool. */
   submit: 'iterate' | 'one_shot';
+  /**
+   * Which renderer the session page mounts — presentation, not round
+   * semantics. 'panes' is the HackerRank-classic layout (statement, Monaco,
+   * test panel); 'ide' is the nested VS Code workbench. Optional on purpose:
+   * absent means resolveSurface() derives it from starts_from, which is
+   * right for every spec written before this field existed.
+   */
+  surface?: 'ide' | 'panes';
 }
 
 /**
@@ -104,9 +112,23 @@ export function deriveMemoryTags(caps: RoundCapabilities): MemoryTag[] {
   return tags;
 }
 
+/**
+ * The single derivation point for which renderer a round gets. Explicit
+ * surface wins; otherwise repo rounds get the IDE (you cannot navigate a
+ * codebase in a pane editor) and blank/diff rounds get panes (a scaffold or
+ * a review does not need a workbench, and the OA rounds this defaults for
+ * are pane layouts in real life). Deliberately NOT a memory tag: tags count
+ * practice conditions exercised, and the renderer changes presentation, not
+ * what skill was drilled.
+ */
+export function resolveSurface(caps: RoundCapabilities): 'ide' | 'panes' {
+  return caps.surface ?? (caps.starts_from === 'repo' ? 'ide' : 'panes');
+}
+
 const CHECK_KINDS = new Set(['one_failing_test', 'all_failing', 'all_passing', 'diff_present']);
 const STARTS_FROM = new Set(['repo', 'blank', 'diff']);
 const SUBMITS = new Set(['iterate', 'one_shot']);
+const SURFACES = new Set(['ide', 'panes']);
 const TAGS = new Set<string>(MEMORY_TAGS);
 
 /**
@@ -136,6 +158,9 @@ export function validateRoundSpec(spec: unknown): string[] {
     }
     if (typeof c.submit !== 'string' || !SUBMITS.has(c.submit)) {
       failures.push(`capabilities.submit out of vocabulary: ${String(c.submit)}`);
+    }
+    if (c.surface !== undefined && (typeof c.surface !== 'string' || !SURFACES.has(c.surface))) {
+      failures.push(`capabilities.surface out of vocabulary: ${String(c.surface)}`);
     }
   }
 
