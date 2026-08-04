@@ -5,6 +5,7 @@ import { build } from 'esbuild';
 import { cpSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { manifest } from './manifest.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const outDir = path.join(here, 'dist', 'trace-emitter-0.0.1');
@@ -20,35 +21,9 @@ await build({
   outfile: path.join(outDir, 'extension.js'),
 });
 
-// The manifest the extension host reads. capabilities.untrustedWorkspaces is
-// LOAD-BEARING: without it, Workspace Trust silently disables the extension
-// the moment a folder is open (spike 3 — zero events, zero logs).
-writeFileSync(
-  path.join(outDir, 'package.json'),
-  JSON.stringify(
-    {
-      name: 'trace-emitter',
-      publisher: 'interview-prep',
-      version: '0.0.1',
-      engines: { vscode: '^1.80.0' },
-      main: './extension.js',
-      activationEvents: ['onStartupFinished'],
-      extensionKind: ['workspace'],
-      capabilities: {
-        untrustedWorkspaces: {
-          supported: true,
-          description: 'Observes editor events only; does not evaluate workspace code.',
-        },
-      },
-      contributes: {
-        commands: [
-          { command: 'interviewPrep.runTests', title: 'Interview Prep: Run Tests' },
-        ],
-      },
-    },
-    null,
-    2,
-  ),
-);
+// The manifest the extension host reads lives in manifest.mjs so its
+// load-bearing pieces (untrustedWorkspaces, the editor/title Run button)
+// are pinned by manifest.test.ts without running a build.
+writeFileSync(path.join(outDir, 'package.json'), JSON.stringify(manifest, null, 2));
 
 console.log('built', outDir);

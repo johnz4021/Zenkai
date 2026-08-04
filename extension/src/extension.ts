@@ -184,7 +184,11 @@ export function activate(context: vscode.ExtensionContext): void {
     running = true;
     statusItem.text = '$(sync~spin) Tests running…';
     testOutput.clear();
-    testOutput.appendLine(`$ ${cmdline}`);
+    testOutput.appendLine(`Running: ${cmdline} …`);
+    // Visible at START, not just on failure: the kickoff run used to spend
+    // its whole duration invisible, and the opening seconds of a session
+    // read as dead air.
+    testOutput.show(true);
     const t0 = Date.now();
     const child = spawn(bin, args, { cwd: folder.uri.fsPath });
     let tail = '';
@@ -220,6 +224,10 @@ export function activate(context: vscode.ExtensionContext): void {
   // The affordance is ABSENT, not disabled — a greyed-out button reads as
   // broken, an absent one reads as the rules.
   const canRunTests = process.env.IP_CAN_RUN_TESTS !== '0';
+  // The editor-title Run button (manifest.mjs menus contribution) is gated
+  // by this context key — manifest `when` clauses cannot read env. Same
+  // absent-not-disabled rule as the status bar item.
+  void vscode.commands.executeCommand('setContext', 'interviewPrep.canRunTests', canRunTests);
   const statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 1_000);
   statusItem.text = '$(beaker) Run Tests';
   statusItem.command = 'interviewPrep.runTests';
@@ -230,6 +238,18 @@ export function activate(context: vscode.ExtensionContext): void {
       if (canRunTests) runTests();
     }),
   );
+
+  // Docked problem statement: the session server writes PROBLEM.md into
+  // ide-surface workspaces; open it as a preview so the round starts on the
+  // statement, the way HackerRank's project IDE docks its question. NOT in
+  // IGNORED — opening the statement is legitimate file_open signal.
+  if (folder) {
+    const problemMd = vscode.Uri.joinPath(folder.uri, 'PROBLEM.md');
+    void vscode.workspace.fs.stat(problemMd).then(
+      () => void vscode.commands.executeCommand('markdown.showPreview', problemMd),
+      () => undefined, // no statement file — pre-surface problem dirs
+    );
+  }
 
   // Kickoff run. For a debugging round the failing suite IS the problem
   // statement, and the rubric's trigger is that first failure — it must not

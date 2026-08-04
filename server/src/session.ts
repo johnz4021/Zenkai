@@ -245,6 +245,16 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // never from a format name (capabilities, not categories).
   const roundSpec = resolveRoundSpec(problem);
   const caps = roundSpec.capabilities;
+  const surface = resolveSurface(caps);
+
+  // IDE surface only: dock the problem statement in the workspace, where the
+  // extension opens it as a preview at activation (HackerRank's project IDE
+  // docks its question the same way). Panes rounds render the statement in
+  // their own pane — a stray PROBLEM.md there would pollute /api/files.
+  if (surface === 'ide' && !existsSync(path.join(cfg.problemDir, 'PROBLEM.md'))) {
+    const title = problem.title ? `# ${problem.title}\n\n` : '# Problem\n\n';
+    writeFileSync(path.join(cfg.problemDir, 'PROBLEM.md'), title + problem.spec + '\n');
+  }
 
   const runtime = problem.runtime ?? 'node';
   if (runtime === 'node') ensureLinuxDeps(cfg.problemDir);
@@ -637,7 +647,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           time_limit_ms: caps.time_limit_ms,
           one_shot: caps.submit === 'one_shot',
           autorun: cfg.autorunTests && roundSpec.check.kind === 'one_failing_test',
-          surface: resolveSurface(caps),
+          surface,
           can_run_tests: caps.can_run_tests,
           statement: problem.spec,
           back_url: backUrl,
