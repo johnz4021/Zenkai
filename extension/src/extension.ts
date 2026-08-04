@@ -16,6 +16,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import * as vscode from 'vscode';
 import type { FileSavePayload, GeneratedProblem, TestRunPayload } from '@interview-prep/shared';
+import { isTestCommand } from '@interview-prep/shared';
 import { DurableEmitter } from './durable-log.js';
 
 const IGNORED = ['/node_modules/', '/.git/', '/.trace/'];
@@ -108,6 +109,52 @@ export function activate(context: vscode.ExtensionContext): void {
       emitter.emit('file_save', payload);
     }),
   );
+
+  // ---- terminal test runs: the half of verification we used to miss ----
+  // A replay over 19 real traces found the Run Tests button pressed about
+  // twice, ever — every other test_run was the autorun at +3s. Candidates
+  // verify the normal way, by typing `npm test` in a terminal, and none of
+  // it was observed. The judge's `verify` dimension therefore recorded a
+  // false negative for anyone who used the terminal, and on one-shot rounds
+  // (where the Run Tests button is absent by design) verification was
+  // structurally unobservable.
+  //
+  // Shell integration gives us the command line AND the exit code. It is a
+  // recent API and openvscode-server may not implement it, so every access
+  // is guarded — a runtime without it degrades to exactly today's behavior
+  // rather than failing to activate.
+  const shellApi = vscode.window as unknown as {
+    onDidStartTerminalShellExecution?: (
+      cb: (e: { execution: { commandLine?: { value?: string } } }) => void,
+    ) => vscode.Disposable;
+    onDidEndTerminalShellExecution?: (
+      cb: (e: { exitCode?: number; execution: { commandLine?: { value?: string } } }) => void,
+    ) => vscode.Disposable;
+  };
+  if (typeof shellApi.onDidEndTerminalShellExecution === 'function') {
+    context.subscriptions.push(
+      shellApi.onDidEndTerminalShellExecution((e) => {
+        const cmdline = e.execution?.commandLine?.value ?? '';
+        if (!isTestCommand(cmdline)) return;
+        // No output capture: shell integration does not hand us the stream,
+        // and reading the terminal buffer is unreliable. The exit code is
+        // the load-bearing fact (isFailingRun reads only that); the command
+        // line stands in for the summary so the judge's timeline still reads.
+        emitter.emit('test_run', {
+          via: 'terminal',
+          exit_code: typeof e.exitCode === 'number' ? e.exitCode : null,
+          duration_ms: null,
+          summary: `$ ${cmdline.slice(0, 200)}`,
+        });
+      }),
+    );
+  } else {
+    emitter.emit('sensor', {
+      sensor: 'terminal',
+      state: 'down',
+      reason: 'shell integration API unavailable in this runtime',
+    });
+  }
 
   // ---- test runs: spawned, observed, first-class ----
   // One line saying what happened, for the timeline the judge reads. Vitest

@@ -51,12 +51,29 @@ export interface TestRunPayload {
   via: 'task' | 'terminal';
   exit_code: number | null; // null = never completed
   duration_ms: number | null;
+  /** One line of the run's tail ("Tests 1 failed | 15 passed", or python's
+   *  "Ran 15 tests — FAILED (failures=1)"). The extension has always emitted
+   *  it; declaring it lets the stuck detector read outcomes without casting.
+   *  Per-test NAMES are not available — only this summary line. */
+  summary?: string;
+  /** Present instead of a summary when the runner failed to spawn. */
+  error?: string;
 }
 
 export interface FileSavePayload {
   path: string;
   /** True when the path matches the problem's declared model paths. */
   is_model_path: boolean;
+}
+
+/** Emitted per document on a 1s coalescing window (extension.ts). */
+export interface EditPayload {
+  path: string;
+  changes: number;
+}
+
+export interface FileOpenPayload {
+  path: string;
 }
 
 export interface SpecMutationPayload {
@@ -92,7 +109,9 @@ export interface UtterancePayload {
  * marked contaminated. Presence-dead contaminates both.
  */
 export interface SensorPayload {
-  sensor: 'presence' | 'stt';
+  /** 'terminal' reports whether shell-integration observation is available
+   *  in this runtime — emitted once at activation when it is not. */
+  sensor: 'presence' | 'stt' | 'terminal';
   state: 'up' | 'down';
   reason: string;
 }

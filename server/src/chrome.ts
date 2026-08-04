@@ -116,7 +116,7 @@ export function sessionPage(sessionId: string, view: SessionPageView = DEFAULT_V
   <aside>
     <div id="log">
       ${intro}
-      <p class="u"><b>observed</b> — edits, saves, file opens, this chat, and test runs made with the <b>Run Tests</b> button in the editor's status bar. Terminal commands are not observed. Silences ≥20s with no activity anywhere count as going quiet.${view.autorun ? ' The suite runs once automatically at start.' : ''}${view.one_shot ? ' The suite runs ONCE, when you press Submit — make it count.' : ''}</p>
+      <p class="u"><b>observed</b> — edits, saves, file opens, this chat, and test runs (the <b>Run Tests</b> button, or a test command in the terminal). Other terminal commands are not observed. Silences ≥20s with no activity anywhere count as going quiet.${view.autorun ? ' The suite runs once automatically at start.' : ''}${view.one_shot ? ' The suite runs ONCE, when you press Submit — make it count.' : ''}</p>
     </div>
     <div id="feedback"></div>
     <form id="f"><input id="msg" autocomplete="off" placeholder="ask / note an assumption…" /><button>send</button></form>
