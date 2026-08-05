@@ -823,7 +823,9 @@ async function launch(targetId, itemId, btn) {
     else el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>';
     return;
   }
-  if (btn) launchStatus(btn, 'booting the environment — a few seconds…');
+  // Honest about the cold path: a first launch on a machine may build the
+  // runtime image. "a few seconds" was a lie a user reasonably read as a hang.
+  if (btn) launchStatus(btn, 'booting the container and editor — up to a minute the first time…');
   const until = Date.now() + 180000;
   const tick = async () => {
     const live = (await (await fetch('/api/session-live')).json()).live;

@@ -109,24 +109,47 @@ function ensureLinuxDeps(problemDir: string): void {
 }
 
 /**
- * The IDE image ships node and nothing else. A problem declaring another
- * runtime gets it installed into the running container as root before the
- * candidate can reach the Run Tests button — if this fails, the round has
- * no trigger at all and the whole session is unassessable, so it throws
- * rather than letting the session start broken.
+ * The runtime a problem needs, as a prebuilt IMAGE rather than a per-session
+ * install.
+ *
+ * This used to `apt-get install python3` into the freshly-run container on
+ * every launch, before the HTTP server bound its port. Every container is
+ * disposable, so every python round paid it again: measured at ~40s of a
+ * ~55s cold start, during which the app showed "booting the environment —
+ * a few seconds…" and nothing was reachable. It reads as a hang, and the
+ * user reported it as one.
+ *
+ * Docker caches the derived image, so the cost is paid once per machine.
+ * Bump the tag when the recipe changes — that is what triggers a rebuild.
  */
-function ensureRuntime(runtime: 'node' | 'python'): void {
-  if (runtime === 'node') return;
-  console.log(`[session] installing ${runtime} runtime in the container...`);
-  const res = spawnSync(
-    'docker',
-    ['exec', '-u', '0', CONTAINER, 'bash', '-lc',
-     'apt-get update -qq && apt-get install -y -qq python3'],
-    { encoding: 'utf8' },
-  );
-  if (res.status !== 0) {
-    throw new Error(`could not install ${runtime} in the container: ${res.stderr?.slice(0, 300)}`);
+const RUNTIME_IMAGES: Record<'node' | 'python', string> = {
+  node: IDE_IMAGE,
+  python: 'ip-ide-python:1',
+};
+
+const PYTHON_DOCKERFILE = `FROM ${IDE_IMAGE}
+USER root
+RUN apt-get update -qq && apt-get install -y -qq python3 && rm -rf /var/lib/apt/lists/*
+USER openvscode-server
+`;
+
+function ensureRuntimeImage(runtime: 'node' | 'python'): string {
+  const image = RUNTIME_IMAGES[runtime];
+  if (runtime === 'node') return image;
+  if (spawnSync('docker', ['image', 'inspect', image], { encoding: 'utf8' }).status === 0) {
+    return image;
   }
+  console.log(`[session] building the ${runtime} IDE image — one time, about a minute...`);
+  const built = spawnSync('docker', ['build', '-t', image, '-'], {
+    input: PYTHON_DOCKERFILE,
+    encoding: 'utf8',
+  });
+  if (built.status !== 0) {
+    // Without the runtime the suite cannot run: no trigger, nothing to
+    // assess. Fail loudly rather than starting a broken round.
+    throw new Error(`could not build the ${runtime} IDE image: ${built.stderr?.slice(0, 300)}`);
+  }
+  return image;
 }
 
 /**
@@ -257,6 +280,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   }
 
   const runtime = problem.runtime ?? 'node';
+  // Resolve (and, once per machine, build) the runtime image BEFORE the
+  // container runs — the old order installed the runtime into an
+  // already-running container, which is why the port stayed unbound for a
+  // minute on every python round.
+  const ideImage = ensureRuntimeImage(runtime);
   if (runtime === 'node') ensureLinuxDeps(cfg.problemDir);
   const extDist = ensureExtensionBuilt(cfg.repoRoot);
   const ideDataDir = ensureIdeDataDir(cfg.repoRoot);
@@ -302,12 +330,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     '-v', `${extDist}:/ext`,
     '-v', `${ideDataDir}:/ipdata`,
     '-v', `${cfg.problemDir}:${workspacePath}`,
-    IDE_IMAGE,
+    ideImage,
     '--without-connection-token', '--host', '0.0.0.0',
     '--extensions-dir', '/ext',
     '--user-data-dir', '/ipdata',
   ]);
-  ensureRuntime(runtime);
 
   // What the interviewer may tell a candidate who asks how to run tests.
   // Derived from the same facts the runtime enforces, so it can never drift
