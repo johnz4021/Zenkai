@@ -124,6 +124,11 @@ const DRAFT_TOOL = {
         type: 'string',
         enum: ['one_failing_test', 'all_failing', 'all_passing', 'diff_present'],
       },
+      max_source_files: {
+        type: 'number',
+        description:
+          'Only when the description pins the problem size in files ("one file", "a single page of code" → 1). Omit otherwise.',
+      },
       emphasis: {
         type: 'string',
         description: 'Generation emphasis from the description, e.g. "likely concurrency". Empty if none.',
@@ -152,6 +157,7 @@ export interface DraftToolOutput {
   submit: RoundSpec['capabilities']['submit'];
   surface?: RoundSpec['capabilities']['surface'];
   check_kind: RoundSpec['check']['kind'];
+  max_source_files?: number;
   emphasis?: string;
   rationale: string;
   unsupported: string;
@@ -185,11 +191,15 @@ export function draftToSpec(out: DraftToolOutput): SpecDraft {
     ...(out.surface ? { surface: out.surface } : {}),
   };
   const emphasis = asText(out.emphasis);
+  const maxFiles = Number(out.max_source_files);
   const spec: RoundSpec = {
     id: slugify(asText(out.id) || asText(out.label)),
     label: asText(out.label),
     capabilities,
-    check: { kind: out.check_kind },
+    check: {
+      kind: out.check_kind,
+      ...(Number.isInteger(maxFiles) && maxFiles >= 1 ? { max_source_files: maxFiles } : {}),
+    },
     memory_tags: deriveMemoryTags(capabilities),
     ...(emphasis ? { emphasis } : {}),
   };

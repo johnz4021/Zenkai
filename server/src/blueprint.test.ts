@@ -1,0 +1,129 @@
+/**
+ * Blueprints exist because of the Palantir size-loss case (2026-08-05,
+ * docs/problem-generation.md): "one page of Python" died in a single lossy
+ * emphasis string while a hardcoded file-count constant won. These tests pin
+ * the mechanical pieces — the gate, the library, the skeleton routing, and
+ * the brief composition whose no-blueprint branch is the backward-compat
+ * contract with every pre-blueprint spec.
+ */
+import { afterEach, describe, expect, it } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type { RoundSpec } from '@interview-prep/shared';
+import { DEFAULT_DEBUGGING_SPEC } from '@interview-prep/shared';
+import {
+  REQUIRED_HEADINGS,
+  blueprintPath,
+  composeRoundBrief,
+  gateBlueprint,
+  loadBlueprint,
+  pickSkeletonFile,
+  writeBlueprintWithBackup,
+} from './blueprint.js';
+
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const LIB = path.join(REPO, 'prompts', 'blueprints');
+
+const spec = (over: Partial<RoundSpec> = {}, caps: Partial<RoundSpec['capabilities']> = {}): RoundSpec => ({
+  ...JSON.parse(JSON.stringify(DEFAULT_DEBUGGING_SPEC)) as RoundSpec,
+  ...over,
+  capabilities: { ...DEFAULT_DEBUGGING_SPEC.capabilities, ...caps },
+});
+
+describe('gateBlueprint', () => {
+  it('every shipped skeleton passes its own gate — the library and the gate cannot drift', () => {
+    const files = readdirSync(LIB).filter((f) => f.endsWith('.md'));
+    expect(files.length).toBeGreaterThanOrEqual(4);
+    for (const f of files) {
+      expect(() => gateBlueprint(readFileSync(path.join(LIB, f), 'utf8'))).not.toThrow();
+    }
+  });
+
+  it('rejects thin output and each missing section by name', () => {
+    expect(() => gateBlueprint('short')).toThrow(/too thin/);
+    expect(() => gateBlueprint(null)).toThrow(/too thin/);
+    const full = readFileSync(path.join(LIB, 'debugging-round.md'), 'utf8');
+    for (const h of REQUIRED_HEADINGS) {
+      expect(() => gateBlueprint(full.replace(h, '## Renamed'))).toThrow(h);
+    }
+  });
+});
+
+describe('pickSkeletonFile', () => {
+  it('keyword hits on the spec label beat the shape fallback', () => {
+    expect(pickSkeletonFile(spec({ label: 'Amazon HackerRank OA' }))).toBe('oa-hackerrank-classic.md');
+    expect(pickSkeletonFile(spec({ label: 'LLD machine coding' }))).toBe('lld-build.md');
+    expect(pickSkeletonFile(spec({ label: 'Palantir learning round' }))).toBe('learning-round.md');
+    expect(pickSkeletonFile(spec({ label: 'Debugging screen' }))).toBe('debugging-round.md');
+  });
+
+  it('falls back on capability shape and every branch names a real file', () => {
+    const oneFailing = spec({ label: 'Round A' });
+    expect(pickSkeletonFile(oneFailing)).toBe('debugging-round.md');
+    const oaShape = spec({ label: 'Round B', check: { kind: 'all_failing' } }, { starts_from: 'blank' });
+    expect(pickSkeletonFile(oaShape)).toBe('oa-hackerrank-classic.md'); // blank derives panes
+    const lldShape = spec({ label: 'Round C', check: { kind: 'all_failing' } }, { starts_from: 'repo' });
+    expect(pickSkeletonFile(lldShape)).toBe('lld-build.md');
+    for (const s of [oneFailing, oaShape, lldShape, spec({ label: 'Round D', check: { kind: 'all_passing' } })]) {
+      expect(existsSync(path.join(LIB, pickSkeletonFile(s)))).toBe(true);
+    }
+  });
+});
+
+describe('composeRoundBrief — the generation seam', () => {
+  const base = spec({ label: 'Palantir learning round', emphasis: 'futures and async' });
+  const inputs = {
+    spec: base,
+    plannedTitle: 'Async task queue — refactor',
+    description: 'learning round, likely async',
+    context: 'friend said futures in python',
+  };
+
+  it('with a blueprint: blueprint + title only — description/context are NOT re-appended', () => {
+    const bp = '# Blueprint: X\n\n## Environment\nA single Python file.';
+    const out = composeRoundBrief({ ...inputs, blueprint: bp });
+    expect(out.startsWith('# Blueprint: X')).toBe(true);
+    expect(out).toContain('Planned title for THIS problem');
+    expect(out).toContain('Async task queue — refactor');
+    // Re-appending the raw words would recreate the conflicting-prose
+    // problem blueprints exist to kill.
+    expect(out).not.toContain('The candidate describes it as');
+    expect(out).not.toContain('Reference material from the candidate');
+    expect(out).not.toContain('Emphasis:');
+  });
+
+  it('without a blueprint: the legacy five-part brief, byte-for-byte', () => {
+    const out = composeRoundBrief({ ...inputs, blueprint: null });
+    expect(out).toBe(
+      'Round: Palantir learning round.\n\n' +
+        'Planned title for THIS problem (build exactly this system, and set the manifest "title" to it): Async task queue — refactor\n\n' +
+        'Emphasis: futures and async.\n\n' +
+        'The candidate describes it as: learning round, likely async\n\n' +
+        'Reference material from the candidate:\nfriend said futures in python',
+    );
+  });
+});
+
+describe('writeBlueprintWithBackup — the only history targets/ gets', () => {
+  let dir: string;
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('first write creates no .prev.md; the second snapshots the first', () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'bp-'));
+    const prev = path.join(dir, 'targets', 't1', 'blueprints', 's1.prev.md');
+    writeBlueprintWithBackup(dir, 't1', 's1', 'v1');
+    expect(loadBlueprint(dir, 't1', 's1')).toBe('v1');
+    expect(existsSync(prev)).toBe(false);
+    writeBlueprintWithBackup(dir, 't1', 's1', 'v2');
+    expect(loadBlueprint(dir, 't1', 's1')).toBe('v2');
+    expect(readFileSync(prev, 'utf8')).toBe('v1');
+  });
+
+  it('loadBlueprint returns null for a spec that has no blueprint yet', () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'bp-'));
+    expect(loadBlueprint(dir, 't1', 'nope')).toBeNull();
+    expect(blueprintPath(dir, 't1', 's1')).toContain(path.join('targets', 't1', 'blueprints', 's1.md'));
+  });
+});

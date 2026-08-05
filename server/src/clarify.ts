@@ -53,6 +53,7 @@ export const ROUND_FIELDS = {
   submit: { type: 'string', enum: ['iterate', 'one_shot'] },
   surface: { type: 'string', enum: ['ide', 'panes'] },
   check_kind: { type: 'string', enum: ['one_failing_test', 'all_failing', 'all_passing', 'diff_present'] },
+  max_source_files: { type: 'number' },
   emphasis: { type: 'string' },
   rationale: { type: 'string' },
   unsupported: { type: 'string' },

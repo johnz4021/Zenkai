@@ -60,6 +60,18 @@ describe('validateRoundSpec', () => {
     expect(validateRoundSpec({}).length).toBeGreaterThanOrEqual(4);
   });
 
+  it('max_source_files must be a positive integer when present', () => {
+    const capped = good();
+    capped.check.max_source_files = 1;
+    expect(validateRoundSpec(capped)).toEqual([]);
+    for (const bad of [0, -2, 1.5, 'one' as unknown as number]) {
+      const s = good();
+      s.check.max_source_files = bad as number;
+      expect(validateRoundSpec(s).join('\n')).toMatch(/max_source_files/);
+    }
+    expect(validateRoundSpec(good())).toEqual([]); // absent stays valid
+  });
+
   it('surface is optional, in-vocabulary when present, rejected otherwise', () => {
     expect(validateRoundSpec(good())).toEqual([]); // absent — every pre-surface spec
     const ide = good();

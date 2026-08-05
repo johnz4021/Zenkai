@@ -728,6 +728,15 @@ export function runApp(cfg: AppConfig): http.Server {
           }
           saveQueue(repoRoot, queue);
         }
+        // Draft a blueprint per accepted spec, detached — the CLI is
+        // idempotent (exits 0 when the file exists), so unconditional spawns
+        // are safe and a re-accepted spec keeps its existing blueprint
+        // (blueprint mutation belongs to adaptation, not re-accept). Drafter
+        // failure never blocks this 200: generation falls back to the
+        // legacy brief until a draft lands.
+        for (const spec of incoming) {
+          spawnDetached(['blueprint', t.id, spec.id]);
+        }
         return json(200, { ok: true, specs: t.specs.map((x) => x.id) });
       }
       if (url === '/api/adapt' && req.method === 'POST') {

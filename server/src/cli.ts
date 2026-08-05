@@ -6,7 +6,7 @@
  *   validate <dir>   mechanical check on a generated problem
  *   session [dir]    run a live session; picks from the pool when dir is omitted
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generateProblem } from './generate.js';
@@ -69,14 +69,19 @@ async function generateInto(
   // The generator owns its own marker's lifetime: the app's close handler
   // cannot be relied on (an app restart mid-generation orphans it, leaving
   // a stale .generating next to a finished problem forever).
-  const { clearGeneratingMarker } = await import('./generation-state.js');
+  const { clearGeneratingMarker, removePythonArtifacts } = await import('./generation-state.js');
   if (!result.ok) {
     clearGeneratingMarker(targetDir);
     console.error('--- stderr ---\n' + result.stderr.slice(0, 2000));
     return 1;
   }
+  // Sweep twice: the generator's own suite runs left bytecode, and the
+  // validator's run below re-creates it — only the second sweep decides
+  // what the candidate's file tree actually shows.
+  removePythonArtifacts(targetDir);
   const report = validateProblem(targetDir);
   clearGeneratingMarker(targetDir);
+  removePythonArtifacts(targetDir);
   console.log(JSON.stringify({ ok: report.ok, failures: report.failures }, null, 2));
   if (report.ok) {
     // Disk marker the queue derives "ready" from — the app can restart and
@@ -168,6 +173,25 @@ if (cmd === 'generate') {
       t.specs = [...t.specs.filter((s) => s.id !== draft.spec.id), draft.spec];
       saveTarget(repoRoot, t);
       console.error(`\naccepted → ${t.id} specs: [${t.specs.map((s) => s.id).join(', ')}]`);
+      // Already a CLI context — draft the blueprint inline. Failure warns
+      // and continues: accept succeeded, generation falls back to the
+      // legacy brief until a blueprint lands.
+      try {
+        const bp = await import('./blueprint.js');
+        if (!existsSync(bp.blueprintPath(repoRoot, t.id, draft.spec.id))) {
+          const skeleton = readFileSync(
+            path.join(repoRoot, 'prompts', 'blueprints', bp.pickSkeletonFile(draft.spec)),
+            'utf8',
+          );
+          const md = await bp.pickBlueprintDrafter(path.join(repoRoot, 'prompts', 'draft-blueprint.md'))({
+            spec: draft.spec, description: t.description ?? '', context: t.context ?? '', skeleton,
+          });
+          bp.writeBlueprintWithBackup(repoRoot, t.id, draft.spec.id, md);
+          console.error(`blueprint drafted → blueprints/${draft.spec.id}.md`);
+        }
+      } catch (e) {
+        console.warn(`blueprint draft failed (generation will use the legacy brief): ${String(e)}`);
+      }
     } else {
       console.error('\ndraft only — rerun with --accept to save it to the target');
     }
@@ -192,17 +216,20 @@ if (cmd === 'generate') {
     console.error(`no confirmed spec ${specId ? `"${specId}" ` : ''}on target ${t.id} — run target infer --accept first`);
     process.exit(2);
   }
-  const brief = [
-    `Round: ${spec.label}.`,
-    // A planned title is a COMMITMENT: the timeline already shows it, so
-    // the generated problem must be that system, not a re-roll.
-    flags.title ? `Planned title for THIS problem (build exactly this system, and set the manifest "title" to it): ${flags.title}` : '',
-    spec.emphasis ? `Emphasis: ${spec.emphasis}.` : '',
-    t.description ? `The candidate describes it as: ${t.description}` : '',
-    t.context ? `Reference material from the candidate:\n${t.context}` : '',
-  ]
-    .filter(Boolean)
-    .join('\n\n');
+  // The blueprint IS the round description when one exists; the legacy
+  // five-part brief is the fallback for specs drafted before blueprints.
+  // A planned title stays a COMMITMENT either way: the timeline already
+  // shows it, so the generated problem must be that system, not a re-roll.
+  const { composeRoundBrief, loadBlueprint } = await import('./blueprint.js');
+  const bp = loadBlueprint(repoRoot, t.id, spec.id);
+  if (bp) console.log(`[generate-for] using blueprint ${spec.id}.md`);
+  const brief = composeRoundBrief({
+    spec,
+    blueprint: bp,
+    plannedTitle: flags.title,
+    description: t.description,
+    context: t.context,
+  });
   const { targetDir: tDir } = await import('./intake.js');
   // --into pins the output dir (queue items know their dir up front, so
   // status can be derived from disk); default keeps the ad-hoc behavior.
@@ -215,6 +242,49 @@ if (cmd === 'generate') {
   const store = loadStore(path.join(repoRoot, 'gaps'), userId);
   const note = buildTargetNote(buildGraphView(store), store);
   process.exit(await generateInto(dir, note, brief, spec));
+} else if (cmd === 'blueprint') {
+  // Draft the round blueprint for one spec. Idempotent: an existing file is
+  // the terminal state, which is what makes accept-spec's unconditional
+  // detached spawns safe. Failure exits non-zero with NOTHING written —
+  // generation falls back to the legacy brief until a draft lands.
+  const { loadTarget } = await import('./intake.js');
+  const {
+    blueprintPath, draftingMarkerPath, gateBlueprint, pickBlueprintDrafter,
+    pickSkeletonFile, writeBlueprintWithBackup,
+  } = await import('./blueprint.js');
+  const { existsSync: ex, mkdirSync: mkd, rmSync: rmf, writeFileSync: wf } = await import('node:fs');
+  const [targetId, specId] = process.argv.slice(3);
+  const t = targetId ? loadTarget(repoRoot, targetId) : null;
+  const spec = t?.specs.find((s) => s.id === specId);
+  if (!t || !spec) {
+    console.error('usage: cli.ts blueprint <target-id> <spec-id>');
+    process.exit(t ? 2 : 64);
+  }
+  const file = blueprintPath(repoRoot, t.id, spec.id);
+  if (ex(file)) {
+    console.log(`[blueprint] ${spec.id}.md already exists — nothing to do`);
+    process.exit(0);
+  }
+  const marker = draftingMarkerPath(repoRoot, t.id, spec.id);
+  mkd(path.dirname(marker), { recursive: true });
+  wf(marker, new Date().toISOString());
+  try {
+    const skeleton = readFileSync(
+      path.join(repoRoot, 'prompts', 'blueprints', pickSkeletonFile(spec)),
+      'utf8',
+    );
+    const draft = pickBlueprintDrafter(path.join(repoRoot, 'prompts', 'draft-blueprint.md'));
+    const markdown = gateBlueprint(
+      await draft({ spec, description: t.description ?? '', context: t.context ?? '', skeleton }),
+    );
+    writeBlueprintWithBackup(repoRoot, t.id, spec.id, markdown);
+    console.log(`[blueprint] wrote ${path.relative(repoRoot, file)} (${markdown.length} chars)`);
+  } catch (e) {
+    console.error(`[blueprint] draft failed for ${t.id}/${spec.id}: ${String(e)}`);
+    process.exit(1);
+  } finally {
+    rmf(marker, { force: true });
+  }
 } else if (cmd === 'app') {
   const { runApp } = await import('./app.js');
   runApp({ port: 3300, sessionPort: 3200, userId });
@@ -421,6 +491,7 @@ if (cmd === 'generate') {
       '  cli.ts session [dir]     run a session (picks from pool if dir omitted)\n' +
       '  cli.ts target <add|list|infer> ...   season-program targets\n' +
       '  cli.ts generate-for <target-id> [spec-id]   generate from a confirmed spec\n' +
+      '  cli.ts blueprint <target-id> <spec-id>   draft the round blueprint (idempotent)\n' +
       '  cli.ts app               run the home app (:3300) - targets, queues, launch',
   );
   process.exit(64);

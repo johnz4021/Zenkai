@@ -49,6 +49,10 @@ export interface CheckSpec {
   kind: 'one_failing_test' | 'all_failing' | 'all_passing' | 'diff_present';
   /** all_failing / all_passing: minimum suite size for the round to be substantive. */
   min_tests?: number;
+  /** Cap on candidate-facing source files (tests excluded) — the validator
+   *  counts them. The one enforceable size knob: "a single ~200-line file"
+   *  is max_source_files: 1 plus blueprint prose, not prose alone. */
+  max_source_files?: number;
   /** diff_present: the changed files the candidate is asked to review. */
   files_changed?: string[];
 }
@@ -176,6 +180,12 @@ export function validateRoundSpec(spec: unknown): string[] {
     }
     if (k.min_tests !== undefined && (typeof k.min_tests !== 'number' || k.min_tests < 1)) {
       failures.push('check.min_tests must be a positive number when present');
+    }
+    if (
+      k.max_source_files !== undefined &&
+      (typeof k.max_source_files !== 'number' || !Number.isInteger(k.max_source_files) || k.max_source_files < 1)
+    ) {
+      failures.push('check.max_source_files must be a positive integer when present');
     }
   }
 

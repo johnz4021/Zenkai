@@ -22,6 +22,10 @@ optional voice interviewer. A round is described by:
   else's change.
 - `submit` — `one_shot` when the work is graded once at the end (typical OA).
   `iterate` when re-running tests during the round is part of the work.
+- One round entry per distinct exercise FORM, even when capabilities are
+  identical — "debugging a file" and "implementing from documentation" are
+  separate rounds with separate ids, because each form gets its own
+  generation blueprint.
 - `surface` — OMIT unless the description names the editing surface itself.
   `panes` when it names a HackerRank/CodeSignal-style browser editor; `ide` when
   it names a real IDE or full development environment ("VS Code environment",

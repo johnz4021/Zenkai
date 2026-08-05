@@ -21,6 +21,13 @@ a NEW problem of the same species — same difficulty, same domain flavor, same 
 etiquette — never a copy. If the material is thin, generate the most representative
 problem for the round described.
 
+The round description above governs the problem's SHAPE: language, repo size,
+file layout, single-file vs multi-module, difficulty. The mechanical
+requirements below govern ONLY the test/check pattern the validator proves.
+Where the two seem to conflict on shape or size, the round description wins —
+"a single Python file of ~200 lines" means exactly that, however the
+requirements below are phrased.
+
 ## Mechanical requirements (the validator will prove these — they are not advisory)
 
 {{CHECK_REQUIREMENTS}}

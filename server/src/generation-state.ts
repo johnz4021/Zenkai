@@ -113,3 +113,29 @@ export function generationProgress(dir: string): {
     phase: existsSync(path.join(dir, 'problem.json')) ? 'finalizing' : 'building',
   };
 }
+
+/**
+ * Strip host-side Python bytecode from a generated problem dir. The
+ * generator and the validator both run the suite, each leaving __pycache__
+ * for whatever Python ran them — a candidate's first look at the repo
+ * showed .pyc files from two interpreter versions (docs/problem-generation
+ * limitation #7). Called before validation AND after it, because the
+ * validator's own run re-creates what the first sweep removed.
+ */
+export function removePythonArtifacts(dir: string): void {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      if (e.name === '__pycache__') rmSync(p, { recursive: true, force: true });
+      else if (e.name !== 'node_modules' && e.name !== '.git') removePythonArtifacts(p);
+    } else if (e.name.endsWith('.pyc')) {
+      rmSync(p, { force: true });
+    }
+  }
+}

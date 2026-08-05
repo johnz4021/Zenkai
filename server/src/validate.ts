@@ -18,6 +18,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { GeneratedProblem } from '@interview-prep/shared';
 import { DIMENSIONS, resolveRoundSpec, validateRoundSpec } from '@interview-prep/shared';
+import { listWorkspaceFiles } from './panes.js';
 
 export interface ValidationReport {
   ok: boolean;
@@ -70,6 +71,24 @@ export function normalizeTestName(name: string): string {
 /** Pure manifest checker. Exported for tests. Dispatches on the round
  *  spec's check kind — the debugging-only hard-reject died with the format
  *  menu (CEO review 2026-07-31: capabilities, not categories). */
+const SOURCE_EXTENSIONS = new Set(['.ts', '.js', '.mjs', '.py']);
+const TEST_DIRS = new Set(['test', 'tests']);
+const HARNESS_BASENAMES = /^(vitest|vite)\.config\.\w+$/;
+const TEST_BASENAMES = /(\.test\.\w+|_test\.py)$|^test_.*\.py$/;
+
+/** Candidate-facing source files from a listWorkspaceFiles() listing —
+ *  what check.max_source_files counts. Tests and harness config are the
+ *  problem's scaffolding, not its size. */
+export function countSourceFiles(files: string[]): number {
+  return files.filter((f) => {
+    if (!SOURCE_EXTENSIONS.has(path.extname(f))) return false;
+    const parts = f.split('/');
+    if (TEST_DIRS.has(parts[0] ?? '')) return false;
+    const base = parts[parts.length - 1] ?? '';
+    return !TEST_BASENAMES.test(base) && !HARNESS_BASENAMES.test(base);
+  }).length;
+}
+
 export function checkManifest(problem: GeneratedProblem, repoDir: string): string[] {
   const failures: string[] = [];
   // A manifest-carried spec must be in-vocabulary; absence is fine (legacy
@@ -94,6 +113,15 @@ export function checkManifest(problem: GeneratedProblem, repoDir: string): strin
   if (spec.check.kind === 'diff_present') {
     for (const f of spec.check.files_changed ?? []) {
       if (!existsSync(path.join(repoDir, f))) failures.push(`files_changed entry does not exist: ${f}`);
+    }
+  }
+  // The one enforceable size knob. This is what makes the generator prompt's
+  // max-files sentence TRUE — every other size claim was removed from the
+  // requirement blocks precisely because nothing proved it.
+  if (spec.check.max_source_files !== undefined) {
+    const count = countSourceFiles(listWorkspaceFiles(repoDir));
+    if (count > spec.check.max_source_files) {
+      failures.push(`${count} source files — check.max_source_files allows ${spec.check.max_source_files}`);
     }
   }
   if (!problem.spec || problem.spec.length < 100) failures.push('spec missing or too short');
@@ -238,7 +266,8 @@ export function checkSuiteAgainstKind(
   const check = resolveRoundSpec(problem).check;
   switch (check.kind) {
     case 'one_failing_test': {
-      if (total < 8) failures.push(`only ${total} tests — one_failing_test requires >= 8`);
+      const min = check.min_tests ?? 8;
+      if (total < min) failures.push(`only ${total} tests — one_failing_test requires >= ${min}`);
       if (failed.length !== 1) {
         failures.push(`expected exactly 1 failing test, got ${failed.length}: [${failed.join(' | ')}]`);
       } else if (problem.planted_bug) {

@@ -21,6 +21,10 @@ A round is described by:
 - `starts_from` — `repo` (existing codebase: debugging, extend), `blank` (build from
   scaffold: most OAs, implement-these-classes), `diff` (review someone's change).
 - `submit` — `one_shot` (graded once at the end) or `iterate`.
+- One round entry per distinct exercise FORM, even when capabilities are
+  identical — "debugging a file" and "implementing from documentation" are
+  separate rounds with separate ids, because each form gets its own
+  generation blueprint.
 - `surface` — OMIT unless the description names the editing surface: `panes`
   (HackerRank/CodeSignal-style browser editor) or `ide` (real IDE / dev
   environment with file tree and terminal). Omitted = derived from `starts_from`.

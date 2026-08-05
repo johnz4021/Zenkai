@@ -3,6 +3,7 @@ import {
   checkExpectations,
   checkManifest,
   checkSuiteAgainstKind,
+  countSourceFiles,
   normalizeTestName,
   parseUnittestOutput,
   parseVitestJson,
@@ -215,6 +216,74 @@ describe('checkSuiteAgainstKind', () => {
 
   it('diff_present asserts nothing about the suite', () => {
     expect(checkSuiteAgainstKind(withSpec('diff_present'), ['a', 'b'], 2)).toEqual([]);
+  });
+
+  it('one_failing_test honors min_tests instead of hardcoding 8 (doc limitation #6)', () => {
+    const relaxed = withSpec('one_failing_test', 4);
+    expect(checkSuiteAgainstKind(relaxed, ['a'], 5)).toEqual([]);
+    expect(checkSuiteAgainstKind(relaxed, ['a'], 3).join()).toMatch(/requires >= 4/);
+  });
+});
+
+describe('countSourceFiles — what check.max_source_files counts', () => {
+  // The knob exists because "one page of Python" had no enforceable home;
+  // the count must see the candidate's problem, not its scaffolding.
+  it('counts source files, not tests or harness config', () => {
+    expect(
+      countSourceFiles([
+        'main.py',
+        'lib/helper.py',
+        'src/mod.ts',
+        'tests/test_main.py', // test dir
+        'test/helper.test.ts', // test dir
+        'src/mod.test.ts', // test suffix
+        'src/util_test.py', // pytest-style suffix
+        'vitest.config.ts', // harness
+        'README.md', // not source
+        'PROBLEM.md',
+        'package.json',
+      ]),
+    ).toBe(3);
+  });
+
+  it('an empty listing counts zero', () => {
+    expect(countSourceFiles([])).toBe(0);
+  });
+
+  it('checkManifest enforces the cap against the real tree', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const path = await import('node:path');
+    const dir = mkdtempSync(path.join(tmpdir(), 'cap-'));
+    try {
+      mkdirSync(path.join(dir, 'tests'));
+      writeFileSync(path.join(dir, 'main.py'), 'x');
+      writeFileSync(path.join(dir, 'extra.py'), 'x');
+      writeFileSync(path.join(dir, 'tests/test_main.py'), 'x');
+      const capped = {
+        round_type: 'debugging',
+        repo_path: '.',
+        model_paths: [],
+        spec: 'y'.repeat(120),
+        mutations: [],
+        rubric: { round_type: 'debugging' },
+        round_spec: {
+          id: 't', label: 'T',
+          capabilities: {
+            interviewer: false, can_run_tests: true, time_limit_ms: null,
+            starts_from: 'blank' as const, submit: 'one_shot' as const,
+          },
+          check: { kind: 'all_failing' as const, min_tests: 3, max_source_files: 1 },
+          memory_tags: [],
+        },
+      } as unknown as GeneratedProblem;
+      const failures = checkManifest(capped, dir);
+      expect(failures.join('\n')).toMatch(/2 source files — check\.max_source_files allows 1/);
+      capped.round_spec!.check.max_source_files = 2;
+      expect(checkManifest(capped, dir).join('\n')).not.toMatch(/max_source_files/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

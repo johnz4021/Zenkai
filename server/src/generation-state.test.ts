@@ -4,7 +4,7 @@
  * failed plus a retry click meant TWO agents writing the same directory.
  * Pure verdict + disk marker round-trips; liveness injected as a value.
  */
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -12,6 +12,7 @@ import {
   clearGeneratingMarker,
   generationProgress,
   readGeneratingMarker,
+  removePythonArtifacts,
   sweepVerdict,
   writeGeneratingMarker,
 } from './generation-state.js';
@@ -84,5 +85,26 @@ describe('generationProgress — honest numbers for the UI (ISSUE-007)', () => {
   it('no marker → null since; empty dir → zero files, still building', () => {
     const d = scratch();
     expect(generationProgress(d)).toEqual({ since: null, files: 0, phase: 'building' });
+  });
+});
+
+describe('removePythonArtifacts — the candidate never sees host bytecode', () => {
+  // Limitation #7: generated dirs shipped __pycache__ from two interpreter
+  // versions because both the generator and the validator ran the suite.
+  it('removes nested __pycache__ dirs and stray .pyc, leaves sources', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'pyc-'));
+    try {
+      mkdirSync(path.join(dir, 'pkg', '__pycache__'), { recursive: true });
+      mkdirSync(path.join(dir, 'tests'), { recursive: true });
+      writeFileSync(path.join(dir, 'pkg', '__pycache__', 'mod.cpython-313.pyc'), 'x');
+      writeFileSync(path.join(dir, 'pkg', 'mod.py'), 'x');
+      writeFileSync(path.join(dir, 'tests', 'stale.pyc'), 'x');
+      removePythonArtifacts(dir);
+      expect(existsSync(path.join(dir, 'pkg', '__pycache__'))).toBe(false);
+      expect(existsSync(path.join(dir, 'tests', 'stale.pyc'))).toBe(false);
+      expect(existsSync(path.join(dir, 'pkg', 'mod.py'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

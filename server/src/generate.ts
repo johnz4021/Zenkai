@@ -21,15 +21,26 @@ import { DEFAULT_DEBUGGING_SPEC } from '@interview-prep/shared';
  * Per-check-kind mechanical requirements, selected in code — the generator
  * is TOLD which criterion applies and never writes its own. The
  * one_failing_test block is the original debugging prompt's requirement
- * text, verbatim in substance: it is gauntlet-proven and stays canonical.
+ * text in substance: it is gauntlet-proven and stays canonical.
+ *
+ * A function of the check, not a constant: min_tests and max_source_files
+ * vary per spec. Deliberately ABSENT: any file-count or repo-size claim not
+ * enforced by the validator. The old "4 to 8 source files" line was framed
+ * as validator-proven, never was, and beat a candidate's explicit "one page
+ * of Python" (the size-loss case, docs/problem-generation.md) — shape
+ * belongs to the round description, which the template says wins.
  */
-export const CHECK_REQUIREMENT_BLOCKS: Record<RoundSpec['check']['kind'], string> = {
-  one_failing_test: `1. A small, realistic module set for the round's domain.
-   - 4 to 8 source files. Pure logic + in-memory state. No HTTP server, no
-     database, no external services.
+export function checkRequirements(check: RoundSpec['check']): string {
+  const maxFiles = check.max_source_files
+    ? `\n   - At most ${check.max_source_files} source file${check.max_source_files === 1 ? '' : 's'} (tests excluded) — the validator counts them and rejects more.`
+    : '';
+  const blocks: Record<RoundSpec['check']['kind'], string> = {
+    one_failing_test: `1. A realistic module set for the round's domain, sized per the round
+   description above. Pure logic + in-memory state. No HTTP server, no
+   database, no external services.${maxFiles}
    - Written like production code by a competent team: consistent style, no
      tutorial comments, realistic naming.
-2. A behavioral test suite with 8 to 15 tests describing real behavior
+2. A behavioral test suite with at least ${check.min_tests ?? 8} tests describing real behavior
    ("reserving more units than available rejects"), not implementation details.
 3. Plant EXACTLY ONE subtle bug in the source.
    - Realistic class: boundary condition, wrong comparator, missed invalidation,
@@ -50,13 +61,13 @@ Self-verification (do this before you finish — it is the whole point):
 - Temporarily fix the bug, confirm ALL tests pass, then RESTORE the bug exactly.
 - If anything is off, fix the problem set and re-verify.`,
 
-  all_failing: `1. A build-from-scratch task: a scaffold (function/class signatures with
+    all_failing: `1. A build-from-scratch task: a scaffold (function/class signatures with
    docstrings or interface stubs, raising/throwing "not implemented") plus a VISIBLE
    behavioral test suite the candidate implements against.
    - The suite IS the spec made precise: name tests after behaviors, cover the core
      path, the rejection paths, and at least two edge cases.
-   - Scope the work to fit the round's time limit for a strong college senior.
-2. At least the spec's minimum number of tests (default 5; more is better).
+   - Scope the work to fit the round's time limit for a strong college senior.${maxFiles}
+2. At least ${check.min_tests ?? 5} tests (more is better).
 3. EVERY test must fail on the untouched scaffold — the candidate starts from zero.
    No hidden tests: what they see is what grades them.
 4. Do NOT include a reference solution anywhere in the repo.
@@ -66,8 +77,8 @@ Self-verification (do this before you finish — it is the whole point):
 - Write a THROWAWAY solution elsewhere in memory or a temp file, confirm the suite
   would pass against it, then make sure no trace of it remains in the repo.`,
 
-  all_passing: `1. An existing, working module set relevant to the round, with a green
-   behavioral test suite (at least the spec's minimum, default 5).
+    all_passing: `1. An existing, working module set relevant to the round, with a green
+   behavioral test suite (at least ${check.min_tests ?? 5} tests).${maxFiles}
 2. The candidate's task (stated in the manifest spec) is to EXTEND or REFACTOR —
    the repo must be green before their work starts, and the spec must say clearly
    what "done" looks like.
@@ -75,13 +86,15 @@ Self-verification (do this before you finish — it is the whole point):
 
 Self-verification: run the suite; every test passes on the repo as shipped.`,
 
-  diff_present: `1. A base module set plus a CHANGE to review: the changed files listed in
+    diff_present: `1. A base module set plus a CHANGE to review: the changed files listed in
    the round spec's check.files_changed must exist and contain a realistic diff-worth
    of modifications (a mix of sound decisions and 2-4 genuine defects worth catching).
 2. Include a REVIEW.md template the candidate writes their review into.
 3. The manifest spec describes what the change claims to do; the defects must be
    discoverable by reading, not by running.`,
-};
+  };
+  return blocks[check.kind];
+}
 
 export interface GenerateOptions {
   /** Directory to create the problem in. Created if missing; must be empty-ish. */
@@ -113,7 +126,7 @@ export async function generateProblem(opts: GenerateOptions): Promise<GenerateRe
   const spec = opts.spec ?? DEFAULT_DEBUGGING_SPEC;
   const prompt = template
     .replace(/\{\{ROUND_BRIEF\}\}/g, opts.brief)
-    .replace(/\{\{CHECK_REQUIREMENTS\}\}/g, CHECK_REQUIREMENT_BLOCKS[spec.check.kind])
+    .replace(/\{\{CHECK_REQUIREMENTS\}\}/g, checkRequirements(spec.check))
     .replace(/\{\{ROUND_SPEC_JSON\}\}/g, JSON.stringify(spec))
     .replace(/\{\{TARGET_NOTE\}\}/g, opts.targetNote ?? '');
 
