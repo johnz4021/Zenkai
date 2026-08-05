@@ -1,39 +1,62 @@
 # How a practice problem comes to be
 
 An objective walkthrough of the pipeline from "I have a Palantir interview" to a
-generated repo on disk — every stage, every field that matters, where each piece
-of user intent travels, and where it currently stops. Line numbers are accurate
-as of 2026-08-05 (commit `cd89ac8`).
+generated repo on disk — every stage, every artifact, where each piece of user
+intent travels. Rewritten for the round-blueprints refactor (2026-08-05); the
+pre-blueprint version of this document, with its limitations list, is in git
+history at commit `db3a1ad`.
 
 ```
-description ──► intake/clarify LLM ──► RoundSpec[] ──► queue (spec_id per item)
-                                                          │
-"what I learned" ──► adapt LLM ──► new RoundSpec appended ─┤ (re-points pending items)
-                                                          │
-                                          generate-for ◄──┘  (one item at a time)
-                                                │
-                    prompts/generate-round.md + 4 substitutions ──► claude -p (opus, 80 turns)
-                                                │
-                                        problems/<item>/  (repo + problem.json)
-                                                │
-                                        validateProblem ──► .validated | .failed
+description ──► intake/clarify LLM ──► RoundSpec[]        ──► queue (spec_id per item)
+                        │                    │
+                        │                    └─► blueprint drafter (detached, per spec)
+                        │                              │
+                        │                targets/<id>/blueprints/<spec_id>.md
+                        │                              │
+"what I learned" ──► learnings.md (verbatim) ──► adapt LLM ──► blueprint edits
+                                                    │            + new specs (append-only)
+                                                    │            + re-points (pending, failed, READY+stale)
+                                                    ▼
+                              generate-for: blueprint + planned title = the brief
+                                                    │
+                     prompts/generate-round.md + 4 substitutions ──► claude -p (opus, 80 turns)
+                                                    │
+                                    problems/<item>/ (repo + problem.json)
+                                                    │
+                                    validateProblem ──► .validated | .failed
+                                    (incl. max_source_files count, __pycache__ swept)
 ```
+
+The two-artifact rule: a **spec** is the closed *ruler* (capabilities the session
+runtime enforces, the validator dispatches on, and memory counts over); a
+**blueprint** is the open *recipe* (a rich markdown generation prompt, drafted by
+an LLM, editable by adaptation and by hand). A spec means an **exercise form** —
+"learning round: debugging" and "learning round: implement-from-docs" are two
+specs on one target, each with its own blueprint. The queue round-robins across
+specs; each queue item's `planned_title` is the topic slot within its form.
 
 ---
 
-## Stage 1 — Intake: description → RoundSpec
+## Stage 1 — Intake: description → RoundSpec + blueprint
 
-**Entry**: the "new target" flow. The user types a free-form `description` and can
-paste reference material (`context`). `POST /api/clarify` (`app.ts:657`) runs the
-clarify reasoner (`clarify.ts`), which may ask up to 3 questions and returns
-draft rounds; `POST /api/accept-spec` (`app.ts:690`) persists the confirmed
-result as `targets/<id>/target.json`.
+**Entry**: the "new target" flow. The user types a free-form `description` and
+can paste reference material (`context`). `/api/clarify` runs the clarify
+reasoner (up to 3 questions, draft rounds); `/api/accept-spec` persists the
+confirmed result to `targets/<id>/target.json`, builds the queue (round-robin,
+`proposeQueue`), names planned rounds (`plan-topics.ts`), and then **spawns a
+detached blueprint draft per accepted spec** (`cli.ts blueprint <target>
+<spec>` — idempotent, exits 0 when the file exists; drafter failure degrades to
+the legacy brief and never blocks intake). The CLI intake path (`target infer
+--accept`) drafts inline.
 
-**The inference contract**: the LLM fills a flat tool schema (`intake.ts`
-`DRAFT_TOOL` :101, `clarify.ts` `ROUND_FIELDS` :46) and `draftToSpec()`
-(`intake.ts:166`) converts it to a `RoundSpec`, derives memory tags in code, and
-gates it through `validateRoundSpec()`. A draft that fails the gate throws — an
-inference failure never becomes a session.
+**The drafter** (`server/src/blueprint.ts`, prompt `prompts/draft-blueprint.md`)
+rewrites a starter skeleton from the git-tracked library `prompts/blueprints/`
+(debugging-round, oa-hackerrank-classic, lld-build, learning-round; keyword
+match on label/emphasis, capability shape as fallback) against the spec and the
+candidate's own words, quoting shape statements concretely. Gate:
+`gateBlueprint` — ≥600 chars, all seven load-bearing H2s (What this round is /
+Environment / Repo shape / What the candidate does / Difficulty calibration /
+Topic guidance / Learnings log).
 
 **What a RoundSpec contains** (`shared/src/round-spec.ts`):
 
@@ -45,229 +68,128 @@ inference failure never becomes a session.
 | `capabilities.time_limit_ms` | number \| null | closed |
 | `capabilities.starts_from` | `repo` \| `blank` \| `diff` | closed |
 | `capabilities.submit` | `iterate` \| `one_shot` | closed |
-| `capabilities.surface` | `ide` \| `panes` (optional; derived from `starts_from` when absent) | closed |
-| `check.kind` | `one_failing_test` \| `all_failing` \| `all_passing` \| `diff_present` | closed |
-| `check.min_tests` | number (optional) | the only numeric shape knob |
-| `memory_tags` | 6-tag set, derived in code, never authored | closed |
-| `emphasis` | free-form string (optional) | **the only open-vocabulary generation input on the spec** |
+| `capabilities.surface` | `ide` \| `panes` (optional; `resolveSurface` derives from `starts_from`) | closed |
+| `check.kind` | 4 kinds | closed |
+| `check.min_tests` | number (optional) | suite-size floor, honored by every kind |
+| `check.max_source_files` | number (optional) | **the enforceable size knob** — validator counts candidate-facing source files (tests/harness excluded) |
+| `memory_tags` | derived in code, never authored | closed |
+| `emphasis` | free-form (optional) | legacy topical hint; the blueprint is the real recipe |
 
-**What the vocabulary does NOT contain**: language/runtime, file count, line
-count, repo size, problem scale. None of these are fields. If the user's
-description implies them, they can only survive as prose inside `emphasis`,
-`label`, `description`, or `context`.
-
-**Target file** (`targets/<id>/target.json`): `id`, `label`, `interview_date`,
-`description` (the user's original text, kept verbatim), `context` (pasted
-reference material, kept verbatim), `specs: RoundSpec[]`, `adaptations:
-AdaptRecord[]`. A `research` key exists on some targets from a dead feature;
-nothing reads it.
-
----
+Language and repo shape deliberately stay OUT of the closed vocabulary: they are
+blueprint prose, which generation is told is authoritative — plus the one
+enforceable `max_source_files` knob when size must be a guarantee rather than a
+request.
 
 ## Stage 2 — The plan: queue items bound to spec ids
 
-`/api/accept-spec` also builds the queue (`queue.ts` `proposeQueue` :89):
-runway ÷ 3 per week, capped at 12 items, **round-robin across `target.specs`**.
-Each `QueueItem` carries:
+Unchanged: `proposeQueue` round-robins runway across `target.specs` (≤12 items,
+3/week), each `QueueItem` carrying `spec_id` (its binding to a form),
+`planned_title` (the topic commitment), `status`, and the `stale` flag.
 
-- `spec_id` — the binding to a RoundSpec. This is the identity that decides
-  which spec a future generation uses. It is set here and changed only by
-  adaptation re-pointing.
-- `planned_title` — a topic name from the plan-topics LLM (`plan-topics.ts`),
-  e.g. "Async task queue — sequential-to-parallel refactor". Passed to the
-  generator as a build-exactly-this instruction.
-- `status` — `pending → generating → ready → done` (or `failed`/`skipped`),
-  plus a `stale` flag set by adaptation.
-- `note` — display-only. Explicitly documented as NOT a generation channel
-  (`queue.ts:36`).
+## Stage 3 — Generation: blueprint + title → repo
 
----
+All trigger paths funnel to `cli.ts generate-for <target> <spec> --into <dir>
+[--title]`. The brief (`composeRoundBrief`, `server/src/blueprint.ts`):
 
-## Stage 3 — Generation: spec + prose → repo
+- **Blueprint exists** → the blueprint IS the round description, plus the
+  planned-title commitment line. `description`/`context` are deliberately NOT
+  re-appended — the drafter folded them in, and re-adding raw words would
+  recreate the conflicting-prose problem.
+- **No blueprint** (pre-blueprint specs, drafter failure) → the legacy
+  five-part brief, byte-for-byte (pinned by test).
 
-**Trigger paths**: `/api/generate` (next pending item), `/api/retry` (failed
-item), `/api/rebuild` (stale ready item) — all in `app.ts`, all funneling into
-`spawnGeneration()` (`app.ts:120`), which shells out:
+The prompt (`prompts/generate-round.md`) still takes four substitutions
+(`{{ROUND_BRIEF}}`, `{{CHECK_REQUIREMENTS}}`, `{{ROUND_SPEC_JSON}}`,
+`{{TARGET_NOTE}}`) and now states the **precedence rule**: the round
+description governs shape/language/size/layout; the mechanical block governs
+only the validator-proven test pattern; on conflict the description wins.
 
-```
-cli.ts generate-for <target_id> <item.spec_id> --into <dir> [--title <planned_title>]
-```
+`{{CHECK_REQUIREMENTS}}` is `checkRequirements(check)` (`generate.ts`) — a
+function of the spec's check, no longer a constant. The old "4 to 8 source
+files" claim is gone (it was framed as validator-enforced and never was); test
+floors interpolate `min_tests`; a max-files sentence appears exactly when
+`max_source_files` is set, and that one is true — `checkManifest` counts via
+`countSourceFiles` over the panes file-walker. `one_failing_test`'s suite floor
+honors `min_tests` (default 8). Generated dirs are swept of `__pycache__`/
+`*.pyc` before AND after validation (`removePythonArtifacts`).
 
-That argument list is the **entire** channel from the app to the generator:
-target id, spec id, output dir, planned title.
+Runtime selection is unchanged in mechanism (the model reads the brief; only
+node/python exist) but the blueprint's Environment section now states the
+language explicitly, so it is instruction rather than luck.
 
-**The prompt** (`generate.ts:114-118`) is `prompts/generate-round.md` with
-exactly four substitutions:
+## Stage 4 — Adaptation: learnings in, recipe edits out
 
-1. **`{{ROUND_BRIEF}}`** — composed in `cli.ts:195-205` from, in order:
-   `Round: <spec.label>.` · `Planned title for THIS problem (build exactly
-   this system...): <planned_title>` · `Emphasis: <spec.emphasis>.` · `The
-   candidate describes it as: <target.description>` · `Reference material from
-   the candidate:\n<target.context>`. Empty pieces are dropped.
-2. **`{{CHECK_REQUIREMENTS}}`** — a hardcoded block selected by `check.kind`
-   from `CHECK_REQUIREMENT_BLOCKS` (`generate.ts:26-84`). The model never
-   writes its own passing criterion. For `one_failing_test` the block demands:
-   *"4 to 8 source files"*, *"a behavioral test suite with 8 to 15 tests"*,
-   exactly one failing test, a `planted_bug` manifest entry. For `all_failing`:
-   min 5 tests (or `check.min_tests`), scoped "to fit the round's time limit".
-3. **`{{ROUND_SPEC_JSON}}`** — the spec verbatim; the template requires it to
-   be embedded unchanged in the generated `problem.json` as `round_spec`.
-4. **`{{TARGET_NOTE}}`** — the gap-graph targeting note (`buildTargetNote`,
-   `gap-graph.ts:310`): the candidate's most active process gap with recent
-   evidence, plus instructions to make that behavior likely-triggered and
-   observable, and to never mention it. Purely behavioral; carries no
-   shape/language intent by construction.
+**The raw material is never lost again**: at apply time, before anything else,
+the full note is appended verbatim with a dated header to
+`targets/<id>/learnings.md` (`appendLearnings`).
 
-**The generation itself** is an agentic `claude -p` run (model hardcoded
-`opus`, `--max-turns 80`, 8-minute timeout, cwd = the item dir). The model
-writes the repo and the manifest directly to disk.
+The adapt LLM (`adapt.ts`, prompt `prompts/adapt-plan.md`) sees the active
+specs AND their current blueprints (capped ~8K chars each), and answers with
+two instruments:
 
-**Runtime selection is the model's free choice, steered by one prompt line**
-(`generate-round.md:28-34`): *"Choose the language the round calls for (from
-the brief; default TypeScript)."* Only two runtimes exist end-to-end
-(`GeneratedProblem.runtime?: 'node' | 'python'`). There is no equivalent
-instruction for size — and the check-requirements block is introduced as
-**"Mechanical requirements (the validator will prove these — they are not
-advisory)"** (`generate-round.md:24`), so when the brief's prose and the
-block's file-count band conflict, the model has been told the block wins.
+- **`blueprint_edits`** — the common case: the material refines HOW an existing
+  form looks (topic/size/language/difficulty) with no capability change. The
+  round's complete revised blueprint, with the learning folded into the
+  relevant sections and appended to its Learnings log. Recipe-only adapts
+  never touch the queue.
+- **`rounds`** — a genuinely different exercise form or a capability change:
+  a new spec (append-only, `supersedes` optional) arriving WITH its complete
+  blueprint (gate-required; a draft without one is dropped).
 
-**What the model controls vs. not**: it picks the domain, module decomposition,
-bug, test names, spec text, and rubric expectations. It does not pick the check
-kind, the test-count band, the manifest schema, or the round-spec JSON.
-`round_type` in the manifest is always the literal `"debugging"` regardless of
-the round's real shape (legacy field; `resolveRoundSpec` is the real read path).
+**Queue effects of a supersession**: `pending`/`failed` items re-point
+round-robin as before. **`ready` items now re-point AND get `stale: true`** —
+the fix for the pinned regression where the rebuild button regenerated a
+retired spec because `item.spec_id` never changed. `done`/`generating`/
+`skipped` stay untouchable.
 
-**Validation** (`validate.ts`): `checkManifest` proves manifest shape,
-planted-bug coherence, spec length, expectation concreteness; the suite is
-actually run and `checkSuiteAgainstKind` (:232) proves the failure pattern
-(≥8 tests and exactly one failure for `one_failing_test`, etc.). **File count
-is never validated** — the "4 to 8 source files" language exists only in the
-prompt. Success writes `.validated`; failure writes `.failed` and the timeline
-offers retry.
+**Writes at apply** (order deliberate): learnings.md → blueprint files (each
+overwrite snapshots the previous version to `<spec_id>.prev.md`; `targets/` is
+gitignored, so these ARE the history) → `target.json` (specs + AdaptRecord,
+the commit marker) → `queue.json`. `AdaptRecord` gains optional
+`blueprints_updated`; `reconcileAdaptation` is unchanged and compatible. The
+apply route re-proves `gateBlueprint` server-side and tolerates old-shape
+diffs from stale tabs.
 
----
+**Preview UI**: spec boxes as before, plus "blueprint created/revised" rows
+with an expandable view of the full markdown; nothing is written until the
+user approves.
 
-## Stage 4 — Adaptation: "what I learned" → new specs
+## Stage 5 — Regeneration
 
-**Entry**: the "+ add what you learned" box on a target page → `POST
-/api/adapt` (preview, writes nothing) → `POST /api/adapt/apply` (persists).
-
-**What the adapt LLM sees** (`adapt.ts` `buildPrompt` :323): exactly two
-things — one summary line per current spec (`specLine`) and the user's raw
-`material`. It returns new round drafts in the same flat schema as intake,
-each optionally naming `supersedes`.
-
-**What apply does** (`applyAdaptation`, `adapt.ts:234-264`):
-
-- **Specs are append-only.** New specs are pushed onto `target.specs`; an
-  existing spec object is never mutated, and id collisions are rejected.
-  Supersession is recorded on the adapt record, not on the spec — the old spec
-  remains in `target.specs` and remains loadable by id.
-- **Only `pending` and `failed` items are re-pointed** (`RESHAPEABLE`,
-  `adapt.ts:151`): their `spec_id`, `label`, and `planned_title` are updated
-  to the new spec.
-- **`ready` items are only flagged** (`item.stale = true`) — their `spec_id`
-  is NOT changed.
-- `done` / `generating` / `skipped` items are untouched.
-- The apply route revalidates every new spec through `validateRoundSpec`
-  before writing `target.json` then `queue.json`.
-
-**What survives of the user's note**: the material is consumed by one LLM call
-and persisted only as a 280-character `material_excerpt` on the adapt record
-(display + crash recovery). It is **never appended to `target.context` or
-`target.description`**, so any detail the adapt model chose not to encode into
-the new spec's `emphasis` is unrecoverable downstream. `emphasis` is also not
-in the adapt tool's `required` list — the model may omit it silently.
+`/api/rebuild` and `/api/retry` regenerate under `item.spec_id` as before —
+which is now correct for all cases, because adaptation genuinely re-points
+superseded ready items. `generate-for` re-reads the target and the blueprint
+file at generation time, so a hand-edit to a blueprint is picked up by the
+next generation with no further ceremony.
 
 ---
 
-## Stage 5 — Regeneration: which spec does a rebuild use?
+## Field reference: every channel that carries user intent into generation
 
-`/api/rebuild` (stale ready item) and `/api/retry` (failed item) both
-regenerate under **`item.spec_id` as it currently stands** (`app.ts:853-857`,
-`:899`). The CLI re-reads `target.json` at generation time, so later *edits*
-to a spec object would be picked up — but spec objects are never edited
-(append-only), so in practice the spec identity on the item is everything.
-
-Consequences, stated plainly:
-
-- For a **failed** item: correct. Adaptation already re-pointed it, so retry
-  generates under the new spec.
-- For a **stale ready** item: **the rebuild regenerates under the superseded
-  spec.** Adaptation flagged it but did not re-point it; rebuild clears the
-  flag and calls `generate-for` with the old `spec_id`, which still resolves
-  (append-only specs never disappear). The UI copy — *"built for the old round
-  shape — still startable, or rebuild it to match the plan"*
-  (`client/app.js:403`) — promises the opposite of what the code does.
-
----
-
-## Field reference: every channel that can carry user intent into generation
-
-| # | Field | Written by | Reaches the generation prompt? | How |
+| # | Artifact | Written by | Reaches generation? | How |
 |---|---|---|---|---|
-| 1 | `RoundSpec.emphasis` | intake/clarify/adapt LLM | **yes** | `Emphasis: …` in ROUND_BRIEF **and** inside ROUND_SPEC_JSON |
-| 2 | `RoundSpec.label` | same | **yes** | `Round: …` in ROUND_BRIEF |
-| 3 | `Target.description` | user, at intake, verbatim | **yes** | `The candidate describes it as: …` |
-| 4 | `Target.context` | user, at intake, verbatim | **yes** | `Reference material from the candidate: …` |
-| 5 | `QueueItem.planned_title` | plan-topics LLM | **yes** | `--title` → "build exactly this system" |
-| 6 | Gap-graph note | `buildTargetNote` from session history | **yes** | `{{TARGET_NOTE}}`; behavioral only |
-| 7 | Adapt `material` (the "what I learned" note) | user | **no** | one LLM call → `emphasis` on a new spec; raw text discarded (280-char excerpt kept for display) |
-| 8 | `AdaptRecord.summary` / `rationale` | adapt LLM | no | display only |
-| 9 | `QueueItem.note` | re-pacing | no | display only, by documented design |
-| 10 | `Target.research` | dead feature | no | zero readers |
+| 1 | **Blueprint** (`targets/<id>/blueprints/<spec_id>.md`) | drafter at intake; adapt edits; hand-editable | **yes — it IS the round description** | `composeRoundBrief` → `{{ROUND_BRIEF}}` |
+| 2 | `QueueItem.planned_title` | plan-topics LLM | yes | title commitment line |
+| 3 | `check.max_source_files` | inference models or hand-set | yes + **enforced** | requirements block + validator count |
+| 4 | `check.min_tests` | same | yes + enforced | requirements block + suite check |
+| 5 | Gap-graph note | session history | yes | `{{TARGET_NOTE}}` (behavioral only) |
+| 6 | `RoundSpec.emphasis` / `label` | inference models | yes (legacy path, no-blueprint fallback) | legacy brief |
+| 7 | `Target.description` / `context` | user at intake | indirectly | folded into the blueprint by the drafter; raw only in the no-blueprint fallback |
+| 8 | **`learnings.md`** | user, verbatim at adapt apply | indirectly | the adapt model folds entries into blueprints; the file itself is the loss-proof record |
+| 9 | `<spec_id>.prev.md` | blueprint writes | no | single-level undo |
+| 10 | `AdaptRecord` | apply | no | audit + crash repair |
 
-The closed capability vocabulary (interviewer / can_run_tests / time_limit /
-starts_from / submit / surface / check.kind) always reaches generation via
-ROUND_SPEC_JSON and is enforced by the validator and the session runtime.
+## Standing limitations
 
----
-
-## Case study: the Palantir learning-round adaptation (2026-08-05)
-
-Material: *"Task is one page w/ couple hundred lines of code, debug in
-python"*.
-
-What happened, verified on disk:
-
-1. Adapt created `palantir-learning-round-debug-python` with emphasis
-   *"Debugging a single ~few-hundred-line Python file; likely
-   concurrency/async…"* — the laundering **worked**; both learnings made it
-   into the new spec's emphasis.
-2. Items 3–6 (pending) were re-pointed to the new spec. Item-2 (ready) was
-   flagged stale only.
-3. The user pressed rebuild on item-2. It regenerated **under the superseded
-   `palantir-learning-round`** (manifest written 7 minutes after that spec was
-   retired still embeds the old spec id and old emphasis) — Stage-5 limitation.
-4. Even under the new spec, the size intent would have been fighting
-   `{{CHECK_REQUIREMENTS}}`'s "4 to 8 source files / 8 to 15 tests", framed as
-   non-advisory. Result: `runtime: python` (language survived — it has an
-   explicit prompt line telling the model to read the brief) and 11 files /
-   747 lines (size lost — no such line exists, and the constant is declared to
-   win).
-
----
-
-## Current limitations, in one list
-
-1. **Size/shape is a hardcoded constant that outranks user intent.** The
-   per-check-kind file and test bands (`generate.ts:26-84`) are presented to
-   the model as validator-enforced. Prose in the brief cannot beat them. (The
-   validator enforces the *test* pattern but never counts files.)
-2. **Stale-ready rebuilds regenerate the old shape.** Flagging does not
-   re-point; rebuild uses the unchanged `spec_id`; the button copy claims
-   otherwise. Verified live on `palantir-ms9y4guw/item-2`.
-3. **Language and scale have no home in the closed vocabulary.** Language
-   works in practice only because of one prompt line telling the model to read
-   the brief; scale has no such line and no field.
-4. **The raw adaptation note is unrecoverable after one LLM call.** Only a
-   280-char excerpt survives, for display. Anything the adapt model dropped is
-   gone; `emphasis` is optional in its tool schema.
-5. **`round_type` is frozen at `"debugging"`** in every manifest regardless of
-   the round's real shape; the judge still resolves expectations off it.
-6. **`min_tests` is the only numeric knob** on a spec, and the
-   `one_failing_test` requirement block ignores it (hardcodes 8–15).
-7. **Generated dirs accumulate host artifacts** (`__pycache__` from two
-   Python versions) that appear in the candidate's file tree.
-8. **`Target.research` is written but never read** (dead field on older
+1. **`round_type` is frozen at `"debugging"`** in every manifest; the judge
+   still resolves expectations off it (out of scope of the blueprints work).
+2. **`Target.research` is written but never read** (dead field on older
    targets).
+3. Blueprint history is single-level (`.prev.md`) plus `learnings.md`;
+   `targets/` has no git history by design.
+4. The drafter runs detached from accept-spec with no UI surfacing of a
+   failed draft — the degrade path (legacy brief) is silent. A "(no blueprint
+   yet)" indicator is a known deferrable.
+5. `checkExpectations`' vocabulary-overlap gate can in principle false-fail a
+   terse single-file problem whose manifest spec runs short — the 150-300-word
+   manifest spec requirement is the mitigation; watch early generations.
