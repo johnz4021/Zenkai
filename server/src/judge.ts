@@ -132,6 +132,25 @@ export function promptHash(template: string): string {
 
 /** Parse and validate the model's reply. Throws on any schema violation —
  *  the caller maps that to UNASSESSED (never a fabricated verdict). */
+/** First balanced JSON array in a string, string-literal aware — the
+ *  greedy-regex approach breaks the moment trailing junk contains a `]`. */
+function firstBalancedArray(s: string): string | null {
+  const start = s.indexOf('[');
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (inString) {
+      if (c === '\\') i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === '[') depth++;
+    else if (c === ']' && --depth === 0) return s.slice(start, i + 1);
+  }
+  return null;
+}
+
 export function parseAssessmentOutput(raw: string): {
   solved: boolean;
   summary: string;
@@ -144,19 +163,33 @@ export function parseAssessmentOutput(raw: string): {
     summary?: unknown;
     dimensions?: unknown;
   };
+  // Serialization drift, seen live TWICE through a forced tool call — the
+  // API guides but does not hard-enforce the input schema:
+  //   1. dimensions arrived as a stringified array with a stray `}` after it;
+  //   2. the ENTIRE assessment arrived inside the dimensions string —
+  //      `"dimensions": "[...],\"solved\":true,\"summary\":\"...\""` with the
+  //      top level otherwise empty (sess-1785962737985: a complete, correct
+  //      assessment destroyed by shape alone).
+  // Normalize before validating: pull the balanced array out of the string,
+  // then recover solved/summary from the string's remainder when the top
+  // level lacks them.
+  if (typeof o.dimensions === 'string') {
+    const packed = o.dimensions;
+    const arr = firstBalancedArray(packed);
+    if (!arr) throw new Error('dimensions is a string with no array inside');
+    o.dimensions = JSON.parse(arr) as unknown;
+    const rest = packed.slice(packed.indexOf(arr) + arr.length);
+    if (typeof o.solved !== 'boolean') {
+      const solved = rest.match(/"solved"\s*:\s*(true|false)/);
+      if (solved) o.solved = solved[1] === 'true';
+    }
+    if (typeof o.summary !== 'string') {
+      const summary = rest.match(/"summary"\s*:\s*("(?:[^"\\]|\\.)*")/);
+      if (summary) o.summary = JSON.parse(summary[1]!) as string;
+    }
+  }
   if (typeof o.solved !== 'boolean') throw new Error('missing/invalid solved');
   if (typeof o.summary !== 'string') throw new Error('missing/invalid summary');
-  // Seen live even through a forced tool call: the API validates the TOP
-  // LEVEL of a tool's input schema but not nested types, and the model
-  // stringified the dimensions array — with a stray `}` after it, so a naive
-  // re-parse fails too. The content inside was a complete, correct
-  // assessment. Normalize: take the first balanced JSON array out of the
-  // string and ignore whatever trails it.
-  if (typeof o.dimensions === 'string') {
-    const arr = o.dimensions.match(/\[[\s\S]*\]/);
-    if (!arr) throw new Error('dimensions is a string with no array inside');
-    o.dimensions = JSON.parse(arr[0]) as unknown;
-  }
   if (!Array.isArray(o.dimensions)) throw new Error('missing dimensions array');
 
   const seen = new Set<string>();

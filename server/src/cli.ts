@@ -376,12 +376,26 @@ if (cmd === 'generate') {
     .map((l) => JSON.parse(l) as import('@interview-prep/shared').TraceEvent);
 
   // Find the problem this session ran (the .used marker names the session).
+  // Both universes: the generic pool AND every target's own problems dir —
+  // the lookup predated targets, which silently made every targeted session
+  // un-rejudgeable ("no .used marker names it" on a marker that existed).
+  const candidateDirs: string[] = [];
+  try {
+    for (const dir of readdirSync(problemsRoot)) candidateDirs.push(path.join(problemsRoot, dir));
+  } catch { /* no pool */ }
+  try {
+    for (const t of readdirSync(path.join(repoRoot, 'targets'))) {
+      const probs = path.join(repoRoot, 'targets', t, 'problems');
+      try {
+        for (const dir of readdirSync(probs)) candidateDirs.push(path.join(probs, dir));
+      } catch { /* target without problems */ }
+    }
+  } catch { /* no targets */ }
   let problemDir: string | null = null;
-  for (const dir of readdirSync(problemsRoot)) {
-    const marker = path.join(problemsRoot, dir, '.used');
+  for (const dir of candidateDirs) {
     try {
-      if (readFileSync(marker, 'utf8').split('\n')[0] === sessionId) {
-        problemDir = path.join(problemsRoot, dir);
+      if (readFileSync(path.join(dir, '.used'), 'utf8').split('\n')[0] === sessionId) {
+        problemDir = dir;
         break;
       }
     } catch {

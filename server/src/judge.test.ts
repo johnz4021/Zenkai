@@ -101,6 +101,34 @@ describe('parseAssessmentOutput (schema is the gate)', () => {
     const bad = JSON.stringify({ solved: true, summary: 'x', dimensions: 'they did well' });
     expect(() => parseAssessmentOutput(bad)).toThrow(/no array inside/);
   });
+
+  // Live failure #2 of this family (sess-1785962737985): the model packed
+  // the ENTIRE assessment into the dimensions string — the array, then
+  // ,"solved":true,"summary":"..." — leaving the top level with nothing
+  // else. A complete, correct assessment died on 'missing/invalid solved'.
+  it('recovers solved and summary packed inside the dimensions string', () => {
+    const good = JSON.parse(GOOD_OUTPUT);
+    const packed = JSON.stringify({
+      dimensions:
+        JSON.stringify(good.dimensions) +
+        ',"solved":true,"summary":"Escaped \\"quotes\\" and [brackets] survive."',
+    });
+    const parsed = parseAssessmentOutput(packed);
+    expect(parsed.solved).toBe(true);
+    expect(parsed.summary).toBe('Escaped "quotes" and [brackets] survive.');
+    expect(parsed.dimensions).toHaveLength(6);
+  });
+
+  it('the balanced-array scan is not fooled by brackets in trailing prose', () => {
+    // The greedy regex would have spanned to the ] inside the summary text.
+    const good = JSON.parse(GOOD_OUTPUT);
+    const packed = JSON.stringify({
+      solved: false,
+      summary: 'ok',
+      dimensions: JSON.stringify(good.dimensions) + ' trailing [junk] here',
+    });
+    expect(parseAssessmentOutput(packed).dimensions).toHaveLength(6);
+  });
 });
 
 describe('verifyCitations (attribution is the likely failure)', () => {
