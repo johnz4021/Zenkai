@@ -97,6 +97,19 @@ export function writeBlueprintWithBackup(
   writeFileSync(file, markdown);
 }
 
+/**
+ * The raw "what I learned" material, verbatim and dated, appended BEFORE any
+ * LLM interprets it. The old flow kept only a 280-char excerpt after one
+ * lossy adapt call — anything the model dropped was unrecoverable. This file
+ * is the guarantee that nothing the candidate learned is ever laundered away.
+ */
+export function appendLearnings(root: string, targetId: string, material: string, now: number): void {
+  const file = path.join(root, 'targets', targetId, 'learnings.md');
+  mkdirSync(path.dirname(file), { recursive: true });
+  const entry = `## ${new Date(now).toISOString()}\n\n${material.trim()}\n\n`;
+  writeFileSync(file, (existsSync(file) ? readFileSync(file, 'utf8') : '# Learnings\n\n') + entry);
+}
+
 // ---- skeleton selection ----
 
 /** Which starter skeleton a spec drafts from. Keyword match on the spec's

@@ -36,6 +36,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import type { RoundSpec } from '@interview-prep/shared';
 import { coerceArray, ROUND_FIELDS } from './clarify.js';
+import { gateBlueprint } from './blueprint.js';
 import { draftToSpec, type DraftToolOutput, type SpecDraft, type Target } from './intake.js';
 import type { Queue, QueueItem } from './queue.js';
 
@@ -44,6 +45,22 @@ export interface AdaptDraft extends SpecDraft {
    *  it is an additional round. The superseded spec itself is never
    *  edited or removed (append-only). */
   supersedes: string | null;
+  /** The new round's complete blueprint markdown — a new exercise form
+   *  arrives with its recipe, never as capabilities alone. */
+  blueprint: string;
+}
+
+/** A refinement of an EXISTING spec's blueprint with no capability change —
+ *  the common case: most learnings are recipe, not ruler. Specs stay
+ *  append-only; blueprints are mutable-with-record (.prev.md + AdaptRecord). */
+export interface BlueprintEdit {
+  id: string;
+  blueprint: string;
+}
+
+export interface AdaptOutcome {
+  drafts: AdaptDraft[];
+  blueprint_edits: BlueprintEdit[];
 }
 
 export interface AdaptDiff {
@@ -67,6 +84,10 @@ export interface AdaptDiff {
   flagged: string[];
   /** Filled at apply time: re-points whose item moved on since preview. */
   skipped: { item_id: string; reason: string }[];
+  /** Blueprint files this adapt writes: new rounds' recipes and revisions
+   *  of existing ones. Full markdown rides the diff because the client
+   *  round-trips the approved diff verbatim to /api/adapt/apply. */
+  blueprints: { spec_id: string; action: 'new' | 'revised'; markdown: string }[];
   /** One mechanical sentence for the log and the timeline line. */
   summary: string;
 }
@@ -83,6 +104,10 @@ export interface AdaptRecord {
   repointed: { item_id: string; from: string; to: string }[];
   flagged: string[];
   skipped: { item_id: string; reason: string }[];
+  /** Spec ids whose blueprint file this adapt wrote. Optional: records
+   *  from before blueprints existed keep parsing, and reconcileAdaptation
+   *  ignores it by design. */
+  blueprints_updated?: string[];
 }
 
 const EXCERPT_MAX = 280;
@@ -107,12 +132,9 @@ export function excerptOf(material: string): string {
  * null), and a draft may not reuse an existing spec id — append-only means
  * a "changed" round arrives under a new id.
  */
-export function gateAdapt(raw: unknown, existingSpecs: RoundSpec[], allSpecIds?: string[]): AdaptDraft[] {
-  const o = raw as { rounds?: unknown };
+export function gateAdapt(raw: unknown, existingSpecs: RoundSpec[], allSpecIds?: string[]): AdaptOutcome {
+  const o = raw as { rounds?: unknown; blueprint_edits?: unknown };
   const rounds = coerceArray(o.rounds ?? []);
-  // Zero rounds is a VALID answer: "the material changes nothing". Forcing
-  // a fake draft here would add a spec and churn the queue for a no-op.
-  if (rounds.length === 0) return [];
   if (rounds.length > 4) throw new Error(`adapt: ${rounds.length} rounds (max 4)`);
   // Two universes on purpose: `supersedes` must target an ACTIVE spec
   // (existingSpecs — what the model was shown), while id collisions are
@@ -124,28 +146,53 @@ export function gateAdapt(raw: unknown, existingSpecs: RoundSpec[], allSpecIds?:
   const dropped: string[] = [];
   for (const r of rounds) {
     try {
-      const x = r as DraftToolOutput & { supersedes?: unknown };
+      const x = r as DraftToolOutput & { supersedes?: unknown; blueprint?: unknown };
       const supersedes =
         typeof x.supersedes === 'string' && x.supersedes.trim() ? x.supersedes.trim() : null;
       if (supersedes !== null && !activeIds.has(supersedes)) {
         throw new Error(`adapt: supersedes unknown spec "${supersedes}"`);
       }
+      // A new exercise form arrives with its recipe — a draft without a
+      // gate-passing blueprint is incoherent the same way a bad capability
+      // is, and drops without sinking its siblings.
+      const blueprint = gateBlueprint(x.blueprint);
       const draft = draftToSpec(x);
       if (existingIds.has(draft.spec.id)) {
         throw new Error(
           `adapt: draft id "${draft.spec.id}" collides with an existing spec — specs are append-only, use a new id`,
         );
       }
-      drafts.push({ ...draft, supersedes });
+      drafts.push({ ...draft, supersedes, blueprint });
     } catch (e) {
       dropped.push(String(e).slice(0, 120));
     }
   }
-  if (drafts.length === 0) throw new Error(`adapt: every draft failed the gate: ${dropped.join(' | ')}`);
+  // Blueprint edits: recipe refinements to ACTIVE specs. Invalid entries
+  // drop with a warn — an edit is never worth failing the whole adapt.
+  const blueprint_edits: BlueprintEdit[] = [];
+  for (const e of coerceArray(o.blueprint_edits ?? [])) {
+    const x = e as { id?: unknown; blueprint?: unknown };
+    try {
+      const id = typeof x.id === 'string' ? x.id.trim() : '';
+      if (!activeIds.has(id)) throw new Error(`edit targets unknown/retired spec "${id}"`);
+      if (drafts.some((d) => d.supersedes === id)) {
+        throw new Error(`edit targets "${id}" which this adapt also supersedes`);
+      }
+      blueprint_edits.push({ id, blueprint: gateBlueprint(x.blueprint) });
+    } catch (err) {
+      console.warn(`[adapt] dropped blueprint edit: ${String(err).slice(0, 120)}`);
+    }
+  }
+  // Zero rounds AND zero edits is a VALID answer: "the material changes
+  // nothing". But rounds that ALL failed the gate with no surviving edits
+  // is model breakage, not a no-op — say so.
+  if (rounds.length > 0 && drafts.length === 0 && blueprint_edits.length === 0) {
+    throw new Error(`adapt: every draft failed the gate: ${dropped.join(' | ')}`);
+  }
   if (dropped.length > 0) console.warn(`[adapt] dropped ${dropped.length} incoherent draft(s): ${dropped.join(' | ')}`);
   const ids = new Set(drafts.map((d) => d.spec.id));
   if (ids.size !== drafts.length) throw new Error('adapt: duplicate round ids');
-  return drafts;
+  return { drafts, blueprint_edits };
 }
 
 const RESHAPEABLE = new Set<QueueItem['status']>(['pending', 'failed']);
@@ -158,11 +205,28 @@ const RESHAPEABLE = new Set<QueueItem['status']>(['pending', 'failed']);
  * pending (it has no validated problem to protect). Ready items under a
  * superseded spec are flagged, never moved. Pure; no I/O, no clock.
  */
-export function planAdaptation(target: Target, queue: Queue, drafts: AdaptDraft[]): AdaptDiff {
-  // No drafts → no diff. Never re-balance the queue as a side effect of a
-  // no-op adapt: a "nothing changed" paste must change nothing.
+export function planAdaptation(
+  target: Target,
+  queue: Queue,
+  drafts: AdaptDraft[],
+  blueprintEdits: BlueprintEdit[] = [],
+): AdaptDiff {
+  const editRows: AdaptDiff['blueprints'] = blueprintEdits.map((e) => ({
+    spec_id: e.id,
+    action: 'revised' as const,
+    markdown: e.blueprint,
+  }));
+  // No drafts → the spec set is unchanged, so NOTHING re-points and the
+  // round-robin must not run (a "nothing changed" paste must change
+  // nothing; recipe-only edits change files, never the queue).
   if (drafts.length === 0) {
-    return { new_specs: [], superseded: [], repointed: [], flagged: [], skipped: [], summary: 'no changes — the plan already matches' };
+    return {
+      new_specs: [], superseded: [], repointed: [], flagged: [], skipped: [],
+      blueprints: editRows,
+      summary: editRows.length
+        ? `${editRows.length} blueprint${editRows.length === 1 ? '' : 's'} refined — rounds unchanged`
+        : 'no changes — the plan already matches',
+    };
   }
   const superseded = new Set(drafts.map((d) => d.supersedes).filter((s): s is string => s !== null));
   // Retirement is PERMANENT: specs superseded by any earlier adapt stay
@@ -195,14 +259,41 @@ export function planAdaptation(target: Target, queue: Queue, drafts: AdaptDraft[
       old_title: item.planned_title ?? item.label,
     });
   }
+  // Ready items under a superseded spec get GENUINELY re-pointed to the
+  // superseding round AND flagged stale. The old behavior (flag only) is
+  // the pinned regression: the rebuild button regenerated the superseded
+  // Palantir spec seven minutes after it was retired (2026-08-05), because
+  // rebuild uses item.spec_id and nothing had changed it.
+  const supersededBy = new Map(
+    drafts.filter((d) => d.supersedes !== null).map((d) => [d.supersedes as string, d.spec]),
+  );
+  for (const item of queue.items) {
+    if (item.status !== 'ready') continue;
+    const to = supersededBy.get(item.spec_id);
+    if (!to) continue;
+    const n = (perSpecCount.get(to.id) ?? 0) + 1;
+    perSpecCount.set(to.id, n);
+    repointed.push({
+      item_id: item.id,
+      from_spec_id: item.spec_id,
+      to_spec_id: to.id,
+      new_label: `${to.label} — round ${n}`,
+      old_title: item.planned_title ?? item.label,
+    });
+  }
   const flagged = queue.items
     .filter((i) => i.status === 'ready' && superseded.has(i.spec_id))
     .map((i) => i.id);
+  const blueprints: AdaptDiff['blueprints'] = [
+    ...drafts.map((d) => ({ spec_id: d.spec.id, action: 'new' as const, markdown: d.blueprint })),
+    ...editRows,
+  ];
   const newLabels = drafts.map((d) => d.spec.label).join(', ');
   const parts = [
     drafts.length ? `new: ${newLabels}` : '',
     repointed.length ? `${repointed.length} upcoming round${repointed.length === 1 ? '' : 's'} re-shaped` : '',
     flagged.length ? `${flagged.length} built problem${flagged.length === 1 ? '' : 's'} flagged for rebuild` : '',
+    editRows.length ? `${editRows.length} blueprint${editRows.length === 1 ? '' : 's'} refined` : '',
   ].filter(Boolean);
   return {
     new_specs: drafts.map((d) => d.spec),
@@ -210,6 +301,7 @@ export function planAdaptation(target: Target, queue: Queue, drafts: AdaptDraft[
     repointed,
     flagged,
     skipped: [],
+    blueprints,
     summary: parts.join(' · ') || 'no changes — the plan already matches',
   };
 }
@@ -240,12 +332,17 @@ export function applyAdaptation(
   const skipped: AdaptDiff['skipped'] = [...diff.skipped];
   for (const r of diff.repointed) {
     const item = nextQueue.items.find((i) => i.id === r.item_id);
-    if (!item || !RESHAPEABLE.has(item.status)) {
+    // ready is re-pointable too (with a stale flag): the built problem
+    // still matches the OLD shape, and rebuild regenerates under
+    // item.spec_id — leaving it un-repointed is how the rebuild button
+    // regenerated a retired spec.
+    if (!item || !(RESHAPEABLE.has(item.status) || item.status === 'ready')) {
       skipped.push({ item_id: r.item_id, reason: item ? `now ${item.status}` : 'no longer exists' });
       continue;
     }
     item.spec_id = r.to_spec_id;
     item.label = r.new_label;
+    if (item.status === 'ready') item.stale = true;
     // The old planned title promised the old shape; a stale promise is
     // worse than a quiet row.
     if (r.new_title) item.planned_title = r.new_title;
@@ -271,6 +368,9 @@ export function applyAdaptation(
     repointed: applied,
     flagged: flaggedApplied,
     skipped,
+    ...(diff.blueprints?.length
+      ? { blueprints_updated: diff.blueprints.map((b) => b.spec_id) }
+      : {}),
   };
   nextTarget.adaptations = [...(nextTarget.adaptations ?? []), record];
   return { target: nextTarget, queue: nextQueue };
@@ -310,8 +410,28 @@ export type Adapter = (input: {
   specs: RoundSpec[];
   /** Every spec id that ever existed — the collision universe. */
   allSpecIds?: string[];
+  /** Current blueprints for the active specs — what blueprint_edits revise. */
+  blueprints?: { spec_id: string; markdown: string }[];
   material: string;
-}) => Promise<AdaptDraft[]>;
+}) => Promise<AdaptOutcome>;
+
+/** Token-growth guard: a blueprint is a page, not a book — cap what each
+ *  contributes to the adapt prompt and say so visibly when it truncates. */
+const BLUEPRINT_PROMPT_CAP = 8_000;
+
+function renderBlueprints(bps: { spec_id: string; markdown: string }[] | undefined, specs: RoundSpec[]): string {
+  return specs
+    .map((s) => {
+      const bp = bps?.find((b) => b.spec_id === s.id);
+      const body = bp
+        ? bp.markdown.length > BLUEPRINT_PROMPT_CAP
+          ? bp.markdown.slice(0, BLUEPRINT_PROMPT_CAP) + '\n[truncated]'
+          : bp.markdown
+        : '(no blueprint yet)';
+      return `### ${s.id}\n\n${body}`;
+    })
+    .join('\n\n');
+}
 
 function specLine(s: RoundSpec): string {
   const c = s.capabilities;
@@ -323,6 +443,7 @@ function specLine(s: RoundSpec): string {
 function buildPrompt(templatePath: string, input: Parameters<Adapter>[0]): string {
   return readFileSync(templatePath, 'utf8')
     .replace(/\{\{CURRENT_ROUNDS\}\}/g, input.specs.map(specLine).join('\n'))
+    .replace(/\{\{CURRENT_BLUEPRINTS\}\}/g, renderBlueprints(input.blueprints, input.specs))
     .replace(/\{\{MATERIAL\}\}/g, input.material);
 }
 
@@ -345,15 +466,34 @@ const ADAPT_TOOL = {
               description:
                 'Existing spec id this round REPLACES for future practice, or null when it is an additional round.',
             },
+            blueprint: {
+              type: 'string',
+              description:
+                'The complete round blueprint markdown for this NEW round — every required section, concrete about shape/language/size. Required.',
+            },
           },
           required: [
             'id', 'label', 'interviewer', 'can_run_tests', 'time_limit_minutes',
             'starts_from', 'submit', 'check_kind', 'rationale', 'unsupported', 'supersedes',
+            'blueprint',
           ],
         },
       },
+      blueprint_edits: {
+        type: 'array',
+        description:
+          'Revisions of EXISTING rounds\' blueprints when the material refines HOW a round looks without changing its capabilities — the common case. Each entry is the round\'s COMPLETE revised blueprint with the new learning appended to its Learnings log. Empty when nothing to refine.',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'Existing (active) spec id whose blueprint this revises.' },
+            blueprint: { type: 'string', description: 'The complete revised blueprint markdown.' },
+          },
+          required: ['id', 'blueprint'],
+        },
+      },
     },
-    required: ['rounds'],
+    required: ['rounds', 'blueprint_edits'],
   },
 };
 
@@ -378,10 +518,10 @@ export function apiAdapter(templatePath: string, model = 'claude-sonnet-5'): Ada
 
 export function claudePAdapter(templatePath: string, model = 'sonnet'): Adapter {
   return (input) =>
-    new Promise<AdaptDraft[]>((resolve, reject) => {
+    new Promise<AdaptOutcome>((resolve, reject) => {
       const prompt =
         buildPrompt(templatePath, input) +
-        '\n\nReply with ONLY a JSON object: {"rounds": [{id, label, interviewer, can_run_tests, time_limit_minutes, starts_from, submit, check_kind, emphasis, rationale, unsupported, supersedes}]}';
+        '\n\nReply with ONLY a JSON object: {"rounds": [{id, label, interviewer, can_run_tests, time_limit_minutes, starts_from, submit, check_kind, emphasis, rationale, unsupported, supersedes, blueprint}], "blueprint_edits": [{id, blueprint}]}';
       const child = spawn('claude', ['-p', prompt, '--output-format', 'text', '--model', model], {
         stdio: ['ignore', 'pipe', 'pipe'],
       });

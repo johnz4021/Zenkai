@@ -61,6 +61,15 @@ describe('home app page', () => {
     expect(js).toContain('nothing to change');
   });
 
+  it('the preview shows blueprint changes and apply ships the FULL material', () => {
+    // Blueprints are the recipe half of a round; the raw note must reach
+    // the server verbatim so learnings.md never loses what an LLM dropped.
+    expect(js).toContain('blueprint ');
+    expect(js).toContain("bp.action === 'new' ? 'created' : 'revised'");
+    expect(js).toContain('material: material');
+    expect(html).toContain('.bpview');
+  });
+
   it('a stale ready problem is offered a rebuild, never silently swapped', () => {
     expect(js).toContain('button.rebuild');
     expect(js).toContain('built for the old round shape');

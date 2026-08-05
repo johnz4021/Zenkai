@@ -639,7 +639,8 @@ function renderAdaptPanel(container) {
   }
   // preview — the confirm gate: nothing is written until "re-shape".
   const d = adapt.result.diff;
-  if (!d.new_specs.length && !d.repointed.length && !d.flagged.length) {
+  const blueprints = d.blueprints || [];
+  if (!d.new_specs.length && !d.repointed.length && !d.flagged.length && !blueprints.length) {
     panel.innerHTML = '<p class="meta">nothing to change — the plan already matches what you pasted.</p>' +
       '<div class="btnrow"><button class="do-cancel" type="button">close</button></div>';
     panel.querySelector('.do-cancel').addEventListener('click', cancel);
@@ -656,6 +657,14 @@ function renderAdaptPanel(container) {
       (s.supersedes ? 'replaces ' + esc(s.supersedes) : 'additional round') + '</span></p>' +
       '<p class="meta">' + specShapeLine(s.spec.capabilities) + '</p>' +
       '<p class="rationale">' + esc(s.rationale) + '</p></div>';
+  }
+  for (const bp of blueprints) {
+    // Recipe changes: the durable generation prompt this adapt rewrites.
+    const label = (adapt.result.drafts.find((s) => s.spec.id === bp.spec_id) || {}).spec;
+    html += '<details class="bpchange"><summary class="meta">blueprint ' +
+      (bp.action === 'new' ? 'created' : 'revised') + ': <b>' +
+      esc(label ? label.label : bp.spec_id) + '</b></summary>' +
+      '<pre class="bpview">' + esc(bp.markdown) + '</pre></details>';
   }
   for (const r of d.repointed) {
     html += '<p class="meta repoint">' + esc(r.old_title) + ' → <b>' + esc(r.new_title || r.new_label) + '</b></p>';
@@ -685,10 +694,13 @@ async function previewAdapt(tid) {
 async function applyAdapt(tid) {
   if (!adapt || adapt.phase === 'busy') return;
   const diff = adapt.result.diff;
-  const excerpt = (adapt.material || '').slice(0, 280);
+  // Full material travels to apply: the server appends it VERBATIM to
+  // learnings.md before anything else — the excerpt is only the legacy
+  // display field.
+  const material = adapt.material || '';
   adapt.phase = 'busy';
   rerender();
-  const r = await fetch('/api/adapt/apply', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: tid, diff, material_excerpt: excerpt }) });
+  const r = await fetch('/api/adapt/apply', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: tid, diff, material: material, material_excerpt: material.slice(0, 280) }) });
   const d = await r.json();
   if (d.error) {
     if (adapt && adapt.tid === tid) { adapt.phase = 'error'; adapt.error = d.error; rerender(); }

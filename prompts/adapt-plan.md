@@ -5,17 +5,24 @@ learned something new — an invite email, problem titles from an assessment, a 
 from a friend who interviewed, a preview screen — and pasted it below. Your job: say
 what round shapes the new material implies, so the remaining plan can re-shape.
 
-Return one round entry PER DISTINCT SHAPE the material implies, using the vocabulary
-below. For each entry set `supersedes`:
+You have TWO instruments, and choosing the right one matters:
 
-- the id of a CURRENT round it **replaces** for future practice (the material shows
-  that round is actually shaped differently than planned), or
-- `null` when it is an **additional** round the plan didn't know about.
+- **`blueprint_edits`** — the COMMON case. The material refines HOW an existing
+  round looks (topic, language, size, difficulty, tooling) without changing its
+  capabilities. Return the round's COMPLETE revised blueprint: fold the learning
+  into the relevant sections concretely ("one page" → "a single file of roughly
+  200-300 lines" in Environment/Repo shape), and APPEND a dated verbatim entry
+  to its `## Learnings log` — never delete or rewrite existing log entries.
+- **`rounds`** — a genuinely DIFFERENT exercise form (debugging-a-file vs
+  implement-from-docs are different forms even with identical capabilities) or a
+  capability change. One entry per distinct form, each with its complete
+  `blueprint`. For each set `supersedes`: the id of a CURRENT round it
+  **replaces** for future practice, or `null` for an **additional** round.
 
 Do NOT restate current rounds the material says nothing about — only emit what the
-material adds or corrects. If the material genuinely changes nothing, return an EMPTY
-`rounds` array — that is a valid, honest answer, and the candidate sees "nothing to
-change — the plan already matches".
+material adds or corrects. If the material genuinely changes nothing, return EMPTY
+`rounds` and EMPTY `blueprint_edits` — that is a valid, honest answer, and the
+candidate sees "nothing to change — the plan already matches".
 
 ## The practice environment's capabilities (the whole vocabulary)
 
@@ -61,6 +68,15 @@ Rules for the entries:
 ## The candidate's current rounds
 
 {{CURRENT_ROUNDS}}
+
+## Current round blueprints
+
+Each active round's generation blueprint — the durable recipe problem
+generation follows. This is what `blueprint_edits` revises. A round showing
+"(no blueprint yet)" can still be edited: write its complete blueprint with
+the same section structure as the others.
+
+{{CURRENT_BLUEPRINTS}}
 
 ## What they just learned (pasted material)
 

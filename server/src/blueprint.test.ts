@@ -15,6 +15,7 @@ import type { RoundSpec } from '@interview-prep/shared';
 import { DEFAULT_DEBUGGING_SPEC } from '@interview-prep/shared';
 import {
   REQUIRED_HEADINGS,
+  appendLearnings,
   blueprintPath,
   composeRoundBrief,
   gateBlueprint,
@@ -125,5 +126,24 @@ describe('writeBlueprintWithBackup — the only history targets/ gets', () => {
     dir = mkdtempSync(path.join(tmpdir(), 'bp-'));
     expect(loadBlueprint(dir, 't1', 'nope')).toBeNull();
     expect(blueprintPath(dir, 't1', 's1')).toContain(path.join('targets', 't1', 'blueprints', 's1.md'));
+  });
+});
+
+describe('appendLearnings — nothing the candidate learned is ever laundered away', () => {
+  let dir: string;
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('appends dated verbatim entries, never rewrites earlier ones', () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'bp-'));
+    const t0 = Date.parse('2026-08-05T17:00:00Z');
+    appendLearnings(dir, 't1', 'Task is one page w/ couple hundred lines of code, debug in python', t0);
+    appendLearnings(dir, 't1', 'Second learning:\nmultiline & "quotes" stay untouched', t0 + 86_400_000);
+    const file = readFileSync(path.join(dir, 'targets', 't1', 'learnings.md'), 'utf8');
+    expect(file.startsWith('# Learnings')).toBe(true);
+    expect(file).toContain('## 2026-08-05T17:00:00.000Z');
+    expect(file).toContain('one page w/ couple hundred lines');
+    expect(file).toContain('## 2026-08-06T17:00:00.000Z');
+    expect(file).toContain('multiline & "quotes" stay untouched');
+    expect(file.indexOf('one page')).toBeLessThan(file.indexOf('Second learning'));
   });
 });

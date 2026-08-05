@@ -25,6 +25,7 @@ import { listTargets, loadTarget, pickSpecInferrer, saveTarget, slugify, targetD
 import { bucketIntoDays, loadQueue, nextUp, proposeQueue, reconcileWithDisk, repace, saveQueue, type Queue, type QueueItem } from './queue.js';
 import { buildGraphView, gapDescription, loadStore } from './gap-graph.js';
 import { applyAdaptation, pickAdapter, planAdaptation, reconcileAdaptation, retiredSpecIds, type AdaptDiff } from './adapt.js';
+import { appendLearnings, gateBlueprint, loadBlueprint, writeBlueprintWithBackup } from './blueprint.js';
 import { clearGeneratingMarker, generationProgress, pidAlive, readGeneratingMarker, sweepVerdict, writeGeneratingMarker } from './generation-state.js';
 import { pickTopicNamer } from './plan-topics.js';
 import { clientScript } from './chrome.js';
@@ -427,6 +428,8 @@ export function appPage(): string {
   .adaptpanel .learnbox { width: 100%; min-height: 96px; resize: vertical; }
   .adaptpanel .btnrow { margin-top: 12px; }
   .adaptpanel .adaptsum { font-weight: 500; margin-bottom: 10px; }
+  .adaptpanel .bpchange summary { cursor: pointer; margin: 6px 0; }
+  .adaptpanel .bpview { max-height: 260px; overflow: auto; border: 1px solid var(--line); padding: 10px 12px; font-size: 12px; white-space: pre-wrap; }
   .adaptpanel .repoint b { color: var(--bright); }
   .stale { color: var(--mag); }
 
@@ -758,12 +761,20 @@ export function runApp(cfg: AppConfig): http.Server {
           // not a supersession target; retired ids stay in the collision
           // universe so they can never be reused.
           const retired = retiredSpecIds(t);
-          const drafts = await pickAdapter(path.join(repoRoot, 'prompts', 'adapt-plan.md'))({
-            specs: t.specs.filter((s) => !retired.has(s.id)),
+          const activeSpecs = t.specs.filter((s) => !retired.has(s.id));
+          // The model sees each active round's current blueprint — that is
+          // what blueprint_edits revise. Absent files render as "(no
+          // blueprint yet)".
+          const outcome = await pickAdapter(path.join(repoRoot, 'prompts', 'adapt-plan.md'))({
+            specs: activeSpecs,
             allSpecIds: t.specs.map((s) => s.id),
+            blueprints: activeSpecs
+              .map((s) => ({ spec_id: s.id, markdown: loadBlueprint(repoRoot, t.id, s.id) ?? '' }))
+              .filter((b) => b.markdown),
             material,
           });
-          const diff = planAdaptation(t, q, drafts);
+          const drafts = outcome.drafts;
+          const diff = planAdaptation(t, q, drafts, outcome.blueprint_edits);
           // Name the re-pointed rounds NOW so the preview shows old → new
           // titles, not placeholders. Failure degrades to quiet rows.
           const namer = pickTopicNamer(path.join(repoRoot, 'prompts', 'plan-topics.md'));
@@ -808,6 +819,9 @@ export function runApp(cfg: AppConfig): http.Server {
         const b = JSON.parse((await readBody(req)) || '{}') as {
           target_id?: string;
           diff?: AdaptDiff;
+          /** Full raw note — appended verbatim to learnings.md. */
+          material?: string;
+          /** Legacy clients send only the excerpt; tolerated. */
           material_excerpt?: string;
         };
         const diff = b.diff;
@@ -828,7 +842,29 @@ export function runApp(cfg: AppConfig): http.Server {
         for (const r of diff.repointed) {
           if (!known.has(r.to_spec_id)) return json(400, { error: `re-point targets unknown spec "${r.to_spec_id}"` });
         }
-        const applied = applyAdaptation(t, q, diff, b.material_excerpt ?? '', Date.now());
+        // Blueprint rows re-prove the gate server-side (the client held the
+        // diff). Tolerate absence — an in-flight preview from an old tab.
+        for (const row of diff.blueprints ?? []) {
+          if (!known.has(row.spec_id)) return json(400, { error: `blueprint targets unknown spec "${row.spec_id}"` });
+          if (row.action !== 'new' && row.action !== 'revised') return json(400, { error: 'blueprint action out of vocabulary' });
+          try {
+            gateBlueprint(row.markdown);
+          } catch (e) {
+            return json(400, { error: `blueprint for ${row.spec_id}: ${String(e).slice(0, 200)}` });
+          }
+        }
+        const material = (b.material ?? '').trim();
+        if (material.length > 256 * 1024) return json(400, { error: 'material too large' });
+        // Write order is deliberate: (1) the raw learning survives even if
+        // everything after crashes; (2) blueprint files (.prev.md backup);
+        // (3) target.json (the commit marker) then queue.json.
+        if (material || b.material_excerpt) {
+          appendLearnings(repoRoot, t.id, material || (b.material_excerpt ?? ''), Date.now());
+        }
+        for (const row of diff.blueprints ?? []) {
+          writeBlueprintWithBackup(repoRoot, t.id, row.spec_id, row.markdown);
+        }
+        const applied = applyAdaptation(t, q, diff, material || (b.material_excerpt ?? ''), Date.now());
         saveTarget(repoRoot, applied.target);
         saveQueue(repoRoot, applied.queue);
         const record = applied.target.adaptations![applied.target.adaptations!.length - 1]!;
