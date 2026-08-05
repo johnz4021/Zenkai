@@ -437,6 +437,21 @@ if (cmd === 'generate') {
     events,
     problem.planted_bug?.description,
   );
+  // --record also refreshes the persisted card — the planning page reads
+  // feedback/<sid>.json, and a rescued session must show its rescue there,
+  // not the stale "unassessed" card finalize wrote. Merge-preserve fields
+  // the rejudge context does not have (voice health, page view).
+  if (process.argv.includes('--record')) {
+    const fbDir = path.join(repoRoot, 'feedback');
+    mkdirSync(fbDir, { recursive: true });
+    const fbPath = path.join(fbDir, `${sessionId}.json`);
+    let existing: Record<string, unknown> = {};
+    try {
+      existing = JSON.parse(readFileSync(fbPath, 'utf8')) as Record<string, unknown>;
+    } catch { /* first card for this session */ }
+    writeFileSync(fbPath, JSON.stringify({ ...existing, card }, null, 2));
+    console.error('[rejudge] feedback card refreshed');
+  }
   console.log(JSON.stringify(card, null, 2));
   process.exit(result.status === 'assessed' ? 0 : 3);
 } else if (cmd === 'validate') {

@@ -70,6 +70,20 @@ describe('home app page', () => {
     expect(html).toContain('.bpview');
   });
 
+  it('finished rows carry their judged feedback, re-readable from the plan', () => {
+    // The session server that first rendered the card is torn down minutes
+    // after grading — feedback nobody can re-read is feedback that never
+    // happened. The plan page is where it lives.
+    expect(js).toContain("'/api/feedback?session='");
+    expect(js).toContain('fbtoggle');
+    expect(js).toContain('function renderCardHtml');
+    // Read-only on purpose: no confirm buttons (the endpoint died with the
+    // session), and the bug shows only when solved (unspoiled re-runs).
+    expect(js).toContain('card.bug && card.solved');
+    expect(js).not.toContain("'/api/card-feedback'");
+    expect(html).toContain('.fbcard');
+  });
+
   it('a stale ready problem is offered a rebuild, never silently swapped', () => {
     expect(js).toContain('button.rebuild');
     expect(js).toContain('built for the old round shape');

@@ -428,6 +428,23 @@ export function appPage(): string {
   .adaptpanel .learnbox { width: 100%; min-height: 96px; resize: vertical; }
   .adaptpanel .btnrow { margin-top: 12px; }
   .adaptpanel .adaptsum { font-weight: 500; margin-bottom: 10px; }
+  /* Judged feedback, re-readable from the plan. Same visual grammar as the
+     session card: hairline rows, ONE accent, dim uppercase dimension tags. */
+  .fbtoggle { color: var(--dim); margin-left: 10px; font-size: 12px; }
+  .fbtoggle:hover { color: inherit; }
+  .fbcard { display: block; margin: 10px 0 4px; padding: 4px 14px 10px; border: 1px solid var(--line); font-weight: 400; }
+  .fbcard .desc { margin: 8px 0 4px; }
+  .fbcard .fbrow { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .fbcard .fbrow:last-child { border-bottom: 0; }
+  .fbcard .dim { text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+  .fbcard .v-strong .dim { color: var(--accent); }
+  .fbcard .v-weak .dim { color: #e6a23c; }
+  .fbcard .v-none { opacity: .55; }
+  .fbcard .cite { color: var(--dim); font-size: 12px; margin: 3px 0 3px 14px; }
+  .fbcard .clk { color: inherit; opacity: .9; }
+  .fbcard .closedmark { border-left: 2px solid var(--accent); padding-left: 10px; }
+  .fbcard .fbfocus { border: 1px solid var(--accent); padding: 8px 10px; margin-top: 10px; }
+  .fbcard .fbfocus .k { color: var(--accent); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; margin: 0 0 4px; }
   .adaptpanel .bpchange summary { cursor: pointer; margin: 6px 0; }
   .adaptpanel .bpview { max-height: 260px; overflow: auto; border: 1px solid var(--line); padding: 10px 12px; font-size: 12px; white-space: pre-wrap; }
   .adaptpanel .repoint b { color: var(--bright); }
@@ -567,6 +584,23 @@ export function runApp(cfg: AppConfig): http.Server {
         // on a new row kind and reported itself as a dead server).
         res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'no-store' });
         return res.end(body);
+      }
+      if (url.startsWith('/api/feedback') && req.method === 'GET') {
+        // A finished round's judged card, read from the file finalize (and
+        // rejudge --record) writes. The planning page is where feedback
+        // LIVES after a session — the session server that first rendered
+        // the card is torn down long before anyone wants to re-read it.
+        const sid = new URL(url, 'http://x').searchParams.get('session') ?? '';
+        if (!/^sess-[\w-]+$/.test(sid)) return json(400, { error: 'bad session id' });
+        try {
+          const fb = JSON.parse(
+            readFileSync(path.join(repoRoot, 'feedback', `${sid}.json`), 'utf8'),
+          ) as { card?: unknown };
+          if (!fb.card) return json(404, { error: 'no card for this session' });
+          return json(200, { card: fb.card });
+        } catch {
+          return json(404, { error: 'no feedback recorded for this session' });
+        }
       }
       if (url === '/api/state') {
         const now = Date.now();

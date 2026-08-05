@@ -376,7 +376,7 @@ function renderSeason(row, state) {
     if (d.kind === 'done-today') {
       for (const i of d.items) {
         html += '<li class="past donetoday"><span class="date">TODAY</span><span class="dot done"></span>' +
-          '<span class="body"><span class="ok">✓</span>' + esc(itemTitle(i)) + '</span></li>';
+          '<span class="body"><span class="ok">✓</span>' + esc(itemTitle(i)) + feedbackToggle(i) + feedbackPanel(i) + '</span></li>';
       }
       continue;
     }
@@ -435,7 +435,7 @@ function renderSeason(row, state) {
       if (done.length) {
         for (const i of done) {
           html += '<li class="past"><span class="date">' + fmtDate(d.date) + '</span><span class="dot done"></span>' +
-            '<span class="body"><span class="ok">✓</span>' + esc(itemTitle(i)) + '</span></li>';
+            '<span class="body"><span class="ok">✓</span>' + esc(itemTitle(i)) + feedbackToggle(i) + feedbackPanel(i) + '</span></li>';
         }
       } else {
         html += '<li class="past empty"><span class="date">' + fmtDate(d.date) + '</span><span class="dot"></span>' +
@@ -602,7 +602,81 @@ function wireTimeline(container) {
       renderAdaptPanel(container);
     });
   }
+  for (const a of container.querySelectorAll('a.fbtoggle')) {
+    a.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const sid = a.dataset.s;
+      if (openFeedback.has(sid)) { openFeedback.delete(sid); rerender(); return; }
+      openFeedback.add(sid);
+      if (!feedbackCache[sid]) {
+        try {
+          const r = await fetch('/api/feedback?session=' + encodeURIComponent(sid));
+          const d = await r.json();
+          feedbackCache[sid] = d.card || { state: 'unassessed', reason: d.error || 'No feedback recorded for this session.' };
+        } catch {
+          feedbackCache[sid] = { state: 'unassessed', reason: 'Could not load feedback.' };
+        }
+      }
+      rerender();
+    });
+  }
   renderAdaptPanel(container);
+}
+
+// ---- judged feedback on finished rows ----
+// The card the session page rendered at grading time, re-readable forever
+// from the plan: the session server that first showed it is torn down
+// minutes after the round ends, and feedback nobody can re-read is
+// feedback that never happened. State lives outside the DOM (poll-safe,
+// same trick as `adapt`).
+const openFeedback = new Set();
+const feedbackCache = {};
+
+function feedbackToggle(i) {
+  if (!i.session_id) return '';
+  return ' <a href="#" class="fbtoggle" data-s="' + esc(i.session_id) + '">' +
+    (openFeedback.has(i.session_id) ? 'hide feedback' : 'feedback') + '</a>';
+}
+
+function feedbackPanel(i) {
+  if (!i.session_id || !openFeedback.has(i.session_id)) return '';
+  const card = feedbackCache[i.session_id];
+  if (!card) return '<div class="fbcard"><p class="meta">loading…</p></div>';
+  return '<div class="fbcard">' + renderCardHtml(card) + '</div>';
+}
+
+/** Read-only render of an assessment card — same content the session page
+ *  shows at grading time, minus the interactive bits that need the (long
+ *  dead) session server: no "did this match?" buttons, and the bug is shown
+ *  only when solved (an unsolved problem stays re-runnable unspoiled). */
+function renderCardHtml(card) {
+  let html = '';
+  if (card.state === 'unassessed') {
+    return '<p class="desc"><b>Session not assessed.</b> ' + esc(card.reason || '') + '</p>';
+  }
+  for (const c of card.newly_closed || []) {
+    html += '<div class="fbrow closedmark"><p class="desc">Closed: ' + esc(c.description) + '</p></div>';
+  }
+  if (card.summary) html += '<p class="desc">' + esc(card.summary) + '</p>';
+  for (const r of card.rows || []) {
+    const cls = r.verdict === 'strong' ? 'v-strong' : r.verdict === 'weak' ? 'v-weak' : r.verdict === 'unassessable' ? 'v-none' : '';
+    html += '<div class="fbrow ' + cls + '">' +
+      '<p class="desc"><b class="dim">' + esc(r.dimension) + '</b> · ' +
+      (r.verdict === 'unassessable' ? 'not assessable this session' : esc(r.verdict)) + '</p>' +
+      '<p class="desc">' + esc(r.analysis) + '</p>';
+    for (const q of r.quotes || []) {
+      html += '<p class="cite"><span class="clk">' + esc(q.clock) + '</span>  ' + esc(q.text) + '</p>';
+    }
+    if (r.unreceipted) html += '<p class="cite">No verifiable citation survived for this claim — weigh it accordingly.</p>';
+    html += '</div>';
+  }
+  if (card.bug && card.solved) {
+    html += '<div class="fbrow"><p class="desc"><b>The bug:</b> ' + esc(card.bug.description) + '</p></div>';
+  }
+  if (card.focus) {
+    html += '<div class="fbfocus"><p class="k">next session focus</p><p>' + esc(card.focus.description) + '</p></div>';
+  }
+  return html;
 }
 
 // ---- adapt: "add what you learned" → diff preview → approve → apply ----
