@@ -156,6 +156,40 @@ describe('spec-driven session page (capabilities, not format branches)', () => {
   });
 });
 
+describe('Run Tests lives in our header, not inside the editor', () => {
+  // Observed live: a candidate sat in a session with BOTH IDE affordances
+  // present (status-bar item reading "Tests failed — Run again", an
+  // unlabeled beaker in the editor title bar) and asked the interviewer
+  // how to run tests. The button now sits above the workbench where no
+  // focused tab can hide it.
+  it('an iterate IDE round gets a labeled accent button in the header', () => {
+    const html = sessionPage('s');
+    expect(html).toContain('id="run"');
+    expect(html).toContain('▶ Run Tests');
+    expect(html).toContain('data-endpoint="/api/ide-run"');
+    // Above the workbench, not inside it: the button is in <header>.
+    expect(html.indexOf('id="run"')).toBeLessThan(html.indexOf('<main>'));
+  });
+
+  it('the panes surface uses the same header button, wired to its own route', () => {
+    const html = sessionPage('s', { surface: 'panes', statement: 'x' });
+    expect(html).toContain('data-endpoint="/api/run"');
+    expect(html.indexOf('id="run"')).toBeLessThan(html.indexOf('<main>'));
+  });
+
+  it('rounds that cannot iterate have no run button on either surface', () => {
+    expect(sessionPage('s', { one_shot: true })).not.toContain('id="run"');
+    expect(sessionPage('s', { can_run_tests: false })).not.toContain('id="run"');
+    expect(sessionPage('s', { surface: 'panes', one_shot: true, statement: 'x' })).not.toContain('id="run"');
+  });
+
+  it('the IDE run path asks the extension to run, never a second runner', () => {
+    const js = clientScript() ?? '';
+    expect(js).toContain('/api/ide-run');
+    expect(js).toContain('ide_not_connected');
+  });
+});
+
 describe('panes surface (the HackerRank-classic renderer)', () => {
   const oaPanes = () =>
     sessionPage('s', {

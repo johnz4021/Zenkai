@@ -309,6 +309,16 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   ]);
   ensureRuntime(runtime);
 
+  // What the interviewer may tell a candidate who asks how to run tests.
+  // Derived from the same facts the runtime enforces, so it can never drift
+  // into a runner that is not installed.
+  const howToRun =
+    caps.submit === 'one_shot'
+      ? 'The suite does NOT run during this round. It runs once, server-side, when they press Submit. There is no run command available to them — say so plainly if asked.'
+      : !caps.can_run_tests
+      ? 'This round does not allow running the suite at all. There is no run command — say so plainly if asked.'
+      : `They press the **Run Tests** button in the session header (top right, above the editor). It runs \`${testCmd}\` in the workspace and shows the output in the ${surface === 'panes' ? 'test results panel below the editor' : "editor's Test Results panel"}. That is the intended path. No other test runner is installed.`;
+
   const ideSettings = loadIdeSettings(cfg.repoRoot);
   // Hoisted install: the workspace root owns node_modules (same assumption
   // the vitest testCmd default makes about problem dirs).
@@ -331,6 +341,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // One suite run at a time through /api/run (panes surface); the docker
   // exec is not reentrant-safe against itself on a shared workspace.
   let paneRunning = false;
+  // The live extension socket, so the chrome's Run Tests button can reach
+  // the IDE's own runner (see /api/ide-run).
+  let traceSocket: WebSocket | null = null;
 
   // ---- interviewer ----
   const { bug, bugFile } = bugContext(problem);
@@ -481,6 +494,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         spec: problem.spec,
         bug,
         bugFile,
+        howToRun,
         targetNote,
         elapsedMs: now - (sessionStartedAt ?? now),
         remainingMs: sessionLengthMs - (now - (sessionStartedAt ?? now)),
@@ -868,6 +882,25 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ seq: ev.seq }));
     }
+    if (url === '/api/ide-run' && req.method === 'POST') {
+      // The IDE surface's Run Tests, pressed in OUR header. It does not run
+      // the suite here — it asks the extension to, so the output lands in
+      // the IDE's Test Results panel and the trace records a first-class
+      // `via: 'task'` run instead of a second kind of test run.
+      const rejected = runGuard(caps, ended, false);
+      if (rejected) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: rejected }));
+      }
+      if (!traceSocket || traceSocket.readyState !== traceSocket.OPEN) {
+        res.writeHead(503, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'ide_not_connected' }));
+      }
+      markCandidateContact();
+      traceSocket.send(JSON.stringify({ cmd: 'run_tests' }));
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ ok: true }));
+    }
     if (url === '/api/run' && req.method === 'POST') {
       const rejected = runGuard(caps, ended, paneRunning);
       if (rejected) {
@@ -980,6 +1013,10 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
   const wss = new WebSocketServer({ noServer: true });
   wss.on('connection', (ws) => {
+    traceSocket = ws;
+    ws.on('close', () => {
+      if (traceSocket === ws) traceSocket = null;
+    });
     ws.on('message', (data) => {
       try {
         const ev = JSON.parse(String(data)) as TraceEvent;

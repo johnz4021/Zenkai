@@ -113,6 +113,39 @@ document.getElementById('f').addEventListener('submit', async (e) => {
   });
 });
 
+// Run Tests, IDE surface. The button lives in our header where it cannot
+// hide behind a focused tab; the run itself happens inside the IDE, so the
+// output appears in its Test Results panel — the place a candidate looks.
+// (The panes surface renders the same button but panes.js owns it: it must
+// flush pending saves and paint the output into its own panel.)
+const runButton = document.getElementById('run');
+if (runButton && runButton.dataset.endpoint === '/api/ide-run') {
+  runButton.addEventListener('click', async () => {
+    runButton.disabled = true;
+    runButton.textContent = '▶ Running…';
+    try {
+      const r = await fetch('/api/ide-run', { method: 'POST' });
+      const out = await r.json();
+      if (out.error) {
+        say(
+          'system',
+          out.error === 'ide_not_connected'
+            ? 'The editor is not connected yet — give it a moment and try again.'
+            : 'Tests cannot be run in this round.',
+          'pending',
+        );
+      }
+    } catch {
+      say('system', 'Could not reach the session server to run tests.', 'pending');
+    }
+    // The IDE panel owns the result; just restore the control.
+    setTimeout(() => {
+      runButton.textContent = '▶ Run Tests';
+      runButton.disabled = false;
+    }, 2000);
+  });
+}
+
 // One end path for the button, the time cap, and (later) submit modes.
 let ending = false;
 async function endSession() {

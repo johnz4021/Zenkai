@@ -243,9 +243,45 @@ describe('gap-note never-mention guard (T15)', () => {
   });
 });
 
+describe('the harness fact (how tests are run in THIS round)', () => {
+  // Observed live: asked "how do I run tests?", the interviewer answered
+  // "standard pytest — `pytest -k ...`" on a round whose suite runs under
+  // unittest, in a container with no pytest installed. It had never been
+  // told how the round runs, so it guessed. The fact is now in the prompt.
+  const template = () => readFileSync(path.join(REPO, 'prompts/interviewer.md'), 'utf8');
+  const base = {
+    spec: 'THE SPEC', bug: 'THE BUG', bugFile: BUG_FILE,
+    elapsedMs: 60_000, remainingMs: 44 * 60_000, recentActivity: 'ACT',
+    transcript: [], candidateMessage: 'how do I run the tests?',
+  };
+
+  it('carries the round-specific run command into the cached half', () => {
+    const { system, turn } = renderSplit(template(), {
+      ...base,
+      howToRun: 'They press **Run Tests** in the header. It runs `python3 -m unittest discover -v`.',
+    });
+    expect(system).toContain('python3 -m unittest discover -v');
+    expect(system).toContain('Run Tests');
+    // Stable across turns, so it must live above the session-state marker.
+    expect(turn).not.toContain('unittest');
+  });
+
+  it('forbids guessing a runner, in the words that caused the incident', () => {
+    const { system } = renderSplit(template(), { ...base, howToRun: 'X' });
+    expect(system).toMatch(/never invent a runner/i);
+    expect(system).toContain('pytest'); // the cautionary example stays concrete
+  });
+
+  it('an unset harness fact tells the model to admit it, not improvise', () => {
+    const { system } = renderSplit(template(), base);
+    expect(system).toMatch(/not sure/i);
+  });
+});
+
 describe('renderSplit (prompt caching seam)', () => {
   const ctx = {
     spec: 'THE SPEC', bug: 'THE BUG', bugFile: BUG_FILE, targetNote: 'TARGETING NOTE: gap X',
+    howToRun: 'HOW TO RUN',
     elapsedMs: 60_000, remainingMs: 44 * 60_000, recentActivity: 'ACT', transcript: [],
     candidateMessage: 'hello',
   };

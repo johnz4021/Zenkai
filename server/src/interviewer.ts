@@ -39,6 +39,13 @@ export interface InterviewerContext {
   /** Path of the file holding the bug — used by the leak guard. */
   bugFile: string;
   /**
+   * How the candidate runs the suite in THIS round (affordance + command).
+   * Without it the model guesses: observed live, an interviewer told a
+   * candidate to use `pytest` in a container where pytest was not
+   * installed, on a round whose suite runs under unittest.
+   */
+  howToRun?: string;
+  /**
    * buildTargetNote() output — the candidate's gap history as generator/
    * interviewer emphasis. Shapes WHERE pressure lands; must never be
    * mentioned (the prompt enforces it, guardGapLeak backstops it).
@@ -353,6 +360,7 @@ export function render(template: string, ctx: InterviewerContext): string {
   const values: Record<string, string> = {
     SPEC: ctx.spec,
     BUG: ctx.bug,
+    HOW_TO_RUN: ctx.howToRun ?? 'Not known for this round — say you are not sure if asked.',
     TARGET_NOTE: ctx.targetNote ?? '(no history yet — first sessions)',
     ELAPSED_MIN: String(Math.round(ctx.elapsedMs / 60_000)),
     REMAINING_MIN: String(Math.max(0, Math.round(ctx.remainingMs / 60_000))),

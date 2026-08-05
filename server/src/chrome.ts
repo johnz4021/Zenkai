@@ -73,17 +73,13 @@ const esc = (s: string) =>
  * the IDE surface uses; this replaces ONLY the iframe.
  */
 function panesMain(view: SessionPageView): string {
-  const runBtn =
-    view.can_run_tests && !view.one_shot
-      ? `<button id="run" title="save and run the test suite">▶ Run Tests</button>`
-      : '';
   return /* html */ `<div id="panes">
     <section id="statement"><h1>Problem</h1><div class="body">${esc(view.statement)}</div></section>
     <section id="work">
       <div id="tabs"></div>
       <div id="editor"></div>
       <div id="testpanel">
-        <div id="testbar">${runBtn}<span id="runstate"></span></div>
+        <div id="testbar"><span class="lbl">test results</span><span id="runstate"></span></div>
         <pre id="runout"></pre>
       </div>
     </section>
@@ -125,6 +121,16 @@ export function sessionPage(sessionId: string, partial: Partial<SessionPageView>
   header a#back { color: var(--dim); text-decoration: none; }
   header a#back:hover { color: #e6e6ea; }
   header button { background: none; border: 1px solid var(--line); color: #e6e6ea; padding: 5px 12px; font: inherit; cursor: pointer; }
+  /* Run Tests lives in OUR header, not in the editor. Both IDE affordances
+     (status-bar item, editor-title icon) were observed live being missed by
+     a candidate who then asked the interviewer how to run tests — one is a
+     label that changes after a run, the other an unlabeled icon among VS
+     Code's own. A labeled accent button above the workbench cannot hide
+     behind whichever tab happens to be focused. */
+  header #run { margin-left: auto; border-color: var(--accent); color: var(--accent); font-weight: 600; padding: 5px 16px; }
+  header #run:hover:not(:disabled) { background: var(--accent); color: #17171a; }
+  header #run:disabled { opacity: .55; cursor: default; }
+  header #run + #mute { margin-left: 0; }
   header #mute { margin-left: auto; color: var(--dim); }
   header #mute.on { color: #e6e6ea; border-color: #e6e6ea; }
   main { flex: 1; display: flex; min-height: 0; }
@@ -165,8 +171,7 @@ export function sessionPage(sessionId: string, partial: Partial<SessionPageView>
   #editor { flex: 1; min-height: 0; }
   #testpanel { height: 180px; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
   #testbar { display: flex; align-items: center; gap: 12px; padding: 6px 12px; border-bottom: 1px solid var(--line); }
-  #testbar button { background: none; border: 1px solid var(--accent); color: var(--accent); padding: 4px 14px; font: inherit; cursor: pointer; }
-  #testbar button:disabled { opacity: .5; cursor: default; }
+  #testbar .lbl { color: var(--dim); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
   #runstate { color: var(--dim); }
   #runout { flex: 1; overflow: auto; margin: 0; padding: 8px 12px; font-size: 12px; }
   /* After grading the container is gone — the work pane is dead. The
@@ -182,6 +187,11 @@ export function sessionPage(sessionId: string, partial: Partial<SessionPageView>
   <span class="t" id="clock"${view.time_limit_ms ? ` data-limit="${view.time_limit_ms}"` : ''}>00:00</span>
   <span class="t" id="status">observing: —</span>
   <span class="t" id="voicechip">voice: —</span>
+  ${
+    view.can_run_tests && !view.one_shot
+      ? `<button id="run" class="primary" data-endpoint="${view.surface === 'panes' ? '/api/run' : '/api/ide-run'}" title="run the test suite">▶ Run Tests</button>`
+      : ''
+  }
   <button id="mute" title="mute the mic">mute</button>
   <button id="end">${endLabel}</button>
 </header>

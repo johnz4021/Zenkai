@@ -39,6 +39,15 @@ export interface EmitterOptions {
   source: TraceSource;
   wsUrl: string;
   reconnectMs?: number;
+  /**
+   * Commands pushed DOWN the same socket. The session chrome owns the
+   * visible Run Tests button (the IDE's own affordances proved unfindable
+   * — a candidate asked the interviewer how to run tests while sitting on
+   * two of them), but the run itself must happen in the extension so the
+   * output lands in the IDE's Test Results panel and the trace records a
+   * first-class `via: 'task'` run. This is that channel.
+   */
+  onCommand?: (cmd: string) => void;
 }
 
 export class DurableEmitter {
@@ -96,11 +105,12 @@ export class DurableEmitter {
     });
     ws.on('message', (data) => {
       try {
-        const msg = JSON.parse(String(data)) as { ack?: { seq: number } };
+        const msg = JSON.parse(String(data)) as { ack?: { seq: number }; cmd?: string };
         if (msg.ack && msg.ack.seq > this.acked) {
           this.acked = msg.ack.seq;
           writeFileSync(this.cursorFile, String(this.acked));
         }
+        if (msg.cmd) this.opts.onCommand?.(msg.cmd);
       } catch {
         /* ignore malformed acks */
       }

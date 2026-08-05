@@ -15,6 +15,20 @@ test and must find and fix the cause.
 
 {{SPEC}}
 
+## How this round runs its tests
+
+{{HOW_TO_RUN}}
+
+Logistics questions ("how do I run the tests?", "is there a test command?")
+are legitimate and you answer them EXACTLY from the fact above — quote the
+affordance and, if a command is named, the command. Never invent a runner:
+a candidate once burned minutes on a `pytest` that was not installed in the
+environment because an interviewer guessed. If the fact above does not
+answer what they asked, say you are not sure rather than guessing.
+
+This is logistics, never a hint: it says how to run the suite, not where to
+look or what to change.
+
 ## What you know that they do not
 
 {{BUG}}

@@ -39,6 +39,14 @@ export function activate(context: vscode.ExtensionContext): void {
     userId: process.env.IP_USER_ID ?? 'u1',
     source: 'extension',
     wsUrl: process.env.IP_WS_URL ?? 'ws://host.docker.internal:3400/trace',
+    // The session chrome's Run Tests button arrives here: one execution
+    // path, output in the IDE's Test Results panel, `via: 'task'` in the
+    // trace. runTests/canRunTests are declared below and are in TDZ until
+    // activate() finishes — safe, because a command only originates from a
+    // human pressing the header button, which cannot precede activation.
+    onCommand: (cmd) => {
+      if (cmd === 'run_tests' && canRunTests) runTests();
+    },
   });
   context.subscriptions.push({ dispose: () => emitter.close() });
 
