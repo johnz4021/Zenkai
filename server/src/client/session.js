@@ -67,7 +67,11 @@ async function pollMessages() {
     for (const h of s.heard || []) {
       lastHeardSeq = Math.max(lastHeardSeq, h.seq);
       if (h.untranscribed) {
-        say('you (voice)', '(heard speech — transcription unavailable)', 'pending');
+        // Honest wording: many of these are ambient noise the gate let
+        // through, not lost words — "heard speech" made every one read as
+        // the candidate's own voice failing ("can you hear me?" ×4 in one
+        // real session).
+        say('you (voice)', '(heard sound — no words came through)', 'pending');
       } else {
         say('you (voice)', h.text);
       }

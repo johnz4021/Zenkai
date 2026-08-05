@@ -29,13 +29,48 @@
  */
 
 export const DEFAULT_PRESENCE_CFG = {
-  /** RMS energy above this counts as a live frame. */
+  /** RMS energy above this counts as a live frame — the QUIET-ROOM floor.
+   *  In a noisy room the adaptive noise floor below takes over. */
   energyThreshold: 0.015,
   /** Sustained energy shorter than this is a transient (keystroke), not speech. */
   minSpeechMs: 300,
   /** This much silence after speech closes the turn. */
   endpointMs: 1000,
+  /** Speech must clear the learned noise floor by this multiple. */
+  noiseFloorFactor: 2.5,
+  /** Per-frame EMA rate at which the floor leaks UP toward sustained sound.
+   *  ~0.02 at ~85ms frames ≈ a few seconds to learn a constant hum. */
+  noiseFloorRise: 0.02,
+  /** The floor never learns past this — a room so loud it masks speech is
+   *  not something a gate can fix, and an uncapped floor could gate a
+   *  LOUD speaker out mid-monologue. */
+  noiseFloorMax: 0.05,
 };
+
+/**
+ * Minimum-statistics noise-floor estimate (live failure, sess-1785962737985:
+ * a noisy room + the fixed 0.015 threshold produced 38 empty transcripts out
+ * of 93 segments — ambient noise flickering over the constant threshold was
+ * streamed to STT as "speech", transcribed to nothing, and rendered as
+ * "transcription unavailable"; the candidate asked "can you hear me?" four
+ * times at a working microphone).
+ *
+ * The estimator: snap DOWN to any quieter frame instantly, leak UP slowly
+ * toward sustained sound. Real speech is full of sub-floor dips (inter-word
+ * gaps, breaths) that keep re-anchoring the floor low; a constant hum has
+ * none, so the floor climbs to it within seconds and the gate stops
+ * mistaking it for a voice. Pure — call once per frame.
+ */
+export function nextNoiseFloor(floor, energy, cfg = DEFAULT_PRESENCE_CFG) {
+  if (energy < floor) return energy;
+  return Math.min(cfg.noiseFloorMax, floor + (energy - floor) * cfg.noiseFloorRise);
+}
+
+/** The effective gate: the quiet-room constant, or the learned floor times
+ *  the clearance factor — whichever is higher. */
+export function speechThreshold(floor, cfg = DEFAULT_PRESENCE_CFG) {
+  return Math.max(cfg.energyThreshold, floor * cfg.noiseFloorFactor);
+}
 
 /** Root-mean-square energy of a sample frame (Float32Array or number[]). */
 export function frameEnergy(samples) {
@@ -45,6 +80,9 @@ export function frameEnergy(samples) {
   return Math.sqrt(sum / samples.length);
 }
 
+/** Fixed-threshold classification — quiet-room path, kept for callers
+ *  without a noise-floor estimate. The voice client uses the adaptive
+ *  threshold via frameEnergy + speechThreshold instead. */
 export function isSpeechFrame(samples, cfg = DEFAULT_PRESENCE_CFG) {
   return frameEnergy(samples) > cfg.energyThreshold;
 }

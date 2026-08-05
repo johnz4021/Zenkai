@@ -30,9 +30,11 @@
 
 import {
   DEFAULT_PRESENCE_CFG,
+  frameEnergy,
   initialPresence,
-  isSpeechFrame,
+  nextNoiseFloor,
   presenceStep,
+  speechThreshold,
 } from '/client/presence.js';
 
 const TARGET_RATE = 16_000;
@@ -45,6 +47,10 @@ export function startVoice({ onState, onAgentAudioWanted }) {
     ctx: null,
     stream: null,
     presence: initialPresence(),
+    // Learned ambient level — the gate adapts to the room instead of
+    // streaming a noisy café to STT as "speech" (sess-1785962737985: 38 of
+    // 93 segments transcribed to nothing in a noisy environment).
+    noiseFloor: 0,
     // ~500ms rolling pre-roll so the first word is not clipped: chunks are
     // buffered while idle and flushed when speech_start confirms.
     preRoll: [],
@@ -111,7 +117,14 @@ export function startVoice({ onState, onAgentAudioWanted }) {
           duration_ms: Math.round(frameMs),
         };
 
-        const r = presenceStep(state.presence, isSpeechFrame(samples, DEFAULT_PRESENCE_CFG), now, DEFAULT_PRESENCE_CFG);
+        // Adaptive gate: classify against the learned room floor, then let
+        // the floor learn from this frame. Ordering matters — classifying
+        // with the pre-update floor keeps a loud first word from raising
+        // the bar against itself.
+        const energy = frameEnergy(samples);
+        const speechFrame = energy > speechThreshold(state.noiseFloor, DEFAULT_PRESENCE_CFG);
+        state.noiseFloor = nextNoiseFloor(state.noiseFloor, energy, DEFAULT_PRESENCE_CFG);
+        const r = presenceStep(state.presence, speechFrame, now, DEFAULT_PRESENCE_CFG);
         state.presence = r.state;
 
         if (r.event && r.event.type === 'speech_start') {
