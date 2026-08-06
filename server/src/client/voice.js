@@ -19,8 +19,12 @@
  * silence while muted is unobservable, so it must never score as a clean
  * "stayed quiet" — the server contaminates accordingly.
  *
- * Echo: echoCancellation + the barge-in rule (candidate speech pauses agent
- * audio). Headphones still recommended in the UI copy.
+ * Echo: echoCancellation only. Headphones still recommended in the UI copy.
+ * There is deliberately NO barge-in (candidate speech never pauses agent
+ * audio): interrupting the interviewer is a habit this product should not
+ * rehearse, and the old pause had no resume path — one noise blip over the
+ * gate permanently amputated the rest of a turn. The inverse courtesy IS
+ * kept: a turn arriving mid-candidate-sentence holds until their speech_end.
  *
  * Mic denied / no device is a RUNTIME fallback, not a flag: the session
  * continues text-only with the state chip saying so.
@@ -56,6 +60,10 @@ export function startVoice({ onState, onAgentAudioWanted }) {
     preRoll: [],
     speaking: false,
     audioEl: null,
+    // A turn that arrived while the candidate was mid-sentence, waiting for
+    // their speech_end (or the hold cap) before playing.
+    heldSeq: null,
+    holdTimer: null,
   };
 
   const setChip = (chip) => {
@@ -132,13 +140,17 @@ export function startVoice({ onState, onAgentAudioWanted }) {
           send({ type: 'speech_start', ts: r.event.ts });
           for (const c of state.preRoll) send(c); // first word lives here
           state.preRoll = [];
-          // Barge-in: the candidate talking pauses the agent.
-          if (state.audioEl && !state.audioEl.paused) state.audioEl.pause();
+          // NO barge-in, by decision: the interviewer's audio always plays
+          // to completion. The old pause-on-speech_start had no resume path,
+          // so one noise blip over the gate amputated the rest of the turn
+          // permanently (reported live from a noisy room) — and interrupting
+          // the interviewer is a habit this product should NOT rehearse.
           setChip('hearing you');
         } else if (r.event && r.event.type === 'speech_end') {
           state.speaking = false;
           send({ type: 'speech_end', ts: now });
           setChip('listening');
+          playHeldTurn();
         } else if (r.event && r.event.type === 'transient') {
           send({ type: 'transient' });
         }
@@ -179,6 +191,8 @@ export function startVoice({ onState, onAgentAudioWanted }) {
    *  Session is wrong on its own terms. */
   function stop() {
     state.muted = true;
+    state.heldSeq = null;
+    if (state.holdTimer) { clearTimeout(state.holdTimer); state.holdTimer = null; }
     try { if (state.ctx) state.ctx.close(); } catch {}
     try { if (state.stream) state.stream.getTracks().forEach((t) => t.stop()); } catch {}
     try { if (state.ws) state.ws.close(); } catch {}
@@ -186,9 +200,20 @@ export function startVoice({ onState, onAgentAudioWanted }) {
     setChip('ended');
   }
 
-  /** Called by session.js when a new interviewer turn arrives. */
-  function speak(seq) {
-    if (state.chip.indexOf('text only') !== -1) return;
+  /** The inverse courtesy of no-barge-in: the interviewer does not START
+   *  talking while the candidate is mid-sentence. A turn that arrives
+   *  during a speech segment is held and played at speech_end — capped, so
+   *  a noisy never-ending segment cannot delay the answer forever. */
+  const HOLD_CAP_MS = 3_000;
+  function playHeldTurn() {
+    if (state.heldSeq === null) return;
+    const seq = state.heldSeq;
+    state.heldSeq = null;
+    if (state.holdTimer) { clearTimeout(state.holdTimer); state.holdTimer = null; }
+    playNow(seq);
+  }
+
+  function playNow(seq) {
     const el = state.audioEl || (state.audioEl = document.createElement('audio'));
     el.src = '/voice/tts/' + seq;
     setChip('interviewer speaking');
@@ -198,6 +223,22 @@ export function startVoice({ onState, onAgentAudioWanted }) {
       /* autoplay blocked: text already rendered, audio resumes on gesture */
     });
     if (onAgentAudioWanted) onAgentAudioWanted(seq);
+  }
+
+  /** Called by session.js when a new interviewer turn arrives. */
+  function speak(seq) {
+    if (state.chip.indexOf('text only') !== -1) return;
+    if (state.speaking) {
+      // Hold: they are mid-sentence. Newest turn wins if several stack.
+      state.heldSeq = seq;
+      if (state.holdTimer) clearTimeout(state.holdTimer);
+      state.holdTimer = setTimeout(() => {
+        state.holdTimer = null;
+        playHeldTurn();
+      }, HOLD_CAP_MS);
+      return;
+    }
+    playNow(seq);
   }
 
   boot();
