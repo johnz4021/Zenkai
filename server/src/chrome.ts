@@ -112,74 +112,99 @@ export function sessionPage(sessionId: string, partial: Partial<SessionPageView>
   return /* html */ `<!doctype html>
 <meta charset="utf-8" />
 <title>session ${sessionId}</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' fill='none'%3E%3Crect width='64' height='64' fill='%230e0e0f'/%3E%3Ccircle cx='32' cy='32' r='24' stroke='%230088b0' stroke-width='8' stroke-dasharray='118 33'/%3E%3Cpath d='M18 46 L52 12' stroke='%23f4f4f5' stroke-width='8'/%3E%3Cpath d='M40 12 L52 12 L52 24' stroke='%23f4f4f5' stroke-width='8' stroke-linejoin='miter'/%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
 <style>
-  :root { --accent: #7c5cff; --line: #2a2a2e; --dim: #9a9aa2; }
+  /* Graphite Steel — the SAME token block as the plan app (app.ts). One skin. */
+  :root {
+    --bg: #0e0e0f; --panel: #151517; --raised: #1d1e20; --sunk: #131314;
+    --text-1: #f4f4f5; --text-2: #96979b; --text-3: #66676b;
+    --line: #292a2c; --line-soft: #1c1c1e; --rule: #191919;
+    --steel: #35708f; --steel-text: #7ea9c2;
+    --ok: #5f9e7a; --weak: #e82b86; --weak-text: #ff6fae; --none: #4a4b4f;
+    --mono: 'JetBrains Mono', ui-monospace, monospace;
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 13px/1.45 ui-monospace, monospace; background: #17171a; color: #e6e6ea; display: flex; flex-direction: column; height: 100vh; }
+  body { margin: 0; font: 13.5px/1.45 'Archivo', system-ui, sans-serif; background: var(--bg); color: var(--text-1); display: flex; flex-direction: column; height: 100vh; }
   header { display: flex; align-items: center; gap: 16px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
-  header .t { color: var(--dim); }
-  header a#back { color: var(--dim); text-decoration: none; }
-  header a#back:hover { color: #e6e6ea; }
-  header button { background: none; border: 1px solid var(--line); color: #e6e6ea; padding: 5px 12px; font: inherit; cursor: pointer; }
+  header .t { color: var(--text-2); font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+  header #clock { color: var(--steel-text); }  /* the timer is steel: time is steel's whole job */
+  header a#back { color: var(--text-2); text-decoration: none; }
+  header a#back:hover { color: var(--text-1); }
+  header button { background: none; border: 1px solid var(--line); color: var(--text-1); padding: 5px 12px; font: inherit; cursor: pointer; border-radius: 6px; }
   /* Run Tests lives in OUR header, not in the editor. Both IDE affordances
      (status-bar item, editor-title icon) were observed live being missed by
      a candidate who then asked the interviewer how to run tests — one is a
      label that changes after a run, the other an unlabeled icon among VS
-     Code's own. A labeled accent button above the workbench cannot hide
-     behind whichever tab happens to be focused. */
-  header #run { margin-left: auto; border-color: var(--accent); color: var(--accent); font-weight: 600; padding: 5px 16px; }
-  header #run:hover:not(:disabled) { background: var(--accent); color: #17171a; }
+     Code's own. A labeled button above the workbench cannot hide behind
+     whichever tab happens to be focused. White fill, not steel: the action
+     must never share a color with the indicators. */
+  header #run { margin-left: auto; background: var(--text-1); border-color: var(--text-1); color: var(--bg); font-weight: 600; padding: 5px 16px; }
+  header #run:hover:not(:disabled) { background: #fff; border-color: #fff; }
   header #run:disabled { opacity: .55; cursor: default; }
   header #run + #mute { margin-left: 0; }
-  header #mute { margin-left: auto; color: var(--dim); }
-  header #mute.on { color: #e6e6ea; border-color: #e6e6ea; }
+  header #mute { margin-left: auto; color: var(--text-2); }
+  header #mute.on { color: var(--text-1); border-color: var(--text-1); }
   main { flex: 1; display: flex; min-height: 0; }
   iframe { flex: 1; border: 0; }
-  aside { width: 340px; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+  aside { width: 340px; border-left: 1px solid var(--line); display: flex; flex-direction: column; background: var(--sunk); }
   #log { flex: 1; overflow-y: auto; padding: 10px 14px; }
   #log .u { margin: 0 0 8px; }
-  #log .u b { color: var(--dim); font-weight: normal; }
-  #log .pending { color: var(--dim); }
+  #log .u b { color: var(--text-2); font-weight: normal; }
+  #log .pending { color: var(--text-2); }
   form { display: flex; border-top: 1px solid var(--line); }
   input { flex: 1; background: none; border: 0; color: inherit; font: inherit; padding: 10px 14px; outline: none; }
-  form button { background: none; border: 0; border-left: 1px solid var(--line); color: var(--dim); padding: 0 14px; font: inherit; cursor: pointer; }
+  form button { background: none; border: 0; border-left: 1px solid var(--line); color: var(--text-2); padding: 0 14px; font: inherit; cursor: pointer; }
   #feedback { display: none; padding: 18px; overflow-y: auto; }
-  #feedback h2 { font-size: 13px; font-weight: normal; color: var(--dim); margin: 0 0 4px; text-transform: uppercase; letter-spacing: .06em; }
+  #feedback h2 { font-family: var(--mono); font-size: 12px; font-weight: normal; color: var(--text-2); margin: 0 0 4px; text-transform: uppercase; letter-spacing: .06em; }
   .row { padding: 10px 0; border-bottom: 1px solid var(--line); }
   .row .desc { margin: 0 0 6px; }
-  .cite { color: var(--dim); }
-  .cite .clk { color: #e6e6ea; }
-  .delta { color: var(--dim); padding-left: 18px; }
-  .closedmark { border-left: 2px solid var(--accent); padding-left: 10px; }
-  .row .dim { text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
-  .v-strong .dim { color: var(--accent); }
-  .v-weak .dim { color: #e6a23c; }
-  .v-none { opacity: .55; }
-  #feedback button { background: none; border: 1px solid var(--line); color: var(--dim); padding: 4px 10px; font: inherit; cursor: pointer; }
-  .focus { border: 1px solid var(--accent); padding: 10px; margin-top: 14px; }
-  .focus .k { color: var(--accent); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
-  .meta { color: var(--dim); margin-top: 12px; }
+  .cite { color: var(--text-2); }
+  .cite .clk { color: var(--text-1); }
+  .delta { color: var(--text-2); padding-left: 18px; }
+  .closedmark { border-left: 2px solid var(--steel); padding-left: 10px; }
+  /* Grade grammar: color AND shape (■ strong · ◆ weak · ▫ not-shown + hatch). */
+  .row .dim { font-family: var(--mono); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+  .row .dim::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 7px; border: 1px solid var(--none); vertical-align: 0; }
+  .v-strong .dim { color: var(--ok); }
+  .v-strong .dim::before { background: var(--ok); border-color: var(--ok); }
+  .v-weak .dim { color: var(--weak-text); }
+  .v-weak .dim::before { background: var(--weak); border-color: var(--weak); transform: rotate(45deg) scale(.9); }
+  .v-none { opacity: .55; background: repeating-linear-gradient(45deg, transparent 0 5px, rgba(255, 255, 255, .03) 5px 10px); }
+  #feedback button { background: none; border: 1px solid var(--line); color: var(--text-2); padding: 4px 10px; font: inherit; cursor: pointer; border-radius: 6px; }
+  .focus { border: 1px solid var(--steel); padding: 10px; margin-top: 14px; border-radius: 6px; }
+  .focus .k { color: var(--steel-text); font-family: var(--mono); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+  .meta { color: var(--text-2); margin-top: 12px; }
+  .confirm { margin-top: 10px; color: var(--text-2); }
+  button.cf { background: none; border: 1px solid #3c3d40; color: var(--text-1); padding: 3px 12px; font: inherit; cursor: pointer; border-radius: 6px; margin-left: 6px; }
+  button.cf:hover { border-color: var(--text-3); }
   /* Panes surface: statement · editor · test panel. Same chrome around it. */
   #panes { flex: 1; display: flex; min-width: 0; }
   #statement { width: 34%; min-width: 260px; max-width: 480px; overflow-y: auto; padding: 16px 18px; border-right: 1px solid var(--line); }
-  #statement h1 { font-size: 12px; font-weight: normal; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 10px; }
+  #statement h1 { font-family: var(--mono); font-size: 11px; font-weight: normal; color: var(--text-3); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 10px; }
   #statement .body { white-space: pre-wrap; line-height: 1.55; }
   #work { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   #tabs { display: flex; border-bottom: 1px solid var(--line); overflow-x: auto; }
-  #tabs button { background: none; border: 0; border-right: 1px solid var(--line); color: var(--dim); padding: 7px 14px; font: inherit; cursor: pointer; white-space: nowrap; }
-  #tabs button.active { color: #e6e6ea; border-bottom: 2px solid var(--accent); }
+  #tabs button { background: none; border: 0; border-right: 1px solid var(--line); color: var(--text-2); padding: 7px 14px; font: 12px/1.45 var(--mono); cursor: pointer; white-space: nowrap; border-radius: 0; }
+  #tabs button.active { color: var(--text-1); background: var(--sunk); border-bottom: 2px solid var(--steel); }  /* position marker */
   #editor { flex: 1; min-height: 0; }
   #testpanel { height: 180px; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
   #testbar { display: flex; align-items: center; gap: 12px; padding: 6px 12px; border-bottom: 1px solid var(--line); }
-  #testbar .lbl { color: var(--dim); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
-  #runstate { color: var(--dim); }
-  #runout { flex: 1; overflow: auto; margin: 0; padding: 8px 12px; font-size: 12px; }
+  #testbar .lbl { color: var(--text-3); font-family: var(--mono); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+  #runstate { color: var(--text-2); font-family: var(--mono); font-size: 12px; }
+  #runstate.pass { color: var(--ok); }
+  #runstate.fail { color: var(--weak-text); }
+  #runout { flex: 1; overflow: auto; margin: 0; padding: 8px 12px; font: 12px/1.5 var(--mono); }
   /* After grading the container is gone — the work pane is dead. The
      card takes the full width and the way home gets prominent. */
   body.ended main iframe { display: none; }
   body.ended main #panes { display: none; }
   body.ended aside { width: auto; flex: 1; border-left: 0; max-width: 720px; margin: 0 auto; }
-  .cardback { display: inline-block; margin-top: 18px; color: var(--accent); text-decoration: none; }
+  .cardback { display: inline-block; margin-top: 18px; color: var(--text-1); text-decoration: underline; }
+  :is(button, input, a):focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 </style>
 <header>
   ${view.back_url ? `<a id="back" href="${view.back_url}">← back to plan</a>` : ''}

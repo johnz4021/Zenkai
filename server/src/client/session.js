@@ -26,7 +26,7 @@ const clockTimer = setInterval(() => {
   const shown = limitMs > 0 ? Math.max(0, Math.ceil((limitMs - elapsed) / 1000)) : Math.floor(elapsed / 1000);
   clockEl.textContent =
     String(Math.floor(shown / 60)).padStart(2, '0') + ':' + String(shown % 60).padStart(2, '0');
-  if (limitMs > 0 && limitMs - elapsed < 5 * 60_000) clockEl.style.color = '#e6a23c';
+  if (limitMs > 0 && limitMs - elapsed < 5 * 60_000) clockEl.style.color = '#ff6fae';
 }, 1000);
 
 async function pollStatus() {

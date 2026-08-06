@@ -26,5 +26,21 @@
   "files.autoSave": "off",
 
   "//recommendations": "QA ISSUE-009: a stock 'install the Python extension?' modal popped mid-interview.",
-  "extensions.ignoreRecommendations": true
+  "extensions.ignoreRecommendations": true,
+
+  "//theme": "Graphite Steel re-skin: pull the workbench onto the shell's palette (bg #0e0e0f, sunk #131314, steel #35708f for position/focus) so the embedded editor doesn't read as a third, unowned skin. Reaches the workbench via injectWorkbenchDefaults (workbench-inject.ts) — the //KNOWN-ISSUE above predates that lever.",
+  "workbench.colorTheme": "Default Dark Modern",
+  "workbench.colorCustomizations": {
+    "titleBar.activeBackground": "#0e0e0f",
+    "titleBar.inactiveBackground": "#0e0e0f",
+    "activityBar.background": "#0e0e0f",
+    "sideBar.background": "#131314",
+    "statusBar.background": "#0e0e0f",
+    "statusBar.noFolderBackground": "#0e0e0f",
+    "editor.background": "#131314",
+    "panel.background": "#131314",
+    "editorGroupHeader.tabsBackground": "#0e0e0f",
+    "tab.activeBorder": "#35708f",
+    "focusBorder": "#35708f"
+  }
 }

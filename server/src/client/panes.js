@@ -112,8 +112,24 @@
   const boot = async () => {
     const r = await fetch('/api/files');
     const { files } = await r.json();
+    // Graphite Steel: sink the editor ground to the shell's --sunk tone so the
+    // pane reads as one instrument; syntax colors inherit from vs-dark.
+    monaco.editor.defineTheme('zenkai-graphite', {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [],
+      colors: {
+        'editor.background': '#131314',
+        'editorLineNumber.foreground': '#66676b',
+        'editorLineNumber.activeForeground': '#96979b',
+        'editorCursor.foreground': '#f4f4f5',
+        'editor.selectionBackground': '#35708f55',
+        'editor.inactiveSelectionBackground': '#35708f2e',
+        'focusBorder': '#35708f',
+      },
+    });
     editor = monaco.editor.create(editorHost, {
-      theme: 'vs-dark',
+      theme: 'zenkai-graphite',
       automaticLayout: true,
       minimap: { enabled: false },
       fontSize: 13,
@@ -140,6 +156,8 @@
           $('runstate').textContent = out.error === 'busy' ? 'a run is already in progress' : 'run refused: ' + out.error;
         } else {
           $('runstate').textContent = out.exit_code === 0 ? 'passed' : 'failed';
+          // Presentation hook only: lets the stylesheet color the verdict.
+          $('runstate').className = out.exit_code === 0 ? 'pass' : 'fail';
           $('runout').textContent = out.tail || out.summary || '';
           $('runout').scrollTop = $('runout').scrollHeight;
         }
