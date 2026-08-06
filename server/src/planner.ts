@@ -343,7 +343,10 @@ export function renderPlannerSplit(
   templatePath: string,
   target: Target,
 ): { system: string; kickoff: string } {
-  const raw = readFileSync(templatePath, 'utf8');
+  // The leading HTML comment documents the template for humans; the model
+  // never needs it (and the placeholder names inside it must not reach the
+  // system prompt).
+  const raw = readFileSync(templatePath, 'utf8').replace(/^<!--[\s\S]*?-->\s*/, '');
   const idx = raw.indexOf(KICKOFF_MARKER);
   if (idx === -1) throw new Error('planner.md is missing the KICKOFF marker');
   const system = raw.slice(0, idx).trim();
