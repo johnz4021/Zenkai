@@ -385,6 +385,51 @@ export function appPage(): string {
   .progress .fill.det { animation: none; transition: width 1s linear; }
   @keyframes slide { from { margin-left: 0; } to { margin-left: 70%; } }
 
+  /* ---- planner conversation (the intake IS the first message) ---- */
+  .turn-user { border-left: 1px solid var(--line); padding-left: 16px; margin: 24px 0; white-space: pre-wrap; }
+  .turn-user .att { color: var(--dim); font-size: 12px; margin-top: 6px; white-space: normal; }
+  .turn-planner { margin: 24px 0; }
+  .turn-planner p { margin: 0 0 12px; line-height: 1.65; }
+  .traceline { background: none; border: 0; border-top: 1px solid var(--line-soft); padding: 8px 0 0; min-height: 0;
+    color: var(--dim); font-size: 12px; cursor: pointer; display: block; width: 100%; text-align: left; }
+  .traceline:hover { color: var(--bright); border-color: var(--line-soft); }
+  .cnum { color: var(--mag); }
+  .tracelist { margin-top: 8px; font-size: 12px; }
+  .tracerow { display: flex; gap: 12px; justify-content: space-between; padding: 3px 0; }
+  .tracerow a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-dim); overflow-wrap: anywhere; }
+  /* Conflict panel: the ONLY magenta object on the page — the attention
+     axis spent where it matters (a source contradicting the candidate). */
+  .conflict { border: 1px solid var(--mag-dim); margin: 14px 0; }
+  .conflict .chead { padding: 8px 14px; border-bottom: 1px solid var(--mag-dim); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mag); }
+  .conflict .csides { display: flex; }
+  .conflict .cside { flex: 1; padding: 12px 14px; min-width: 0; }
+  .conflict .cside + .cside { border-left: 1px solid var(--line); color: var(--dim); }
+  .conflict .clabel { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); margin-bottom: 6px; }
+  .conflict .cfoot { display: flex; gap: 14px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); }
+  .conflict .cfoot p { flex: 1; margin: 0; color: var(--dim); font-size: 12px; }
+  .q button.opt { display: block; width: 100%; text-align: left; background: none; border: 0; border-top: 1px solid var(--line-soft); min-height: 0; }
+  .q button.opt:hover { color: var(--bright); background: rgba(255, 255, 255, .02); }
+  /* Confirm gate: pinned above the composer, imminent round expanded,
+     the rest one line each — four rounds must not swallow the screen. */
+  #plan-gate { position: sticky; bottom: 0; background: var(--bg); border-top: 1px solid var(--line); margin-top: 24px; padding: 12px 0 4px; }
+  .gatehead { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+  .gatehead .meta { font-size: 12px; }
+  .gaterow { display: flex; gap: 12px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--line-soft); }
+  .gaterow .gcheck { display: flex; gap: 8px; align-items: baseline; margin: 0; font-weight: 400; cursor: pointer; white-space: nowrap; }
+  .gaterow .gcheck input { width: auto; accent-color: var(--accent); }
+  .gaterow .gmeta { color: var(--dim); font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gaterow .gexpand { background: none; border: 0; min-height: 0; padding: 0; color: var(--dim); font-size: 12px; cursor: pointer; white-space: nowrap; }
+  .gaterow .gexpand:hover { color: var(--bright); }
+  .gaterow .gdate.nodate { color: #6a6a72; }
+  .gatedetail { padding: 0 0 10px 26px; color: var(--dim); font-size: 12px; line-height: 1.6; max-width: 62ch; }
+  .gatedetail b { color: var(--bright); font-weight: 500; }
+  .gatedecline { color: var(--dim); font-size: 12px; padding: 8px 0; border-top: 1px solid var(--line-soft); }
+  .gatecommit { display: flex; gap: 14px; align-items: center; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+  #plan-composer { display: flex; gap: 8px; margin-top: 14px; position: sticky; bottom: 0; background: var(--bg); padding-bottom: 8px; }
+  #plan-composer textarea { flex: 1; min-height: 40px; resize: none; }
+  .carddel { border: 0; color: var(--dim); font-size: 12px; padding: 0; min-height: 0; margin-top: 8px; }
+  .carddel:hover { color: var(--mag); }
+
   /* ---- all plans (index) ---- */
   a.plancard {
     display: block; border: 1px solid var(--line); padding: 16px; margin: 12px 0;

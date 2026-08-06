@@ -38,9 +38,12 @@ function route() {
 }
 
 window.addEventListener('hashchange', () => {
-  // Leaving the intake abandons the client-side flow; the target persists
-  // on disk and surfaces on the index as "finish setting up".
-  if (!window.location.hash.startsWith('#/new')) flowTargetId = null;
+  // Leaving the intake abandons the client-side flow; the target AND its
+  // conversation persist on disk and surface on the index as resumable.
+  if (!window.location.hash.startsWith('#/new')) {
+    flowTargetId = null;
+    plan.tid = null; plan.turns = []; plan.proposal = null; plan.busy = false; plan.error = ''; plan.gateOpen = null;
+  }
   if (lastStateJson) render(JSON.parse(lastStateJson));
 });
 
@@ -121,7 +124,8 @@ function buildBinaryAttachments() {
 // ---- first-run flow: build → clarify → confirm → season ----
 
 let flowTargetId = null;
-let draft = null;
+/** Drafts shown by the classic confirm wall (was an accidental global). */
+let drafts = [];
 
 function flow(html) {
   el('entry-form').hidden = true;
@@ -154,7 +158,7 @@ el('e-build').addEventListener('click', async () => {
   btn.textContent = 'Build my plan';
   if (s.error) { err.textContent = s.error; return; }
   flowTargetId = s.id;
-  runClarify(null);
+  planStart(s.id);
 });
 
 function specShapeLine(c) {
@@ -281,6 +285,268 @@ function renderConfirm(allDrafts) {
 function backToForm() {
   el('entry-flow').hidden = true;
   el('entry-form').hidden = false;
+}
+
+// ---- conversational planner ----
+// The intake form IS the first message; after Build the surface becomes a
+// conversation with the planner (design: Zenkai Planning Screen, approved
+// 2026-08-06). Everything here renders from `plan` state kept OUTSIDE the
+// DOM (adapt-panel precedent) so the 5s poll can't destroy it. The classic
+// wizard above stays intact as the no-API-key fallback (server 501s).
+const plan = { tid: null, turns: [], proposal: null, busy: false, error: '', gateOpen: null };
+
+function planStart(id) {
+  plan.tid = id; plan.turns = []; plan.proposal = null; plan.error = ''; plan.gateOpen = null;
+  planTurn(null);
+}
+
+/** Resume from disk — the conversation replays; nothing was lost. */
+function planResume(id) {
+  plan.tid = id; plan.turns = []; plan.proposal = null; plan.error = ''; plan.gateOpen = null;
+  plan.busy = true;
+  renderPlan();
+  fetch('/api/plan/conversation?target=' + encodeURIComponent(id))
+    .then((r) => r.json())
+    .then((d) => {
+      plan.busy = false;
+      if (d.error) { plan.error = d.error; renderPlan(); return; }
+      if (!d.planner_available) { runClarify(null); return; }
+      plan.turns = d.turns || [];
+      plan.proposal = d.proposal || null;
+      if (plan.turns.length === 0) planTurn(null);
+      else renderPlan();
+    })
+    .catch(() => { plan.busy = false; plan.error = 'could not load the conversation'; renderPlan(); });
+}
+
+function planTurn(message) {
+  plan.busy = true; plan.error = '';
+  renderPlan();
+  fetch('/api/plan/turn', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ target_id: plan.tid, message: message || undefined }),
+  })
+    .then(async (r) => ({ status: r.status, body: await r.json() }))
+    .then(({ status, body }) => {
+      plan.busy = false;
+      if (status === 501) { runClarify(null); return; } // no API key — classic wizard
+      if (body.error) { plan.error = body.error; renderPlan(); return; }
+      plan.turns = plan.turns.concat(body.turns || []);
+      for (const t of body.turns || []) if (t.proposal) plan.proposal = t.proposal;
+      renderPlan();
+    })
+    .catch(() => {
+      plan.busy = false;
+      plan.error = 'the planner did not answer — your conversation is saved, try again';
+      renderPlan();
+    });
+}
+
+function specDateLine(spec) {
+  if (!spec.date) return 'date not set';
+  const n = daysUntil(spec.date);
+  return fmtDate(spec.date) + (n !== null ? ' · ' + n + ' day' + (n === 1 ? '' : 's') : '');
+}
+
+function renderTraceLine(t, i) {
+  const urls = (t.searched && t.searched.urls) || [];
+  const conflicts = t.proposal && t.proposal.conflict ? 1 : 0;
+  if (!urls.length && !conflicts) return '';
+  // Verdicts come from the proposal's sources, matched by url.
+  const verdictOf = {};
+  if (t.proposal) for (const s of t.proposal.sources || []) verdictOf[s.url] = s.verdict;
+  let html = '<button type="button" class="traceline" data-trace="' + i + '">Looked up · ' + urls.length +
+    ' source' + (urls.length === 1 ? '' : 's') +
+    (conflicts ? ' · <span class="cnum">' + conflicts + ' conflict</span>' : ' · 0 conflicts') + ' ▾</button>';
+  html += '<div class="tracelist" hidden data-tracelist="' + i + '">';
+  for (const u of urls) {
+    const v = verdictOf[u] || '';
+    html += '<div class="tracerow"><a href="' + esc(u) + '" target="_blank" rel="noopener">' + esc(u) + '</a>' +
+      (v ? '<span class="' + (v === 'conflicts' ? 'cnum' : 'meta') + '">' + esc(v) + '</span>' : '') + '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderConflict(c) {
+  return '<div class="conflict">' +
+    '<div class="chead">A source disagrees with you · keeping your version</div>' +
+    '<div class="csides">' +
+    '<div class="cside"><div class="clabel">You told me</div>' + esc(c.yours) + '</div>' +
+    '<div class="cside"><div class="clabel">A public source says</div>' + esc(c.theirs) +
+    (c.source_url ? '<div class="meta" style="margin-top:6px"><a href="' + esc(c.source_url) + '" target="_blank" rel="noopener">' + esc(c.source_url) + '</a></div>' : '') +
+    '</div></div>' +
+    '<div class="cfoot"><p>Your evidence outranks a public source. Say so if the source is closer to what you were told.</p>' +
+    '<button type="button" class="c-override" data-theirs="' + esc(c.theirs) + '">Use their version instead</button></div>' +
+    '</div>';
+}
+
+function renderQuestionBlock(q, qi) {
+  let html = '<div class="q"><p class="qtext">' + esc(q.question) + '</p>' +
+    '<p class="meta qwhy">' + esc(q.why) + '</p>';
+  q.options.forEach((op) => {
+    const rec = q.recommended && q.recommended === op.label;
+    html += '<button type="button" class="opt qanswer" data-q="' + esc(q.question) + '" data-a="' + esc(op.label) + '">' +
+      '<span>' + esc(op.label) + (rec ? ' <em class="rec">recommended</em>' : '') +
+      (op.detail ? '<br /><span class="meta">' + esc(op.detail) + '</span>' : '') + '</span></button>';
+  });
+  html += '<p class="meta" style="margin:8px 0 0">None of these? Say it in the message box below.</p></div>';
+  return html;
+}
+
+/** The confirm gate: only confirmable rounds plus the commit button. The
+ *  most imminent round is expanded (description + why); the rest are one
+ *  line — a four-round loop must not swallow the conversation. */
+function renderGate() {
+  const p = plan.proposal;
+  if (!p) return '';
+  const usable = [];
+  const declined = [];
+  p.drafts.forEach((d, i) => (d.unsupported ? declined : usable).push({ d, i }));
+  if (!usable.length && !declined.length) return '';
+  const dated = usable.filter((x) => x.d.spec.date).sort((a, b) => (a.d.spec.date < b.d.spec.date ? -1 : 1));
+  const undated = usable.filter((x) => !x.d.spec.date);
+  const ordered = dated.concat(undated);
+  const openIdx = plan.gateOpen === null ? (ordered.length ? ordered[0].i : null) : plan.gateOpen;
+
+  let html = '<div id="plan-gate"><div class="gatehead"><span class="micro" style="margin:0">Rounds to confirm</span>' +
+    '<span class="meta">nothing is generated until you confirm</span></div>';
+  for (const { d, i } of ordered) {
+    const open = i === openIdx;
+    html += '<div class="gaterow">' +
+      '<label class="gcheck"><input type="checkbox" checked data-gi="' + i + '" /> <b>' + esc(d.spec.label) + '</b></label>' +
+      '<span class="gmeta">' + specShapeLine(d.spec.capabilities) + '</span>' +
+      '<button type="button" class="gexpand" data-gx="' + i + '" aria-expanded="' + open + '">' +
+      '<span class="gdate' + (d.spec.date ? '' : ' nodate') + '">' + specDateLine(d.spec) + '</span> ' + (open ? '▴' : '▾') + '</button>' +
+      '</div>';
+    if (open) {
+      html += '<div class="gatedetail">' +
+        (d.spec.emphasis ? '<div>emphasis: ' + esc(d.spec.emphasis) + '</div>' : '') +
+        '<div><b>Why this shape:</b> ' + esc(d.rationale || '') + '</div></div>';
+    }
+  }
+  for (const { d } of declined) {
+    html += '<div class="gatedecline">' + esc(d.spec.label) + ' — can\'t run honestly: ' + esc(d.unsupported) + '</div>';
+  }
+  html += '<div class="gatecommit"><button id="gate-confirm" class="primary" type="button">Confirm and build the plan</button>' +
+    '<span class="meta" id="gate-note"></span></div></div>';
+  return html;
+}
+
+function renderPlan() {
+  // Navigated away mid-turn: the conversation is on disk; render nothing.
+  if (!plan.tid || route().page !== 'new') return;
+  el('entry-form').hidden = true;
+  const f = el('entry-flow');
+  f.hidden = false;
+  const composerText = el('plan-msg') ? el('plan-msg').value : '';
+
+  let html = '<div id="plan-chat">';
+  plan.turns.forEach((t, i) => {
+    if (t.role === 'user') {
+      html += '<div class="turn-user">' + esc(t.prose) +
+        ((t.attachments || []).length
+          ? '<div class="att">attached: ' + t.attachments.map(esc).join(', ') + '</div>'
+          : '') + '</div>';
+    } else {
+      html += '<div class="turn-planner">';
+      for (const para of (t.prose || '').split('\n\n')) {
+        if (para.trim()) html += '<p>' + esc(para.trim()) + '</p>';
+      }
+      if (t.proposal && t.proposal.conflict) html += renderConflict(t.proposal.conflict);
+      html += renderTraceLine(t, i);
+      if (t.proposal) for (const q of t.proposal.questions || []) html += renderQuestionBlock(q);
+      html += '</div>';
+    }
+  });
+  if (plan.busy) {
+    html += '<div class="turn-planner"><p class="meta">working — reading your material' +
+      (plan.turns.length ? ' and thinking it through' : '') + '…</p>' +
+      '<div class="progress"><div class="fill"></div></div></div>';
+  }
+  if (plan.error) html += '<p class="err">' + esc(plan.error) + '</p>';
+  html += '</div>';
+
+  html += renderGate();
+
+  html += '<div id="plan-composer">' +
+    '<textarea id="plan-msg" rows="1" aria-label="Message the planner" placeholder="Answer, correct me, or ask what a round shape is"' + (plan.busy ? ' disabled' : '') + '></textarea>' +
+    '<button id="plan-send" type="button"' + (plan.busy ? ' disabled' : '') + '>Send</button></div>';
+
+  f.innerHTML = html;
+  if (el('plan-msg')) el('plan-msg').value = composerText;
+  wirePlan(f);
+  f.scrollTop = f.scrollHeight;
+}
+
+function wirePlan(f) {
+  const send = () => {
+    const box = el('plan-msg');
+    const text = box.value.trim();
+    if (!text || plan.busy) return;
+    box.value = '';
+    plan.turns.push({ role: 'user', at: new Date().toISOString(), prose: text });
+    planTurn(text);
+  };
+  if (el('plan-send')) el('plan-send').addEventListener('click', send);
+  if (el('plan-msg')) el('plan-msg').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  for (const b of f.querySelectorAll('.qanswer')) {
+    b.addEventListener('click', () => {
+      if (plan.busy) return;
+      const text = b.dataset.q + ' — ' + b.dataset.a;
+      plan.turns.push({ role: 'user', at: new Date().toISOString(), prose: text });
+      planTurn(text);
+    });
+  }
+  for (const b of f.querySelectorAll('.c-override')) {
+    b.addEventListener('click', () => {
+      if (plan.busy) return;
+      const text = 'Go with the source\'s version: ' + b.dataset.theirs;
+      plan.turns.push({ role: 'user', at: new Date().toISOString(), prose: text });
+      planTurn(text);
+    });
+  }
+  for (const b of f.querySelectorAll('.gexpand')) {
+    b.addEventListener('click', () => {
+      plan.gateOpen = Number(b.dataset.gx);
+      renderPlan();
+    });
+  }
+  for (const b of f.querySelectorAll('[data-trace]')) {
+    b.addEventListener('click', () => {
+      const list = f.querySelector('[data-tracelist="' + b.dataset.trace + '"]');
+      if (list) list.hidden = !list.hidden;
+    });
+  }
+  if (el('gate-confirm')) el('gate-confirm').addEventListener('click', async () => {
+    const kept = [];
+    for (const cb of f.querySelectorAll('.gcheck input[type="checkbox"]')) {
+      if (cb.checked) kept.push(plan.proposal.drafts[Number(cb.dataset.gi)].spec);
+    }
+    if (!kept.length) { el('gate-note').textContent = 'nothing included'; return; }
+    el('gate-confirm').disabled = true;
+    el('gate-note').textContent = 'building your plan…';
+    const r = await fetch('/api/accept-spec', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: plan.tid, specs: kept }) });
+    const s = await r.json();
+    if (s.error) {
+      el('gate-confirm').disabled = false;
+      el('gate-note').textContent = '';
+      plan.error = s.error;
+      renderPlan();
+      return;
+    }
+    // The payoff moment: the whole season appears NOW.
+    const id = plan.tid;
+    plan.tid = null; plan.turns = []; plan.proposal = null; plan.gateOpen = null;
+    flowTargetId = null;
+    el('entry-flow').hidden = true;
+    el('entry-form').hidden = false;
+    window.location.hash = '#/t/' + encodeURIComponent(id);
+    refresh(true);
+  });
 }
 
 // ---- season timeline ----
@@ -556,10 +822,14 @@ function renderIndex(state) {
   for (const row of state.targets) {
     const t = row.target;
     if (!t.specs.length) {
-      // Orphan from an abandoned intake: visible and resumable, never dead.
+      // Abandoned mid-planning: honest about being unfinished, with exactly
+      // two ways out — pick the conversation back up, or delete it. (Live
+      // use grew 5 orphans out of 8 targets when the only option was a
+      // dead "finish setting up" that restarted from scratch.)
       html += '<a href="#/new" class="plancard setup" data-resume="' + esc(t.id) + '">' +
         '<h2>' + esc(t.label) + '</h2>' +
-        '<span class="go">finish setting up →</span></a>';
+        '<span class="go">resume planning →</span>' +
+        '<button type="button" class="carddel" data-del="' + esc(t.id) + '">delete</button></a>';
       continue;
     }
     const total = row.queue ? row.queue.items.length : 0;
@@ -585,14 +855,25 @@ function renderIndex(state) {
       resumeIntake(a.dataset.resume);
     });
   }
+  for (const b of el('index').querySelectorAll('[data-del]')) {
+    b.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!window.confirm('Delete this plan and its conversation? This cannot be undone.')) return;
+      const r = await fetch('/api/target/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: b.dataset.del }) });
+      const s = await r.json();
+      if (s.error) { el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>'; return; }
+      refresh(true);
+    });
+  }
 }
 
-/** Re-enter the intake flow for a target created but never confirmed —
- *  its description is already on disk; /api/infer reads it. */
+/** Pick an unfinished plan's conversation back up — replayed from disk, so
+ *  a closed tab or restarted app costs nothing. */
 function resumeIntake(id) {
   window.location.hash = '#/new';
   flowTargetId = id;
-  runClarify(null);
+  planResume(id);
 }
 
 function wireTimeline(container) {

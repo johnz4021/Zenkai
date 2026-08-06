@@ -118,12 +118,28 @@ describe('home app page', () => {
     expect(js).toContain("couldn't start — is Docker running?");
   });
 
-  it('research is gone from the product (CEO review 2026-08-02, D9)', () => {
-    // The cut is a decision, not an accident — pin it so it can only be
-    // reversed deliberately.
+  it('research returned DELIBERATELY — inside a planner turn, never standalone (D9 → D3 amendment)', () => {
+    // CEO review 2026-08-02 (D9) cut preemptive research on evidence; the
+    // D3 amendment re-fenced it: retrieval lives INSIDE the planner
+    // conversation under the evidence hierarchy, with an audit trace and
+    // conflict deference. The standalone endpoint stays dead.
     expect(js).not.toContain('runResearch');
     expect(js).not.toContain('/api/research');
-    expect(html).not.toMatch(/look(ing)? up/i);
+    expect(js).toContain('Looked up · ');            // the audit trace line
+    expect(js).toContain('keeping your version');    // conflicts defer to the candidate
+  });
+
+  it('the planner is a conversation: composer teaches push-back, gate confirms before generation', () => {
+    expect(js).toContain('Answer, correct me, or ask what a round shape is');
+    expect(js).toContain('/api/plan/turn');
+    expect(js).toContain('nothing is generated until you confirm');
+    expect(html).toContain('#plan-gate');            // gate styles ship with the page
+  });
+
+  it('an abandoned plan is resumable or deletable, never a dead end', () => {
+    expect(js).toContain('resume planning');
+    expect(js).toContain('/api/plan/conversation');
+    expect(js).toContain('/api/target/delete');
   });
 
   it('desktop-only is stated, not broken (D7)', () => {
