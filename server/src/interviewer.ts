@@ -36,6 +36,24 @@ export interface InterviewerTurn {
   reason?: string;
 }
 
+/**
+ * Does the problem SPEC itself name the bug file? Then its name is public —
+ * the candidate reads it in the statement — and the guard's basename/stem
+ * checks would censor the spec's own vocabulary. Found live on a
+ * single-file round: the spec opened with "`hydrator.py` is what an
+ * analysis session runs…", the bug was in hydrator.py, and every opening
+ * turn that framed the task was silently redacted. In a single-file
+ * problem the "location" carries zero information anyway.
+ */
+export function specNamesBugFile(spec: string, bugFile: string): boolean {
+  if (!bugFile || !spec) return false;
+  const base = bugFile.split('/').pop() ?? bugFile;
+  const stem = base.replace(/\.[^.]+$/, '');
+  const hay = spec.toLowerCase();
+  if (hay.includes(base.toLowerCase())) return true;
+  return stem.length > 3 && new RegExp(`\\b${escapeRe(stem)}\\b`, 'i').test(spec);
+}
+
 /** Has the candidate themselves touched the bug file? Drives the guard
  *  relaxation: found territory may be discussed. */
 export function candidateVisitedBugFile(events: TraceEvent[], bugFile: string): boolean {
@@ -184,7 +202,9 @@ export function leaksBugLocation(text: string, bugFile: string): boolean {
   return stem.length > 3 && new RegExp(`\\b${escapeRe(stem)}\\b`, 'i').test(text);
 }
 
-const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 /** Parse the model's JSON reply; anything unparseable becomes silence. */
 export function parseTurn(raw: string): InterviewerTurn {
@@ -486,7 +506,7 @@ export function claudeInterviewer(templatePath: string, model = 'sonnet'): Inter
   const template = readFileSync(templatePath, 'utf8');
   return async (ctx) => {
     const raw = await runClaudeP(render(template, ctx), model, 45_000);
-    return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx), ctx.bugFileVisited ?? false);
+    return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx), (ctx.bugFileVisited ?? false) || specNamesBugFile(ctx.spec, ctx.bugFile));
   };
 }
 
@@ -535,7 +555,7 @@ export function streamingInterviewer(templatePath: string, model = 'claude-sonne
         // A truncated turn parses to SILENT and vanishes — say so loudly.
         console.warn(`[interviewer] turn TRUNCATED at max_tokens — raw tail: …${raw.slice(-120)}`);
       }
-      return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx), ctx.bugFileVisited ?? false);
+      return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx), (ctx.bugFileVisited ?? false) || specNamesBugFile(ctx.spec, ctx.bugFile));
     } catch (e) {
       console.warn('[interviewer] streaming failed, this turn is silent:', String(e).slice(0, 200));
       return { say: '', kind: 'silent', nudge: false };

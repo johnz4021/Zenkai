@@ -6,6 +6,7 @@ import {
   REDACTED_REPLY,
   TurnQueue,
   candidateVisitedBugFile,
+  specNamesBugFile,
   renderSplit,
   bugContext,
   guard,
@@ -355,6 +356,34 @@ describe('guard relaxation — found territory may be discussed', () => {
   it('visited bug file: discussing their own changes there passes clean', () => {
     const out = guard(turnNaming, BUG_FILE, true, false, undefined, true);
     expect(out).toEqual(turnNaming);
+  });
+});
+
+describe('specNamesBugFile — a name the spec published is not a secret', () => {
+  // Live failure: a single-file round's spec OPENED with "`hydrator.py` is
+  // what an analysis session runs…", the bug was in hydrator.py, and every
+  // opening turn that framed the task was silently redacted — the guard was
+  // protecting a secret the candidate could read in the statement.
+  it('true when the spec names the file or its stem', () => {
+    const spec = '`hydrator.py` is what an analysis session runs before it can answer anything.';
+    expect(specNamesBugFile(spec, 'hydrator.py')).toBe(true);
+    expect(specNamesBugFile('The hydrator pulls dataset shards into a cache.', 'hydrator.py')).toBe(true);
+  });
+
+  it('false when the spec keeps the location secret (the multi-file case)', () => {
+    // debugging-001-style: "find the root cause in src/" — no file named.
+    const spec = 'One behavior is broken: exactly one test fails. Find the root cause in src/ and fix it.';
+    expect(specNamesBugFile(spec, 'src/reservationService.ts')).toBe(false);
+  });
+
+  it('guard integration: a spec-public name passes; a secret one still redacts', () => {
+    const opening = { say: 'This round is about hydrator.py — it fills the session cache from the shard store.', kind: 'answer' as const, nudge: false };
+    // Spec-public → clean (this is the opening-turn fix).
+    expect(guard(opening, 'hydrator.py', false, false, undefined, true)).toEqual(opening);
+    // Secret → unprompted leak → silence, exactly as before.
+    const out = guard(opening, 'hydrator.py', false, false, undefined, false);
+    expect(out.say).toBe('');
+    expect(out.redacted).toBe(true);
   });
 });
 

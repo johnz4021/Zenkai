@@ -626,7 +626,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // model-silent carries the model's own reason; anything else here
         // means the parse failed or the call errored (logged upstream).
         console.log(
-          `[interviewer] silent turn${candidateMessage !== null ? ' (was a reply!)' : ''}: ${turn.reason ?? '(no reason — parse failure or error, see warnings above)'}`,
+          `[interviewer] silent turn${candidateMessage !== null ? ' (was a reply!)' : ''}: ${
+            turn.redacted
+              ? 'REDACTED by the leak guard (unprompted leak → silence)'
+              : (turn.reason ?? '(no reason — parse failure or error, see warnings above)')
+          }`,
         );
         return;
       }
