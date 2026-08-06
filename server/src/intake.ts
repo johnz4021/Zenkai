@@ -35,6 +35,12 @@ export interface Target {
   description: string;
   /** Pasted reference material: recruiter email, a found question, notes. */
   context?: string;
+  /** Binary reference material (screenshots, PDFs) stored under the target
+   *  dir and sent to the model as typed content blocks — the firsthand
+   *  evidence class (an assessment preview the candidate SAW) that a
+   *  text-flattened context could never carry. `file` is relative to the
+   *  target dir. */
+  attachments?: { name: string; media_type: string; file: string }[];
   /** Confirmed round shapes. Only confirmed specs generate problems.
    *  APPEND-ONLY once items reference them: adaptation adds specs and
    *  re-points future items; it never edits or removes one, so history
@@ -61,6 +67,42 @@ export function loadTarget(root: string, id: string): Target | null {
   const file = path.join(targetDir(root, id), 'target.json');
   if (!existsSync(file)) return null;
   return JSON.parse(readFileSync(file, 'utf8')) as Target;
+}
+
+/** Media types the intake accepts as binary attachments. The allowlist is
+ *  the gate: anything else is rejected at /api/target, never written. */
+export const ATTACHMENT_MEDIA_TYPES = new Set([
+  'image/png', 'image/jpeg', 'image/webp', 'image/gif', 'application/pdf',
+]);
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+export const MAX_ATTACHMENTS = 5;
+
+/** A stored attachment → the typed content block a model call sends.
+ *  Images become image blocks; PDFs become document blocks with citations
+ *  enabled, so a claim like "your screenshot shows a 90:00 timer" is
+ *  auditable back to the page it came from. A missing or unreadable file
+ *  degrades to a text note — one bad attachment must not sink the call. */
+export function attachmentBlocks(
+  root: string,
+  target: Target,
+): Record<string, unknown>[] {
+  return (target.attachments ?? []).map((a) => {
+    let data: string;
+    try {
+      data = readFileSync(path.join(targetDir(root, target.id), a.file)).toString('base64');
+    } catch {
+      return { type: 'text', text: `(attachment "${a.name}" is missing on disk)` };
+    }
+    if (a.media_type === 'application/pdf') {
+      return {
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data },
+        title: a.name,
+        citations: { enabled: true },
+      };
+    }
+    return { type: 'image', source: { type: 'base64', media_type: a.media_type, data } };
+  });
 }
 
 export function listTargets(root: string): Target[] {

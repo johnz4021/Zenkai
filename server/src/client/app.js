@@ -47,7 +47,13 @@ window.addEventListener('hashchange', () => {
 // ---- attachments (client-side until Build my plan) ----
 // They concatenate into the target's context string — the reference
 // material IS the moat input, so it gets a real region, not a text link.
+// Binary kinds (image/pdf) carry base64 data instead of text: a screenshot
+// read with readAsText was mojibake in the prompt, which made the single
+// most valuable evidence class (an assessment preview the candidate SAW)
+// invisible to the planner.
 const attachments = [];
+
+const BINARY_KINDS = { 'image/png': 'image', 'image/jpeg': 'image', 'image/webp': 'image', 'image/gif': 'image', 'application/pdf': 'pdf' };
 
 function renderAttachments() {
   const list = el('e-attachlist');
@@ -75,20 +81,41 @@ el('e-link').addEventListener('keydown', (e) => {
 el('e-browse').addEventListener('click', () => el('e-file').click());
 el('e-file').addEventListener('change', () => {
   for (const f of el('e-file').files) {
+    const kind = BINARY_KINDS[f.type];
     const reader = new FileReader();
-    reader.onload = () => {
-      attachments.push({ kind: 'file', name: f.name, content: String(reader.result).slice(0, 100_000) });
-      renderAttachments();
-    };
-    reader.readAsText(f);
+    if (kind) {
+      if (f.size > 10 * 1024 * 1024) {
+        el('e-err').textContent = f.name + ' is over 10MB — trim it down';
+        continue;
+      }
+      reader.onload = () => {
+        // readAsDataURL gives "data:<mime>;base64,<data>" — keep only the data.
+        const data = String(reader.result).split(',')[1] || '';
+        attachments.push({ kind, name: f.name, media_type: f.type, data });
+        renderAttachments();
+      };
+      reader.readAsDataURL(f);
+    } else {
+      reader.onload = () => {
+        attachments.push({ kind: 'file', name: f.name, content: String(reader.result).slice(0, 100_000) });
+        renderAttachments();
+      };
+      reader.readAsText(f);
+    }
   }
   el('e-file').value = '';
 });
 
+/** Text-and-link context string; binary attachments travel separately. */
 function buildContext() {
-  return attachments.map((a) =>
+  return attachments.filter((a) => !a.data).map((a) =>
     a.kind === 'link' ? '--- link: ' + a.content + ' ---' : '--- file: ' + a.name + ' ---\n' + a.content
   ).join('\n\n');
+}
+
+/** Binary attachments as {name, media_type, data} for the /api/target body. */
+function buildBinaryAttachments() {
+  return attachments.filter((a) => a.data).map((a) => ({ name: a.name, media_type: a.media_type, data: a.data }));
 }
 
 // ---- first-run flow: build → clarify → confirm → season ----
@@ -119,6 +146,7 @@ el('e-build').addEventListener('click', async () => {
       date: el('e-date').value.trim(),
       description: desc,
       context: buildContext(),
+      attachments: buildBinaryAttachments(),
     }),
   });
   const s = await r.json();

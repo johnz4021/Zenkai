@@ -40,6 +40,9 @@ export type IntakeClarifier = (input: {
   description: string;
   context: string;
   answers?: { question: string; answer: string }[];
+  /** Pre-built typed content blocks (images/PDFs) from attachmentBlocks() —
+   *  firsthand evidence the model reads directly instead of as mojibake. */
+  attachments?: Record<string, unknown>[];
 }) => Promise<ClarifyResult>;
 
 /** Shared with the adapt reasoner — one vocabulary, two prompts. */
@@ -184,10 +187,18 @@ export function apiClarifier(templatePath: string, model = 'claude-sonnet-5'): I
   return async (input) => {
     const { default: Anthropic } = await import('@anthropic-ai/sdk');
     const client = new Anthropic({ timeout: 90_000 });
+    // Attachments lead as typed blocks (the model SEES the screenshot /
+    // reads the PDF with citations enabled); the interpolated template
+    // follows as the text block. Order matters for prompt caching: the
+    // stable evidence sits before the varying answers.
+    const content = [
+      ...(input.attachments ?? []),
+      { type: 'text' as const, text: buildPrompt(templatePath, input) },
+    ] as unknown as import('@anthropic-ai/sdk/resources/messages').ContentBlockParam[];
     const msg = await client.messages.create({
       model,
       max_tokens: 3_000,
-      messages: [{ role: 'user', content: buildPrompt(templatePath, input) }],
+      messages: [{ role: 'user', content }],
       tools: [CLARIFY_TOOL],
       tool_choice: { type: 'tool', name: CLARIFY_TOOL.name },
     });
@@ -202,8 +213,13 @@ export function apiClarifier(templatePath: string, model = 'claude-sonnet-5'): I
 export function claudePClarifier(templatePath: string, model = 'sonnet'): IntakeClarifier {
   return (input) =>
     new Promise<ClarifyResult>((resolve, reject) => {
+      // The -p path cannot carry typed blocks; name what it cannot see so
+      // the model doesn't hallucinate attachment contents.
+      const attachNote = input.attachments?.length
+        ? `\n\n(${input.attachments.length} binary attachment(s) exist but are not readable in fallback mode — do not guess their contents.)`
+        : '';
       const prompt =
-        buildPrompt(templatePath, input) +
+        buildPrompt(templatePath, input) + attachNote +
         '\n\nReply with ONLY a JSON object: {"questions": [{id, question, options: [{label, detail}], recommended, why}], "rounds": [{id, label, interviewer, can_run_tests, time_limit_minutes, starts_from, submit, check_kind, emphasis, rationale, unsupported}]}';
       const child = spawn('claude', ['-p', prompt, '--output-format', 'text', '--model', model], {
         stdio: ['ignore', 'pipe', 'pipe'],

@@ -21,7 +21,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateRoundSpec, type GeneratedProblem, type RoundSpec } from '@interview-prep/shared';
-import { listTargets, loadTarget, pickSpecInferrer, saveTarget, slugify, targetDir, type SpecDraft, type Target } from './intake.js';
+import { ATTACHMENT_MEDIA_TYPES, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, listTargets, loadTarget, pickSpecInferrer, saveTarget, slugify, targetDir, type SpecDraft, type Target } from './intake.js';
 import { bucketIntoDays, loadQueue, nextUp, proposeQueue, reconcileWithDisk, repace, saveQueue, type Queue, type QueueItem } from './queue.js';
 import { buildGraphView, gapDescription, loadStore } from './gap-graph.js';
 import { applyAdaptation, pickAdapter, planAdaptation, reconcileAdaptation, retiredSpecIds, type AdaptDiff } from './adapt.js';
@@ -673,13 +673,36 @@ export function runApp(cfg: AppConfig): http.Server {
         });
       }
       if (url === '/api/target' && req.method === 'POST') {
-        const b = JSON.parse((await readBody(req)) || '{}') as { label?: string; date?: string; description?: string; context?: string };
+        const b = JSON.parse((await readBody(req)) || '{}') as {
+          label?: string; date?: string; description?: string; context?: string;
+          attachments?: { name?: string; media_type?: string; data?: string }[];
+        };
         if (!b.label?.trim()) return json(400, { error: 'label required' });
         // "AUg 20" stored verbatim rendered as "NaN days to Palantir". The
         // date is optional; a garbled one is an error, never silent data.
         const date = b.date?.trim() ?? '';
         if (date && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00`)))) {
           return json(400, { error: `couldn't read that date — write it like 2026-08-20 (got "${date}")` });
+        }
+        // Binary attachments: media-type allowlist + size caps, decoded and
+        // written under the target dir. Rejecting BEFORE the target exists
+        // keeps a bad upload from leaving a half-made plan behind.
+        const incoming = b.attachments ?? [];
+        if (incoming.length > MAX_ATTACHMENTS) {
+          return json(400, { error: `${incoming.length} attachments — max ${MAX_ATTACHMENTS}` });
+        }
+        const decoded: { name: string; media_type: string; bytes: Buffer }[] = [];
+        for (const a of incoming) {
+          const mediaType = a.media_type ?? '';
+          if (!ATTACHMENT_MEDIA_TYPES.has(mediaType)) {
+            return json(400, { error: `"${a.name ?? 'file'}": unsupported type ${mediaType || '(none)'} — images and PDFs only` });
+          }
+          const bytes = Buffer.from(a.data ?? '', 'base64');
+          if (bytes.length === 0) return json(400, { error: `"${a.name ?? 'file'}" is empty` });
+          if (bytes.length > MAX_ATTACHMENT_BYTES) {
+            return json(400, { error: `"${a.name ?? 'file'}" is ${Math.round(bytes.length / 1024 / 1024)}MB — max 10MB` });
+          }
+          decoded.push({ name: (a.name ?? 'attachment').slice(0, 120), media_type: mediaType, bytes });
         }
         const t: Target = {
           id: `${slugify(b.label)}-${Date.now().toString(36)}`,
@@ -690,6 +713,16 @@ export function runApp(cfg: AppConfig): http.Server {
           specs: [],
           created: new Date().toISOString(),
         };
+        if (decoded.length > 0) {
+          const dir = path.join(targetDir(repoRoot, t.id), 'attachments');
+          mkdirSync(dir, { recursive: true });
+          t.attachments = decoded.map((d, i) => {
+            // basename + strip traversal: the name is client input.
+            const safe = `${i + 1}-${path.basename(d.name).replace(/[^\w.\-]+/g, '_')}`;
+            writeFileSync(path.join(dir, safe), d.bytes);
+            return { name: d.name, media_type: d.media_type, file: path.join('attachments', safe) };
+          });
+        }
         saveTarget(repoRoot, t);
         return json(200, { id: t.id });
       }
@@ -706,11 +739,13 @@ export function runApp(cfg: AppConfig): http.Server {
         if (!t) return json(404, { error: 'no such target' });
         if (!t.description) return json(400, { error: 'describe the round first' });
         const { pickClarifier } = await import('./clarify.js');
+        const { attachmentBlocks } = await import('./intake.js');
         try {
           const result = await pickClarifier(path.join(repoRoot, 'prompts', 'clarify-intake.md'))({
             description: t.description,
             context: t.context ?? '',
             answers: b.answers,
+            attachments: attachmentBlocks(repoRoot, t),
           });
           return json(200, result);
         } catch (e) {
