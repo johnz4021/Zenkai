@@ -129,7 +129,11 @@ export interface SensorPayload {
  */
 export interface InterviewerPayload {
   text: string;
-  kind: 'answer' | 'pressure' | 'probe' | 'decline' | 'silent';
+  /** 'ack' = canned server-emitted continuer ("Mm-hm.") — content-free by
+   *  construction, filtered out of the judge timeline. 'time' = the
+   *  server's countdown/cap announcements (emitted untyped since timed
+   *  rounds shipped; legalized here). Everything else is the model. */
+  kind: 'answer' | 'pressure' | 'probe' | 'decline' | 'silent' | 'ack' | 'time';
   nudge: boolean;
   /** True when the turn was unprompted (a pressure beat, not a reply). */
   unprompted: boolean;

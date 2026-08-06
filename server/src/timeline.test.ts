@@ -49,6 +49,18 @@ describe('renderTimeline', () => {
     expect(out).not.toContain('12 minutes left." [NUDGE');
   });
 
+  it('acks never reach the judge — content-free lines are dropped like sensors', () => {
+    // An ack carries zero signal by construction; rendering it would add an
+    // uncompressible line AND flush low-signal compression runs.
+    const out = renderTimeline([
+      ev('session_start', 0),
+      ev('interviewer', 10, { text: 'Mm-hm.', kind: 'ack', nudge: false }, 'chrome'),
+      ev('interviewer', 20, { text: 'What is your theory?', kind: 'probe', nudge: false }, 'chrome'),
+    ]);
+    expect(out).not.toContain('Mm-hm');
+    expect(out).toContain('What is your theory?');
+  });
+
   it('annotates sensor-down intervals with the two-sensor semantics', () => {
     const out = renderTimeline([
       ev('session_start', 0),

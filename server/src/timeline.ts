@@ -102,6 +102,11 @@ function eventLine(e: TraceEvent, t0: number): Line | null {
       return { ts: e.ts, text: `${at}  candidate: "${text}"` };
     }
     case 'interviewer': {
+      // Acks are content-free continuers ("Mm-hm.") — zero judge signal by
+      // construction. Rendering them would add one uncompressible line each
+      // AND flush low-signal compression runs (interviewer lines break
+      // edit/save runs), so they are dropped like sensor events.
+      if ((p as { kind?: string }).kind === 'ack') return null;
       const nudge = p.nudge === true ? ' [NUDGE — this narrowed the search; what follows was prompted, not self-directed]' : '';
       return { ts: e.ts, text: `${at}  interviewer: "${String(p.text ?? '')}"${nudge}` };
     }

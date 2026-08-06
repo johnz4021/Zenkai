@@ -30,6 +30,10 @@ export interface InterviewerTurn {
   nudge: boolean;
   /** Set when the leak guard replaced the model's message. */
   redacted?: boolean;
+  /** Model-stated reason for a deliberate silence. LOG ONLY — never traced.
+   *  Exists because a silent turn used to be indistinguishable from a
+   *  crashed one (sess-1785962737985: three dropped asks, zero evidence). */
+  reason?: string;
 }
 
 export interface InterviewerContext {
@@ -159,7 +163,10 @@ export function parseTurn(raw: string): InterviewerTurn {
   try {
     const o = JSON.parse(match[0]) as Partial<InterviewerTurn>;
     const say = String(o.say ?? '').trim();
-    if (!say) return SILENT;
+    if (!say) {
+      const reason = String(o.reason ?? '').trim();
+      return reason ? { ...SILENT, reason } : SILENT;
+    }
     return {
       say,
       kind: (['answer', 'pressure', 'probe', 'decline', 'silent'] as const).includes(
@@ -463,10 +470,19 @@ export function streamingInterviewer(templatePath: string, model = 'claude-sonne
     const { system, turn } = renderSplit(template, ctx);
     try {
       const { default: Anthropic } = await import('@anthropic-ai/sdk');
-      const client = new Anthropic();
+      // Bounded, always: the SDK default is a 10-MINUTE timeout with two
+      // silent retries — the structural source of the unbounded reply tail
+      // (a real ask once waited 49s with nothing to show why).
+      const client = new Anthropic({ timeout: 20_000, maxRetries: 1 });
+      const t0 = Date.now();
       const stream = client.messages.stream({
         model,
         max_tokens: 400,
+        // Sonnet 5 runs ADAPTIVE THINKING by default (documented change from
+        // 4.6) and max_tokens caps thinking + text combined — thinking could
+        // eat the whole 400 and truncate the JSON into an invisible silent
+        // turn. A conversational beat does not need extended thinking.
+        thinking: { type: 'disabled' },
         system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
         messages: [{ role: 'user', content: turn }],
       });
@@ -475,6 +491,11 @@ export function streamingInterviewer(templatePath: string, model = 'claude-sonne
         .filter((b) => b.type === 'text')
         .map((b) => (b as { text: string }).text)
         .join('');
+      console.log(`[latency] interviewer=${Date.now() - t0}ms`);
+      if (msg.stop_reason === 'max_tokens') {
+        // A truncated turn parses to SILENT and vanishes — say so loudly.
+        console.warn(`[interviewer] turn TRUNCATED at max_tokens — raw tail: …${raw.slice(-120)}`);
+      }
       return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx));
     } catch (e) {
       console.warn('[interviewer] streaming failed, this turn is silent:', String(e).slice(0, 200));
@@ -525,6 +546,13 @@ const INTENT_PROMPT = (
     '- narrating what they read, suspect, or are about to try',
     '- filler, false starts, swearing, or asides to no one',
     '',
+    'OVERRIDE, before the deciding test: an EXPLICIT REQUEST is always',
+    'addressed — asking for help, a hint, a hand, confirmation, or directions',
+    'is a request even when it is about the code in front of them ("how do I',
+    'pair these results?", "can you give me a hand?", "why is it wrong?").',
+    'The rhetorical carve-out applies ONLY to questions the candidate',
+    'immediately proceeds to answer themselves.',
+    '',
     'THE DECIDING TEST when a question could be either — who can answer it?',
     '- About INTENDED BEHAVIOR, requirements, or the rules of the exercise?',
     '  Only the interviewer knows. That is an ask. ("Should a partially',
@@ -546,12 +574,16 @@ export function apiIntentCheck(): IntentCheck {
   return async (text, spec, recent) => {
     try {
       const { default: Anthropic } = await import('@anthropic-ai/sdk');
-      const client = new Anthropic();
+      // Same bounding rule as the interviewer: never the SDK's 10-minute
+      // default on a gate that sits in series before every reply.
+      const client = new Anthropic({ timeout: 5_000, maxRetries: 1 });
+      const t0 = Date.now();
       const msg = await client.messages.create({
         model: 'claude-haiku-4-5',
         max_tokens: 5,
         messages: [{ role: 'user', content: INTENT_PROMPT(text, spec, recent) }],
       });
+      console.log(`[latency] intent=${Date.now() - t0}ms`);
       const out = msg.content
         .filter((b) => b.type === 'text')
         .map((b) => (b as { text: string }).text)

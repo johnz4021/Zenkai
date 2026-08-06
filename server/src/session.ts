@@ -30,6 +30,8 @@ import { clientScript, sessionPage } from './chrome.js';
 import { injectWorkbenchDefaults } from './workbench-inject.js';
 import { describeStuck, detectStuck, type StuckState } from './stuck.js';
 import { isModelPath, listWorkspaceFiles, runGuard, safeWorkspacePath, summarizeTail } from './panes.js';
+import { isCorrectionFollowUp, isExplicitAsk } from './addressing.js';
+import { decideAck } from './ack.js';
 import { TraceStore } from './trace-store.js';
 import {
   TurnQueue,
@@ -371,6 +373,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // The live extension socket, so the chrome's Run Tests button can reach
   // the IDE's own runner (see /api/ide-run).
   let traceSocket: WebSocket | null = null;
+  // Doorbell to /events clients — assigned once the socket server exists;
+  // a no-op until then so early turns just ride the poll.
+  let notifyTurn: () => void = () => {};
 
   // ---- interviewer ----
   const { bug, bugFile } = bugContext(problem);
@@ -470,6 +475,15 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
   const routeUtterance = (text: string): void => {
     if (!interviewer || !intentCheck || !text.trim() || ended) return;
+    // Deterministic fast path: unambiguous asks and post-answer corrections
+    // never touch the LLM gate — no model call, no latency, no chance of the
+    // "narration" misread that dropped three real asks in one session.
+    if (isExplicitAsk(text) || isCorrectionFollowUp(text, store.readAll(), Date.now())) {
+      console.log(`[intent] fast-path ADDRESSED: ${text.slice(0, 80)}`);
+      turnQueue.push(text);
+      pump();
+      return;
+    }
     // Context matters: a question split across breaths ("So I'm thinking...
     // / ...can you tell me if that's right?") is unreadable as a lone
     // fragment. Exclude the utterance itself — it is passed separately as
@@ -547,7 +561,16 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           console.warn(`[interviewer] stuck hint redacted (${n}/2 for this episode)`);
         }
       }
-      if (!turn.say) return; // silence is a valid turn; nothing to record
+      if (!turn.say) {
+        // Silence is a valid turn — but an UNEXPLAINED silence is how three
+        // real asks vanished without a diagnosable trace. Name the cause:
+        // model-silent carries the model's own reason; anything else here
+        // means the parse failed or the call errored (logged upstream).
+        console.log(
+          `[interviewer] silent turn${candidateMessage !== null ? ' (was a reply!)' : ''}: ${turn.reason ?? '(no reason — parse failure or error, see warnings above)'}`,
+        );
+        return;
+      }
       lastInterviewerTs = Date.now();
       store.emitChrome('interviewer', {
         text: turn.say,
@@ -559,6 +582,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // how the K=3 threshold gets tuned from real sessions.
         ...(stuck ? { stuck: true } : {}),
       });
+      notifyTurn();
     } catch (e) {
       console.warn('[interviewer] turn failed:', String(e));
     } finally {
@@ -569,6 +593,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   };
 
   let pressureTimer: NodeJS.Timeout | null = null;
+  let ackTimer: NodeJS.Timeout | null = null;
   let capTimer: NodeJS.Timeout | null = null;
 
   const readBody = (req: http.IncomingMessage): Promise<string> =>
@@ -580,6 +605,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
   const finalize = async (): Promise<unknown> => {
     if (pressureTimer) clearInterval(pressureTimer);
+    if (ackTimer) clearInterval(ackTimer);
     if (capTimer) clearInterval(capTimer);
     voice?.close();
 
@@ -1069,11 +1095,34 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     });
   });
 
+  // Turn-delivery doorbell. The client used to learn about a new interviewer
+  // turn only via its 2s /api/messages poll — 0-2000ms of pure dead air on
+  // EVERY reply, invisible to any server-side timing. The poke carries no
+  // data (the poll path stays the single source of truth); it only makes the
+  // next fetch immediate. If this socket dies, the poll still delivers.
+  const eventsWss = new WebSocketServer({ noServer: true });
+  const eventsClients = new Set<WebSocket>();
+  eventsWss.on('connection', (ws) => {
+    eventsClients.add(ws);
+    ws.on('close', () => eventsClients.delete(ws));
+  });
+  notifyTurn = () => {
+    for (const ws of eventsClients) {
+      try {
+        ws.send('{"poke":true}');
+      } catch {
+        /* dead socket — close handler reaps it */
+      }
+    }
+  };
+
   server.on('upgrade', (req, socket, head) => {
     if (req.url === '/trace') {
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
     } else if (req.url === '/voice') {
       voiceWss.handleUpgrade(req, socket, head, (ws) => voiceWss.emit('connection', ws, req));
+    } else if (req.url === '/events') {
+      eventsWss.handleUpgrade(req, socket, head, (ws) => eventsWss.emit('connection', ws, req));
     } else {
       proxy.ws(req, socket, head);
     }
@@ -1114,6 +1163,23 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       void runInterviewer(null, stuck && !episodeSpent ? stuck : null);
     }, PRESSURE_TICK_MS);
     pressureTimer.unref();
+
+    // Listening signals between substantive turns. The candidate once asked
+    // "can you hear me?" four times at a working mic because silence was the
+    // interviewer's only other state — acks are canned, content-free, and
+    // deliberately do NOT touch lastInterviewerTs, so they never delay or
+    // replace a real turn.
+    ackTimer = setInterval(() => {
+      if (ended || interviewerBusy || sessionStartedAt === null || timeUpAt !== null) return;
+      const events = store.readAll();
+      if (!hasFailingRun(events)) return; // same "genuinely underway" gate as pressure
+      if (Date.now() - lastInterviewerTs >= PRESSURE_INTERVAL_MS) return; // a real turn is due — let it speak
+      const ack = decideAck(events, Date.now(), { askPending: turnQueue.size > 0 });
+      if (!ack) return;
+      store.emitChrome('interviewer', { text: ack, kind: 'ack', nudge: false, unprompted: true });
+      notifyTurn();
+    }, PRESSURE_TICK_MS);
+    ackTimer.unref();
   }
 
   // Hard time cap (timed rounds only). Anchored to the candidate's arrival,
@@ -1133,6 +1199,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           kind: 'time',
           nudge: false,
         });
+        notifyTurn();
       }
       if (elapsed >= sessionLengthMs && timeUpAt === null) {
         timeUpAt = Date.now();
@@ -1141,6 +1208,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           kind: 'time',
           nudge: false,
         });
+        notifyTurn();
         console.log('[session] time cap reached — waiting for the client to end');
       }
       if (timeUpAt !== null && Date.now() - timeUpAt > 30_000 && !ended) {

@@ -75,6 +75,16 @@ describe('parseTurn', () => {
     expect(t).toEqual({ say: '12 minutes left. Leading theory?', kind: 'pressure', nudge: false });
   });
 
+  it('a deliberate silence carries its reason — log-only, never traced', () => {
+    // Three real asks once vanished with no way to tell chosen silence from
+    // a crash (sess-1785962737985). The reason is the audit trail.
+    const t = parseTurn('{"say":"","kind":"silent","nudge":false,"reason":"candidate mid-thought, narrating"}');
+    expect(t.say).toBe('');
+    expect(t.reason).toBe('candidate mid-thought, narrating');
+    // No reason offered → plain SILENT, no phantom field.
+    expect('reason' in parseTurn('{"say":"","kind":"silent","nudge":false}')).toBe(false);
+  });
+
   it('tolerates prose around the JSON', () => {
     expect(parseTurn('Sure:\n```json\n{"say":"ok","kind":"answer","nudge":false}\n```').say).toBe('ok');
   });

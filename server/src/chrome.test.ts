@@ -66,6 +66,15 @@ describe('session chrome', () => {
     }
   });
 
+  it('listens on the /events doorbell and keeps the poll as fallback', () => {
+    // A turn used to wait out up to 2s of poll interval before rendering —
+    // dead air on every reply. The poke makes the fetch immediate; the poll
+    // survives so a dead socket costs immediacy, never delivery.
+    expect(js).toContain("'/events'");
+    expect(js).toContain('setInterval(pollMessages, 2000)');
+    expect(js).toContain('pollInFlight');
+  });
+
   it('tells the candidate what the interviewer will and will not answer', () => {
     expect(html).toContain('interviewer');
     expect(html).toContain("you won't");

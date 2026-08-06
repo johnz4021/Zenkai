@@ -13,7 +13,7 @@
  * never reads editor state from the iframe.
  */
 
-/* global document, window, fetch */
+/* global document, window, fetch, WebSocket, location */
 
 // Count up untimed, count DOWN when the round carries a limit (data-limit,
 // set by the server from the round spec). The server owns enforcement; this
@@ -58,7 +58,10 @@ function say(who, text, cls) {
 }
 let thinkingEl = null;
 let lastHeardSeq = -1;
+let pollInFlight = false;
 async function pollMessages() {
+  if (pollInFlight) return; // poke + interval can overlap; cursors make retries safe
+  pollInFlight = true;
   try {
     const r = await fetch('/api/messages?since=' + lastSeq + '&vsince=' + lastHeardSeq);
     const s = await r.json();
@@ -89,10 +92,22 @@ async function pollMessages() {
     // button so the mic is released before the record closes. The server
     // holds a grace period before finalizing on its own.
     if (s.time_up) endSession();
-  } catch {}
+  } catch {} finally {
+    pollInFlight = false;
+  }
 }
 const messagesTimer = setInterval(pollMessages, 2000);
 pollMessages();
+
+// Turn doorbell: the server pokes this socket the instant a turn lands, and
+// we fetch immediately instead of waiting out the poll interval — that wait
+// was 0-2000ms of dead air on EVERY interviewer reply. The poll above stays
+// as the fallback; if this socket dies, nothing is lost but immediacy.
+let eventsWs = null;
+try {
+  eventsWs = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/events');
+  eventsWs.addEventListener('message', () => { pollMessages(); });
+} catch {}
 
 // The session is over: the clock, the observer line, and the interviewer
 // poll all describe a room that no longer exists — stop them (QA ISSUE-012,
@@ -101,6 +116,7 @@ function stopSessionLoops() {
   clearInterval(clockTimer);
   clearInterval(statusTimer);
   clearInterval(messagesTimer);
+  if (eventsWs) { try { eventsWs.close(); } catch {} eventsWs = null; }
 }
 
 document.getElementById('f').addEventListener('submit', async (e) => {
