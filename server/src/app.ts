@@ -104,6 +104,20 @@ function postSession(port: number, apiPath: string): Promise<{ ok: boolean }> {
  *  stays on disk (.validated / .failed markers). */
 const liveGenerations = new Set<string>();
 
+/** The soonest date any of this target's rounds happens — spec dates first,
+ *  the target's single date as fallback. Drives index ordering. */
+function nearestDeadline(t: {
+  interview_date?: string | null;
+  specs: { date?: string | null }[];
+}): string | undefined {
+  let min: string | undefined;
+  for (const s of t.specs) {
+    const d = s.date ?? t.interview_date;
+    if (d && (!min || d < min)) min = d;
+  }
+  return min ?? t.interview_date ?? undefined;
+}
+
 function spawnDetached(args: string[], env: Record<string, string> = {}): void {
   const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), ...args], {
     cwd: repoRoot,
@@ -387,28 +401,28 @@ export function appPage(): string {
 
   /* ---- planner conversation (the intake IS the first message) ---- */
   .turn-user { border-left: 1px solid var(--line); padding-left: 16px; margin: 24px 0; white-space: pre-wrap; }
-  .turn-user .att { color: var(--dim); font-size: 12px; margin-top: 6px; white-space: normal; }
+  .turn-user .att { color: var(--text-2); font-size: 12px; margin-top: 6px; white-space: normal; }
   .turn-planner { margin: 24px 0; }
   .turn-planner p { margin: 0 0 12px; line-height: 1.65; }
   .traceline { background: none; border: 0; border-top: 1px solid var(--line-soft); padding: 8px 0 0; min-height: 0;
-    color: var(--dim); font-size: 12px; cursor: pointer; display: block; width: 100%; text-align: left; }
-  .traceline:hover { color: var(--bright); border-color: var(--line-soft); }
-  .cnum { color: var(--mag); }
+    color: var(--text-2); font-size: 12px; cursor: pointer; display: block; width: 100%; text-align: left; }
+  .traceline:hover { color: var(--text-1); border-color: var(--line-soft); }
+  .cnum { color: var(--weak-text); }
   .tracelist { margin-top: 8px; font-size: 12px; }
   .tracerow { display: flex; gap: 12px; justify-content: space-between; padding: 3px 0; }
-  .tracerow a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-dim); overflow-wrap: anywhere; }
+  .tracerow a { color: var(--steel-text); text-decoration: none; border-bottom: 1px solid rgba(126, 169, 194, .4); overflow-wrap: anywhere; }
   /* Conflict panel: the ONLY magenta object on the page — the attention
      axis spent where it matters (a source contradicting the candidate). */
-  .conflict { border: 1px solid var(--mag-dim); margin: 14px 0; }
-  .conflict .chead { padding: 8px 14px; border-bottom: 1px solid var(--mag-dim); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--mag); }
+  .conflict { border: 1px solid rgba(232, 43, 134, .35); margin: 14px 0; }
+  .conflict .chead { padding: 8px 14px; border-bottom: 1px solid rgba(232, 43, 134, .35); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--weak-text); }
   .conflict .csides { display: flex; }
   .conflict .cside { flex: 1; padding: 12px 14px; min-width: 0; }
-  .conflict .cside + .cside { border-left: 1px solid var(--line); color: var(--dim); }
-  .conflict .clabel { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); margin-bottom: 6px; }
+  .conflict .cside + .cside { border-left: 1px solid var(--line); color: var(--text-2); }
+  .conflict .clabel { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-2); margin-bottom: 6px; }
   .conflict .cfoot { display: flex; gap: 14px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); }
-  .conflict .cfoot p { flex: 1; margin: 0; color: var(--dim); font-size: 12px; }
+  .conflict .cfoot p { flex: 1; margin: 0; color: var(--text-2); font-size: 12px; }
   .q button.opt { display: block; width: 100%; text-align: left; background: none; border: 0; border-top: 1px solid var(--line-soft); min-height: 0; }
-  .q button.opt:hover { color: var(--bright); background: rgba(255, 255, 255, .02); }
+  .q button.opt:hover { color: var(--text-1); background: rgba(255, 255, 255, .02); }
   /* Confirm gate: pinned above the composer, imminent round expanded,
      the rest one line each — four rounds must not swallow the screen. */
   #plan-gate { position: sticky; bottom: 0; background: var(--bg); border-top: 1px solid var(--line); margin-top: 24px; padding: 12px 0 4px; }
@@ -416,19 +430,19 @@ export function appPage(): string {
   .gatehead .meta { font-size: 12px; }
   .gaterow { display: flex; gap: 12px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--line-soft); }
   .gaterow .gcheck { display: flex; gap: 8px; align-items: baseline; margin: 0; font-weight: 400; cursor: pointer; white-space: nowrap; }
-  .gaterow .gcheck input { width: auto; accent-color: var(--accent); }
-  .gaterow .gmeta { color: var(--dim); font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .gaterow .gexpand { background: none; border: 0; min-height: 0; padding: 0; color: var(--dim); font-size: 12px; cursor: pointer; white-space: nowrap; }
-  .gaterow .gexpand:hover { color: var(--bright); }
+  .gaterow .gcheck input { width: auto; accent-color: var(--steel); }
+  .gaterow .gmeta { color: var(--text-2); font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gaterow .gexpand { background: none; border: 0; min-height: 0; padding: 0; color: var(--text-2); font-size: 12px; cursor: pointer; white-space: nowrap; }
+  .gaterow .gexpand:hover { color: var(--text-1); }
   .gaterow .gdate.nodate { color: #6a6a72; }
-  .gatedetail { padding: 0 0 10px 26px; color: var(--dim); font-size: 12px; line-height: 1.6; max-width: 62ch; }
-  .gatedetail b { color: var(--bright); font-weight: 500; }
-  .gatedecline { color: var(--dim); font-size: 12px; padding: 8px 0; border-top: 1px solid var(--line-soft); }
+  .gatedetail { padding: 0 0 10px 26px; color: var(--text-2); font-size: 12px; line-height: 1.6; max-width: 62ch; }
+  .gatedetail b { color: var(--text-1); font-weight: 500; }
+  .gatedecline { color: var(--text-2); font-size: 12px; padding: 8px 0; border-top: 1px solid var(--line-soft); }
   .gatecommit { display: flex; gap: 14px; align-items: center; padding-top: 10px; border-top: 1px solid var(--line-soft); }
   #plan-composer { display: flex; gap: 8px; margin-top: 14px; position: sticky; bottom: 0; background: var(--bg); padding-bottom: 8px; }
   #plan-composer textarea { flex: 1; min-height: 40px; resize: none; }
-  .carddel { border: 0; color: var(--dim); font-size: 12px; padding: 0; min-height: 0; margin-top: 8px; }
-  .carddel:hover { color: var(--mag); }
+  .carddel { border: 0; color: var(--text-2); font-size: 12px; padding: 0; min-height: 0; margin-top: 8px; }
+  .carddel:hover { color: var(--weak-text); }
 
   /* ---- all plans (index) ---- */
   a.plancard {
@@ -454,8 +468,12 @@ export function appPage(): string {
   /* The countdown numeral: JBM light, tabular — steel's label sits beside it,
      the number itself stays white (the brightest thing on the page). */
   .season .daysleft b { font-family: var(--mono); font-size: 54px; font-weight: 300; letter-spacing: -.04em; font-variant-numeric: tabular-nums; color: var(--text-1); display: inline-block; margin-right: 6px; vertical-align: -4px; }
-  .seasonbar { height: 2px; background: var(--line); margin: 16px 0 7px; }
+  .seasonbar { height: 2px; background: var(--line); margin: 16px 0 7px; position: relative; }
   .seasonbar .fill { height: 100%; background: var(--steel); transition: width .8s cubic-bezier(.2, .7, .2, 1); }
+  /* Round-day milestones on the one spine — markers, never separate bars. */
+  .seasonbar .tick { position: absolute; top: -3px; width: 1px; height: 8px; background: var(--text-3); }
+  .debrief { margin: -12px 0 18px; }
+  .debrief a { color: var(--steel-text); }
   .paceline { display: flex; justify-content: space-between; color: var(--text-2); font-family: var(--mono); font-size: 12px; margin-bottom: 26px; }
 
   /* adaptation: the last change + the door for new information */
@@ -707,8 +725,9 @@ export function runApp(cfg: AppConfig): http.Server {
                 : null,
             };
           })
-          // Nearest interview first; undated targets last.
-          .sort((a, b) => (a.target.interview_date ?? '9999') < (b.target.interview_date ?? '9999') ? -1 : 1);
+          // Nearest ROUND first (a loop's rounds carry their own dates);
+          // the target date stands in for undated specs; undated targets last.
+          .sort((a, b) => (nearestDeadline(a.target) ?? '9999') < (nearestDeadline(b.target) ?? '9999') ? -1 : 1);
         return json(200, {
           targets,
           focus,

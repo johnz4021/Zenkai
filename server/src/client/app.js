@@ -567,6 +567,44 @@ function fmtDate(iso) {
   return String(d).padStart(2, '0') + ' ' + MONTHS[m - 1];
 }
 
+/** Dated rounds for a target, nearest first. Spec dates win; the target's
+ *  single date stands in for specs without one (and for pre-dates targets,
+ *  where it renders under the target's own label). */
+function roundDates(t) {
+  const byDate = {};
+  const out = [];
+  for (const s of t.specs || []) {
+    const date = s.date || t.interview_date;
+    if (!date) continue;
+    if (byDate[date]) { byDate[date].labels.push(s.label); continue; }
+    byDate[date] = { date, labels: [s.label] };
+    out.push(byDate[date]);
+  }
+  if (!out.length && t.interview_date) out.push({ date: t.interview_date, labels: [t.label] });
+  out.sort((a, b) => (a.date < b.date ? -1 : 1));
+  return out.map((r) => ({
+    date: r.date,
+    label: r.labels.join(' · '),
+    passed: Date.parse(r.date + 'T23:59:59') < Date.now(),
+  }));
+}
+
+/** Tick marks on the season bar, one per upcoming round day — the loop's
+ *  milestones on the single spine, never separate bars. */
+function seasonTicks(t, rounds) {
+  const upcoming = rounds.filter((r) => !r.passed);
+  if (upcoming.length < 2) return ''; // one round = the bar's end IS the tick
+  const end = Date.parse(upcoming[upcoming.length - 1].date + 'T23:59:59');
+  const span = end - Date.now();
+  if (span <= 0) return '';
+  let out = '';
+  for (const r of upcoming) {
+    const pct = Math.round(((Date.parse(r.date + 'T23:59:59') - Date.now()) / span) * 100);
+    out += '<span class="tick" style="left:' + Math.min(99, Math.max(1, pct)) + '%" title="' + esc(r.label) + ' · ' + fmtDate(r.date) + '"></span>';
+  }
+  return out;
+}
+
 function metaLine(caps) {
   if (!caps) return '';
   return [
@@ -625,23 +663,42 @@ function renderSeason(row, state) {
   const days = row.days || [];
   let html = '<div class="season">';
 
-  // Header: the days-remaining number is the page's loudest fact.
-  const leftDays = daysUntil(t.interview_date);
-  if (t.interview_date && leftDays !== null) {
-    const left = leftDays;
-    if (left === 0 || Date.parse(t.interview_date + 'T23:59:59') < Date.now()) {
-      const ago = Math.max(1, Math.floor((Date.now() - Date.parse(t.interview_date + 'T00:00:00')) / 86400000));
-      html += '<h2 class="daysleft">' + esc(t.label) + ' was ' + ago + ' day' + (ago === 1 ? '' : 's') + ' ago — how did it go?</h2>';
-      html += '<p class="meta"><a href="#/new" class="addlink">+ prepare for the next one</a></p></div>';
-      return html;
+  // Header: the days-remaining number is the page's loudest fact — and it
+  // counts to the NEAREST round, because that is what governs today. One
+  // loop, several rounds, several dates (per-round dates, 2026-08-06).
+  const rounds = roundDates(t);
+  const upcoming = rounds.filter((r) => !r.passed);
+  const passed = rounds.filter((r) => r.passed);
+  if (rounds.length && upcoming.length === 0) {
+    // EVERY dated round has happened — the season-over takeover.
+    const last = rounds[rounds.length - 1];
+    const ago = Math.max(1, Math.floor((Date.now() - Date.parse(last.date + 'T00:00:00')) / 86400000));
+    html += '<h2 class="daysleft">' + esc(t.label) + ' was ' + ago + ' day' + (ago === 1 ? '' : 's') + ' ago — how did it go?</h2>';
+    html += '<p class="meta"><a href="#/new" class="addlink">+ prepare for the next one</a></p></div>';
+    return html;
+  }
+  if (upcoming.length) {
+    const nearest = upcoming[0];
+    const loopEnd = rounds[rounds.length - 1];
+    const left = daysUntil(nearest.date);
+    html += '<h2 class="daysleft"><b data-count="' + left + '">' + left + '</b> days to ' + esc(nearest.label) + '</h2>';
+    if (loopEnd.date !== nearest.date) {
+      html += '<p class="meta" style="margin:-14px 0 16px">loop ends ' + fmtDate(loopEnd.date) + '</p>';
     }
-    html += '<h2 class="daysleft"><b data-count="' + left + '">' + left + '</b> days to ' + esc(t.label) + '</h2>';
     const total = row.queue ? row.queue.items.length : 0;
     const done = row.queue ? row.queue.items.filter((i) => i.status === 'done' || i.status === 'skipped').length : 0;
     const pct = total ? Math.round((done / total) * 100) : 0;
-    html += '<div class="seasonbar"><div class="fill" style="width:' + pct + '%"></div></div>';
+    // One bar spans the whole loop; a tick marks each round day inside it.
+    html += '<div class="seasonbar"><div class="fill" style="width:' + pct + '%"></div>' + seasonTicks(t, rounds) + '</div>';
     html += '<div class="paceline"><span>' + (row.queue ? row.queue.pace.per_week + ' rounds/week keeps you on pace' : '') + '</span>' +
       '<span>' + done + ' / ' + total + ' done</span></div>';
+    // A round that already happened, mid-loop: the debrief moment, inline —
+    // never a takeover while later rounds still need prep.
+    for (const r of passed) {
+      const ago = Math.max(1, Math.floor((Date.now() - Date.parse(r.date + 'T00:00:00')) / 86400000));
+      html += '<p class="meta debrief">' + esc(r.label) + ' was ' + ago + ' day' + (ago === 1 ? '' : 's') +
+        ' ago — how did it go? <a href="#" class="addlearn" data-t="' + esc(t.id) + '">tell the plan</a></p>';
+    }
   } else {
     html += '<h2 class="daysleft">' + esc(t.label) + '</h2><p class="meta">no date set</p>';
   }
@@ -656,8 +713,16 @@ function renderSeason(row, state) {
   html += '<ol class="runway">';
   for (const d of days) {
     if (d.kind === 'interview') {
+      // Per-round markers carry the round's own label; the single-date
+      // compat path has none and keeps the target label.
       html += '<li class="interview"><span class="date">' + fmtDate(d.date) + '</span><span class="dot"></span>' +
-        '<span class="body">' + fmtDate(d.date) + ' — ' + esc(t.label) + '</span></li>';
+        '<span class="body">' + fmtDate(d.date) + ' — ' + esc(d.label || t.label) + '</span></li>';
+      continue;
+    }
+    if (d.kind === 'unscheduled') {
+      html += '<li class="quiet"><span class="date"></span><span class="dot"></span>' +
+        '<span class="body">date not set — ' + d.count + ' confirmed round' + (d.count === 1 ? '' : 's') +
+        ' unscheduled (add the date via “+ add what you learned”)</span></li>';
       continue;
     }
     if (d.kind === 'collapsed') {
@@ -836,8 +901,13 @@ function renderIndex(state) {
     const done = row.queue ? row.queue.items.filter((i) => i.status === 'done' || i.status === 'skipped').length : 0;
     const pct = total ? Math.round((done / total) * 100) : 0;
     let left = '';
-    const n = daysUntil(t.interview_date);
-    if (n !== null) left = n === 0 ? 'interview passed' : n + ' days left';
+    const cardRounds = roundDates(t);
+    const cardUpcoming = cardRounds.filter((r) => !r.passed);
+    if (cardUpcoming.length) {
+      left = daysUntil(cardUpcoming[0].date) + ' days to ' + (cardRounds.length > 1 ? 'next round' : 'interview');
+    } else if (cardRounds.length) {
+      left = 'interview passed';
+    }
     const nextItem = row.next;
     const nextLine = nextItem
       ? (nextItem.status === 'generating' ? 'building: ' : 'next: ') + esc(nextItem.title || nextItem.planned_title || nextItem.label)
