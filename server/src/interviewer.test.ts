@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   REDACTED_REPLY,
   TurnQueue,
+  candidateVisitedBugFile,
   renderSplit,
   bugContext,
   guard,
@@ -109,27 +110,29 @@ describe('renderActivity', () => {
   const ev = (type: string, dtSec: number, payload: unknown = {}): TraceEvent =>
     ({ session_id: 's', user_id: 'u', source: 'extension', seq: 0, ts: now - dtSec * 1000, type, payload }) as TraceEvent;
 
-  it('summarizes editor activity with relative times', () => {
-    const out = renderActivity([ev('test_run', 90, { exit_code: 1 }), ev('edit', 10, { path: 'a.ts' })], now);
-    expect(out).toContain('-90s  test run FAILED');
-    expect(out).toContain('-10s  edit file A');
+  it('summarizes editor activity with relative times and run summaries', () => {
+    const out = renderActivity(
+      [ev('test_run', 90, { exit_code: 1, summary: 'FAILED (failures=1)' }), ev('edit', 10, { path: 'a.ts' })],
+      now,
+    );
+    expect(out).toContain('-90s  test run FAILED (FAILED (failures=1))');
+    expect(out).toContain('-10s  edit a.ts');
   });
 
-  it('never puts a real path in the prompt — the agent parroted one back', () => {
+  it('shows real basenames — the aliasing era ended with workspace eyes', () => {
+    // The old parroting risk is covered by the guard now: every path here is
+    // one the candidate themselves touched, and unvisited-bug-file mentions
+    // are still redacted by guard(). An interviewer that can see engine.py's
+    // diff but must call it "file A" is incoherent.
     const out = renderActivity(
       [
         ev('file_open', 60, { path: 'src/reservationService.ts' }),
-        ev('edit', 30, { path: 'src/reservationService.ts' }),
         ev('edit', 10, { path: 'src/expiryIndex.ts' }),
       ],
       now,
     );
-    expect(out).not.toContain('reservationService');
-    expect(out).not.toContain('expiryIndex');
-    // Identity survives: same file keeps the same alias, a new file gets a new one.
-    expect(out).toContain('file_open file A');
-    expect(out).toContain('edit file A');
-    expect(out).toContain('edit file B');
+    expect(out).toContain('file_open reservationService.ts');
+    expect(out).toContain('edit expiryIndex.ts');
   });
 
   it('excludes chat so the transcript is not duplicated into the prompt', () => {
@@ -314,8 +317,56 @@ describe('renderSplit (prompt caching seam)', () => {
       ...ctx, elapsedMs: 20 * 60_000, remainingMs: 25 * 60_000,
       recentActivity: 'DIFFERENT', candidateMessage: 'another question',
       transcript: [{ who: 'candidate' as const, text: 'earlier' }],
+      // The eyes-and-arc per-turn fields must also stay below the marker.
+      workspaceView: '── engine.py\n+ changed', momentObservation: 'first fix just ran',
     }).system;
     expect(a).toBe(b);
+  });
+
+  it('rubric and engagement land in the CACHED half; workspace and moment in the turn half', () => {
+    const template = readFileSync(path.join(REPO, 'prompts/interviewer.md'), 'utf8');
+    const { system, turn } = renderSplit(template, {
+      ...ctx,
+      rubric: '- approach: RUBRIC-MARKER states the mechanism',
+      engagement: 'ENGAGEMENT-MARKER collaborative',
+      workspaceView: 'WORKSPACE-MARKER diff',
+      momentObservation: 'MOMENT-MARKER first fix ran',
+    });
+    expect(system).toContain('RUBRIC-MARKER');
+    expect(system).toContain('ENGAGEMENT-MARKER');
+    expect(system).not.toContain('WORKSPACE-MARKER');
+    expect(turn).toContain('WORKSPACE-MARKER');
+    expect(turn).toContain('MOMENT-MARKER');
+  });
+});
+
+describe('guard relaxation — found territory may be discussed', () => {
+  // The eyes make this necessary: an interviewer who can see the candidate's
+  // own changes to sweep.ts but gets redacted for saying "your sweep change"
+  // is incoherent. Unvisited stays redacted exactly as before (the original
+  // parroting incident).
+  const turnNaming = { say: 'Walk me through your change in reservationService.ts.', kind: 'probe' as const, nudge: false };
+
+  it('unvisited bug file: mention still redacts (the original incident)', () => {
+    const out = guard(turnNaming, BUG_FILE, true, false, undefined, false);
+    expect(out.redacted).toBe(true);
+  });
+
+  it('visited bug file: discussing their own changes there passes clean', () => {
+    const out = guard(turnNaming, BUG_FILE, true, false, undefined, true);
+    expect(out).toEqual(turnNaming);
+  });
+});
+
+describe('candidateVisitedBugFile', () => {
+  const ev = (type: string, p: string): TraceEvent =>
+    ({ session_id: 's', user_id: 'u', source: 'extension', seq: 0, ts: 1, type, payload: { path: p } }) as TraceEvent;
+
+  it('any edit/open/save on the bug file counts, container paths included', () => {
+    expect(candidateVisitedBugFile([ev('file_open', '/home/workspace/p-s/src/reservationService.ts')], BUG_FILE)).toBe(true);
+    expect(candidateVisitedBugFile([ev('edit', 'src/reservationService.ts')], BUG_FILE)).toBe(true);
+    expect(candidateVisitedBugFile([ev('edit', 'src/other.ts')], BUG_FILE)).toBe(false);
+    expect(candidateVisitedBugFile([], BUG_FILE)).toBe(false);
   });
 });
 

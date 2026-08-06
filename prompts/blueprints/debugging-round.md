@@ -45,6 +45,14 @@ Stateful domains where a subtle quantity or ordering mistake produces a clean
 observable failure: inventory holds, schedulers, caches with expiry, retry
 queues, billing accumulators.
 
+## Interviewer engagement
+
+Restrained. Open by framing the broken-behavior premise, then let them
+drive. Probe method at the flagged moments — what the failure output said,
+what a change was meant to fix — and press for a mechanism when they name
+only a location. Reward reading before editing and stated hypotheses; do
+not reward speed.
+
 ## Learnings log
 
 <!-- Append-only. Dated entries, verbatim quotes from the candidate's

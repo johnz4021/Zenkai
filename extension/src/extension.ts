@@ -214,7 +214,7 @@ export function activate(context: vscode.ExtensionContext): void {
         exit_code: code,
         duration_ms: Date.now() - t0,
       };
-      emitter.emit('test_run', { ...payload, summary: summarizeRun(tail) });
+      emitter.emit('test_run', { ...payload, summary: summarizeRun(tail), output_tail: tail });
       statusItem.text = code === 0 ? '$(check) Tests passed — Run again' : '$(x) Tests failed — Run again';
       // A failing suite is the round's opening move — put it on screen.
       if (code !== 0) testOutput.show(true);

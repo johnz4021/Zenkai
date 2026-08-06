@@ -437,7 +437,7 @@ function specLine(s: RoundSpec): string {
   const c = s.capabilities;
   return `- id: ${s.id} · "${s.label}" · ${c.interviewer ? 'live interviewer' : 'no interviewer (OA)'} · ${
     c.time_limit_ms ? Math.round(c.time_limit_ms / 60_000) + ' min' : 'untimed'
-  } · starts from ${c.starts_from} · ${c.submit}${s.emphasis ? ` · emphasis: ${s.emphasis}` : ''}`;
+  } · starts from ${c.starts_from} · ${c.submit}${s.emphasis ? ` · emphasis: ${s.emphasis}` : ''}${s.date ? ` · on ${s.date}` : ' · date not set'}`;
 }
 
 function buildPrompt(templatePath: string, input: Parameters<Adapter>[0]): string {

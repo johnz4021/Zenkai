@@ -58,6 +58,11 @@ export const ROUND_FIELDS = {
   check_kind: { type: 'string', enum: ['one_failing_test', 'all_failing', 'all_passing', 'diff_present'] },
   max_source_files: { type: 'number' },
   emphasis: { type: 'string' },
+  date: {
+    type: 'string',
+    description:
+      'YYYY-MM-DD — ONLY when the material states when THIS round happens. Omit otherwise; never guess a date.',
+  },
   rationale: { type: 'string' },
   unsupported: { type: 'string' },
 };

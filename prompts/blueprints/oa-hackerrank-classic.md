@@ -42,6 +42,12 @@ hidden gotchas. One problem per session.
 Classic OA fare: array/string manipulation with a twist, hashmap counting,
 two-pointer/sliding window, BFS on grids, interval merging, simple DP.
 
+## Interviewer engagement
+
+None — this round is autograded and unproctored. Nobody replies during the
+session; the candidate manages their own time. (This section exists so the
+recipe says the absence out loud instead of leaving it implied.)
+
 ## Learnings log
 
 <!-- Append-only. Dated entries, verbatim quotes from the candidate's

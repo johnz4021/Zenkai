@@ -646,7 +646,7 @@ export function runApp(cfg: AppConfig): http.Server {
                 id: t.id,
                 label: t.label,
                 interview_date: t.interview_date ?? null,
-                specs: t.specs.map((s) => ({ id: s.id, label: s.label, capabilities: s.capabilities })),
+                specs: t.specs.map((s) => ({ id: s.id, label: s.label, capabilities: s.capabilities, date: s.date ?? null })),
               },
               queue: withTitles,
               // Latest adaptation only — the timeline explains why rounds
@@ -761,6 +761,61 @@ export function runApp(cfg: AppConfig): http.Server {
           }
         }
       }
+      if (url === '/api/plan/turn' && req.method === 'POST') {
+        // One planner conversation turn, awaited inline (the repo's pattern
+        // for model calls — /api/clarify does the same). Research turns can
+        // run 30-60s; the client shows determinate progress. Turns persist
+        // only AFTER the model+gate succeed, so a 502 retry is idempotent.
+        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; message?: string };
+        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (!t) return json(404, { error: 'no such target' });
+        if (!process.env.ANTHROPIC_API_KEY) {
+          // The conversational planner needs typed content blocks + server
+          // tools, which the claude -p path cannot carry. 501 tells the
+          // client to fall back to the classic wizard.
+          return json(501, { error: 'the conversational planner needs ANTHROPIC_API_KEY — falling back to the classic intake' });
+        }
+        if (!t.description && !b.message?.trim()) return json(400, { error: 'describe the round first' });
+        if ((b.message ?? '').length > 32 * 1024) return json(400, { error: 'message too long — trim it to the relevant part' });
+        const { runPlannerTurn } = await import('./planner.js');
+        try {
+          const result = await runPlannerTurn({
+            root: repoRoot,
+            target: t,
+            templatePath: path.join(repoRoot, 'prompts', 'planner.md'),
+            userMessage: b.message,
+          });
+          return json(200, { turns: result.turns, done: t.specs.length > 0 });
+        } catch (e) {
+          return json(502, { error: `planner turn failed: ${String(e).slice(0, 300)}` });
+        }
+      }
+      if (url.startsWith('/api/plan/conversation')) {
+        // Replay for resume — the fix for the orphan-target litter: a
+        // target with a conversation and no specs picks up where it left
+        // off instead of rotting as "finish setting up".
+        const tid = new URL(url, 'http://x').searchParams.get('target') ?? '';
+        const t = tid ? loadTarget(repoRoot, tid) : null;
+        if (!t) return json(404, { error: 'no such target' });
+        const { loadConversation, renderConversation, latestProposal } = await import('./planner.js');
+        const turns = loadConversation(repoRoot, tid);
+        return json(200, {
+          turns: renderConversation(turns),
+          proposal: latestProposal(turns),
+          planner_available: Boolean(process.env.ANTHROPIC_API_KEY),
+        });
+      }
+      if (url === '/api/target/delete' && req.method === 'POST') {
+        // The other half of the abandoned-plan fix: an explicit way OUT.
+        // Deleting removes the whole target dir — conversation, attachments,
+        // generated problems. The candidate confirmed in the UI; traces and
+        // assessments live outside the target dir and are untouched.
+        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string };
+        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (!t) return json(404, { error: 'no such target' });
+        rmSync(targetDir(repoRoot, t.id), { recursive: true, force: true });
+        return json(200, { ok: true });
+      }
       if (url === '/api/accept-spec' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as {
           target_id?: string;
@@ -779,6 +834,17 @@ export function runApp(cfg: AppConfig): http.Server {
         const ids = new Set(incoming.map((x) => x.id));
         t.specs = [...t.specs.filter((x) => !ids.has(x.id)), ...incoming];
         saveTarget(repoRoot, t);
+        // Planner-settled facts feed generation: persist the summary the
+        // model wrote at proposal time so the blueprint drafter reads it
+        // (composeRoundBrief deliberately drops description/context once a
+        // blueprint exists — this is the door conversation content takes).
+        try {
+          const { loadConversation, latestProposal } = await import('./planner.js');
+          const prop = latestProposal(loadConversation(repoRoot, t.id));
+          if (prop?.summary) {
+            writeFileSync(path.join(targetDir(repoRoot, t.id), 'planner-summary.md'), prop.summary + '\n');
+          }
+        } catch { /* classic wizard path — no conversation */ }
         if (!loadQueue(repoRoot, t.id)) {
           const queue = proposeQueue(t, Date.now());
           // Name every planned round now (D-impl): one call PER SPEC so a

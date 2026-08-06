@@ -59,6 +59,11 @@ export interface TestRunPayload {
    *  it; declaring it lets the stuck detector read outcomes without casting.
    *  Per-test NAMES are not available — only this summary line. */
   summary?: string;
+  /** The run's actual output tail (≤4k chars). The extension always
+   *  captured it and shipped only the summary — which left the interviewer
+   *  able to say "the test failed" but never WHY. Absent on
+   *  terminal-observed runs (the shell API exposes no output). */
+  output_tail?: string;
   /** Present instead of a summary when the runner failed to spawn. */
   error?: string;
 }

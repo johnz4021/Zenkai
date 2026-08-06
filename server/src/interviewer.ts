@@ -36,6 +36,18 @@ export interface InterviewerTurn {
   reason?: string;
 }
 
+/** Has the candidate themselves touched the bug file? Drives the guard
+ *  relaxation: found territory may be discussed. */
+export function candidateVisitedBugFile(events: TraceEvent[], bugFile: string): boolean {
+  if (!bugFile) return false;
+  const base = bugFile.split('/').pop() ?? bugFile;
+  return events.some((e) => {
+    if (e.type !== 'edit' && e.type !== 'file_open' && e.type !== 'file_save') return false;
+    const p = String((e.payload as { path?: string })?.path ?? '');
+    return p.endsWith(`/${base}`) || p === base || p.endsWith(`/${bugFile}`) || p === bugFile;
+  });
+}
+
 export interface InterviewerContext {
   spec: string;
   /** Ground truth about the planted bug. Never leaves this process. */
@@ -74,6 +86,24 @@ export interface InterviewerContext {
    * on their screen even though it also appears inside `bug`.
    */
   allowedExtra?: string;
+  /** renderWorkspaceView() output: real diffs of recently-edited files +
+   *  the latest test output. PER-TURN (below the cache marker). */
+  workspaceView?: string;
+  /** True once the candidate has themselves touched the bug file —
+   *  relaxes the location guard for found territory. */
+  bugFileVisited?: boolean;
+  /** The problem's six rubric dimension expectations, rendered as a list.
+   *  Per-session constant (stable half, cacheable). The judge always had
+   *  these; the interviewer probing blind to them was the rubric-blind
+   *  finding — one dimension literally graded a question "to the
+   *  interviewer" it never knew to expect. */
+  rubric?: string;
+  /** The blueprint's "## Interviewer engagement" section (or a per-check
+   *  default): how led this round is, what to reward. Stable half. */
+  engagement?: string;
+  /** Set when a moment trigger fired ('opening' or a moments.ts detection):
+   *  the observation text for the per-turn half. */
+  momentObservation?: string | null;
 }
 
 export type Interviewer = (ctx: InterviewerContext) => Promise<InterviewerTurn>;
@@ -292,9 +322,14 @@ export function guard(
   hasTargetNote = false,
   /** Present only on stuck turns: arms the vocabulary check. */
   stuckVocab?: { forbidden: string; allowed: string },
+  /** True once the candidate has edited/opened/saved the bug file
+   *  THEMSELVES. Mentioning territory they already found is not a leak —
+   *  discussing their own changes there is the whole point of the
+   *  interviewer having eyes. Unvisited stays redacted exactly as before. */
+  bugFileVisited = false,
 ): InterviewerTurn {
   if (!turn.say) return turn;
-  const bugLeak = leaksBugLocation(turn.say, bugFile);
+  const bugLeak = !bugFileVisited && leaksBugLocation(turn.say, bugFile);
   // The gap-note guard only arms when a note was actually injected —
   // otherwise a turn like "you tend to..." is just conversation.
   const gapLeak = hasTargetNote && leaksGapNote(turn.say);
@@ -316,32 +351,30 @@ export function guard(
 /**
  * Compact activity summary for the prompt: what they have been doing.
  *
- * File paths are ALIASED ("file A", "file B"). Measured with the real agent:
- * given raw paths, an unprompted pressure beat parroted the buggy file's name
- * straight back out of the activity feed. The interviewer never needs the
- * name — it needs identity ("still in the same file after 8 minutes"), which
- * an alias carries just as well while removing the easiest accidental leak.
+ * REAL paths now (the aliasing era is over): every path here is a file the
+ * candidate themselves touched, and the relaxed guard still redacts
+ * bug-file mentions until the candidate has visited it — so the parroting
+ * incident that created aliasing ("file A"/"file B") cannot recur through
+ * this feed. What changed: the interviewer has workspace eyes, and an
+ * interviewer that can see engine.py's diff but must call it "file A" in
+ * conversation is incoherent.
  */
 export function renderActivity(events: TraceEvent[], nowMs: number, limit = 10): string {
   const recent = events
     .filter((e) => e.type !== 'utterance' && e.type !== 'interviewer')
     .slice(-limit);
   if (recent.length === 0) return '(no editor activity yet)';
-  const aliases = new Map<string, string>();
-  const alias = (p: string) => {
-    if (!p) return 'a file';
-    if (!aliases.has(p)) aliases.set(p, `file ${String.fromCharCode(65 + aliases.size)}`);
-    return aliases.get(p) as string;
-  };
+  const basename = (p: string) => (p ? (p.split('/').pop() ?? p) : 'a file');
   return recent
     .map((e) => {
       const ago = Math.round((nowMs - e.ts) / 1000);
       const p = e.payload as Record<string, unknown> | null;
       let what: string = e.type;
       if (e.type === 'test_run') {
-        what = p?.exit_code === 0 ? 'test run PASSED' : 'test run FAILED';
+        const s = String(p?.summary ?? '');
+        what = `test run ${p?.exit_code === 0 ? 'PASSED' : 'FAILED'}${s ? ` (${s})` : ''}`;
       } else if (e.type === 'edit' || e.type === 'file_save' || e.type === 'file_open') {
-        what = `${e.type} ${alias(String(p?.path ?? ''))}`;
+        what = `${e.type} ${basename(String(p?.path ?? ''))}`;
       } else if (e.type === 'pause') {
         what = 'went silent';
       }
@@ -369,6 +402,12 @@ export function render(template: string, ctx: InterviewerContext): string {
     BUG: ctx.bug,
     HOW_TO_RUN: ctx.howToRun ?? 'Not known for this round — say you are not sure if asked.',
     TARGET_NOTE: ctx.targetNote ?? '(no history yet — first sessions)',
+    RUBRIC: ctx.rubric ?? '(no rubric available for this round)',
+    ENGAGEMENT: ctx.engagement ?? 'Balanced: probe at the flagged moments, otherwise let them work.',
+    WORKSPACE_VIEW: ctx.workspaceView ?? '(no edits yet this session)',
+    MOMENT: ctx.momentObservation
+      ? `MOMENT — ${ctx.momentObservation} Follow the moment rules above: one focused probe about it, then release.`
+      : 'no',
     ELAPSED_MIN: String(Math.round(ctx.elapsedMs / 60_000)),
     REMAINING_MIN: String(Math.max(0, Math.round(ctx.remainingMs / 60_000))),
     RECENT_ACTIVITY: ctx.recentActivity,
@@ -447,7 +486,7 @@ export function claudeInterviewer(templatePath: string, model = 'sonnet'): Inter
   const template = readFileSync(templatePath, 'utf8');
   return async (ctx) => {
     const raw = await runClaudeP(render(template, ctx), model, 45_000);
-    return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx));
+    return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx), ctx.bugFileVisited ?? false);
   };
 }
 
@@ -496,7 +535,7 @@ export function streamingInterviewer(templatePath: string, model = 'claude-sonne
         // A truncated turn parses to SILENT and vanishes — say so loudly.
         console.warn(`[interviewer] turn TRUNCATED at max_tokens — raw tail: …${raw.slice(-120)}`);
       }
-      return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx));
+      return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx), ctx.bugFileVisited ?? false);
     } catch (e) {
       console.warn('[interviewer] streaming failed, this turn is silent:', String(e).slice(0, 200));
       return { say: '', kind: 'silent', nudge: false };

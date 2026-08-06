@@ -42,6 +42,14 @@ complexity.
 Bounded stateful components: parking lot / booking systems, LRU-style caches,
 rate limiters, order books, versioned key-value stores, undo stacks.
 
+## Interviewer engagement
+
+Moderately led. Open by framing the contract-from-tests premise. Probe
+design decisions BEFORE code exists — where state lives, what validates
+where — and at the first green test ask what the next increment is. Reward
+incremental suite progress over big-bang attempts; press when they code
+ahead of a stated design.
+
 ## Learnings log
 
 <!-- Append-only. Dated entries, verbatim quotes from the candidate's

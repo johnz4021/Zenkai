@@ -18,6 +18,7 @@ import {
   appendLearnings,
   blueprintPath,
   composeRoundBrief,
+  extractSection,
   gateBlueprint,
   loadBlueprint,
   pickSkeletonFile,
@@ -70,6 +71,22 @@ describe('pickSkeletonFile', () => {
     for (const s of [oneFailing, oaShape, lldShape, spec({ label: 'Round D', check: { kind: 'all_passing' } })]) {
       expect(existsSync(path.join(LIB, pickSkeletonFile(s)))).toBe(true);
     }
+  });
+});
+
+describe('extractSection — the optional engagement seam', () => {
+  it('pulls one section body, stops at the next heading, strips comments', () => {
+    const md = '# T\n\n## Environment\nPython.\n\n## Interviewer engagement\nCollaborative.\n<!-- note -->\nReward questions.\n\n## Learnings log\n';
+    expect(extractSection(md, '## Interviewer engagement')).toBe('Collaborative.\n\nReward questions.');
+  });
+
+  it('absent section returns null — pre-section blueprints keep working', () => {
+    // Deliberately NOT in REQUIRED_HEADINGS: the already-drafted palantir
+    // blueprint (and stale adapt previews) must keep passing the gate.
+    const md = readFileSync(path.join(LIB, 'debugging-round.md'), 'utf8');
+    expect(extractSection('# T\n\n## Environment\nx', '## Interviewer engagement')).toBeNull();
+    // And every shipped skeleton now HAS the section.
+    expect(extractSection(md, '## Interviewer engagement')).toContain('Restrained');
   });
 });
 

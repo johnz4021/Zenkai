@@ -83,6 +83,11 @@ export interface RoundSpec {
   memory_tags: MemoryTag[];
   /** Open-vocabulary generation emphasis ("likely concurrency"). */
   emphasis?: string;
+  /** ISO date (YYYY-MM-DD) THIS round happens, when known. One loop's
+   *  rounds fall on different days (an OA this week, the onsite in three);
+   *  the queue paces each round's practice against its own date. Absent =
+   *  confirmed but unscheduled — paced against the loop end, never guessed. */
+  date?: string;
 }
 
 /** What every manifest written before round_spec existed resolves to. */
@@ -187,6 +192,13 @@ export function validateRoundSpec(spec: unknown): string[] {
     ) {
       failures.push('check.max_source_files must be a positive integer when present');
     }
+  }
+
+  if (
+    s.date !== undefined &&
+    (typeof s.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s.date) || Number.isNaN(Date.parse(`${s.date}T00:00:00`)))
+  ) {
+    failures.push(`date must be YYYY-MM-DD when present: ${String(s.date)}`);
   }
 
   if (!Array.isArray(s.memory_tags)) {

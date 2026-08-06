@@ -110,6 +110,25 @@ export function appendLearnings(root: string, targetId: string, material: string
   writeFileSync(file, (existsSync(file) ? readFileSync(file, 'utf8') : '# Learnings\n\n') + entry);
 }
 
+/**
+ * Extract one `## Heading` section's body from blueprint markdown, or null
+ * when absent. Used for the OPTIONAL "## Interviewer engagement" section —
+ * deliberately NOT in REQUIRED_HEADINGS: blueprints drafted before it
+ * existed (and stale adapt previews) must keep passing the gate.
+ */
+export function extractSection(markdown: string, heading: string): string | null {
+  const lines = markdown.split('\n');
+  const start = lines.findIndex((l) => l.trim() === heading);
+  if (start === -1) return null;
+  const body: string[] = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^##\s/.test(lines[i]!)) break;
+    body.push(lines[i]!);
+  }
+  const text = body.join('\n').replace(/<!--[\s\S]*?-->/g, '').trim();
+  return text || null;
+}
+
 // ---- skeleton selection ----
 
 /** Which starter skeleton a spec drafts from. Keyword match on the spec's

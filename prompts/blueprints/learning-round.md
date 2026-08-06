@@ -45,6 +45,15 @@ Async/concurrent programming (futures, task queues, await-in-loop
 parallelization), event-driven callbacks, batch APIs with response/ID
 matching, retry/backoff semantics.
 
+## Interviewer engagement
+
+Collaborative. Open warmly and point them at the in-repo doc as the place
+to start. Questions from the candidate are a STRONG signal in this round —
+answer spec-level questions generously and note curiosity as a positive,
+never a crutch. Probe their mental model of the unfamiliar mechanism before
+they edit ("how do you think the results come back?"), and at a fix, press
+for why it works, not just that it passes.
+
 ## Learnings log
 
 <!-- Append-only. Dated entries, verbatim quotes from the candidate's

@@ -32,10 +32,14 @@ import { describeStuck, detectStuck, type StuckState } from './stuck.js';
 import { isModelPath, listWorkspaceFiles, runGuard, safeWorkspacePath, summarizeTail } from './panes.js';
 import { isCorrectionFollowUp, isExplicitAsk } from './addressing.js';
 import { decideAck } from './ack.js';
+import { renderWorkspaceView, snapshotWorkspace } from './workspace-view.js';
+import { detectMoment } from './moments.js';
+import { extractSection, loadBlueprint } from './blueprint.js';
 import { TraceStore } from './trace-store.js';
 import {
   TurnQueue,
   bugContext,
+  candidateVisitedBugFile,
   pickIntentCheck,
   pickInterviewer,
   renderActivity,
@@ -76,6 +80,9 @@ const SESSION_LENGTH_MS = 45 * 60_000;
 /** Floor between unprompted pressure beats. An interviewer that talks every
  *  minute stops being pressure and starts being noise. */
 const PRESSURE_INTERVAL_MS = 4 * 60_000;
+/** Floor for event-anchored moment probes — shorter than pressure: a probe
+ *  about something that JUST happened tolerates less staleness. */
+const MOMENT_INTERVAL_MS = 2 * 60_000;
 const PRESSURE_TICK_MS = 30_000;
 
 const IDE_IMAGE = 'gitpod/openvscode-server:latest';
@@ -295,6 +302,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   const gapsDir = path.join(cfg.repoRoot, 'gaps');
   const store = new TraceStore(tracesDir, cfg.sessionId, cfg.userId);
 
+  // Session-start baseline for the interviewer's workspace eyes: every turn
+  // diffs the candidate's current files against this. Overwrites any prior
+  // snapshot — a rebuilt problem must never diff a stale baseline.
+  snapshotWorkspace(cfg.problemDir);
+
   // ---- IDE container ----
   // Panes rounds launch the SAME container: /api/run needs docker exec, and
   // node_modules are Linux binaries (ensureLinuxDeps installs them via
@@ -348,6 +360,29 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       ? 'This round does not allow running the suite at all. There is no run command — say so plainly if asked.'
       : `They press the **Run Tests** button in the session header (top right, above the editor). It runs \`${testCmd}\` in the workspace and shows the output in the ${surface === 'panes' ? 'test results panel below the editor' : "editor's Test Results panel"}. That is the intended path. No other test runner is installed.`;
 
+  // What a strong candidate does in THIS round — the judge's own grading
+  // dimensions, finally shared with the interviewer (the rubric-blind
+  // finding: one dimension graded a question "to the interviewer" the
+  // interviewer never knew to expect). Per-session constant → cached half.
+  const rubricText = Object.entries(problem.rubric?.dimensions ?? {})
+    .map(([k, v]) => `- ${k}: ${String(v)}`)
+    .join('\n');
+  // Engagement style from the round's blueprint (optional section; pool
+  // problems and pre-section blueprints fall back to a per-check default).
+  const ENGAGEMENT_DEFAULTS: Record<string, string> = {
+    one_failing_test:
+      'Restrained: frame the round at the open, probe method at flagged moments, let them drive.',
+    all_failing:
+      'Moderately led: probe design decisions before code exists; reward incremental suite progress.',
+    all_passing: 'Balanced: probe intent behind changes.',
+    diff_present: 'Balanced: probe what they would flag and why.',
+  };
+  const blueprintText = cfg.targetId ? loadBlueprint(cfg.repoRoot, cfg.targetId, roundSpec.id) : null;
+  const engagement =
+    (blueprintText ? extractSection(blueprintText, '## Interviewer engagement') : null) ??
+    ENGAGEMENT_DEFAULTS[roundSpec.check.kind] ??
+    'Balanced: probe at the flagged moments, otherwise let them work.';
+
   const ideSettings = loadIdeSettings(cfg.repoRoot);
   // Hoisted install: the workspace root owns node_modules (same assumption
   // the vitest testCmd default makes about problem dirs).
@@ -370,6 +405,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // One suite run at a time through /api/run (panes surface); the docker
   // exec is not reentrant-safe against itself on a shared workspace.
   let paneRunning = false;
+  // Moment probes fire once each per session (restart forgets at most one —
+  // the stuckRedactions precedent).
+  const firedMoments = new Set<string>();
   // The live extension socket, so the chrome's Run Tests button can reach
   // the IDE's own runner (see /api/ide-run).
   let traceSocket: WebSocket | null = null;
@@ -404,6 +442,19 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       sessionStartedAt = Date.now();
       lastInterviewerTs = sessionStartedAt;
       console.log('[session] candidate arrived — clock started');
+      // OPENING: a real interviewer runs the room from the first second —
+      // the round used to begin in dead silence. Fires exactly once, on
+      // arrival, without waiting for a failing run. setImmediate so the
+      // contact-triggering request finishes first.
+      if (interviewer) {
+        setImmediate(() =>
+          void runInterviewer(null, null, {
+            kind: 'opening',
+            observation:
+              'The candidate just arrived. Open the round: greet, frame the task from the spec, say how it runs, invite them to begin.',
+          }),
+        );
+      }
     }
   };
   let interviewerBusy = false;
@@ -525,6 +576,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   const runInterviewer = async (
     candidateMessage: string | null,
     stuck: StuckState | null = null,
+    moment: { kind: string; observation: string } | null = null,
   ): Promise<void> => {
     if (!interviewer || ended || interviewerBusy) return;
     interviewerBusy = true;
@@ -552,6 +604,13 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // aliased by describeStuck — identity, never file names.
         stuckObservation: stuck ? describeStuck(stuck, now) : null,
         allowedExtra: problem.planted_bug?.failing_test ?? '',
+        // The eyes: real diffs + test output, per turn. Cheap — reads only
+        // the few recently-edited files.
+        workspaceView: renderWorkspaceView(cfg.problemDir, events),
+        bugFileVisited: candidateVisitedBugFile(events, bugFile),
+        rubric: rubricText,
+        engagement,
+        momentObservation: moment ? moment.observation : null,
       });
       if (turn.redacted) {
         console.warn('[interviewer] leak guard fired — reply replaced');
@@ -626,6 +685,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         exit_code: run.status,
         duration_ms: Date.now() - t0,
         summary: summarizeTail(tail),
+        output_tail: tail,
       });
     }
 
@@ -985,6 +1045,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
             exit_code: code,
             duration_ms: Date.now() - t0,
             summary,
+            output_tail: tail,
           });
         }
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -1157,10 +1218,27 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       if (ended || interviewerBusy || sessionStartedAt === null) return;
       const events = store.readAll();
       if (!hasFailingRun(events)) return;
-      if (Date.now() - lastInterviewerTs < PRESSURE_INTERVAL_MS) return;
-      const stuck = detectStuck(events, Date.now(), sessionStartedAt);
-      const episodeSpent = stuck ? (stuckRedactions.get(stuck.since_ms) ?? 0) >= 2 : false;
-      void runInterviewer(null, stuck && !episodeSpent ? stuck : null);
+      const sinceTurn = Date.now() - lastInterviewerTs;
+      // Priority: stuck/pressure (4-min floor) over moments (2-min floor).
+      // Stuck is help; a moment is engagement; pressure is the metronome —
+      // help beats engagement beats rhythm.
+      if (sinceTurn >= PRESSURE_INTERVAL_MS) {
+        const stuck = detectStuck(events, Date.now(), sessionStartedAt);
+        const episodeSpent = stuck ? (stuckRedactions.get(stuck.since_ms) ?? 0) >= 2 : false;
+        void runInterviewer(null, stuck && !episodeSpent ? stuck : null);
+        return;
+      }
+      if (sinceTurn >= MOMENT_INTERVAL_MS) {
+        // Event-anchored probes: the first failure read, the first fix that
+        // ran, the pass after a struggle. Each fires ONCE — marked before
+        // dispatch so even a guard-silenced turn never re-fires it.
+        const moment = detectMoment(events, roundSpec.check.kind, firedMoments, Date.now());
+        if (moment) {
+          firedMoments.add(moment.kind);
+          console.log(`[moment] ${moment.kind}`);
+          void runInterviewer(null, null, moment);
+        }
+      }
     }, PRESSURE_TICK_MS);
     pressureTimer.unref();
 

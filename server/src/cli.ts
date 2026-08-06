@@ -183,8 +183,13 @@ if (cmd === 'generate') {
             path.join(repoRoot, 'prompts', 'blueprints', bp.pickSkeletonFile(draft.spec)),
             'utf8',
           );
+          const { plannerSummary } = await import('./planner.js');
+          const summary = plannerSummary(repoRoot, t.id);
           const md = await bp.pickBlueprintDrafter(path.join(repoRoot, 'prompts', 'draft-blueprint.md'))({
-            spec: draft.spec, description: t.description ?? '', context: t.context ?? '', skeleton,
+            spec: draft.spec,
+            description: t.description ?? '',
+            context: [t.context ?? '', summary].filter(Boolean).join('\n\n'),
+            skeleton,
           });
           bp.writeBlueprintWithBackup(repoRoot, t.id, draft.spec.id, md);
           console.error(`blueprint drafted → blueprints/${draft.spec.id}.md`);
@@ -273,9 +278,18 @@ if (cmd === 'generate') {
       path.join(repoRoot, 'prompts', 'blueprints', pickSkeletonFile(spec)),
       'utf8',
     );
+    // Planner-settled facts (when a conversation planned this target) ride
+    // along as context — the blueprint is where they reach generation.
+    const { plannerSummary } = await import('./planner.js');
+    const summary = plannerSummary(repoRoot, t.id);
     const draft = pickBlueprintDrafter(path.join(repoRoot, 'prompts', 'draft-blueprint.md'));
     const markdown = gateBlueprint(
-      await draft({ spec, description: t.description ?? '', context: t.context ?? '', skeleton }),
+      await draft({
+        spec,
+        description: t.description ?? '',
+        context: [t.context ?? '', summary].filter(Boolean).join('\n\n'),
+        skeleton,
+      }),
     );
     writeBlueprintWithBackup(repoRoot, t.id, spec.id, markdown);
     console.log(`[blueprint] wrote ${path.relative(repoRoot, file)} (${markdown.length} chars)`);

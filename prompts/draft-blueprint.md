@@ -44,5 +44,11 @@ problem of this round is built.
 - Do not invent company facts that are not in the candidate's words or
   material. When the material is thin, describe the most representative
   version of the round and keep claims generic rather than fabricated.
+- `## Interviewer engagement` (when the skeleton has it) describes how the
+  live interviewer runs THIS round: how led, what to probe, what to reward.
+  Write it from the candidate's material — a round described as
+  collaborative gets a warm, question-rewarding interviewer; a described
+  pressure screen gets a restrained one. For rounds with no interviewer,
+  say so plainly.
 - Leave `## Learnings log` with no entries — only its instruction comment.
 - Output ONLY the blueprint markdown, starting at the first `#` heading.

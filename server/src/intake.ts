@@ -201,6 +201,8 @@ export interface DraftToolOutput {
   check_kind: RoundSpec['check']['kind'];
   max_source_files?: number;
   emphasis?: string;
+  /** ISO date this round happens, ONLY when the material states it. */
+  date?: string;
   rationale: string;
   unsupported: string;
 }
@@ -234,6 +236,7 @@ export function draftToSpec(out: DraftToolOutput): SpecDraft {
   };
   const emphasis = asText(out.emphasis);
   const maxFiles = Number(out.max_source_files);
+  const date = asText(out.date);
   const spec: RoundSpec = {
     id: slugify(asText(out.id) || asText(out.label)),
     label: asText(out.label),
@@ -244,6 +247,9 @@ export function draftToSpec(out: DraftToolOutput): SpecDraft {
     },
     memory_tags: deriveMemoryTags(capabilities),
     ...(emphasis ? { emphasis } : {}),
+    // The vocabulary gate below validates the format; a garbled date is an
+    // inference failure, never silent data (same rule as /api/target).
+    ...(date ? { date } : {}),
   };
   const failures = validateRoundSpec(spec);
   if (failures.length > 0) {
