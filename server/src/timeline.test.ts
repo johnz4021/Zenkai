@@ -3,7 +3,7 @@
  * encode assumptions) and gets tested like one. The one thing it must never
  * do: render a verdict.
  */
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -176,8 +176,13 @@ describe('editor-down reliability annotation', () => {
 describe('real traces render sanely (no ground-truth claim — render check only)', () => {
   const tracesDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'traces');
   it('every stored trace renders without throwing and attributes speakers', () => {
+    // traces/ is gitignored local session data: absent in a fresh clone, a
+    // git worktree, or CI. Assert over whatever is here, and skip cleanly
+    // when there is nothing — a corpus check must not fail for lack of a
+    // corpus.
+    if (!existsSync(tracesDir)) return;
     const files = readdirSync(tracesDir).filter((f) => f.endsWith('.jsonl'));
-    expect(files.length).toBeGreaterThan(0);
+    if (files.length === 0) return;
     for (const f of files) {
       const events = readFileSync(path.join(tracesDir, f), 'utf8')
         .split('\n')

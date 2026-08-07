@@ -118,7 +118,7 @@ describe('session chrome', () => {
     // The client asks for /voice/tts/<seq>; the server reads that event's
     // payload.text, which guard() produced. No client path carries raw
     // model output to the speaker.
-    expect(js).toContain('window.ipVoice.speak(m.seq)');
+    expect(js).toContain('window.ipVoice.speak(m.seq,');
     expect(clientScript('voice.js')).toContain("'/voice/tts/' + seq");
   });
 

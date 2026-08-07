@@ -64,6 +64,9 @@ export function startVoice({ onState, onAgentAudioWanted }) {
     // their speech_end (or the hold cap) before playing.
     heldSeq: null,
     holdTimer: null,
+    // Is agent audio on the speakers right now? Only acks consult this, to
+    // avoid cutting a real turn short.
+    playing: false,
   };
 
   const setChip = (chip) => {
@@ -179,6 +182,9 @@ export function startVoice({ onState, onAgentAudioWanted }) {
       state.preRoll = [];
       send({ type: 'presence', state: 'down', reason: 'muted by user' });
       setChip('muted');
+      // Muting ends the segment the hold was waiting on. Without this the
+      // held turn sat out the full cap in a room that had gone silent.
+      playHeldTurn();
     } else {
       send({ type: 'presence', state: 'up', reason: 'unmuted' });
       setChip('listening');
@@ -200,11 +206,20 @@ export function startVoice({ onState, onAgentAudioWanted }) {
     setChip('ended');
   }
 
-  /** The inverse courtesy of no-barge-in: the interviewer does not START
-   *  talking while the candidate is mid-sentence. A turn that arrives
-   *  during a speech segment is held and played at speech_end — capped, so
-   *  a noisy never-ending segment cannot delay the answer forever. */
-  const HOLD_CAP_MS = 3_000;
+  /**
+   * The inverse courtesy of no-barge-in: the interviewer does not START
+   * talking while the candidate is mid-sentence. A turn arriving during a
+   * speech segment is held and played at speech_end — capped, so a noisy
+   * never-ending segment cannot delay the answer forever.
+   *
+   * The cap was 3s, which was a tuning error. A candidate thinking out loud
+   * produces a speech start every ~10s (219 in a 35-minute session), so the
+   * hold fired on nearly every turn and spent its whole budget: the reply was
+   * on screen and the voice arrived up to three seconds later. 1.2s still
+   * covers the "wait, they're mid-word" case — endpointing is 1s — without
+   * being felt as lag.
+   */
+  const HOLD_CAP_MS = 1_200;
   function playHeldTurn() {
     if (state.heldSeq === null) return;
     const seq = state.heldSeq;
@@ -216,18 +231,31 @@ export function startVoice({ onState, onAgentAudioWanted }) {
   function playNow(seq) {
     const el = state.audioEl || (state.audioEl = document.createElement('audio'));
     el.src = '/voice/tts/' + seq;
+    state.playing = true;
     setChip('interviewer speaking');
-    el.onended = () => setChip(state.muted ? 'muted' : 'listening');
-    el.onerror = () => setChip(state.muted ? 'muted' : 'listening');
+    const done = () => {
+      state.playing = false;
+      setChip(state.muted ? 'muted' : 'listening');
+    };
+    el.onended = done;
+    el.onerror = done;
     el.play().catch(() => {
       /* autoplay blocked: text already rendered, audio resumes on gesture */
+      state.playing = false;
     });
     if (onAgentAudioWanted) onAgentAudioWanted(seq);
   }
 
-  /** Called by session.js when a new interviewer turn arrives. */
-  function speak(seq) {
+  /**
+   * Called by session.js when a new interviewer turn arrives.
+   *
+   * `skipIfBusy` is for acks: a canned "Mm-hm." carries a seq like any turn,
+   * and reassigning src for one used to amputate a real turn mid-sentence.
+   * A courtesy noise that interrupts is not a courtesy.
+   */
+  function speak(seq, opts) {
     if (state.chip.indexOf('text only') !== -1) return;
+    if (opts && opts.skipIfBusy && (state.playing || state.heldSeq !== null)) return;
     if (state.speaking) {
       // Hold: they are mid-sentence. Newest turn wins if several stack.
       state.heldSeq = seq;

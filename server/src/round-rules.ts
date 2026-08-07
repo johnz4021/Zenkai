@@ -24,6 +24,67 @@ export interface RoundRules {
   readingLimit: string;
   /** The forbidden-vocabulary phrase in the STUCK rules. */
   stuckForbidden: string;
+  /**
+   * What counts as an OBSERVATION (confirmable) versus a THEORY (declined) in
+   * this round. sess-1786072934316: the interviewer confirmed an observation
+   * exactly once in 35 minutes ("Right — they're finished") and that is the
+   * turn the candidate made progress after. Everything else was deflection,
+   * which the candidate read as "not giving me any feedback".
+   */
+  feedbackRules: string;
+  /** What the ADRIFT redirect may say the candidate has ruled out. */
+  adriftRuledOut: string;
+}
+
+/**
+ * Language, library, and tooling questions — answerable in EVERY round.
+ *
+ * Universal, so it lives outside the per-kind table. sess-1786072934316 cost
+ * ~14 minutes to its absence: the candidate asked eight times whether a
+ * dict comprehension over `pool.submit(...)` was valid and whether a Future
+ * can be a dict key, and was refused every time, because
+ * "Answer questions about the SPEC… the one thing you are genuinely useful
+ * for" left no category for a question about the language itself.
+ */
+export const ANSWERABLE = `- **Answer language, library, and tooling questions directly and briefly.**
+  "Can a Future be a dict key?" — *"Yes, Futures are hashable."* "Do I need
+  \`await\` here?" — *"No, this is threading, not asyncio."* "Is this dict
+  comprehension valid?" — *"Yes, that's fine."* These are NOT hints: they are
+  facts the candidate would look up in ten seconds, and refusing them burns
+  the round on something the exercise is not testing. A real interviewer
+  answers them without breaking stride.
+  Answer in ONE sentence, then hand the floor back with a question about the
+  problem. Decline ONLY if answering would reveal the mechanism itself —
+  which is rare. **The default is to answer.**
+  If they ask the same factual question twice, you did not answer it the
+  first time. Answer it plainly now.`;
+
+/**
+ * The observation/theory line, composed rather than copied.
+ *
+ * The OBSERVATION half is universal — evidence in front of the candidate is
+ * confirmable in any round. Only the THEORY examples and the withheld noun
+ * change per kind, so only those are parameters. Four hand-written copies
+ * would drift, which is the whole reason round-rules.ts is a table.
+ */
+function feedbackRulesFor(theoryExamples: string, withheld: string): string {
+  return `An **OBSERVATION** is a claim about evidence already in front of them —
+test output, a print they added, code they have read. **Confirm or correct
+these freely and plainly.** "Right, all three futures are already finished by
+the time you print — that's real." Confirming costs you nothing: they can see
+it themselves. It is how they learn which of their own signals to trust, and
+withholding it makes you useless rather than rigorous. When they say something
+accurate and load-bearing, SAY SO before you ask the next question.
+
+**Correct a wrong observation explicitly.** If they say "these are running
+synchronously" and their own output shows otherwise, say so and send them back
+to the output. Letting a false reading stand is worse than any hint.
+
+A **THEORY** is a claim about the cause — ${theoryExamples}. These you still
+decline, exactly as before: turn it back on them.
+
+The line: you may tell them what is TRUE about what they have already seen.
+You may not tell them ${withheld}.`;
 }
 
 const DEBUGGING: RoundRules = {
@@ -43,6 +104,11 @@ makes you suspect it."* Turning the question back on them is always correct.`,
   readingLimit:
     "never use this visibility to steer them toward the bug's location beyond territory they have ALREADY reached themselves",
   stuckForbidden: 'from your private bug knowledge',
+  feedbackRules: feedbackRulesFor(
+    '"so the bug is in the executor?", "is it the stats object that\'s wrong?"',
+    'what is CAUSING the failure',
+  ),
+  adriftRuledOut: 'the part of the flow they have been reading is not where the fault is',
 };
 
 const RULES: Record<string, RoundRules> = {
@@ -63,6 +129,11 @@ call — walk me through the trade-off you see."*`,
     readingLimit:
       'never use this visibility to hand them an implementation approach — discuss only design they have already proposed or code they have already written',
     stuckForbidden: 'from your own idea of the solution',
+    feedbackRules: feedbackRulesFor(
+      '"is a queue the right structure here?", "will this design pass the suite?"',
+      'which approach will work',
+    ),
+    adriftRuledOut: 'the part of the design they have been circling is not what the suite is asking for',
   },
   all_passing: {
     intro:
@@ -79,6 +150,11 @@ know?"); when they fish for the approach, turn it back on them.`,
     readingLimit:
       'never use this visibility to point at code the change should touch beyond territory they have ALREADY reached themselves',
     stuckForbidden: 'from your own idea of the solution',
+    feedbackRules: feedbackRulesFor(
+      '"is this the right place to make the change?", "will this keep the suite green?"',
+      'where the change belongs',
+    ),
+    adriftRuledOut: 'the part of the code they have been reading is not where the change belongs',
   },
   diff_present: {
     intro:
@@ -95,6 +171,11 @@ weighing?") and how they would articulate a concern to its author.`,
     readingLimit:
       'never use this visibility to steer them toward a defect they have not reached themselves',
     stuckForbidden: 'from your private knowledge of the planted defects',
+    feedbackRules: feedbackRulesFor(
+      '"is this line one of the defects?", "how many have I found?"',
+      'which lines carry the planted defects',
+    ),
+    adriftRuledOut: 'the hunk they have been re-reading is not where a defect is',
   },
 };
 

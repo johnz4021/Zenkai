@@ -22,7 +22,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
 import { isCandidateActivity } from '@interview-prep/shared';
-import { roundRules } from './round-rules.js';
+import { ANSWERABLE, roundRules } from './round-rules.js';
 
 export type InterviewerKind = 'answer' | 'pressure' | 'probe' | 'decline' | 'silent';
 
@@ -124,6 +124,13 @@ export interface InterviewerContext {
   /** Set when a moment trigger fired ('opening' or a moments.ts detection):
    *  the observation text for the per-turn half. */
   momentObservation?: string | null;
+  /**
+   * describeAdrift()/describeWarm() output: they have been reading one region
+   * for a long time with nothing moving. Fires the REDIRECT rules (close the
+   * dead end) or, when the answer is inside that region, the encouragement
+   * inversion. Never both with stuckObservation — the tick picks one.
+   */
+  adriftObservation?: string | null;
   /** The round's check kind — selects the per-kind prompt blocks
    *  (round-rules.ts). Absent = one_failing_test, the legacy resolution. */
   checkKind?: string;
@@ -486,6 +493,9 @@ export function render(template: string, ctx: InterviewerContext): string {
     ANSWER_RULES: rules.answerRules,
     READING_LIMIT: rules.readingLimit,
     STUCK_FORBIDDEN: rules.stuckForbidden,
+    FEEDBACK_RULES: rules.feedbackRules,
+    ADRIFT_RULED_OUT: rules.adriftRuledOut,
+    ANSWERABLE,
     CODEBASE: ctx.codebase ?? '(no codebase view available for this round)',
     HOW_TO_RUN: ctx.howToRun ?? 'Not known for this round — say you are not sure if asked.',
     TARGET_NOTE: ctx.targetNote ?? '(no history yet — first sessions)',
@@ -498,6 +508,9 @@ export function render(template: string, ctx: InterviewerContext): string {
     ELAPSED_MIN: String(Math.round(ctx.elapsedMs / 60_000)),
     REMAINING_MIN: String(Math.max(0, Math.round(ctx.remainingMs / 60_000))),
     RECENT_ACTIVITY: ctx.recentActivity,
+    ADRIFT: ctx.adriftObservation
+      ? `ADRIFT — ${ctx.adriftObservation} Follow the adrift rules above: one move, nudge true.`
+      : 'no',
     STUCK: ctx.stuckObservation
       ? `STUCK — ${ctx.stuckObservation} Follow the stuck rules above: one move, their vocabulary only, nudge true.`
       : 'no',
@@ -513,14 +526,17 @@ export function render(template: string, ctx: InterviewerContext): string {
   );
 }
 
-/** The guard inputs for a stuck turn, or undefined on ordinary turns.
- *  Forbidden = the private bug knowledge; allowed = everything the candidate
- *  already has (spec, the failing test's name via allowedExtra, their own
- *  words). Exported so tests exercise the exact composition the runtime uses. */
+/** The guard inputs for a SCAFFOLDING turn (stuck or adrift), or undefined on
+ *  ordinary turns. Forbidden = the private bug knowledge; allowed = everything
+ *  the candidate already has (spec, the failing test's name via allowedExtra,
+ *  their own words). The candidate's own words matter most on an adrift turn:
+ *  the redirect names their region back to them, so their vocabulary is
+ *  exactly what it must be free to use. Exported so tests exercise the exact
+ *  composition the runtime uses. */
 export function stuckVocabOf(
   ctx: InterviewerContext,
 ): { forbidden: string; allowed: string } | undefined {
-  if (!ctx.stuckObservation) return undefined;
+  if (!ctx.stuckObservation && !ctx.adriftObservation) return undefined;
   const candidateWords = ctx.transcript
     .filter((t) => t.who === 'candidate')
     .map((t) => t.text)

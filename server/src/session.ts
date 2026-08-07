@@ -29,6 +29,7 @@ import { buildGraphView, buildTargetNote, loadStore, recordAssessment, saveStore
 import { clientScript, sessionPage } from './chrome.js';
 import { injectWorkbenchDefaults } from './workbench-inject.js';
 import { describeStuck, detectStuck, type StuckState } from './stuck.js';
+import { describeAdrift, describeWarm, detectAdrift, regionContainsAnswer } from './adrift.js';
 import { isModelPath, listWorkspaceFiles, runGuard, safeWorkspacePath, summarizeTail } from './panes.js';
 import { isCorrectionFollowUp, isExplicitAsk } from './addressing.js';
 import { decideAck } from './ack.js';
@@ -81,10 +82,10 @@ export interface SessionConfig {
 const SESSION_LENGTH_MS = 45 * 60_000;
 /** Floor between unprompted pressure beats. An interviewer that talks every
  *  minute stops being pressure and starts being noise. */
-const PRESSURE_INTERVAL_MS = 4 * 60_000;
+const PRESSURE_INTERVAL_MS = 5 * 60_000;
 /** Floor for event-anchored moment probes — shorter than pressure: a probe
  *  about something that JUST happened tolerates less staleness. */
-const MOMENT_INTERVAL_MS = 2 * 60_000;
+const MOMENT_INTERVAL_MS = 3 * 60_000;
 const PRESSURE_TICK_MS = 30_000;
 
 const IDE_IMAGE = 'gitpod/openvscode-server:latest';
@@ -430,6 +431,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // Moment probes fire once each per session (restart forgets at most one —
   // the stuckRedactions precedent).
   const firedMoments = new Set<string>();
+  // The adrift REDIRECT is once per session: "the region you're in is spent"
+  // is a location signal, and repeating it turns the round into a guided
+  // tour. The warm inversion (they are already in the right place) carries
+  // no location content and is deliberately not capped by this.
+  let adriftFired = false;
   // The live extension socket, so the chrome's Run Tests button can reach
   // the IDE's own runner (see /api/ide-run).
   let traceSocket: WebSocket | null = null;
@@ -545,10 +551,35 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       )
     : null;
 
+  /**
+   * Settling window before a turn starts composing.
+   *
+   * One spoken question is often TWO utterances: the browser endpoints on a
+   * 1s pause (presence.js), so "Can you tell me — / — if a Future can be a
+   * dict key?" commits as two segments. The first started a turn, the second
+   * queued behind `interviewerBusy`, and the `finally` pump drained it as a
+   * SECOND turn — measured live at 12:01 and 12:05, two near-identical
+   * probes 3.6s apart answering one question.
+   *
+   * Waiting a beat lets the second half land in the same drain, where
+   * TurnQueue already joins them into one breath. The cost is ~600ms on a
+   * single-segment ask; the benefit is never talking over yourself.
+   */
+  const SETTLE_MS = 600;
+  let settleTimer: NodeJS.Timeout | null = null;
+  const settlePending = (): boolean => settleTimer !== null;
+
   const pump = (): void => {
     if (ended || interviewerBusy) return;
-    const merged = turnQueue.drain();
-    if (merged !== null) void runInterviewer(merged);
+    if (settleTimer) return; // already waiting for stragglers
+    if (turnQueue.size === 0) return;
+    settleTimer = setTimeout(() => {
+      settleTimer = null;
+      if (ended || interviewerBusy) return; // a turn started meanwhile; its finally re-pumps
+      const merged = turnQueue.drain();
+      if (merged !== null) void runInterviewer(merged);
+    }, SETTLE_MS);
+    settleTimer.unref?.();
   };
 
   const routeUtterance = (text: string): void => {
@@ -559,6 +590,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     if (isExplicitAsk(text) || isCorrectionFollowUp(text, store.readAll(), Date.now())) {
       console.log(`[intent] fast-path ADDRESSED: ${text.slice(0, 80)}`);
       turnQueue.push(text);
+      notifyTurn(); // ring the doorbell now so the "…" appears immediately
       pump();
       return;
     }
@@ -586,6 +618,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         console.log(`[intent] ${addressed ? 'ADDRESSED' : 'narration'}: ${text.slice(0, 80)}`);
         if (!addressed) return; // narration: traced, agent stays silent
         turnQueue.push(text);
+        notifyTurn();
         pump();
       })
       .catch((e) => {
@@ -599,13 +632,24 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // the model can't phrase this one safely, and pressure resumes.
   const stuckRedactions = new Map<number, number>();
 
-  /** One interviewer turn. `null` message = unprompted (pressure or stuck). */
+  /** One interviewer turn. `null` message = unprompted (pressure, stuck,
+   *  adrift, or moment). */
   const runInterviewer = async (
     candidateMessage: string | null,
     stuck: StuckState | null = null,
     moment: { kind: string; observation: string } | null = null,
+    adriftObservation: string | null = null,
   ): Promise<void> => {
-    if (!interviewer || ended || interviewerBusy) return;
+    if (!interviewer || ended) return;
+    if (interviewerBusy) {
+      // An unprompted beat that lands mid-reply used to VANISH here without
+      // a trace — including the opening turn. The tick retries on its next
+      // pass, so the loss is recoverable; the silence about it was not.
+      if (candidateMessage === null) {
+        console.log('[interviewer] unprompted turn skipped — a reply was in flight (tick will retry)');
+      }
+      return;
+    }
     interviewerBusy = true;
     try {
       const events = store.readAll();
@@ -648,6 +692,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // The scaffolding move (one step when stuck): the observation is
         // aliased by describeStuck — identity, never file names.
         stuckObservation: stuck ? describeStuck(stuck, now) : null,
+        adriftObservation,
         allowedExtra: problem.planted_bug?.failing_test ?? '',
         workspaceView,
         bugFileVisited: candidateVisitedBugFile(events, bugFile),
@@ -926,7 +971,16 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         }));
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(
-        JSON.stringify({ messages, heard, thinking: interviewerBusy, time_up: timeUpAt !== null }),
+        // "Thinking" starts the moment a question is ACCEPTED, not when the
+        // model call begins — the settling window and queue wait are dead air
+        // to the candidate otherwise, and dead air with no indicator is
+        // indistinguishable from a broken interviewer.
+        JSON.stringify({
+          messages,
+          heard,
+          thinking: interviewerBusy || turnQueue.size > 0 || settlePending(),
+          time_up: timeUpAt !== null,
+        }),
       );
     }
     if (url === '/api/card-feedback' && req.method === 'POST') {
@@ -1268,13 +1322,42 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       const events = store.readAll();
       if (!hasFailingRun(events)) return;
       const sinceTurn = Date.now() - lastInterviewerTs;
-      // Priority: stuck/pressure (4-min floor) over moments (2-min floor).
-      // Stuck is help; a moment is engagement; pressure is the metronome —
-      // help beats engagement beats rhythm.
+      // Priority: stuck/adrift/pressure (5-min floor) over moments (3-min).
+      // Stuck is help, adrift is help, a moment is engagement, pressure is
+      // the metronome — help beats engagement beats rhythm.
       if (sinceTurn >= PRESSURE_INTERVAL_MS) {
         const stuck = detectStuck(events, Date.now(), sessionStartedAt);
         const episodeSpent = stuck ? (stuckRedactions.get(stuck.since_ms) ?? 0) >= 2 : false;
-        void runInterviewer(null, stuck && !episodeSpent ? stuck : null);
+        if (stuck && !episodeSpent) {
+          void runInterviewer(null, stuck);
+          return;
+        }
+        // Nothing is being CHANGED — but is anything being read productively?
+        // detectStuck is blind to a candidate who only reads (its own doc
+        // says reading must never trip it), which left the wrong-file reader
+        // with no help at all for 35 minutes in sess-1786072934316.
+        const adrift = detectAdrift(events, Date.now(), sessionStartedAt);
+        // The once-per-session budget is spent on the REDIRECT only: "the
+        // region you are in is spent" is a location signal, and repeating it
+        // turns the round into a guided tour. The warm inversion carries no
+        // location content — it is pure "keep pulling on that" — so it stays
+        // available all session, which is the half the candidate actually
+        // asked for ("rarely making me feel like I was on to something").
+        if (adrift) {
+          const warm = regionContainsAnswer(adrift, bugFile, problem.planted_bug?.line);
+          if (warm || !adriftFired) {
+            if (!warm) adriftFired = true;
+            console.log(`[adrift] ${warm ? 'WARM — answer is in their region; encouraging, not redirecting' : 'REDIRECT'}`);
+            void runInterviewer(
+              null,
+              null,
+              null,
+              warm ? describeWarm(adrift, Date.now()) : describeAdrift(adrift, Date.now()),
+            );
+            return;
+          }
+        }
+        void runInterviewer(null, null);
         return;
       }
       if (sinceTurn >= MOMENT_INTERVAL_MS) {

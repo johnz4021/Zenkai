@@ -480,6 +480,97 @@ describe('round rules — one template, four kinds of round', () => {
     }).system;
     expect(a).toBe(b);
   });
+
+  it.each(['one_failing_test', 'all_failing', 'all_passing', 'diff_present'])(
+    '%s renders an ADRIFT turn with no unfilled slots',
+    (kind) => {
+      const out = render(template(), {
+        ...base,
+        checkKind: kind,
+        adriftObservation: 'They have been reading one stretch for 6 minutes.',
+      });
+      expect(out).not.toMatch(/\{\{[A-Z_]+\}\}/);
+      expect(out).toContain('ADRIFT —');
+    },
+  );
+});
+
+describe('answerable questions and evidence feedback (the 14-minute refusal loop)', () => {
+  // sess-1786072934316: eight variants of "is this valid syntax" refused over
+  // fourteen minutes, because "questions about the SPEC" was the only
+  // answerable category the prompt named. And exactly one observation was
+  // ever confirmed ("Right — they're finished"), which is the turn the
+  // candidate finally made progress after.
+  const template = () => readFileSync(path.join(REPO, 'prompts/interviewer.md'), 'utf8');
+  const base = {
+    spec: 'THE SPEC', bug: 'THE BUG', bugFile: BUG_FILE,
+    elapsedMs: 60_000, remainingMs: 44 * 60_000, recentActivity: 'ACT',
+    transcript: [], candidateMessage: 'is this valid syntax?',
+  };
+
+  it('language and library questions are answerable, in the CACHED half', () => {
+    const { system, turn } = renderSplit(template(), base);
+    expect(system).toContain('Futures are hashable');
+    expect(system).toMatch(/threading, not asyncio/);
+    expect(system).toMatch(/default is to answer/i);
+    // Stable across turns → must live above the session-state marker.
+    expect(turn).not.toContain('Futures are hashable');
+  });
+
+  it('the observation/theory line is present and cached', () => {
+    const { system } = renderSplit(template(), base);
+    expect(system).toContain('An **OBSERVATION**');
+    expect(system).toMatch(/Confirm or correct\s+these freely/);
+    expect(system).toMatch(/A \*\*THEORY\*\* is a claim about the cause/);
+  });
+
+  it('every kind gets both, and a build round frames theories as design not bugs', () => {
+    for (const kind of ['one_failing_test', 'all_failing', 'all_passing', 'diff_present']) {
+      const out = render(template(), { ...base, checkKind: kind });
+      expect(out, kind).toContain('An **OBSERVATION**');
+      expect(out, kind).toContain('Futures are hashable');
+    }
+    expect(render(template(), { ...base, checkKind: 'all_failing' })).toContain(
+      'which approach will work',
+    );
+  });
+});
+
+describe('stuckVocabOf arms on adrift too', () => {
+  // An adrift turn names the candidate's own region back to them, so their
+  // vocabulary must be free while the private bug knowledge stays forbidden —
+  // the same composition a stuck turn uses.
+  const base = {
+    spec: 'shards hydrate concurrently', bug: 'holds the partition guard across the retried load',
+    bugFile: 'hydrator.py', elapsedMs: 0, remainingMs: 0, recentActivity: '',
+    transcript: [{ who: 'candidate' as const, text: 'we submit everything to the pool' }],
+    candidateMessage: null,
+  };
+
+  it('an ordinary turn is still unarmed', () => {
+    expect(stuckVocabOf(base)).toBeUndefined();
+  });
+
+  it('an adrift turn arms it, with the candidate\'s words allowed', () => {
+    const v = stuckVocabOf({ ...base, adriftObservation: 'circling one region' });
+    expect(v).toBeDefined();
+    expect(v!.forbidden).toContain('partition guard');
+    expect(v!.allowed).toContain('submit everything to the pool');
+  });
+
+  it('the redirect phrasing survives the guard; a mechanism word does not', () => {
+    const v = stuckVocabOf({ ...base, adriftObservation: 'circling one region' })!;
+    const ok = guard(
+      { say: 'You have spent a while on how the work gets handed to the pool, and that part looks sound. What else touches one of these on its way through?', kind: 'probe', nudge: true },
+      base.bugFile, false, false, v, true,
+    );
+    expect(ok.redacted).toBeUndefined();
+    const leak = guard(
+      { say: 'Think about the partition guard being held.', kind: 'probe', nudge: true },
+      base.bugFile, false, false, v, true,
+    );
+    expect(leak.redacted).toBe(true);
+  });
 });
 
 describe('guard relaxation — found territory may be discussed', () => {

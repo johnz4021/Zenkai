@@ -59,8 +59,15 @@ function say(who, text, cls) {
 let thinkingEl = null;
 let lastHeardSeq = -1;
 let pollInFlight = false;
+// A poke that lands mid-fetch used to be a silent no-op, so that turn waited
+// out the full 2s interval — the exact dead air the doorbell exists to kill.
+// Remember it instead and re-poll on the way out.
+let pokeMissed = false;
 async function pollMessages() {
-  if (pollInFlight) return; // poke + interval can overlap; cursors make retries safe
+  if (pollInFlight) {
+    pokeMissed = true;
+    return;
+  }
   pollInFlight = true;
   try {
     const r = await fetch('/api/messages?since=' + lastSeq + '&vsince=' + lastHeardSeq);
@@ -84,7 +91,10 @@ async function pollMessages() {
       if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
       say('interviewer', m.text);
       // Voice: the turn's audio is fetched from the STORED (guarded) event.
-      if (window.ipVoice) window.ipVoice.speak(m.seq);
+      // Acks are content-free continuers, and they carry a seq like any other
+      // turn — which meant an ack could reassign the <audio> src and cut a
+      // real turn off mid-sentence. A courtesy noise never interrupts.
+      if (window.ipVoice) window.ipVoice.speak(m.seq, { skipIfBusy: m.kind === 'ack' });
     }
     if (s.thinking && !thinkingEl) thinkingEl = say('interviewer', '…', 'pending');
     if (!s.thinking && thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
@@ -94,6 +104,10 @@ async function pollMessages() {
     if (s.time_up) endSession();
   } catch {} finally {
     pollInFlight = false;
+    if (pokeMissed) {
+      pokeMissed = false;
+      void pollMessages();
+    }
   }
 }
 const messagesTimer = setInterval(pollMessages, 2000);
