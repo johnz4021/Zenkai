@@ -530,3 +530,62 @@ easier to see, not smaller.
 timeline's own shape now points at exactly where they go.
 
 **Effort / priority:** unchanged from #13 (P2, ~2-3 hrs CC).
+
+---
+
+## 24. Debrief shape-ledger (deferred from the shape-uncertainty CEO review)
+
+**What:** After a real interview round, a prefilled one-tap debrief ("was it like this?"
+against the plan's own predicted shape) recording the ACTUAL round shape per company,
+dated, in the spec vocabulary.
+
+**Why:** Ground truth about round shapes arrives at the moment memory is freshest, via a
+timeline prompt that already exists ("X was 2 days ago — how did it go?"). At n=1 it
+re-aims the user's own remaining rounds; at scale it compounds into dated per-company
+shape priors — the data asset LC company tags approximates with stale crowd frequency.
+
+**Pros:** self-feeding moat; near-zero friction (correcting a prediction, not authoring).
+**Cons:** worthless below some user count; noise/lying concerns (user judgment 2026-08-07:
+open but unconvinced at current scale).
+
+**Context:** Noise fences designed and agreed: ledger priors enter the evidence hierarchy
+at tier 3 (structurally cannot override firsthand/secondhand), shift only on k≥3
+recency-weighted independent reports, provenance always displayed. Rides the E1 debrief
+channel from the external-bridge review. See ceo-plans/2026-08-07-shape-uncertainty.md.
+
+**Effort:** human ~1 wk / CC ~3-4 hrs. **Priority:** P3 until user count justifies.
+**Blocked on:** users beyond the author.
+
+---
+
+## 25. Cold-start shape corpus (deferred from the shape-uncertainty CEO review)
+
+**What:** Manually curated public-source pass (Blind, LC discuss, HN) extracting round
+SHAPES per company — spec vocabulary + date, never problem content — for ~20-30 companies.
+
+**Why:** Per-company priors before debriefs accumulate. **Cons:** recurring manual
+re-verification (shapes rot; stale curated data is worse than the live research loop).
+**Context:** the planner's runtime web search covers the author's own loops this season.
+
+**Effort:** M, recurring. **Priority:** P3. **Blocked on:** #24 existing (else nowhere to store).
+
+---
+
+## 26. Dimension-tagged difficulty operators (deferred from the shape-uncertainty CEO review)
+
+**What:** Blueprint variation operators tagged to judged dimensions — orientation → more
+files/deeper call graph; diagnosis → symptom further from cause; verification → subtler
+criterion; constraint → tighter budget; transfer distance → different shape. NEVER raw
+LOC. The gap graph picks the axis (extend where cruising, hold where struggling); a
+one-tap post-round grade (too easy / right / brutal) plus per-dimension verdicts close
+the loop IRT-style: operators are hypotheses, outcomes correct them.
+
+**Why:** "Meaningfully extend so they're challenged every time" made mechanical; answers
+the multi-file-vs-LOC question by construction.
+
+**Context:** Design settled in the 2026-08-07 CEO review; calibration needs live
+sessions. Un-defer criterion: the author completes one season containing ≥1 hedged
+segment and debriefs it.
+
+**Effort:** human ~1 wk / CC ~3-4 hrs. **Priority:** P2 once the criterion fires.
+**Blocked on:** portfolio planning shipping (the accepted scope).
