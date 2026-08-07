@@ -87,6 +87,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // ordering is preserved because coalescing only merges CONSECUTIVE changes
   // to the SAME document (2A: classifier-grade, ~1s precision is fine).
   const editBuffer = new Map<string, { changes: number; timer: NodeJS.Timeout }>();
+  const lastViewRange = new Map<string, { at: number; start: number }>();
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((e) => {
       if (!relevant(e.document.uri) || e.contentChanges.length === 0) return;
@@ -116,7 +117,41 @@ export function activate(context: vscode.ExtensionContext): void {
       };
       emitter.emit('file_save', payload);
     }),
+    // Focus IS the signal onDidOpenTextDocument misses: that event fires only
+    // when a document first loads into memory, so switching back to an
+    // already-open tab was invisible — a 12-minute real session produced 4
+    // file events total, and a candidate silently reading the wrong file was
+    // undetectable. Reuses file_open (via: 'focus') so every downstream
+    // consumer — activity feed, stuck detector, workspace view — picks it up
+    // without learning a new type.
+    vscode.window.onDidChangeActiveTextEditor((ed) => {
+      if (!ed || !relevant(ed.document.uri)) return;
+      emitter.emit('file_open', { path: ed.document.uri.path, via: 'focus' });
+    }),
+    // Scroll → visible range, coalesced HARD (per file: 15s floor AND a
+    // >25-line move — same Map+timer shape as editBuffer above). This is
+    // attention ("they have been in the exception path for four minutes"),
+    // not surveillance; the session page's observed-copy names it.
+    vscode.window.onDidChangeTextEditorVisibleRanges((e) => {
+      if (!relevant(e.textEditor.document.uri)) return;
+      const range = e.visibleRanges[0];
+      if (!range) return;
+      const key = e.textEditor.document.uri.path;
+      const prev = lastViewRange.get(key);
+      const now = Date.now();
+      if (prev && (now - prev.at < 15_000 || Math.abs(range.start.line - prev.start) < 25)) return;
+      lastViewRange.set(key, { at: now, start: range.start.line });
+      emitter.emit('view_range', { path: key, start: range.start.line + 1, end: range.end.line + 1 });
+    }),
   );
+
+  // The already-focused editor at activation: the session usually starts with
+  // a file on screen, and without this the first focus event waits for the
+  // first SWITCH.
+  const active = vscode.window.activeTextEditor;
+  if (active && relevant(active.document.uri)) {
+    emitter.emit('file_open', { path: active.document.uri.path, via: 'focus' });
+  }
 
   // ---- terminal test runs: the half of verification we used to miss ----
   // A replay over 19 real traces found the Run Tests button pressed about

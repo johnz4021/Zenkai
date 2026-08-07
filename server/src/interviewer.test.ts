@@ -16,6 +16,7 @@ import {
   parseTurn,
   render,
   renderActivity,
+  buildTranscript,
 } from './interviewer.js';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
 
@@ -132,12 +133,84 @@ describe('renderActivity', () => {
       ],
       now,
     );
-    expect(out).toContain('file_open reservationService.ts');
+    expect(out).toContain('opened reservationService.ts');
     expect(out).toContain('edit expiryIndex.ts');
+  });
+
+  it('labels focus switches distinctly from first opens', () => {
+    const out = renderActivity([ev('file_open', 30, { path: 'src/engine.py', via: 'focus' })], now);
+    expect(out).toContain('switched to engine.py');
   });
 
   it('excludes chat so the transcript is not duplicated into the prompt', () => {
     expect(renderActivity([ev('utterance', 5, { text: 'hi' })], now)).toBe('(no editor activity yet)');
+  });
+
+  it('drops sensor noise — the 9-of-10-lines-said-"sensor" regression', () => {
+    // Measured live (sess-1786053559997): voice sensor flips flooded the
+    // 10-event window and evicted the candidate's file opens; the
+    // interviewer then asked which file they were in.
+    const events = [
+      ev('file_open', 120, { path: 'src/hydrator.py' }),
+      ...Array.from({ length: 12 }, (_, i) =>
+        ev('sensor', 100 - i, { sensor: 'stt', state: i % 2 ? 'down' : 'up', reason: 'x' }),
+      ),
+      ev('edit', 10, { path: 'src/hydrator.py' }),
+    ];
+    const out = renderActivity(events, now);
+    expect(out).not.toContain('sensor');
+    expect(out).toContain('opened hydrator.py');
+    expect(out).toContain('edit hydrator.py');
+  });
+
+  it('keeps view_range out of the feed — attention lives in the workspace view', () => {
+    const out = renderActivity(
+      [ev('edit', 20, { path: 'a.py' }), ev('view_range', 5, { path: 'a.py', start: 1, end: 40 })],
+      now,
+    );
+    expect(out).not.toContain('view_range');
+    expect(out).toContain('edit a.py');
+  });
+});
+
+describe('buildTranscript', () => {
+  const now = 1_000_000;
+  const utter = (dtSec: number, text: string): TraceEvent =>
+    ({ session_id: 's', user_id: 'u', source: 'chrome', seq: 0, ts: now - dtSec * 1000, type: 'utterance', payload: { text, via: 'voice' } }) as TraceEvent;
+  const agent = (dtSec: number, text: string): TraceEvent =>
+    ({ session_id: 's', user_id: 'u', source: 'chrome', seq: 0, ts: now - dtSec * 1000, type: 'interviewer', payload: { text } }) as TraceEvent;
+
+  it('drops empty utterances from the window but reports them as one count line', () => {
+    // 3 of 10 transcript slots were empty candidate: lines in a measured
+    // session — untranscribed segments must not evict real narration, and
+    // must not read as silence either.
+    const events = [
+      utter(100, 'I think the retry logic is off'),
+      utter(90, ''),
+      agent(80, 'What makes you say that?'),
+      utter(70, ''),
+      utter(60, 'the backoff doubles twice'),
+    ];
+    const out = buildTranscript(events);
+    expect(out.map((t) => t.text)).toEqual([
+      'I think the retry logic is off',
+      'What makes you say that?',
+      'the backoff doubles twice',
+      '(spoke 2 more times in this window, but the words could not be transcribed)',
+    ]);
+  });
+
+  it('empty-only speech still surfaces as the count line, never as blank turns', () => {
+    const out = buildTranscript([utter(30, ''), utter(20, '')]);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.text).toContain('2 more times');
+  });
+
+  it('keeps only the last N real lines', () => {
+    const events = Array.from({ length: 15 }, (_, i) => utter(150 - i, `line ${i}`));
+    const out = buildTranscript(events, 10);
+    expect(out).toHaveLength(10);
+    expect(out[0]!.text).toBe('line 5');
   });
 });
 
@@ -338,6 +411,74 @@ describe('renderSplit (prompt caching seam)', () => {
     expect(system).not.toContain('WORKSPACE-MARKER');
     expect(turn).toContain('WORKSPACE-MARKER');
     expect(turn).toContain('MOMENT-MARKER');
+  });
+
+  it('the codebase view (repo map + failing test) lands in the CACHED half', () => {
+    const template = readFileSync(path.join(REPO, 'prompts/interviewer.md'), 'utf8');
+    const { system, turn } = renderSplit(template, {
+      ...ctx,
+      codebase: 'CODEBASE-MARKER hydrator.py — 378 lines',
+    });
+    expect(system).toContain('CODEBASE-MARKER');
+    expect(turn).not.toContain('CODEBASE-MARKER');
+  });
+});
+
+describe('round rules — one template, four kinds of round', () => {
+  // The template was hardcoded to debugging while bugContext degraded to
+  // "(no planted bug for this round type)" on other kinds: a build round's
+  // interviewer asserted knowledge of a bug that did not exist. Now the
+  // per-kind blocks come from round-rules.ts through one template.
+  const template = () => readFileSync(path.join(REPO, 'prompts/interviewer.md'), 'utf8');
+  const base = {
+    spec: 'THE SPEC', bug: 'THE BUG', bugFile: BUG_FILE,
+    elapsedMs: 60_000, remainingMs: 44 * 60_000, recentActivity: 'ACT',
+    transcript: [], candidateMessage: 'hello',
+  };
+
+  it.each(['one_failing_test', 'all_failing', 'all_passing', 'diff_present'])(
+    '%s renders with no unfilled slots',
+    (kind) => {
+      const out = render(template(), { ...base, checkKind: kind });
+      expect(out).not.toMatch(/\{\{[A-Z_]+\}\}/);
+    },
+  );
+
+  it('the debugging round keeps today’s hard rule verbatim', () => {
+    const out = render(template(), { ...base, checkKind: 'one_failing_test' });
+    expect(out).toContain('You know where the bug is. The candidate must find it themselves.');
+    expect(out).toContain('You are conducting a debugging round.');
+    expect(out).toContain('from your private bug knowledge');
+  });
+
+  it('an absent checkKind resolves to debugging — legacy manifests unchanged', () => {
+    const out = render(template(), base);
+    expect(out).toContain('You are conducting a debugging round.');
+  });
+
+  it('a build round says there is NO planted bug and never claims one', () => {
+    const out = render(template(), { ...base, checkKind: 'all_failing' });
+    expect(out).toContain('NO planted bug');
+    expect(out).not.toContain('You know where the bug is');
+    expect(out).not.toContain('conducting a debugging round');
+  });
+
+  it('a review round guards the planted defects, not a single bug location', () => {
+    const out = render(template(), { ...base, checkKind: 'diff_present' });
+    expect(out).toContain('code review round');
+    expect(out).toContain('planted defects');
+  });
+
+  it('round rules are per-session constant — the cached half stays identical across turns', () => {
+    const ctx = { ...base, checkKind: 'all_failing', codebase: 'FILES: a.py' };
+    const a = renderSplit(template(), ctx).system;
+    const b = renderSplit(template(), {
+      ...ctx,
+      elapsedMs: 20 * 60_000,
+      candidateMessage: 'another question',
+      workspaceView: 'diff',
+    }).system;
+    expect(a).toBe(b);
   });
 });
 

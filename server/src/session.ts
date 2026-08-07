@@ -16,7 +16,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import httpProxy from 'http-proxy';
@@ -32,13 +32,15 @@ import { describeStuck, detectStuck, type StuckState } from './stuck.js';
 import { isModelPath, listWorkspaceFiles, runGuard, safeWorkspacePath, summarizeTail } from './panes.js';
 import { isCorrectionFollowUp, isExplicitAsk } from './addressing.js';
 import { decideAck } from './ack.js';
-import { renderWorkspaceView, snapshotWorkspace } from './workspace-view.js';
+import { renderWorkspaceView, selectRecentlyEdited, snapshotWorkspace } from './workspace-view.js';
+import { codebaseViewOf, focusViewOf, namedOutOfContextFiles, toRel } from './problem-view.js';
 import { detectMoment } from './moments.js';
 import { extractSection, loadBlueprint } from './blueprint.js';
 import { TraceStore } from './trace-store.js';
 import {
   TurnQueue,
   bugContext,
+  buildTranscript,
   candidateVisitedBugFile,
   pickIntentCheck,
   pickInterviewer,
@@ -230,10 +232,30 @@ function fetchIdeHtml(port: number, urlPath: string): Promise<string> {
 }
 
 function ensureExtensionBuilt(repoRoot: string): string {
-  const dist = path.join(repoRoot, 'extension', 'dist');
-  if (!existsSync(path.join(dist, 'trace-emitter-0.0.1', 'extension.js'))) {
-    console.log('[session] building extension...');
-    sh('node', ['build.mjs'], { cwd: path.join(repoRoot, 'extension') });
+  const extRoot = path.join(repoRoot, 'extension');
+  const dist = path.join(extRoot, 'dist');
+  const bundle = path.join(dist, 'trace-emitter-0.0.1', 'extension.js');
+  // Staleness by mtime, not existence. The existence-only check shipped a
+  // two-day-old bundle while src had moved on (output_tail never reached a
+  // session), and nothing anywhere said so. esbuild is ~100ms — rebuilding
+  // on a newer source is cheaper than one silently stale session.
+  const newestSource = [
+    ...readdirSync(path.join(extRoot, 'src'))
+      .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
+      .map((f) => path.join(extRoot, 'src', f)),
+    path.join(extRoot, 'build.mjs'),
+    path.join(extRoot, 'manifest.mjs'),
+  ].reduce((newest, p) => {
+    try {
+      return Math.max(newest, statSync(p).mtimeMs);
+    } catch {
+      return newest;
+    }
+  }, 0);
+  const bundledAt = existsSync(bundle) ? statSync(bundle).mtimeMs : 0;
+  if (bundledAt < newestSource) {
+    console.log(`[session] ${bundledAt === 0 ? 'building' : 'rebuilding'} extension (source newer than bundle)...`);
+    sh('node', ['build.mjs'], { cwd: extRoot });
   }
   return dist;
 }
@@ -417,6 +439,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
   // ---- interviewer ----
   const { bug, bugFile } = bugContext(problem);
+  // The stable code context (repo map + the failing test verbatim), computed
+  // ONCE: it describes the problem as handed out, so the cached system block
+  // stays byte-identical across turns.
+  const codebaseView = codebaseViewOf(cfg.problemDir, problem.planted_bug?.failing_test ?? null);
+  const workspaceFileList = listWorkspaceFiles(cfg.problemDir);
   // The spec's interviewer:false (an OA) wins over everything: nobody
   // replies, so the intent check has nothing to route to either. The mic
   // stays live — think-aloud is still judge signal.
@@ -583,6 +610,28 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     try {
       const events = store.readAll();
       const now = Date.now();
+      // The eyes, per turn: the file under their eyes first (focus sensor),
+      // then real diffs + test output. Cheap — a handful of reads.
+      const focusView = focusViewOf(cfg.problemDir, events, now);
+      const workspaceView = [focusView, renderWorkspaceView(cfg.problemDir, events)]
+        .filter(Boolean)
+        .join('\n\n');
+      // read_file instrumentation (decides the deferred-tool question with
+      // data): a candidate naming a file whose CONTENT the interviewer does
+      // not have is the one situation a tool would have served.
+      if (candidateMessage) {
+        const focusRel = focusView.match(/^── currently viewing: (\S+)/)?.[1];
+        const inContext = [
+          focusRel,
+          // Diffed files ride in the workspace view — their content is
+          // (partially) in front of the interviewer too.
+          ...selectRecentlyEdited(events).map((p) => toRel(p)),
+        ].filter((f): f is string => Boolean(f));
+        const named = namedOutOfContextFiles(candidateMessage, workspaceFileList, inContext);
+        if (named.length > 0) {
+          console.log(`[context] candidate named ${named.join(', ')} — content not in interviewer context`);
+        }
+      }
       const turn = await interviewer({
         spec: problem.spec,
         bug,
@@ -592,25 +641,21 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         elapsedMs: now - (sessionStartedAt ?? now),
         remainingMs: sessionLengthMs - (now - (sessionStartedAt ?? now)),
         recentActivity: renderActivity(events, now),
-        transcript: events
-          .filter((e) => e.type === 'utterance' || e.type === 'interviewer')
-          .slice(-10)
-          .map((e) => ({
-            who: e.type === 'utterance' ? ('candidate' as const) : ('interviewer' as const),
-            text: String((e.payload as { text?: string })?.text ?? ''),
-          })),
+        // Real lines only; unheard voice segments collapse to a count line
+        // instead of eating window slots as empty candidate turns.
+        transcript: buildTranscript(events),
         candidateMessage,
         // The scaffolding move (one step when stuck): the observation is
         // aliased by describeStuck — identity, never file names.
         stuckObservation: stuck ? describeStuck(stuck, now) : null,
         allowedExtra: problem.planted_bug?.failing_test ?? '',
-        // The eyes: real diffs + test output, per turn. Cheap — reads only
-        // the few recently-edited files.
-        workspaceView: renderWorkspaceView(cfg.problemDir, events),
+        workspaceView,
         bugFileVisited: candidateVisitedBugFile(events, bugFile),
         rubric: rubricText,
         engagement,
         momentObservation: moment ? moment.observation : null,
+        checkKind: roundSpec.check.kind,
+        codebase: codebaseView,
       });
       if (turn.redacted) {
         console.warn('[interviewer] leak guard fired — reply replaced');

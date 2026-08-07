@@ -21,6 +21,8 @@
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
+import { isCandidateActivity } from '@interview-prep/shared';
+import { roundRules } from './round-rules.js';
 
 export type InterviewerKind = 'answer' | 'pressure' | 'probe' | 'decline' | 'silent';
 
@@ -122,6 +124,14 @@ export interface InterviewerContext {
   /** Set when a moment trigger fired ('opening' or a moments.ts detection):
    *  the observation text for the per-turn half. */
   momentObservation?: string | null;
+  /** The round's check kind — selects the per-kind prompt blocks
+   *  (round-rules.ts). Absent = one_failing_test, the legacy resolution. */
+  checkKind?: string;
+  /** codebaseViewOf() output: repo map + the failing test verbatim.
+   *  Session-constant by construction (computed once at start) → stable
+   *  half. The interviewer had never seen a line of the problem it was
+   *  probing; this is the fix, bounded. */
+  codebase?: string;
 }
 
 export type Interviewer = (ctx: InterviewerContext) => Promise<InterviewerTurn>;
@@ -334,6 +344,12 @@ export function leaksImplementationVocabulary(
  * going to point you anywhere" would be a non-sequitur — and, worse, a tell
  * that the agent nearly said something about where to look. Unprompted turns
  * redact to silence.
+ *
+ * Related but prompt-enforced only: the quote-only-opened-files rule (the
+ * interviewer now sees the repo map and failing test up front, and may
+ * discuss content only from files the candidate has opened). No mechanical
+ * layer here — quoting unvisited NON-bug files is a taste violation, not a
+ * leak, and this guard stays surgical about actual leaks.
  */
 export function guard(
   turn: InterviewerTurn,
@@ -380,8 +396,16 @@ export function guard(
  * conversation is incoherent.
  */
 export function renderActivity(events: TraceEvent[], nowMs: number, limit = 10): string {
+  // isCandidateActivity is the filter, at last with a consumer: the old
+  // "everything but chat" filter let voice-sensor flips flood the window —
+  // measured live, 9 of the 10 lines the interviewer saw were the literal
+  // word "sensor" and the candidate's file opens had been evicted (it then
+  // asked which file they were in, with the answer sitting in the trace).
+  // utterances live in the transcript slot; view_range coalesces into the
+  // workspace view's "currently viewing" line — repeating either here would
+  // just re-crowd the window.
   const recent = events
-    .filter((e) => e.type !== 'utterance' && e.type !== 'interviewer')
+    .filter((e) => isCandidateActivity(e) && e.type !== 'utterance' && e.type !== 'view_range')
     .slice(-limit);
   if (recent.length === 0) return '(no editor activity yet)';
   const basename = (p: string) => (p ? (p.split('/').pop() ?? p) : 'a file');
@@ -393,14 +417,51 @@ export function renderActivity(events: TraceEvent[], nowMs: number, limit = 10):
       if (e.type === 'test_run') {
         const s = String(p?.summary ?? '');
         what = `test run ${p?.exit_code === 0 ? 'PASSED' : 'FAILED'}${s ? ` (${s})` : ''}`;
-      } else if (e.type === 'edit' || e.type === 'file_save' || e.type === 'file_open') {
+      } else if (e.type === 'edit' || e.type === 'file_save') {
         what = `${e.type} ${basename(String(p?.path ?? ''))}`;
-      } else if (e.type === 'pause') {
-        what = 'went silent';
+      } else if (e.type === 'file_open') {
+        const via = (p as { via?: string } | null)?.via;
+        what = `${via === 'focus' ? 'switched to' : 'opened'} ${basename(String(p?.path ?? ''))}`;
       }
       return `  -${ago}s  ${what}`;
     })
     .join('\n');
+}
+
+/**
+ * The conversation window for the prompt: last `limit` REAL lines.
+ *
+ * Untranscribed utterances (voice segments STT heard nothing in) used to
+ * render as empty `candidate:` lines and consume transcript slots — 3 of 10
+ * in one measured session. They are dropped from the window but collapsed
+ * into one honest count line, because the opposite failure is worse: speech
+ * the interviewer reads as silence.
+ */
+export function buildTranscript(
+  events: TraceEvent[],
+  limit = 10,
+): { who: 'candidate' | 'interviewer'; text: string }[] {
+  const talk = events.filter((e) => e.type === 'utterance' || e.type === 'interviewer');
+  const textOf = (e: TraceEvent) => String((e.payload as { text?: string })?.text ?? '').trim();
+  const spoken = talk.filter((e) => textOf(e) !== '');
+  const kept = spoken.slice(-limit);
+  // Count unheard segments inside the rendered window (or all of them when
+  // nothing transcribed at all) — older ones are stale, not signal.
+  const sinceTs = kept[0]?.ts ?? 0;
+  const unheard = talk.filter(
+    (e) => e.type === 'utterance' && e.ts >= sinceTs && textOf(e) === '',
+  ).length;
+  const out = kept.map((e) => ({
+    who: e.type === 'utterance' ? ('candidate' as const) : ('interviewer' as const),
+    text: textOf(e),
+  }));
+  if (unheard > 0) {
+    out.push({
+      who: 'candidate',
+      text: `(spoke ${unheard} more time${unheard === 1 ? '' : 's'} in this window, but the words could not be transcribed)`,
+    });
+  }
+  return out;
 }
 
 /**
@@ -417,9 +478,15 @@ export function render(template: string, ctx: InterviewerContext): string {
     ctx.transcript.length === 0
       ? '(nothing said yet)'
       : ctx.transcript.map((t) => `${t.who}: ${t.text}`).join('\n');
+  const rules = roundRules(ctx.checkKind);
   const values: Record<string, string> = {
     SPEC: ctx.spec,
     BUG: ctx.bug,
+    ROUND_INTRO: rules.intro,
+    ANSWER_RULES: rules.answerRules,
+    READING_LIMIT: rules.readingLimit,
+    STUCK_FORBIDDEN: rules.stuckForbidden,
+    CODEBASE: ctx.codebase ?? '(no codebase view available for this round)',
     HOW_TO_RUN: ctx.howToRun ?? 'Not known for this round — say you are not sure if asked.',
     TARGET_NOTE: ctx.targetNote ?? '(no history yet — first sessions)',
     RUBRIC: ctx.rubric ?? '(no rubric available for this round)',

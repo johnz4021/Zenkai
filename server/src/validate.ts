@@ -76,16 +76,25 @@ const TEST_DIRS = new Set(['test', 'tests']);
 const HARNESS_BASENAMES = /^(vitest|vite)\.config\.\w+$/;
 const TEST_BASENAMES = /(\.test\.\w+|_test\.py)$|^test_.*\.py$/;
 
+/** Is this workspace-relative path a test file by the repo's conventions?
+ *  The ONLY test-file identification that exists: no manifest field names
+ *  the test file, so consumers (problem-view's failing-test lookup) share
+ *  this predicate instead of growing a drifting copy. */
+export function isTestFile(rel: string): boolean {
+  const parts = rel.split('/');
+  if (TEST_DIRS.has(parts[0] ?? '')) return true;
+  return TEST_BASENAMES.test(parts[parts.length - 1] ?? '');
+}
+
 /** Candidate-facing source files from a listWorkspaceFiles() listing —
  *  what check.max_source_files counts. Tests and harness config are the
  *  problem's scaffolding, not its size. */
 export function countSourceFiles(files: string[]): number {
   return files.filter((f) => {
     if (!SOURCE_EXTENSIONS.has(path.extname(f))) return false;
-    const parts = f.split('/');
-    if (TEST_DIRS.has(parts[0] ?? '')) return false;
-    const base = parts[parts.length - 1] ?? '';
-    return !TEST_BASENAMES.test(base) && !HARNESS_BASENAMES.test(base);
+    if (isTestFile(f)) return false;
+    const base = f.split('/').pop() ?? '';
+    return !HARNESS_BASENAMES.test(base);
   }).length;
 }
 

@@ -28,6 +28,7 @@ export type TraceEventType =
   | 'spec_mutation' // scripted spec swap fired by the chrome (never LLM-timed)
   | 'pause'         // LEGACY: extension-emitted verdict; readable, ignored
   | 'sensor'        // voice sensor state change (see SensorPayload)
+  | 'view_range'    // which lines are on the candidate's screen (coalesced)
   | 'session_start'
   | 'session_end';
 
@@ -82,6 +83,24 @@ export interface EditPayload {
 
 export interface FileOpenPayload {
   path: string;
+  /** 'focus' = the editor SWITCHED to an already-open document (tab click,
+   *  split focus). Plain opens omit it. Both mean the same downstream thing —
+   *  this file has the candidate's attention — which is why focus reuses
+   *  file_open instead of minting a type every consumer would have to learn. */
+  via?: 'focus';
+}
+
+/**
+ * The visible line range of a file on the candidate's screen. Emitted by the
+ * extension on scroll, coalesced hard (one per file per 15s, only after a
+ * >25-line move) — attention signal, not a keylogger. This is the one fact
+ * no tool could recover from disk: WHERE the candidate is looking. Lines are
+ * 1-indexed.
+ */
+export interface ViewRangePayload {
+  path: string;
+  start: number;
+  end: number;
 }
 
 export interface SpecMutationPayload {
@@ -172,6 +191,9 @@ export const CANDIDATE_ACTIVITY_TYPES: readonly TraceEventType[] = [
   'command',
   'test_run',
   'utterance',
+  // Scrolling is reading, and reading is activity — the pause lesson again:
+  // a candidate silently working through a file must never score as absent.
+  'view_range',
 ];
 
 export function isCandidateActivity(e: TraceEvent): boolean {
