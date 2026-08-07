@@ -442,7 +442,9 @@ export function appPage(): string {
   #plan-attach { margin-bottom: 6px; }
   @media (max-width: 1099px) {
     body.wide { max-width: 760px; }
-    #plan-wrap { display: flex; flex-direction: column; }
+    /* The base grid rule's align-items:start would leak into this flex
+       context and shrink the panel to content width (QA ISSUE-004). */
+    #plan-wrap { display: flex; flex-direction: column; align-items: stretch; }
     #plan-main { display: contents; }
     #plan-chat { order: 1; }
     #plan-panel { order: 2; position: sticky; bottom: 0; top: auto; max-height: 45vh; }
