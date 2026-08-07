@@ -112,13 +112,17 @@ function hasSpecDates(target: Target): boolean {
  * pace, round-robin across confirmed specs, capped so a far-off date does
  * not produce a wall of items.
  */
-export function proposeQueue(target: Target, now: number): Queue {
+export function proposeQueue(target: Target, now: number, perWeek: number = DEFAULT_PER_WEEK): Queue {
+  // perWeek comes from the planning CONVERSATION when the candidate answered
+  // the time-budget question ("about an hour a day" → 4/week); the constant
+  // is only the silence default. It sizes the queue; repace keeps adjusting
+  // pace against the runway afterwards.
   const items: QueueItem[] = [];
   if (target.specs.length > 0 && !hasSpecDates(target)) {
     // Single-deadline loop: the original behavior, byte-identical.
     const days = daysLeft(target.interview_date, now);
     const weeks = days === null ? 2 : Math.max(1, days / 7);
-    const count = Math.min(MAX_ITEMS, Math.max(2, Math.round(weeks * DEFAULT_PER_WEEK)));
+    const count = Math.min(MAX_ITEMS, Math.max(2, Math.round(weeks * perWeek)));
     for (let i = 0; i < count; i++) {
       const spec = target.specs[i % target.specs.length]!;
       items.push({
@@ -136,7 +140,7 @@ export function proposeQueue(target: Target, now: number): Queue {
     // specs get 2 flat and sort last (confirmed but unscheduled).
     const endDays = daysLeft(loopEnd(target), now);
     const weeks = endDays === null ? 2 : Math.max(1, endDays / 7);
-    const total = Math.min(MAX_ITEMS, Math.max(2, Math.round(weeks * DEFAULT_PER_WEEK)));
+    const total = Math.min(MAX_ITEMS, Math.max(2, Math.round(weeks * perWeek)));
     const dated = target.specs.filter((s) => specDeadline(s, target));
     const undated = target.specs.filter((s) => !specDeadline(s, target));
     const daysOf = new Map(dated.map((s) => [s.id, daysLeft(specDeadline(s, target), now) ?? 1]));
@@ -175,7 +179,7 @@ export function proposeQueue(target: Target, now: number): Queue {
   return {
     target_id: target.id,
     items,
-    pace: { per_week: DEFAULT_PER_WEEK },
+    pace: { per_week: perWeek },
     created: new Date(now).toISOString(),
   };
 }

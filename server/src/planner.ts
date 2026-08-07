@@ -24,14 +24,14 @@
  * secondhand > public > priors) lives in prompts/planner.md.
  *
  * Requires ANTHROPIC_API_KEY: server tools and typed content blocks do not
- * exist on the claude -p path. Without a key the app falls back to the
- * classic clarify wizard.
+ * exist on the claude -p path. Without a key the client shows a notice —
+ * conversational planning has no degraded mode (design D1, 2026-08-07).
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { attachmentBlocks, draftToSpec, targetDir, type DraftToolOutput, type SpecDraft, type Target } from './intake.js';
-import { ROUND_FIELDS, coerceArray, type ClarifyQuestion } from './clarify.js';
+import { ROUND_FIELDS, coerceArray } from './clarify.js';
 
 // ---- conversation store (targets/<id>/conversation.jsonl) ----
 
@@ -104,50 +104,10 @@ const PROPOSE_TOOL = {
           required: ['id', 'label', 'interviewer', 'can_run_tests', 'time_limit_minutes', 'starts_from', 'submit', 'check_kind', 'rationale', 'unsupported'],
         },
       },
-      questions: {
-        type: 'array',
-        description: 'AT MOST 3 open questions whose answers change the specs. Empty when the material settles everything.',
-        items: {
-          type: 'object',
-          properties: {
-            id: { type: 'string' },
-            question: { type: 'string' },
-            options: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: { label: { type: 'string' }, detail: { type: 'string' } },
-                required: ['label'],
-              },
-            },
-            recommended: { type: 'string', description: 'Label of the recommended option, or empty.' },
-            why: { type: 'string', description: 'One sentence: what changes based on the answer.' },
-          },
-          required: ['id', 'question', 'options', 'why'],
-        },
-      },
-      sources: {
-        type: 'array',
-        description: 'Every public source consulted this turn, with a verdict. Empty when you did not search.',
-        items: {
-          type: 'object',
-          properties: {
-            url: { type: 'string' },
-            note: { type: 'string', description: 'What this source says, in a clause.' },
-            verdict: { type: 'string', enum: ['agrees', 'thin', 'conflicts'] },
-          },
-          required: ['url', 'verdict'],
-        },
-      },
-      conflict: {
-        type: 'object',
-        description: 'Present ONLY when a source contradicts the candidate\'s own evidence. You keep their version.',
-        properties: {
-          yours: { type: 'string', description: 'What the candidate told you, with its provenance.' },
-          theirs: { type: 'string', description: 'What the source says.' },
-          source_url: { type: 'string' },
-        },
-        required: ['yours', 'theirs'],
+      pace_per_week: {
+        type: 'number',
+        description:
+          'Practice rounds per week, 1-7, derived from the candidate\'s answer to the daily-time question. Omit until they have answered.',
       },
       summary: {
         type: 'string',
@@ -160,34 +120,20 @@ const PROPOSE_TOOL = {
 
 // ---- pure gate over one assistant turn ----
 
-export interface PlannerSource {
-  url: string;
-  note?: string;
-  verdict: 'agrees' | 'thin' | 'conflicts';
-}
-
-export interface PlannerConflict {
-  yours: string;
-  theirs: string;
-  source_url?: string;
-}
-
 export interface PlannerProposal {
   drafts: SpecDraft[];
-  questions: ClarifyQuestion[];
-  sources: PlannerSource[];
-  conflict?: PlannerConflict;
+  /** Practice rounds/week from the time-budget conversation; sizes the queue. */
+  pace_per_week?: number;
   summary?: string;
 }
 
 export interface PlannerReply {
-  /** Concatenated text blocks — what the candidate reads. */
+  /** Concatenated text blocks — what the candidate reads. Questions,
+   *  retrieval reports, and conflicts all live HERE as prose (Cowork
+   *  grammar, design D1 2026-08-07): the chat has no widgets. */
   prose: string;
   /** The gated proposal, when the model called propose_rounds this turn. */
   proposal: PlannerProposal | null;
-  /** Retrieval that actually happened (from server tool blocks), for the
-   *  trace line — independent of what the model claims in `sources`. */
-  searched: { queries: number; urls: string[] };
 }
 
 function text(v: unknown): string {
@@ -216,78 +162,28 @@ export function gateProposal(raw: unknown): PlannerProposal {
   const ids = new Set(drafts.map((d) => d.spec.id));
   if (ids.size !== drafts.length) throw new Error('planner: duplicate round ids');
 
-  const questions = coerceArray(o.questions ?? []).map((q) => {
-    const x = q as Partial<ClarifyQuestion>;
-    if (!x.question?.trim()) throw new Error('planner: empty question');
-    const options = coerceArray(x.options ?? []).map((op) => {
-      const y = op as { label?: string; detail?: string };
-      if (!y.label?.trim()) throw new Error('planner: option without label');
-      return { label: y.label.trim(), ...(y.detail?.trim() ? { detail: y.detail.trim() } : {}) };
-    });
-    if (options.length < 2 || options.length > 4) {
-      throw new Error(`planner: "${x.question}" has ${options.length} options (need 2-4)`);
-    }
-    return {
-      id: (x.id ?? '').trim() || x.question.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 32),
-      question: x.question.trim(),
-      options,
-      ...(x.recommended?.trim() ? { recommended: x.recommended.trim() } : {}),
-      why: (x.why ?? '').trim() || 'affects the round shape',
-    };
-  });
-  if (questions.length > 3) throw new Error(`planner: ${questions.length} questions (max 3)`);
-
-  const sources: PlannerSource[] = coerceArray(o.sources ?? []).flatMap((s) => {
-    const y = s as { url?: unknown; note?: unknown; verdict?: unknown };
-    const url = text(y.url);
-    const verdict = text(y.verdict);
-    if (!url || (verdict !== 'agrees' && verdict !== 'thin' && verdict !== 'conflicts')) return [];
-    return [{ url, verdict, ...(text(y.note) ? { note: text(y.note) } : {}) } as PlannerSource];
-  });
-
-  let conflict: PlannerConflict | undefined;
-  const c = o.conflict as { yours?: unknown; theirs?: unknown; source_url?: unknown } | undefined;
-  if (c && text(c.yours) && text(c.theirs)) {
-    conflict = {
-      yours: text(c.yours),
-      theirs: text(c.theirs),
-      ...(text(c.source_url) ? { source_url: text(c.source_url) } : {}),
-    };
-  }
+  const paceRaw = Number(o.pace_per_week);
+  const pace = Number.isFinite(paceRaw) ? Math.min(7, Math.max(1, Math.round(paceRaw))) : undefined;
 
   const summary = text(o.summary);
-  return { drafts, questions, sources, ...(conflict ? { conflict } : {}), ...(summary ? { summary } : {}) };
+  return { drafts, ...(pace !== undefined ? { pace_per_week: pace } : {}), ...(summary ? { summary } : {}) };
 }
 
-/** One assistant turn's content blocks → what the candidate sees. Pure. */
+/** One assistant turn's content blocks → what the candidate sees. Pure.
+ *  Server-tool blocks (search/fetch results) are skipped silently — the
+ *  model reports retrieval in prose with inline links; the chat renders no
+ *  trace widget. */
 export function gatePlannerTurn(content: Record<string, unknown>[]): PlannerReply {
   let prose = '';
-  let queries = 0;
-  const urls: string[] = [];
   let proposal: PlannerProposal | null = null;
   for (const block of content) {
     if (block.type === 'text' && typeof block.text === 'string') {
       prose += (prose ? '\n\n' : '') + block.text.trim();
-    } else if (block.type === 'server_tool_use') {
-      queries += 1;
-    } else if (block.type === 'web_search_tool_result') {
-      // Success content is a LIST of results; error content is an OBJECT —
-      // branch before iterating (server-tool errors don't raise).
-      const c = block.content;
-      if (Array.isArray(c)) {
-        for (const r of c) {
-          const u = (r as { url?: unknown }).url;
-          if (typeof u === 'string' && u && !urls.includes(u)) urls.push(u);
-        }
-      }
-    } else if (block.type === 'web_fetch_tool_result') {
-      const c = block.content as { url?: unknown } | undefined;
-      if (c && typeof c.url === 'string' && c.url && !urls.includes(c.url)) urls.push(c.url);
     } else if (block.type === 'tool_use' && block.name === PROPOSE_TOOL.name) {
       proposal = gateProposal(block.input);
     }
   }
-  return { prose, proposal, searched: { queries, urls } };
+  return { prose, proposal };
 }
 
 // ---- turn rendering for the client (replay + live) ----
@@ -297,7 +193,6 @@ export interface RenderedTurn {
   at: string;
   prose: string;
   proposal?: PlannerProposal;
-  searched?: { queries: number; urls: string[] };
   /** Names of binary attachments carried by this turn (kickoff only). */
   attachments?: string[];
 }
@@ -348,7 +243,6 @@ export function renderConversation(turns: PlannerTurn[]): RenderedTurn[] {
         at: t.at,
         prose: reply.prose,
         ...(reply.proposal ? { proposal: reply.proposal } : {}),
-        ...(reply.searched.queries > 0 || reply.searched.urls.length > 0 ? { searched: reply.searched } : {}),
       });
     }
   }

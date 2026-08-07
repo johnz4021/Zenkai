@@ -63,6 +63,12 @@ export const ROUND_FIELDS = {
     description:
       'YYYY-MM-DD — ONLY when the material states when THIS round happens. Omit otherwise; never guess a date.',
   },
+  evidence_tier: {
+    type: 'string',
+    enum: ['firsthand', 'secondhand', 'public_prior'],
+    description:
+      "How this round's FORM is evidenced: firsthand = an artifact the candidate SAW (email/preview naming the form); secondhand = someone told them; public_prior = web sources or your priors. Never rate upward from what the material supports.",
+  },
   rationale: { type: 'string' },
   unsupported: { type: 'string' },
 };

@@ -1,13 +1,12 @@
 /**
- * Home app client (design review 2026-07-31, approved mockups
- * firstrun-E-attach + variant-C/A).
+ * Home app client (Cowork-grammar redesign D1, 2026-08-07).
  *
  * Two views, server-driven from /api/state:
- *   entry   — first run: the screen IS the input. Build my plan runs
- *             clarify (0-3 questions, best-guess drafts) → spec confirm →
- *             the season appears immediately, before the first problem
- *             finishes. No research step: the plan is built from what the
- *             candidate knows and pastes (CEO review 2026-08-02).
+ *   entry   — a planning conversation. The composer IS the intake: the
+ *             first Send creates the target and kicks off the planner; the
+ *             chat holds nothing but prose while ALL structure lives in the
+ *             plan panel (the confirm gate), maintained by the model's
+ *             propose_rounds tool. Nothing is generated until confirm.
  *   seasons — the dated forward-only runway. TODAY holds the page's only
  *             primary action; the past is neutral history, never debt.
  *
@@ -42,124 +41,50 @@ window.addEventListener('hashchange', () => {
   // conversation persist on disk and surface on the index as resumable.
   if (!window.location.hash.startsWith('#/new')) {
     flowTargetId = null;
-    plan.tid = null; plan.turns = []; plan.proposal = null; plan.busy = false; plan.error = ''; plan.gateOpen = null;
+    resetPlan();
   }
   if (lastStateJson) render(JSON.parse(lastStateJson));
 });
 
-// ---- attachments (client-side until Build my plan) ----
-// They concatenate into the target's context string — the reference
-// material IS the moat input, so it gets a real region, not a text link.
-// Binary kinds (image/pdf) carry base64 data instead of text: a screenshot
-// read with readAsText was mojibake in the prompt, which made the single
-// most valuable evidence class (an assessment preview the candidate SAW)
-// invisible to the planner.
+// ---- planning surface: Cowork grammar (design D1, 2026-08-07) ----
+// The chat contains NOTHING but prose; ALL structure lives in the plan
+// panel, which the model maintains through its propose_rounds tool. The
+// composer IS the entry — there is no form. State lives OUTSIDE the DOM
+// (adapt-panel precedent) so the 5s poll can't destroy it.
+
+let flowTargetId = null; // non-null while a planning conversation owns #entry
+
 const attachments = [];
-
 const BINARY_KINDS = { 'image/png': 'image', 'image/jpeg': 'image', 'image/webp': 'image', 'image/gif': 'image', 'application/pdf': 'pdf' };
+// A paste longer than this becomes a chip instead of composer text — the
+// candidate's own material must never dominate the viewport.
+const PASTE_CHIP_CHARS = 400;
 
-function renderAttachments() {
-  const list = el('e-attachlist');
-  list.innerHTML = attachments.map((a, i) =>
-    '<div class="attach"><span class="name">' + esc(a.name) + '</span>' +
-    '<span class="kind">' + esc(a.kind) + '</span>' +
-    '<button type="button" data-i="' + i + '" aria-label="remove ' + esc(a.name) + '">×</button></div>'
-  ).join('');
-  for (const b of list.querySelectorAll('button')) {
-    b.addEventListener('click', () => { attachments.splice(Number(b.dataset.i), 1); renderAttachments(); });
-  }
+const plan = {
+  tid: null, turns: [], proposal: null, busy: false, error: '',
+  gateOpen: null,          // panel row index whose rationale is expanded
+  include: {},             // draft index -> checkbox state
+  tier: {},                // draft index -> user's tier override (free, T2-B)
+  openChips: {},           // turn index -> expanded paste chip
+  flash: false,            // one render's worth of row-flash after an update
+};
+
+function resetPlan() {
+  plan.tid = null; plan.turns = []; plan.proposal = null; plan.busy = false;
+  plan.error = ''; plan.gateOpen = null; plan.include = {}; plan.tier = {};
+  plan.openChips = {}; plan.flash = false;
+  attachments.length = 0;
 }
 
-el('e-addlink').addEventListener('click', () => {
-  const input = el('e-link');
-  const url = input.value.trim();
-  if (!url) return;
-  attachments.push({ kind: 'link', name: url, content: url });
-  input.value = '';
-  renderAttachments();
-});
-el('e-link').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { e.preventDefault(); el('e-addlink').click(); }
-});
-el('e-browse').addEventListener('click', () => el('e-file').click());
-el('e-file').addEventListener('change', () => {
-  for (const f of el('e-file').files) {
-    const kind = BINARY_KINDS[f.type];
-    const reader = new FileReader();
-    if (kind) {
-      if (f.size > 10 * 1024 * 1024) {
-        el('e-err').textContent = f.name + ' is over 10MB — trim it down';
-        continue;
-      }
-      reader.onload = () => {
-        // readAsDataURL gives "data:<mime>;base64,<data>" — keep only the data.
-        const data = String(reader.result).split(',')[1] || '';
-        attachments.push({ kind, name: f.name, media_type: f.type, data });
-        renderAttachments();
-      };
-      reader.readAsDataURL(f);
-    } else {
-      reader.onload = () => {
-        attachments.push({ kind: 'file', name: f.name, content: String(reader.result).slice(0, 100_000) });
-        renderAttachments();
-      };
-      reader.readAsText(f);
-    }
-  }
-  el('e-file').value = '';
-});
-
-/** Text-and-link context string; binary attachments travel separately. */
 function buildContext() {
   return attachments.filter((a) => !a.data).map((a) =>
-    a.kind === 'link' ? '--- link: ' + a.content + ' ---' : '--- file: ' + a.name + ' ---\n' + a.content
+    a.kind === 'link' ? '--- link: ' + a.content + ' ---' : '--- ' + a.name + ' ---\n' + a.content
   ).join('\n\n');
 }
 
-/** Binary attachments as {name, media_type, data} for the /api/target body. */
 function buildBinaryAttachments() {
   return attachments.filter((a) => a.data).map((a) => ({ name: a.name, media_type: a.media_type, data: a.data }));
 }
-
-// ---- first-run flow: build → clarify → confirm → season ----
-
-let flowTargetId = null;
-/** Drafts shown by the classic confirm wall (was an accidental global). */
-let drafts = [];
-
-function flow(html) {
-  el('entry-form').hidden = true;
-  const f = el('entry-flow');
-  f.hidden = false;
-  f.innerHTML = html;
-}
-
-el('e-build').addEventListener('click', async () => {
-  const desc = el('e-desc').value.trim();
-  const err = el('e-err');
-  if (!desc) { err.textContent = 'say something about the round — one sentence is enough'; return; }
-  err.textContent = '';
-  const btn = el('e-build');
-  btn.disabled = true;
-  btn.textContent = 'Saving…';
-  const r = await fetch('/api/target', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      label: el('e-company').value.trim() || desc.split(/[.,]/)[0].slice(0, 40),
-      date: el('e-date').value.trim(),
-      description: desc,
-      context: buildContext(),
-      attachments: buildBinaryAttachments(),
-    }),
-  });
-  const s = await r.json();
-  btn.disabled = false;
-  btn.textContent = 'Build my plan';
-  if (s.error) { err.textContent = s.error; return; }
-  flowTargetId = s.id;
-  planStart(s.id);
-});
 
 function specShapeLine(c) {
   return (c.interviewer ? 'live interviewer' : 'no interviewer (OA)') + ' · ' +
@@ -168,149 +93,27 @@ function specShapeLine(c) {
     (c.submit === 'one_shot' ? 'graded once at submit' : 'iterate freely');
 }
 
-function runClarify(answers) {
-  flow('<h2>Working out the round\'s shape…</h2><div class="progress"><div class="fill"></div></div>');
-  fetch('/api/clarify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: flowTargetId, answers: answers || undefined }) })
-    .then((r) => r.json())
-    .then((d) => {
-      if (d.error) {
-        flow('<p class="err">' + esc(d.error) + '</p><p class="meta">Your description is saved.</p>' +
-          '<button id="re-clarify" class="primary" type="button">try again</button>');
-        el('re-clarify').addEventListener('click', () => runClarify(answers));
-        return;
-      }
-      // One answer round-trip max: after answers, or with none needed, confirm.
-      if (d.questions && d.questions.length && !answers) renderQuestions(d);
-      else renderConfirm(d.drafts);
-    });
+function specDateLine(spec) {
+  if (!spec.date) return 'date not set';
+  const n = daysUntil(spec.date);
+  return fmtDate(spec.date) + (n !== null ? ' · ' + n + ' day' + (n === 1 ? '' : 's') : '');
 }
 
-/** 0-3 structured questions from the reasoner. Options, a recommended tag,
- *  a free-text escape per question, and a global "use your best guess". */
-function renderQuestions(d) {
-  let html = '<h2>Quick check before the plan gets built</h2>' +
-    '<p class="meta">Your description leaves something worth settling — wrong answers here cost you generated rounds of the wrong shape.</p>';
-  d.questions.forEach((q, qi) => {
-    html += '<div class="q" data-qi="' + qi + '"><p class="qtext">' + esc(q.question) + '</p>' +
-      '<p class="meta qwhy">' + esc(q.why) + '</p>';
-    q.options.forEach((op, oi) => {
-      const rec = q.recommended && q.recommended === op.label;
-      html += '<label class="opt"><input type="radio" name="q' + qi + '" value="' + oi + '"' + (rec ? ' checked' : '') + ' />' +
-        '<span>' + esc(op.label) + (rec ? ' <em class="rec">recommended</em>' : '') +
-        (op.detail ? '<br /><span class="meta">' + esc(op.detail) + '</span>' : '') + '</span></label>';
-    });
-    html += '<label class="opt"><input type="radio" name="q' + qi + '" value="other" />' +
-      '<span>something else: <input type="text" class="otherbox" data-qi="' + qi + '" placeholder="say it in a few words" /></span></label>';
-    html += '</div>';
-  });
-  html += '<button id="q-submit" class="primary" type="button">that\'s right — build the plan</button> ' +
-    '<button id="q-skip" type="button">use your best guess</button>';
-  flow(html);
-  for (const box of el('entry-flow').querySelectorAll('.otherbox')) {
-    box.addEventListener('focus', () => {
-      const radios = el('entry-flow').querySelectorAll('input[name="q' + box.dataset.qi + '"]');
-      radios[radios.length - 1].checked = true;
-    });
-  }
-  el('q-skip').addEventListener('click', () => renderConfirm(d.drafts));
-  el('q-submit').addEventListener('click', () => {
-    const answers = d.questions.map((q, qi) => {
-      const picked = el('entry-flow').querySelector('input[name="q' + qi + '"]:checked');
-      if (!picked) return { question: q.question, answer: '(no answer — use your best guess)' };
-      if (picked.value === 'other') {
-        const box = el('entry-flow').querySelector('.otherbox[data-qi="' + qi + '"]');
-        return { question: q.question, answer: box.value.trim() || '(no answer — use your best guess)' };
-      }
-      return { question: q.question, answer: q.options[Number(picked.value)].label };
-    });
-    runClarify(answers);
-  });
-}
-
-/** The confirm gate, now over one OR MORE drafts. Each can be dropped;
- *  unsupported drafts render as honest declines and are never accepted. */
-function renderConfirm(allDrafts) {
-  drafts = allDrafts || [];
-  const usable = drafts.filter((x) => !x.unsupported);
-  let html = '<h2>' + (usable.length > 1 ? 'Confirm your rounds — the plan covers all of them' : 'Confirm the shape') + '</h2>';
-  drafts.forEach((x, i) => {
-    if (x.unsupported) {
-      html += '<div class="specbox dropped"><p><b>' + esc(x.spec.label) + '</b> — can\'t run honestly</p>' +
-        '<p class="meta">' + esc(x.unsupported) + '</p></div>';
-      return;
-    }
-    html += '<div class="specbox" data-di="' + i + '"><p><b>' + esc(x.spec.label) + '</b>' +
-      (usable.length > 1 ? ' <label class="keep"><input type="checkbox" checked data-di="' + i + '" /> include</label>' : '') +
-      '</p><p class="meta">' + specShapeLine(x.spec.capabilities) +
-      (x.spec.emphasis ? ' · emphasis: ' + esc(x.spec.emphasis) : '') + '</p>' +
-      '<p class="rationale">' + esc(x.rationale) + '</p></div>';
-  });
-  if (usable.length === 0) {
-    html += '<p class="meta">Rather than fake it, none of this is offered. Edit the description if that\'s wrong.</p>' +
-      '<button id="back-edit" type="button">edit description</button>';
-    flow(html);
-    el('back-edit').addEventListener('click', backToForm);
-    return;
-  }
-  html += '<button id="accept" class="primary" type="button">looks right — build my plan</button> ' +
-    '<button id="back-edit" type="button">edit description</button>';
-  flow(html);
-  el('back-edit').addEventListener('click', backToForm);
-  el('accept').addEventListener('click', async () => {
-    const kept = drafts.filter((x, i) => {
-      if (x.unsupported) return false;
-      const cb = el('entry-flow').querySelector('input[type="checkbox"][data-di="' + i + '"]');
-      return !cb || cb.checked;
-    }).map((x) => x.spec);
-    if (!kept.length) return;
-    flow('<h2>Building your plan…</h2><div class="progress"><div class="fill"></div></div>');
-    const r = await fetch('/api/accept-spec', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: flowTargetId, specs: kept }) });
-    const s = await r.json();
-    if (s.error) {
-      flow('<p class="err">' + esc(s.error) + '</p><button id="re-confirm" class="primary" type="button">back</button>');
-      el('re-confirm').addEventListener('click', () => renderConfirm(drafts));
-      return;
-    }
-    // The payoff moment: the whole season appears NOW — day 1 keeps
-    // generating behind it.
-    const id = flowTargetId;
-    flowTargetId = null;
-    el('entry-flow').hidden = true;
-    el('entry-form').hidden = false;
-    window.location.hash = '#/t/' + encodeURIComponent(id);
-    refresh(true);
-  });
-}
-
-function backToForm() {
-  el('entry-flow').hidden = true;
-  el('entry-form').hidden = false;
-}
-
-// ---- conversational planner ----
-// The intake form IS the first message; after Build the surface becomes a
-// conversation with the planner (design: Zenkai Planning Screen, approved
-// 2026-08-06). Everything here renders from `plan` state kept OUTSIDE the
-// DOM (adapt-panel precedent) so the 5s poll can't destroy it. The classic
-// wizard above stays intact as the no-API-key fallback (server 501s).
-const plan = { tid: null, turns: [], proposal: null, busy: false, error: '', gateOpen: null };
-
-function planStart(id) {
-  plan.tid = id; plan.turns = []; plan.proposal = null; plan.error = ''; plan.gateOpen = null;
-  planTurn(null);
-}
-
-/** Resume from disk — the conversation replays; nothing was lost. */
 function planResume(id) {
-  plan.tid = id; plan.turns = []; plan.proposal = null; plan.error = ''; plan.gateOpen = null;
-  plan.busy = true;
+  resetPlan();
+  plan.tid = id; plan.busy = true;
+  flowTargetId = id;
   renderPlan();
   fetch('/api/plan/conversation?target=' + encodeURIComponent(id))
     .then((r) => r.json())
     .then((d) => {
       plan.busy = false;
       if (d.error) { plan.error = d.error; renderPlan(); return; }
-      if (!d.planner_available) { runClarify(null); return; }
+      if (!d.planner_available) {
+        plan.error = 'conversational planning needs ANTHROPIC_API_KEY in .env — set it and restart the app';
+        renderPlan();
+        return;
+      }
       plan.turns = d.turns || [];
       plan.proposal = d.proposal || null;
       if (plan.turns.length === 0) planTurn(null);
@@ -330,13 +133,19 @@ function planTurn(message) {
     .then(async (r) => ({ status: r.status, body: await r.json() }))
     .then(({ status, body }) => {
       plan.busy = false;
-      if (status === 501) { runClarify(null); return; } // no API key — classic wizard
+      if (status === 501) {
+        plan.error = 'conversational planning needs ANTHROPIC_API_KEY in .env — set it and restart the app';
+        renderPlan();
+        return;
+      }
       if (body.error) { plan.error = body.error; renderPlan(); return; }
       // We already rendered the user's message optimistically — keep only
-      // the assistant's side of the server echo, or every answer shows twice.
+      // the assistant's side of the server echo.
       const incoming = (body.turns || []).filter((t) => (message ? t.role !== 'user' : true));
       plan.turns = plan.turns.concat(incoming);
-      for (const t of incoming) if (t.proposal) plan.proposal = t.proposal;
+      for (const t of incoming) {
+        if (t.proposal) { plan.proposal = t.proposal; plan.flash = true; }
+      }
       renderPlan();
     })
     .catch(() => {
@@ -346,219 +155,295 @@ function planTurn(message) {
     });
 }
 
-function specDateLine(spec) {
-  if (!spec.date) return 'date not set';
-  const n = daysUntil(spec.date);
-  return fmtDate(spec.date) + (n !== null ? ' · ' + n + ' day' + (n === 1 ? '' : 's') : '');
-}
-
-function renderTraceLine(t, i) {
-  const urls = (t.searched && t.searched.urls) || [];
-  const conflicts = t.proposal && t.proposal.conflict ? 1 : 0;
-  if (!urls.length && !conflicts) return '';
-  // Verdicts come from the proposal's sources, matched by url.
-  const verdictOf = {};
-  if (t.proposal) for (const s of t.proposal.sources || []) verdictOf[s.url] = s.verdict;
-  let html = '<button type="button" class="traceline" data-trace="' + i + '">Looked up · ' + urls.length +
-    ' source' + (urls.length === 1 ? '' : 's') +
-    (conflicts ? ' · <span class="cnum">' + conflicts + ' conflict</span>' : ' · 0 conflicts') + ' ▾</button>';
-  html += '<div class="tracelist" hidden data-tracelist="' + i + '">';
-  for (const u of urls) {
-    const v = verdictOf[u] || '';
-    html += '<div class="tracerow"><a href="' + esc(u) + '" target="_blank" rel="noopener">' + esc(u) + '</a>' +
-      (v ? '<span class="' + (v === 'conflicts' ? 'cnum' : 'meta') + '">' + esc(v) + '</span>' : '') + '</div>';
+/** First Send: the message IS the intake. Create the target, then kick off. */
+async function planFirstSend(text) {
+  plan.busy = true; plan.error = '';
+  plan.turns.push({ role: 'user', at: new Date().toISOString(), prose: text });
+  renderPlan();
+  const label = text.split(/[.,\n]/)[0].split(/\s+/).slice(0, 5).join(' ').slice(0, 40) || 'plan';
+  try {
+    const r = await fetch('/api/target', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label, description: text, context: buildContext(), attachments: buildBinaryAttachments() }),
+    });
+    const sBody = await r.json();
+    if (sBody.error) { plan.busy = false; plan.error = sBody.error; plan.turns.pop(); renderPlan(); return; }
+    plan.tid = sBody.id;
+    flowTargetId = sBody.id;
+    attachments.length = 0;
+    // The kickoff turn (server side) carries the description + attachments;
+    // our optimistic turn already shows the words, so drop the echo.
+    plan.turns = [];
+    planTurn(null);
+  } catch {
+    plan.busy = false; plan.error = 'could not reach the app server'; renderPlan();
   }
-  html += '</div>';
-  return html;
 }
 
-function renderConflict(c) {
-  return '<div class="conflict">' +
-    '<div class="chead">A source disagrees with you · keeping your version</div>' +
-    '<div class="csides">' +
-    '<div class="cside"><div class="clabel">You told me</div>' + esc(c.yours) + '</div>' +
-    '<div class="cside"><div class="clabel">A public source says</div>' + esc(c.theirs) +
-    (c.source_url ? '<div class="meta" style="margin-top:6px"><a href="' + esc(c.source_url) + '" target="_blank" rel="noopener">' + esc(c.source_url) + '</a></div>' : '') +
-    '</div></div>' +
-    '<div class="cfoot"><p>Your evidence outranks a public source. Say so if the source is closer to what you were told.</p>' +
-    '<button type="button" class="c-override" data-theirs="' + esc(c.theirs) + '">Use their version instead</button></div>' +
-    '</div>';
+// Markdown links in planner prose → real anchors. Escape FIRST, then link —
+// the model reports retrieval as prose with inline links (no trace widget).
+function linkify(escaped) {
+  return escaped.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener">$1</a>');
 }
 
-function renderQuestionBlock(q, qi) {
-  let html = '<div class="q"><p class="qtext">' + esc(q.question) + '</p>' +
-    '<p class="meta qwhy">' + esc(q.why) + '</p>';
-  q.options.forEach((op) => {
-    const rec = q.recommended && q.recommended === op.label;
-    html += '<button type="button" class="opt qanswer" data-q="' + esc(q.question) + '" data-a="' + esc(op.label) + '">' +
-      '<span>' + esc(op.label) + (rec ? ' <em class="rec">recommended</em>' : '') +
-      (op.detail ? '<br /><span class="meta">' + esc(op.detail) + '</span>' : '') + '</span></button>';
-  });
-  html += '<p class="meta" style="margin:8px 0 0">None of these? Say it in the message box below.</p></div>';
-  return html;
-}
-
-/** The confirm gate: only confirmable rounds plus the commit button. The
- *  most imminent round is expanded (description + why); the rest are one
- *  line — a four-round loop must not swallow the conversation. */
-function renderGate() {
-  const p = plan.proposal;
-  if (!p) return '';
-  const usable = [];
-  const declined = [];
-  p.drafts.forEach((d, i) => (d.unsupported ? declined : usable).push({ d, i }));
-  if (!usable.length && !declined.length) return '';
-  const dated = usable.filter((x) => x.d.spec.date).sort((a, b) => (a.d.spec.date < b.d.spec.date ? -1 : 1));
-  const undated = usable.filter((x) => !x.d.spec.date);
-  const ordered = dated.concat(undated);
-  const openIdx = plan.gateOpen === null ? (ordered.length ? ordered[0].i : null) : plan.gateOpen;
-
-  let html = '<div id="plan-gate"><div class="gatehead"><span class="micro" style="margin:0">Rounds to confirm</span>' +
-    '<span class="meta">nothing is generated until you confirm</span></div>';
-  for (const { d, i } of ordered) {
-    const open = i === openIdx;
-    html += '<div class="gaterow">' +
-      '<label class="gcheck"><input type="checkbox" checked data-gi="' + i + '" /> <b>' + esc(d.spec.label) + '</b></label>' +
-      '<span class="gmeta">' + specShapeLine(d.spec.capabilities) + '</span>' +
-      '<button type="button" class="gexpand" data-gx="' + i + '" aria-expanded="' + open + '">' +
-      '<span class="gdate' + (d.spec.date ? '' : ' nodate') + '">' + specDateLine(d.spec) + '</span> ' + (open ? '▴' : '▾') + '</button>' +
-      '</div>';
-    if (open) {
-      // The rationale is what makes the gate auditable. Emphasis stays in
-      // the data (generation reads it) but not here — it is a paragraph
-      // written FOR the generator, and it buried the gate in text.
-      html += '<div class="gatedetail"><b>Why this shape:</b> ' + esc(d.rationale || '') + '</div>';
-    }
-  }
-  for (const { d } of declined) {
-    html += '<div class="gatedecline">' + esc(d.spec.label) + ' — can\'t run honestly: ' + esc(d.unsupported) + '</div>';
-  }
-  html += '<div class="gatecommit"><button id="gate-confirm" class="primary" type="button">Confirm and build the plan</button>' +
-    '<span class="meta" id="gate-note"></span></div></div>';
-  return html;
-}
-
-function renderPlan() {
-  // Navigated away mid-turn: the conversation is on disk; render nothing.
-  if (!plan.tid || route().page !== 'new') return;
-  el('entry-form').hidden = true;
-  const f = el('entry-flow');
-  f.hidden = false;
-  const composerText = el('plan-msg') ? el('plan-msg').value : '';
-
-  // Only the LATEST assistant turn is interactive: its questions and its
-  // conflict are the current state. Older turns render as plain history —
-  // stale radio groups piling up per turn is how the page became a wall.
+function renderTurns() {
   let lastAssistant = -1;
   plan.turns.forEach((t, i) => { if (t.role === 'assistant') lastAssistant = i; });
-
-  let html = '<div id="plan-chat">';
+  let html = '';
   plan.turns.forEach((t, i) => {
     if (t.role === 'user') {
-      html += '<div class="turn-user">' + esc(t.prose) +
-        ((t.attachments || []).length
-          ? '<div class="att">attached: ' + t.attachments.map(esc).join(', ') + '</div>'
-          : '') + '</div>';
-    } else {
-      const current = i === lastAssistant;
-      html += '<div class="turn-planner' + (current ? '' : ' history') + '">';
-      for (const para of (t.prose || '').split('\n\n')) {
-        if (para.trim()) html += '<p>' + esc(para.trim()) + '</p>';
+      const long = (t.prose || '').length > PASTE_CHIP_CHARS;
+      html += '<div class="turn-user">';
+      if (long) {
+        const open = !!plan.openChips[i];
+        html += '<button type="button" class="pastechip" data-chip="' + i + '">' +
+          '<span>' + (open ? '▾' : '▸') + '</span><span>pasted · ' + (t.prose.length > 999 ? (t.prose.length / 1000).toFixed(1) + 'k' : t.prose.length) + ' chars</span></button>' +
+          (open ? '<div class="pastebody">' + esc(t.prose) + '</div>' : '');
+      } else {
+        html += esc(t.prose);
       }
-      if (current && t.proposal && t.proposal.conflict) html += renderConflict(t.proposal.conflict);
-      html += renderTraceLine(t, i);
-      if (current && t.proposal) for (const q of t.proposal.questions || []) html += renderQuestionBlock(q);
+      if ((t.attachments || []).length) {
+        html += '<div class="att">attached: ' + t.attachments.map(esc).join(', ') + '</div>';
+      }
+      html += '</div>';
+    } else {
+      html += '<div class="turn-planner' + (i === lastAssistant ? '' : ' history') + '">';
+      for (const para of (t.prose || '').split('\n\n')) {
+        if (para.trim()) html += '<p>' + linkify(esc(para.trim())) + '</p>';
+      }
       html += '</div>';
     }
   });
   if (plan.busy) {
-    html += '<div class="turn-planner"><p class="meta">working — reading your material' +
-      (plan.turns.length ? ' and thinking it through' : '') + '…</p>' +
+    html += '<div class="turn-planner"><p class="meta">working' +
+      (plan.turns.length <= 1 ? ' — reading your material' : '') + '…</p>' +
       '<div class="progress"><div class="fill"></div></div></div>';
   }
   if (plan.error) html += '<p class="err">' + esc(plan.error) + '</p>';
-  html += '</div>';
+  return html;
+}
 
-  html += renderGate();
+/** The plan panel: the ONE structured surface (Cowork's plan pane). */
+function renderPanel() {
+  const p = plan.proposal;
+  let body = '';
+  if (!p) {
+    body = '<div class="paceline">' + (plan.busy ? 'thinking…' : 'the plan appears here as we talk') + '</div>';
+  } else {
+    const usable = [];
+    const declined = [];
+    p.drafts.forEach((d, i) => (d.unsupported ? declined : usable).push({ d, i }));
+    const dated = usable.filter((x) => x.d.spec.date).sort((a, b) => (a.d.spec.date < b.d.spec.date ? -1 : 1));
+    const ordered = dated.concat(usable.filter((x) => !x.d.spec.date));
+    const openIdx = plan.gateOpen === null ? (ordered.length ? ordered[0].i : null) : plan.gateOpen;
+    for (const { d, i } of ordered) {
+      const included = plan.include[i] !== false;
+      const tier = plan.tier[i] || d.spec.evidence_tier || 'public_prior';
+      const open = i === openIdx;
+      body += '<div class="gaterow' + (plan.flash ? ' flash' : '') + '">' +
+        '<label class="gcheck"><input type="checkbox"' + (included ? ' checked' : '') + ' data-gi="' + i + '" /> ' +
+        '<span style="color:' + (included ? 'var(--text-1)' : 'var(--text-2)') + '">' + esc(d.spec.label) + '</span></label>' +
+        '<div class="gshape">' + specShapeLine(d.spec.capabilities) + '</div>' +
+        '<div class="grow2">' +
+        '<span class="gdate' + (d.spec.date ? '' : ' nodate') + '">' + specDateLine(d.spec) + '</span>' +
+        '<button type="button" class="tier" data-ti="' + i + '" title="How this round is evidenced — click to override">' +
+        esc(tier === 'public_prior' ? 'public' : tier) + '</button>' +
+        '<button type="button" class="gexpand" data-gx="' + i + '" aria-expanded="' + open + '">' + (open ? 'why ▴' : 'why ▾') + '</button>' +
+        '</div>' +
+        (open ? '<div class="gatedetail"><b>Why this shape:</b> ' + esc(d.rationale || '') + '</div>' : '') +
+        '</div>';
+    }
+    for (const { d } of declined) {
+      body += '<div class="gatedecline">' + esc(d.spec.label) + ' — can\'t run honestly: ' + esc(d.unsupported) + '</div>';
+    }
+    body += '<div class="paceline">' +
+      (p.pace_per_week
+        ? p.pace_per_week + ' rounds/week — from your answer'
+        : '3 rounds/week — default until you tell me your daily time') + '</div>';
+  }
+  const n = p ? p.drafts.filter((d, i) => !d.unsupported && plan.include[i] !== false).length : 0;
+  return '<aside id="plan-panel">' +
+    '<div class="phead"><p class="micro">The plan</p>' +
+    '<div class="meta">nothing is generated until you confirm</div></div>' +
+    '<div class="pbody">' + body + '</div>' +
+    '<div class="pfoot"><button id="gate-confirm" class="primary" type="button"' + (n === 0 ? ' disabled' : '') + '>' +
+    (n === 1 ? 'Confirm 1 round and build the plan' : 'Confirm ' + n + ' rounds and build the plan') + '</button>' +
+    '<span class="meta" id="gate-note"></span></div>' +
+    '</aside>';
+}
 
-  html += '<div id="plan-composer">' +
-    '<textarea id="plan-msg" rows="1" aria-label="Message the planner" placeholder="Answer, correct me, or ask what a round shape is"' + (plan.busy ? ' disabled' : '') + '></textarea>' +
-    '<button id="plan-send" type="button"' + (plan.busy ? ' disabled' : '') + '>Send</button></div>';
+function renderComposer() {
+  let chips = '';
+  if (attachments.length) {
+    chips = '<div id="plan-attach">' + attachments.map((a, i) =>
+      '<div class="attach"><span class="name">' + esc(a.name) + '</span>' +
+      '<span class="kind">' + esc(a.kind) + '</span>' +
+      '<button type="button" data-i="' + i + '" aria-label="remove ' + esc(a.name) + '">×</button></div>'
+    ).join('') + '</div>';
+  }
+  return '<div id="plan-composer">' + chips +
+    '<div class="row">' +
+    '<textarea id="plan-msg" rows="2" aria-label="Message the planner" placeholder="' +
+    (plan.tid ? 'Answer, correct me, or ask what a round shape is' : 'Describe the interview — paste everything you have') + '"' +
+    (plan.busy ? ' disabled' : '') + '></textarea>' +
+    '<button id="plan-attach-btn" class="mini" type="button" style="min-height:40px">Attach</button>' +
+    '<button id="plan-send" type="button"' + (plan.busy ? ' disabled' : '') + '>Send</button></div>' +
+    '<div class="helper">Correct me where I am wrong. What you saw yourself outranks anything I find.</div>' +
+    '</div>';
+}
 
-  f.innerHTML = html;
-  if (el('plan-msg')) el('plan-msg').value = composerText;
+function renderPlan() {
+  if (route().page !== 'new') return;
+  const f = el('entry-flow');
+  const prevMsg = el('plan-msg') ? el('plan-msg').value : '';
+  const hadFocus = document.activeElement && document.activeElement.id === 'plan-msg';
+
+  let chat = '';
+  if (!plan.tid && plan.turns.length === 0) {
+    chat = '<div id="plan-intro">Describe the interview you\'re preparing for — company, what the recruiter said, ' +
+      'what a friend told you, a screenshot of the assessment preview. Paste everything; I\'ll sort out what matters ' +
+      'and build a practice plan you confirm before anything is generated.</div>' +
+      (plan.error ? '<p class="err">' + esc(plan.error) + '</p>' : '');
+  } else {
+    chat = renderTurns();
+  }
+
+  f.innerHTML = '<div id="plan-wrap">' +
+    '<div id="plan-main"><div id="plan-chat">' + chat + '</div>' + renderComposer() + '</div>' +
+    ((plan.tid || plan.turns.length) ? renderPanel() : '') +
+    '</div>';
+  plan.flash = false;
+
+  if (el('plan-msg')) {
+    el('plan-msg').value = prevMsg;
+    if (hadFocus) el('plan-msg').focus();
+  }
   wirePlan(f);
-  f.scrollTop = f.scrollHeight;
+  const chatEl = el('plan-chat');
+  if (chatEl && plan.turns.length) chatEl.scrollTop = chatEl.scrollHeight;
 }
 
 function wirePlan(f) {
   const send = () => {
     const box = el('plan-msg');
     const text = box.value.trim();
-    if (!text || plan.busy) return;
+    if (plan.busy) return;
+    if (!text && !plan.tid) return;
     box.value = '';
+    if (!plan.tid) { planFirstSend(text); return; }
+    if (!text) return;
     plan.turns.push({ role: 'user', at: new Date().toISOString(), prose: text });
     planTurn(text);
   };
   if (el('plan-send')) el('plan-send').addEventListener('click', send);
-  if (el('plan-msg')) el('plan-msg').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-  });
-  for (const b of f.querySelectorAll('.qanswer')) {
-    b.addEventListener('click', () => {
-      if (plan.busy) return;
-      const text = b.dataset.q + ' — ' + b.dataset.a;
-      plan.turns.push({ role: 'user', at: new Date().toISOString(), prose: text });
-      planTurn(text);
+  if (el('plan-msg')) {
+    el('plan-msg').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+    // A long paste becomes a chip, not a wall (Cowork treatment).
+    el('plan-msg').addEventListener('paste', (e) => {
+      const text = (e.clipboardData || window.clipboardData).getData('text');
+      if (text && text.length > PASTE_CHIP_CHARS) {
+        e.preventDefault();
+        attachments.push({ kind: 'pasted', name: 'pasted · ' + (text.length > 999 ? (text.length / 1000).toFixed(1) + 'k' : text.length) + ' chars', content: text });
+        renderPlan();
+      }
     });
   }
-  for (const b of f.querySelectorAll('.c-override')) {
-    b.addEventListener('click', () => {
-      if (plan.busy) return;
-      const text = 'Go with the source\'s version: ' + b.dataset.theirs;
-      plan.turns.push({ role: 'user', at: new Date().toISOString(), prose: text });
-      planTurn(text);
-    });
+  if (el('plan-attach-btn')) el('plan-attach-btn').addEventListener('click', () => el('e-file').click());
+  const attach = el('plan-attach');
+  if (attach) {
+    for (const b of attach.querySelectorAll('button[data-i]')) {
+      b.addEventListener('click', () => { attachments.splice(Number(b.dataset.i), 1); renderPlan(); });
+    }
   }
-  for (const b of f.querySelectorAll('.gexpand')) {
+  for (const b of f.querySelectorAll('[data-chip]')) {
     b.addEventListener('click', () => {
-      plan.gateOpen = Number(b.dataset.gx);
+      plan.openChips[Number(b.dataset.chip)] = !plan.openChips[Number(b.dataset.chip)];
       renderPlan();
     });
   }
-  for (const b of f.querySelectorAll('[data-trace]')) {
-    b.addEventListener('click', () => {
-      const list = f.querySelector('[data-tracelist="' + b.dataset.trace + '"]');
-      if (list) list.hidden = !list.hidden;
+  for (const cb of f.querySelectorAll('.gcheck input[type="checkbox"]')) {
+    cb.addEventListener('change', () => {
+      plan.include[Number(cb.dataset.gi)] = cb.checked;
+      renderPlan();
     });
   }
+  for (const b of f.querySelectorAll('.tier')) {
+    b.addEventListener('click', () => {
+      // Free override in both directions (T2 decision B, 2026-08-07): the
+      // candidate's plan, the candidate's call. The planner's own rating is
+      // still what it proposed — this only changes the stored tier.
+      const order = ['firsthand', 'secondhand', 'public_prior'];
+      const i = Number(b.dataset.ti);
+      const d = plan.proposal.drafts[i];
+      const cur = plan.tier[i] || d.spec.evidence_tier || 'public_prior';
+      plan.tier[i] = order[(order.indexOf(cur) + 1) % order.length];
+      plan.flash = true;
+      renderPlan();
+    });
+  }
+  for (const b of f.querySelectorAll('.gexpand')) {
+    b.addEventListener('click', () => { plan.gateOpen = Number(b.dataset.gx); renderPlan(); });
+  }
   if (el('gate-confirm')) el('gate-confirm').addEventListener('click', async () => {
+    const p = plan.proposal;
     const kept = [];
-    for (const cb of f.querySelectorAll('.gcheck input[type="checkbox"]')) {
-      if (cb.checked) kept.push(plan.proposal.drafts[Number(cb.dataset.gi)].spec);
-    }
-    if (!kept.length) { el('gate-note').textContent = 'nothing included'; return; }
+    p.drafts.forEach((d, i) => {
+      if (d.unsupported || plan.include[i] === false) return;
+      const tier = plan.tier[i] || d.spec.evidence_tier;
+      kept.push(Object.assign({}, d.spec, tier ? { evidence_tier: tier } : {}));
+    });
+    if (!kept.length) return;
     el('gate-confirm').disabled = true;
     el('gate-note').textContent = 'building your plan…';
-    const r = await fetch('/api/accept-spec', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: plan.tid, specs: kept }) });
-    const s = await r.json();
-    if (s.error) {
+    const r = await fetch('/api/accept-spec', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target_id: plan.tid, specs: kept, pace_per_week: p.pace_per_week }),
+    });
+    const sBody = await r.json();
+    if (sBody.error) {
       el('gate-confirm').disabled = false;
       el('gate-note').textContent = '';
-      plan.error = s.error;
+      plan.error = sBody.error;
       renderPlan();
       return;
     }
     // The payoff moment: the whole season appears NOW.
     const id = plan.tid;
-    plan.tid = null; plan.turns = []; plan.proposal = null; plan.gateOpen = null;
+    resetPlan();
     flowTargetId = null;
-    el('entry-flow').hidden = true;
-    el('entry-form').hidden = false;
     window.location.hash = '#/t/' + encodeURIComponent(id);
     refresh(true);
   });
 }
+
+// Binary/text file attach — the input lives in static HTML so this binds once.
+el('e-file').addEventListener('change', () => {
+  for (const file of el('e-file').files) {
+    const kind = BINARY_KINDS[file.type];
+    const reader = new FileReader();
+    if (kind) {
+      if (file.size > 10 * 1024 * 1024) { plan.error = file.name + ' is over 10MB — trim it down'; renderPlan(); continue; }
+      reader.onload = () => {
+        attachments.push({ kind, name: file.name, media_type: file.type, data: String(reader.result).split(',')[1] || '' });
+        renderPlan();
+      };
+      reader.readAsDataURL(file);
+    } else {
+      reader.onload = () => {
+        attachments.push({ kind: 'file', name: file.name, content: String(reader.result).slice(0, 100_000) });
+        renderPlan();
+      };
+      reader.readAsText(file);
+    }
+  }
+  el('e-file').value = '';
+});
+
 
 // ---- season timeline ----
 
@@ -1247,6 +1132,8 @@ function render(state) {
   el('entry').hidden = r.page !== 'new';
   el('timeline').hidden = r.page !== 'timeline';
   el('nav-new').hidden = r.page === 'new';
+  // The planning surface gets a wider page column for its two-pane layout.
+  document.body.classList.toggle('wide', r.page === 'new');
 
   if (r.page === 'index') {
     renderIndex(state);
@@ -1255,11 +1142,9 @@ function render(state) {
   }
   if (r.page === 'new') {
     lastRouteKey = 'new';
-    // Mid-flow the flow DOM owns the section — never repaint under the user.
-    if (flowTargetId === null) {
-      el('entry-flow').hidden = true;
-      el('entry-form').hidden = false;
-    }
+    // The conversation owns the section; the poll must never repaint under
+    // the user. Build the surface only when it isn't there yet.
+    if (!el('plan-wrap')) renderPlan();
     return;
   }
   // timeline

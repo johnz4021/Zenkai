@@ -56,47 +56,43 @@ describe('gateProposal', () => {
     expect(() => gateProposal({ rounds: [] })).toThrow(/without rounds/);
   });
 
-  it('duplicate ids throw; sources filter to valid verdicts; conflict needs both sides', () => {
+  it('duplicate ids throw; summary carries', () => {
     expect(() => gateProposal({ rounds: [ROUND, ROUND] })).toThrow(/duplicate/);
-    const p = gateProposal({
-      rounds: [ROUND],
-      sources: [
-        { url: 'https://stripe.com/blog', verdict: 'agrees', note: 'runs in a real repo' },
-        { url: 'https://x.test', verdict: 'maybe' },
-        { verdict: 'thin' },
-      ],
-      conflict: { yours: 'the email says 90 minutes', theirs: 'a guide says 60', source_url: 'https://g.test' },
-      summary: 'Two rounds, browser editor.',
-    });
-    expect(p.sources).toEqual([{ url: 'https://stripe.com/blog', verdict: 'agrees', note: 'runs in a real repo' }]);
-    expect(p.conflict?.source_url).toBe('https://g.test');
+    const p = gateProposal({ rounds: [ROUND], summary: 'Two rounds, browser editor.' });
     expect(p.summary).toBe('Two rounds, browser editor.');
-    const noConflict = gateProposal({ rounds: [ROUND], conflict: { yours: 'x' } });
-    expect(noConflict.conflict).toBeUndefined();
   });
 
-  it('questions: 2-4 options enforced, max 3 questions', () => {
-    const q = (id: string) => ({ id, question: 'Editor contents?', options: [{ label: 'repo' }, { label: 'blank' }], why: 'shape' });
-    expect(gateProposal({ rounds: [ROUND], questions: [q('a')] }).questions).toHaveLength(1);
-    expect(() => gateProposal({ rounds: [ROUND], questions: [{ ...q('a'), options: [{ label: 'one' }] }] })).toThrow(/options/);
-    expect(() => gateProposal({ rounds: [ROUND], questions: [q('a'), q('b'), q('c'), q('d')] })).toThrow(/max 3/);
+  it('evidence_tier rides the round through the shared gate; a bad tier sinks only that draft', () => {
+    const p = gateProposal({ rounds: [{ ...ROUND, evidence_tier: 'firsthand' }] });
+    expect(p.drafts[0]?.spec.evidence_tier).toBe('firsthand');
+    const mixed = gateProposal({
+      rounds: [{ ...ROUND, evidence_tier: 'gospel' }, { ...ROUND, id: 'r2', label: 'R2', evidence_tier: 'secondhand' }],
+    });
+    expect(mixed.drafts).toHaveLength(1);
+    expect(mixed.drafts[0]?.spec.evidence_tier).toBe('secondhand');
+  });
+
+  it('pace_per_week clamps to 1-7 and rounds; garbage is dropped', () => {
+    expect(gateProposal({ rounds: [ROUND], pace_per_week: 4 }).pace_per_week).toBe(4);
+    expect(gateProposal({ rounds: [ROUND], pace_per_week: 12 }).pace_per_week).toBe(7);
+    expect(gateProposal({ rounds: [ROUND], pace_per_week: 0.2 }).pace_per_week).toBe(1);
+    expect(gateProposal({ rounds: [ROUND], pace_per_week: 'daily' }).pace_per_week).toBeUndefined();
   });
 });
 
 describe('gatePlannerTurn', () => {
-  it('concatenates prose, counts searches, collects result urls, extracts the proposal', () => {
+  it('concatenates prose, skips server-tool blocks silently, extracts the proposal', () => {
     const reply = gatePlannerTurn([
       { type: 'text', text: 'The 90-minute round is unsettled.' },
       { type: 'server_tool_use', id: 's1', name: 'web_search', input: { query: 'stripe practical round' } },
       { type: 'web_search_tool_result', tool_use_id: 's1', content: [
         { type: 'web_search_result', url: 'https://stripe.com/jobs', title: 'Jobs' },
-        { type: 'web_search_result', url: 'https://stripe.com/jobs', title: 'dup' },
       ] },
       { type: 'text', text: 'Proposing what the email settles.' },
       { type: 'tool_use', id: 't1', name: 'propose_rounds', input: { rounds: [ROUND] } },
     ] as never);
     expect(reply.prose).toBe('The 90-minute round is unsettled.\n\nProposing what the email settles.');
-    expect(reply.searched).toEqual({ queries: 1, urls: ['https://stripe.com/jobs'] });
+    expect(reply.prose).not.toContain('stripe.com/jobs'); // retrieval reads as prose links the MODEL writes, never a widget
     expect(reply.proposal?.drafts).toHaveLength(1);
   });
 
@@ -105,7 +101,7 @@ describe('gatePlannerTurn', () => {
       { type: 'text', text: 'Search failed; proceeding from your material.' },
       { type: 'web_search_tool_result', tool_use_id: 's1', content: { type: 'web_search_tool_result_error', error_code: 'max_uses_exceeded' } },
     ] as never);
-    expect(reply.searched.urls).toEqual([]);
+    expect(reply.prose).toContain('Search failed');
     expect(reply.proposal).toBeNull();
   });
 });

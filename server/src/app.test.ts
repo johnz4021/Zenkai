@@ -35,23 +35,25 @@ describe('home app page', () => {
     expect(js).not.toContain("el('entry').hidden = hasTargets");
   });
 
-  it('every intake field has a real label — placeholder-as-label is dead', () => {
+  it('the intake IS the composer — the form is dead (Cowork grammar D1)', () => {
+    // No labeled form fields: the first Send creates the target.
     for (const id of ['e-desc', 'e-date', 'e-company', 'e-link']) {
-      expect(html).toContain(`label for="${id}"`);
+      expect(html).not.toContain(`label for="${id}"`);
     }
-  });
-
-  it('reference material is a labeled region, not a text link', () => {
-    expect(html).toContain('Reference material');
-    expect(html).toContain('id="e-browse"');
-    expect(html).toContain('id="e-attachlist"');
-  });
-
-  it('one violet primary action and the muted closing line — no numbered steps', () => {
-    expect(html).toContain('Build my plan');
-    expect(html).toContain('you confirm every round before anything gets built');
-    // The rejected slop pattern must not creep back in.
+    expect(html).not.toContain('Build my plan');
+    expect(js).toContain('Describe the interview — paste everything you have');
+    expect(js).toContain('Correct me where I am wrong. What you saw yourself outranks anything I find.');
+    expect(js).toContain('function planFirstSend');
+    // The file input survives as the composer's Attach target.
+    expect(html).toContain('id="e-file"');
+    expect(js).toContain('plan-attach-btn');
     expect(html).not.toMatch(/how it works/i);
+  });
+
+  it('a long paste becomes a chip, never a wall (live-screenshot finding 2026-08-07)', () => {
+    expect(js).toContain('PASTE_CHIP_CHARS');
+    expect(js).toContain("addEventListener('paste'");
+    expect(js).toContain('pastechip'); // replayed long kickoffs collapse too
   });
 
   it('adaptation is preview-then-apply — the model never writes unapproved', () => {
@@ -118,22 +120,37 @@ describe('home app page', () => {
     expect(js).toContain("couldn't start — is Docker running?");
   });
 
-  it('research returned DELIBERATELY — inside a planner turn, never standalone (D9 → D3 amendment)', () => {
-    // CEO review 2026-08-02 (D9) cut preemptive research on evidence; the
-    // D3 amendment re-fenced it: retrieval lives INSIDE the planner
-    // conversation under the evidence hierarchy, with an audit trace and
-    // conflict deference. The standalone endpoint stays dead.
+  it('research reads as prose with inline links — the trace widget is dead (D1)', () => {
+    // CEO review 2026-08-02 (D9) cut preemptive research; D3 re-fenced it
+    // inside the planner turn; D1 (2026-08-07) made its OUTPUT prose: the
+    // model cites sources as markdown links in its own sentences.
     expect(js).not.toContain('runResearch');
     expect(js).not.toContain('/api/research');
-    expect(js).toContain('Looked up · ');            // the audit trace line
-    expect(js).toContain('keeping your version');    // conflicts defer to the candidate
+    expect(js).not.toContain('Looked up');
+    expect(js).not.toContain('renderTraceLine');
+    expect(js).toContain('function linkify');
   });
 
-  it('the planner is a conversation: composer teaches push-back, gate confirms before generation', () => {
+  it('the chat is prose-only; ALL structure lives in the plan panel (D1)', () => {
     expect(js).toContain('Answer, correct me, or ask what a round shape is');
     expect(js).toContain('/api/plan/turn');
     expect(js).toContain('nothing is generated until you confirm');
-    expect(html).toContain('#plan-gate');            // gate styles ship with the page
+    expect(html).toContain('#plan-panel');           // panel styles ship with the page
+    expect(html).toContain('#plan-wrap');            // two-pane layout
+    // The widgets the panel replaced must stay dead.
+    expect(js).not.toContain('renderQuestionBlock');
+    expect(js).not.toContain('renderConflict');
+    expect(js).not.toContain('runClarify');
+    expect(js).not.toContain('renderConfirm(');
+  });
+
+  it('the panel captures evidence_tier (free override) and the conversational pace', () => {
+    expect(js).toContain("['firsthand', 'secondhand', 'public_prior']");
+    expect(js).toContain('evidence_tier');
+    expect(js).toContain('pace_per_week');
+    expect(js).toContain('rounds/week');
+    expect(html).toContain('.gaterow.flash');        // row-flash on proposal updates
+    expect(html).toContain('prefers-reduced-motion');
   });
 
   it('an abandoned plan is resumable or deletable, never a dead end', () => {

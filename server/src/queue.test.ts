@@ -58,6 +58,15 @@ describe('proposeQueue', () => {
   it('no confirmed specs → empty queue, never invented items', () => {
     expect(proposeQueue(target({ specs: [] }), NOW).items).toEqual([]);
   });
+
+  it('a conversational pace resizes the queue; omitting it keeps the default', () => {
+    const t = target({ interview_date: '2026-08-15' });
+    const paced = proposeQueue(t, NOW, 5);
+    expect(paced.items.length).toBe(11); // 15-day runway × 5/week
+    expect(paced.pace.per_week).toBe(5);
+    // Byte-identical default when the third arg is absent (compat contract).
+    expect(proposeQueue(t, NOW)).toEqual(proposeQueue(t, NOW, 3));
+  });
 });
 
 describe('repace — a queue with a pace, not a calendar', () => {

@@ -364,87 +364,86 @@ export function appPage(): string {
   }
 
   /* ---- entry (make a plan) ---- */
-  #entry h2 { font-size: 16px; font-weight: 500; margin: 0 0 8px; }
-  #e-desc { min-height: 118px; }
-  .optrow { display: flex; gap: 18px; }
-  .optrow > div { flex: 1; }
-  #refbox { border: 1px solid var(--line); padding: 14px 16px; margin-top: 20px; background: var(--panel); border-radius: 6px; }
-  #refbox .help { color: var(--text-2); margin: 2px 0 10px; }
-  .linkrow { display: flex; gap: 8px; }
-  .linkrow input { flex: 1; }
-  #e-attachlist { margin-top: 4px; }
   .attach { display: flex; gap: 10px; align-items: baseline; padding: 7px 0; border-top: 1px solid var(--line-soft); }
   .attach .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .attach .kind { color: var(--text-2); font-size: 12px; }
   .attach button { border: 0; color: var(--text-2); padding: 0 6px; min-height: 0; }
   .attach button:hover { color: var(--text-1); }
-  #e-build { width: 100%; margin-top: 24px; padding: 13px; min-height: 44px; letter-spacing: .02em; }
-  .closing { border-top: 1px solid var(--line); margin-top: 28px; padding-top: 15px; color: var(--text-2); }
   .findings p { margin: 7px 0; }
   .rationale { color: var(--text-2); white-space: pre-wrap; }
   .specbox { border: 1px solid var(--line); padding: 13px 15px; margin: 10px 0; background: var(--panel); border-radius: 6px; }
   .specbox.dropped { opacity: .55; }
   .specbox .keep { display: inline-flex; gap: 6px; margin-left: 12px; color: var(--text-2); font-weight: 400; }
   .specbox .keep input { width: auto; }
-  .q { border: 1px solid var(--line); padding: 14px 16px; margin: 14px 0; background: var(--panel); border-radius: 6px; }
-  .q .qtext { margin: 0 0 2px; font-weight: 500; }
-  .q .qwhy { margin: 0 0 10px; }
-  .q .opt { display: flex; gap: 10px; align-items: baseline; padding: 7px 0; margin: 0; border-top: 1px solid var(--line-soft); cursor: pointer; }
-  .q .opt input[type="radio"] { width: auto; accent-color: var(--steel); }
-  .q .opt .rec { color: var(--steel-text); font-style: normal; font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; margin-left: 6px; }
-  .q .otherbox { width: 260px; display: inline-block; padding: 4px 8px; margin-left: 6px; }
   .progress { height: 2px; background: var(--line); margin: 16px 0; overflow: hidden; }
   .progress .fill { height: 100%; background: var(--steel); width: 30%; animation: slide 1.5s ease-in-out infinite alternate; }
   /* Determinate variant: width measures real elapsed vs the 8-min wall. */
   .progress .fill.det { animation: none; transition: width 1s linear; }
   @keyframes slide { from { margin-left: 0; } to { margin-left: 70%; } }
 
-  /* ---- planner conversation (the intake IS the first message) ---- */
+  /* ---- planning surface: Cowork grammar (design D1, 2026-08-07) ----
+     The chat contains NOTHING but prose; ALL structure lives in the plan
+     panel, which the model maintains through its propose_rounds tool. Wide
+     screens get a right rail; narrow ones stack the panel above the
+     composer. body.wide widens the page column for this route only. */
+  body.wide { max-width: 1180px; }
+  #plan-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 28px; align-items: start; }
+  #plan-main { min-width: 0; }
+  #plan-chat { max-width: 62ch; }
   .turn-user { border-left: 1px solid var(--line); padding-left: 16px; margin: 24px 0; white-space: pre-wrap; }
   .turn-user .att { color: var(--text-2); font-size: 12px; margin-top: 6px; white-space: normal; }
   .turn-planner { margin: 24px 0; }
   .turn-planner p { margin: 0 0 12px; line-height: 1.65; }
-  /* Settled turns recede; the current turn (questions, conflict) is where
-     the eye should land. */
+  .turn-planner a { color: var(--steel-text); text-decoration: none; border-bottom: 1px solid rgba(126, 169, 194, .4); overflow-wrap: anywhere; }
+  /* Settled turns recede; the current turn is where the eye should land. */
   .turn-planner.history { opacity: .55; }
   .turn-planner.history:hover { opacity: 1; }
-  .traceline { background: none; border: 0; border-top: 1px solid var(--line-soft); padding: 8px 0 0; min-height: 0;
-    color: var(--text-2); font-size: 12px; cursor: pointer; display: block; width: 100%; text-align: left; }
-  .traceline:hover { color: var(--text-1); border-color: var(--line-soft); }
-  .cnum { color: var(--weak-text); }
-  .tracelist { margin-top: 8px; font-size: 12px; }
-  .tracerow { display: flex; gap: 12px; justify-content: space-between; padding: 3px 0; }
-  .tracerow a { color: var(--steel-text); text-decoration: none; border-bottom: 1px solid rgba(126, 169, 194, .4); overflow-wrap: anywhere; }
-  /* Conflict panel: the ONLY magenta object on the page — the attention
-     axis spent where it matters (a source contradicting the candidate). */
-  .conflict { border: 1px solid rgba(232, 43, 134, .35); margin: 14px 0; }
-  .conflict .chead { padding: 8px 14px; border-bottom: 1px solid rgba(232, 43, 134, .35); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--weak-text); }
-  .conflict .csides { display: flex; }
-  .conflict .cside { flex: 1; padding: 12px 14px; min-width: 0; }
-  .conflict .cside + .cside { border-left: 1px solid var(--line); color: var(--text-2); }
-  .conflict .clabel { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-2); margin-bottom: 6px; }
-  .conflict .cfoot { display: flex; gap: 14px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); }
-  .conflict .cfoot p { flex: 1; margin: 0; color: var(--text-2); font-size: 12px; }
-  .q button.opt { display: block; width: 100%; text-align: left; background: none; border: 0; border-top: 1px solid var(--line-soft); min-height: 0; }
-  .q button.opt:hover { color: var(--text-1); background: rgba(255, 255, 255, .02); }
-  /* Confirm gate: pinned above the composer, imminent round expanded,
-     the rest one line each — four rounds must not swallow the screen. */
-  #plan-gate { position: sticky; bottom: 0; background: var(--bg); border-top: 1px solid var(--line); margin-top: 24px; padding: 12px 0 4px; }
-  .gatehead { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
-  .gatehead .meta { font-size: 12px; }
-  .gaterow { display: flex; gap: 12px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--line-soft); }
-  .gaterow .gcheck { display: flex; gap: 8px; align-items: baseline; margin: 0; font-weight: 400; cursor: pointer; white-space: nowrap; }
+  /* Pasted walls collapse to chips — the candidate's own paste must never
+     dominate the viewport (live-screenshot finding, 2026-08-07). */
+  .pastechip { display: flex; gap: 10px; width: 100%; text-align: left; background: none; border: 0; border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); padding: 7px 0; min-height: 0; color: var(--text-2); font-size: 12px; cursor: pointer; font-family: var(--mono); }
+  .pastechip:hover { color: var(--text-1); }
+  .pastebody { margin: 0; padding: 4px 0 10px 20px; font-size: 13px; line-height: 1.6; color: var(--text-2); white-space: pre-wrap; }
+  #plan-intro { color: var(--text-2); margin: 28px 0; line-height: 1.65; }
+  /* The plan panel: the ONE structured surface. */
+  #plan-panel { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; position: sticky; top: 64px; display: flex; flex-direction: column; max-height: calc(100vh - 90px); }
+  #plan-panel .phead { padding: 12px 16px 8px; border-bottom: 1px solid var(--line); }
+  #plan-panel .phead .micro { margin: 0; }
+  #plan-panel .phead .meta { font-size: 12px; margin-top: 3px; }
+  #plan-panel .pbody { overflow-y: auto; min-height: 0; }
+  .gaterow { border-bottom: 1px solid var(--line-soft); border-left: 2px solid transparent; padding: 10px 14px 10px 12px; }
+  .gaterow.flash { animation: rowflash 1.1s ease-out; }
+  @keyframes rowflash { 0% { border-left-color: transparent; } 15% { border-left-color: var(--steel); } 100% { border-left-color: transparent; } }
+  @media (prefers-reduced-motion: reduce) { .gaterow.flash { animation: none; } }
+  .gaterow .gcheck { display: flex; gap: 8px; align-items: baseline; margin: 0; font-weight: 500; cursor: pointer; }
   .gaterow .gcheck input { width: auto; accent-color: var(--steel); }
-  .gaterow .gmeta { color: var(--text-2); font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .gaterow .gexpand { background: none; border: 0; min-height: 0; padding: 0; color: var(--text-2); font-size: 12px; cursor: pointer; white-space: nowrap; }
+  .gaterow .gshape { color: var(--text-2); font-size: 12px; margin: 3px 0 0 22px; line-height: 1.5; }
+  .gaterow .grow2 { display: flex; align-items: center; gap: 10px; margin: 6px 0 0 22px; }
+  .gaterow .gdate { font-size: 12px; color: var(--text-2); }
+  .gaterow .gdate.nodate { color: var(--text-3); }
+  .tier { font: inherit; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; background: none; border: 1px solid var(--line); padding: 1px 7px; cursor: pointer; color: var(--text-2); min-height: 0; }
+  .tier:hover { border-color: var(--text-3); color: var(--text-1); }
+  .gaterow .gexpand { background: none; border: 0; min-height: 0; padding: 0; margin-left: auto; color: var(--text-2); font-size: 12px; cursor: pointer; white-space: nowrap; }
   .gaterow .gexpand:hover { color: var(--text-1); }
-  .gaterow .gdate.nodate { color: #6a6a72; }
-  .gatedetail { padding: 0 0 10px 26px; color: var(--text-2); font-size: 12px; line-height: 1.6; max-width: 62ch; }
+  .gatedetail { padding: 6px 0 2px 22px; color: var(--text-2); font-size: 12px; line-height: 1.6; }
   .gatedetail b { color: var(--text-1); font-weight: 500; }
-  .gatedecline { color: var(--text-2); font-size: 12px; padding: 8px 0; border-top: 1px solid var(--line-soft); }
-  .gatecommit { display: flex; gap: 14px; align-items: center; padding-top: 10px; border-top: 1px solid var(--line-soft); }
-  #plan-composer { display: flex; gap: 8px; margin-top: 14px; position: sticky; bottom: 0; background: var(--bg); padding-bottom: 8px; }
-  #plan-composer textarea { flex: 1; min-height: 40px; resize: none; }
+  .gatedecline { color: var(--text-2); font-size: 12px; padding: 8px 14px; border-bottom: 1px solid var(--line-soft); }
+  .paceline { padding: 10px 14px; font-size: 12px; line-height: 1.5; color: var(--text-2); }
+  #plan-panel .pfoot { padding: 12px 14px 14px; border-top: 1px solid var(--line); }
+  #plan-panel .pfoot button { width: 100%; padding: 10px; }
+  #plan-panel .pfoot .meta { font-size: 12px; margin-top: 8px; display: block; line-height: 1.5; }
+  #plan-composer { margin-top: 14px; position: sticky; bottom: 0; background: var(--bg); padding-bottom: 10px; max-width: 62ch; }
+  #plan-composer .row { display: flex; gap: 8px; align-items: flex-start; }
+  #plan-composer textarea { flex: 1; min-height: 58px; resize: none; }
+  #plan-composer .helper { font-size: 12px; color: var(--text-3); margin-top: 7px; line-height: 1.5; }
+  #plan-attach { margin-bottom: 6px; }
+  @media (max-width: 1099px) {
+    body.wide { max-width: 760px; }
+    #plan-wrap { display: flex; flex-direction: column; }
+    #plan-main { display: contents; }
+    #plan-chat { order: 1; }
+    #plan-panel { order: 2; position: sticky; bottom: 0; top: auto; max-height: 45vh; }
+    #plan-composer { order: 3; }
+  }
   .carddel { border: 0; color: var(--text-2); font-size: 12px; padding: 0; min-height: 0; margin-top: 8px; }
   .carddel:hover { color: var(--weak-text); }
 
@@ -592,35 +591,11 @@ export function appPage(): string {
   <section id="index" hidden></section>
 
   <section id="entry" hidden>
-    <div id="entry-form">
-      <h2><label for="e-desc" style="margin:0">What are you interviewing for?</label></h2>
-      <textarea id="e-desc" placeholder="Palantir new grad. Recruiter email says 90 min HackerRank. The assessment preview showed class stubs to implement — so LLD-style, not just algorithms."></textarea>
-      <div class="optrow">
-        <div>
-          <label for="e-date">Interview date <span class="meta">(optional)</span></label>
-          <input id="e-date" placeholder="2026-09-15" />
-        </div>
-        <div>
-          <label for="e-company">Company <span class="meta">(optional)</span></label>
-          <input id="e-company" placeholder="Palantir" />
-        </div>
-      </div>
-      <div id="refbox">
-        <label for="e-link" style="margin-top:0">Reference material</label>
-        <p class="help">a question from this round, a repo, a thread — this is what makes the generated problems feel real</p>
-        <div class="linkrow">
-          <input id="e-link" placeholder="paste a link — github.com/user/repo, a Blind thread, a writeup" />
-          <button id="e-addlink" type="button">add</button>
-          <button id="e-browse" type="button">browse files</button>
-          <input id="e-file" type="file" multiple hidden aria-hidden="true" />
-        </div>
-        <div id="e-attachlist"></div>
-      </div>
-      <button id="e-build" class="primary" type="button">Build my plan</button>
-      <p class="err" id="e-err" aria-live="polite"></p>
-      <p class="closing">Everything you paste shapes the plan — and you confirm every round before anything gets built.</p>
-    </div>
-    <div id="entry-flow" hidden aria-live="polite"></div>
+    <!-- Cowork grammar (design D1, 2026-08-07): the chat contains nothing
+         but prose; ALL structure lives in the plan panel. The client renders
+         the whole surface — composer, chat, panel — into entry-flow. -->
+    <div id="entry-flow" aria-live="polite"></div>
+    <input id="e-file" type="file" multiple hidden aria-hidden="true" />
   </section>
 
   <section id="timeline" hidden></section>
@@ -713,7 +688,7 @@ export function runApp(cfg: AppConfig): http.Server {
                 id: t.id,
                 label: t.label,
                 interview_date: t.interview_date ?? null,
-                specs: t.specs.map((s) => ({ id: s.id, label: s.label, capabilities: s.capabilities, date: s.date ?? null })),
+                specs: t.specs.map((s) => ({ id: s.id, label: s.label, capabilities: s.capabilities, date: s.date ?? null, evidence_tier: s.evidence_tier ?? null })),
               },
               queue: withTitles,
               // Latest adaptation only — the timeline explains why rounds
@@ -889,6 +864,9 @@ export function runApp(cfg: AppConfig): http.Server {
           target_id?: string;
           spec?: RoundSpec;          // legacy single-spec shape
           specs?: RoundSpec[];       // multi-round accept
+          /** Conversational pace override (1-7); falls back to the latest
+           *  proposal's value, then the default. */
+          pace_per_week?: number;
         };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
         const incoming = b.specs ?? (b.spec ? [b.spec] : []);
@@ -906,15 +884,22 @@ export function runApp(cfg: AppConfig): http.Server {
         // model wrote at proposal time so the blueprint drafter reads it
         // (composeRoundBrief deliberately drops description/context once a
         // blueprint exists — this is the door conversation content takes).
+        // The conversational pace ("about an hour a day" → 4/week) sizes the
+        // queue; an explicit client value wins over the stored proposal.
+        let pace: number | undefined =
+          typeof b.pace_per_week === 'number' && Number.isFinite(b.pace_per_week)
+            ? Math.min(7, Math.max(1, Math.round(b.pace_per_week)))
+            : undefined;
         try {
           const { loadConversation, latestProposal } = await import('./planner.js');
           const prop = latestProposal(loadConversation(repoRoot, t.id));
           if (prop?.summary) {
             writeFileSync(path.join(targetDir(repoRoot, t.id), 'planner-summary.md'), prop.summary + '\n');
           }
-        } catch { /* classic wizard path — no conversation */ }
+          if (pace === undefined && prop?.pace_per_week) pace = prop.pace_per_week;
+        } catch { /* no conversation — CLI or legacy path */ }
         if (!loadQueue(repoRoot, t.id)) {
-          const queue = proposeQueue(t, Date.now());
+          const queue = proposeQueue(t, Date.now(), pace);
           // Name every planned round now (D-impl): one call PER SPEC so a
           // multi-round queue gets titles that fit each round's shape.
           // Failure degrades to quiet rows — naming never blocks the plan.

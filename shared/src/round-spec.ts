@@ -88,6 +88,12 @@ export interface RoundSpec {
    *  the queue paces each round's practice against its own date. Absent =
    *  confirmed but unscheduled — paced against the loop end, never guessed. */
   date?: string;
+  /** How this round's FORM is evidenced (CEO review 2026-08-07): a
+   *  firsthand artifact the candidate SAW > a secondhand account > public
+   *  sources or model priors. Classified by the planner, freely overridable
+   *  by the candidate at the confirm gate. Drives hedge allocation once the
+   *  portfolio backend lands; captured now so the data accumulates. */
+  evidence_tier?: 'firsthand' | 'secondhand' | 'public_prior';
 }
 
 /** What every manifest written before round_spec existed resolves to. */
@@ -199,6 +205,13 @@ export function validateRoundSpec(spec: unknown): string[] {
     (typeof s.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s.date) || Number.isNaN(Date.parse(`${s.date}T00:00:00`)))
   ) {
     failures.push(`date must be YYYY-MM-DD when present: ${String(s.date)}`);
+  }
+
+  if (
+    s.evidence_tier !== undefined &&
+    s.evidence_tier !== 'firsthand' && s.evidence_tier !== 'secondhand' && s.evidence_tier !== 'public_prior'
+  ) {
+    failures.push(`evidence_tier out of vocabulary: ${String(s.evidence_tier)}`);
   }
 
   if (!Array.isArray(s.memory_tags)) {

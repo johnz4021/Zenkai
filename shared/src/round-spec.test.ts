@@ -55,6 +55,18 @@ describe('validateRoundSpec', () => {
     expect(validateRoundSpec(s).join('\n')).toMatch(/files_changed/);
   });
 
+  it('evidence_tier: optional, closed vocabulary', () => {
+    for (const tier of ['firsthand', 'secondhand', 'public_prior'] as const) {
+      const s = good();
+      s.evidence_tier = tier;
+      expect(validateRoundSpec(s)).toEqual([]);
+    }
+    const s = good();
+    s.evidence_tier = 'gospel' as never;
+    expect(validateRoundSpec(s).join('\n')).toMatch(/evidence_tier/);
+    expect(validateRoundSpec(good())).toEqual([]); // absent stays valid
+  });
+
   it('rejects non-objects and empty shells loudly', () => {
     expect(validateRoundSpec(null)).toHaveLength(1);
     expect(validateRoundSpec({}).length).toBeGreaterThanOrEqual(4);

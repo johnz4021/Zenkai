@@ -203,6 +203,8 @@ export interface DraftToolOutput {
   emphasis?: string;
   /** ISO date this round happens, ONLY when the material states it. */
   date?: string;
+  /** How the round's FORM is evidenced; drives hedge allocation later. */
+  evidence_tier?: string;
   rationale: string;
   unsupported: string;
 }
@@ -250,6 +252,7 @@ export function draftToSpec(out: DraftToolOutput): SpecDraft {
     // The vocabulary gate below validates the format; a garbled date is an
     // inference failure, never silent data (same rule as /api/target).
     ...(date ? { date } : {}),
+    ...(asText(out.evidence_tier) ? { evidence_tier: asText(out.evidence_tier) as RoundSpec['evidence_tier'] } : {}),
   };
   const failures = validateRoundSpec(spec);
   if (failures.length > 0) {
