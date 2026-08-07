@@ -447,6 +447,13 @@ export function appPage(): string {
   #plan-composer textarea { flex: 1; min-height: 58px; resize: none; }
   #plan-composer .helper { font-size: 12px; color: var(--text-3); margin-top: 7px; line-height: 1.5; }
   #plan-attach { margin-bottom: 6px; }
+  /* Optional link row: deliberately quiet — links are one more kind of
+     evidence, not a required field. */
+  #plan-composer .linkrow { display: flex; gap: 8px; margin-top: 8px; }
+  #plan-composer .linkrow input { flex: 1; font-size: 13px; padding: 7px 10px; color: var(--text-2); }
+  #plan-composer .linkrow input:focus { color: var(--text-1); }
+  #plan-composer .linkrow button { min-height: 0; padding: 4px 12px; font-size: 13px; color: var(--text-2); }
+  #plan-composer .linkrow button:hover { color: var(--text-1); }
   @media (max-width: 1099px) {
     body.wide { max-width: 760px; }
     /* The base grid rule's align-items:start would leak into this flex
