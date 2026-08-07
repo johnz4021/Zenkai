@@ -388,6 +388,10 @@ export function appPage(): string {
      composer. body.wide widens the page column for this route only. */
   body.wide { max-width: 1180px; }
   #plan-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 28px; align-items: start; }
+  /* Empty state (no conversation yet): no panel to reserve a rail for —
+     single column, centered, so the intake moment isn't lopsided (QA ISSUE-001). */
+  #plan-wrap.nopanel { grid-template-columns: minmax(0, 1fr); }
+  #plan-wrap.nopanel #plan-main { max-width: 62ch; margin: 0 auto; width: 100%; }
   #plan-main { min-width: 0; }
   #plan-chat { max-width: 62ch; }
   .turn-user { border-left: 1px solid var(--line); padding-left: 16px; margin: 24px 0; white-space: pre-wrap; }

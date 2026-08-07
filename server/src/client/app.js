@@ -313,9 +313,10 @@ function renderPlan() {
     chat = renderTurns();
   }
 
-  f.innerHTML = '<div id="plan-wrap">' +
+  const hasPanel = Boolean(plan.tid || plan.turns.length);
+  f.innerHTML = '<div id="plan-wrap"' + (hasPanel ? '' : ' class="nopanel"') + '>' +
     '<div id="plan-main"><div id="plan-chat">' + chat + '</div>' + renderComposer() + '</div>' +
-    ((plan.tid || plan.turns.length) ? renderPanel() : '') +
+    (hasPanel ? renderPanel() : '') +
     '</div>';
   plan.flash = false;
 
