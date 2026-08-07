@@ -69,7 +69,10 @@ const plan = {
   flash: false,            // one render's worth of row-flash after an update
 };
 
+let renderedTurnCount = 0; // autoscroll fires only when this grows
+
 function resetPlan() {
+  renderedTurnCount = 0;
   plan.tid = null; plan.turns = []; plan.proposal = null; plan.busy = false;
   plan.error = ''; plan.gateOpen = null; plan.include = {}; plan.tier = {};
   plan.openChips = {}; plan.flash = false;
@@ -321,8 +324,13 @@ function renderPlan() {
     if (hadFocus) el('plan-msg').focus();
   }
   wirePlan(f);
-  const chatEl = el('plan-chat');
-  if (chatEl && plan.turns.length) chatEl.scrollTop = chatEl.scrollHeight;
+  // The PAGE scrolls, not #plan-chat — scroll to the composer when a new
+  // turn arrived so the reply is never invisible below the fold (QA
+  // ISSUE-002). Count-gated: re-renders from tier clicks etc. must not yank.
+  if (plan.turns.length !== renderedTurnCount) {
+    renderedTurnCount = plan.turns.length;
+    if (plan.turns.length && el('plan-composer')) el('plan-composer').scrollIntoView({ block: 'end' });
+  }
 }
 
 function wirePlan(f) {
