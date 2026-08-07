@@ -442,7 +442,9 @@ export function appPage(): string {
     #plan-main { display: contents; }
     #plan-chat { order: 1; }
     #plan-panel { order: 2; position: sticky; bottom: 0; top: auto; max-height: 45vh; }
-    #plan-composer { order: 3; }
+    /* Only ONE bottom-sticky element per stack: a sticky composer here would
+       sit on top of the panel and hide the confirm button (QA ISSUE-003). */
+    #plan-composer { order: 3; position: static; }
   }
   .carddel { border: 0; color: var(--text-2); font-size: 12px; padding: 0; min-height: 0; margin-top: 8px; }
   .carddel:hover { color: var(--weak-text); }
