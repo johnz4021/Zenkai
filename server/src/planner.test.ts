@@ -257,3 +257,22 @@ describe('runPlannerTurn (fake model)', () => {
     expect(loadConversation(root, t.id)).toHaveLength(4);
   });
 });
+
+describe('kickoff rendering — prompt plumbing never reaches the candidate', () => {
+  it('a kickoff turn with display renders the candidate words, not the template', () => {
+    const turns: PlannerTurn[] = [{
+      role: 'user', at: 't0', display: 'Palantir learning round, async debugging',
+      content: [{ type: 'text', text: "I'm preparing for: Palantir\n\n<<<CANDIDATE_MATERIAL\nstuff\nCANDIDATE_MATERIAL>>>" }],
+    }];
+    const r = renderConversation(turns);
+    expect(r[0]?.prose).toBe('Palantir learning round, async debugging');
+    expect(r[0]?.prose).not.toContain('CANDIDATE_MATERIAL');
+  });
+
+  it('a LEGACY kickoff (no display) gets its scaffolding stripped', () => {
+    const raw = "I'm preparing for: Palantir (loop ends 2026-08-07)\n\n<<<CANDIDATE_MATERIAL\nlearning round, futures in python\nCANDIDATE_MATERIAL>>>\n\nReference material I collected (also see any attached images/PDFs above):\n\n<<<CANDIDATE_MATERIAL\n(none)\nCANDIDATE_MATERIAL>>>";
+    const turns: PlannerTurn[] = [{ role: 'user', at: 't0', content: [{ type: 'text', text: raw }] }];
+    const r = renderConversation(turns);
+    expect(r[0]?.prose).toBe('learning round, futures in python');
+  });
+});

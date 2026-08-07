@@ -332,8 +332,11 @@ function planTurn(message) {
       plan.busy = false;
       if (status === 501) { runClarify(null); return; } // no API key — classic wizard
       if (body.error) { plan.error = body.error; renderPlan(); return; }
-      plan.turns = plan.turns.concat(body.turns || []);
-      for (const t of body.turns || []) if (t.proposal) plan.proposal = t.proposal;
+      // We already rendered the user's message optimistically — keep only
+      // the assistant's side of the server echo, or every answer shows twice.
+      const incoming = (body.turns || []).filter((t) => (message ? t.role !== 'user' : true));
+      plan.turns = plan.turns.concat(incoming);
+      for (const t of incoming) if (t.proposal) plan.proposal = t.proposal;
       renderPlan();
     })
     .catch(() => {
@@ -421,9 +424,10 @@ function renderGate() {
       '<span class="gdate' + (d.spec.date ? '' : ' nodate') + '">' + specDateLine(d.spec) + '</span> ' + (open ? '▴' : '▾') + '</button>' +
       '</div>';
     if (open) {
-      html += '<div class="gatedetail">' +
-        (d.spec.emphasis ? '<div>emphasis: ' + esc(d.spec.emphasis) + '</div>' : '') +
-        '<div><b>Why this shape:</b> ' + esc(d.rationale || '') + '</div></div>';
+      // The rationale is what makes the gate auditable. Emphasis stays in
+      // the data (generation reads it) but not here — it is a paragraph
+      // written FOR the generator, and it buried the gate in text.
+      html += '<div class="gatedetail"><b>Why this shape:</b> ' + esc(d.rationale || '') + '</div>';
     }
   }
   for (const { d } of declined) {
@@ -442,6 +446,12 @@ function renderPlan() {
   f.hidden = false;
   const composerText = el('plan-msg') ? el('plan-msg').value : '';
 
+  // Only the LATEST assistant turn is interactive: its questions and its
+  // conflict are the current state. Older turns render as plain history —
+  // stale radio groups piling up per turn is how the page became a wall.
+  let lastAssistant = -1;
+  plan.turns.forEach((t, i) => { if (t.role === 'assistant') lastAssistant = i; });
+
   let html = '<div id="plan-chat">';
   plan.turns.forEach((t, i) => {
     if (t.role === 'user') {
@@ -450,13 +460,14 @@ function renderPlan() {
           ? '<div class="att">attached: ' + t.attachments.map(esc).join(', ') + '</div>'
           : '') + '</div>';
     } else {
-      html += '<div class="turn-planner">';
+      const current = i === lastAssistant;
+      html += '<div class="turn-planner' + (current ? '' : ' history') + '">';
       for (const para of (t.prose || '').split('\n\n')) {
         if (para.trim()) html += '<p>' + esc(para.trim()) + '</p>';
       }
-      if (t.proposal && t.proposal.conflict) html += renderConflict(t.proposal.conflict);
+      if (current && t.proposal && t.proposal.conflict) html += renderConflict(t.proposal.conflict);
       html += renderTraceLine(t, i);
-      if (t.proposal) for (const q of t.proposal.questions || []) html += renderQuestionBlock(q);
+      if (current && t.proposal) for (const q of t.proposal.questions || []) html += renderQuestionBlock(q);
       html += '</div>';
     }
   });

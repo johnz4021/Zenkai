@@ -404,6 +404,10 @@ export function appPage(): string {
   .turn-user .att { color: var(--text-2); font-size: 12px; margin-top: 6px; white-space: normal; }
   .turn-planner { margin: 24px 0; }
   .turn-planner p { margin: 0 0 12px; line-height: 1.65; }
+  /* Settled turns recede; the current turn (questions, conflict) is where
+     the eye should land. */
+  .turn-planner.history { opacity: .55; }
+  .turn-planner.history:hover { opacity: 1; }
   .traceline { background: none; border: 0; border-top: 1px solid var(--line-soft); padding: 8px 0 0; min-height: 0;
     color: var(--text-2); font-size: 12px; cursor: pointer; display: block; width: 100%; text-align: left; }
   .traceline:hover { color: var(--text-1); border-color: var(--line-soft); }

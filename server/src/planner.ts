@@ -42,6 +42,11 @@ export interface PlannerTurn {
    *  server_tool_use / thinking blocks intact — the API requires unmodified
    *  replay, and the stored form IS the replay form. */
   content: Record<string, unknown>[];
+  /** What the CANDIDATE should see for this turn, when it differs from the
+   *  model-facing content. The kickoff turn is the interpolated prompt
+   *  template (fences, headers, "(none)" placeholders) — rendering that
+   *  verbatim put prompt plumbing on the user's own screen. */
+  display?: string;
 }
 
 export function conversationPath(root: string, targetId: string): string {
@@ -297,6 +302,20 @@ export interface RenderedTurn {
   attachments?: string[];
 }
 
+/** Legacy kickoff turns (stored before `display` existed) carry the raw
+ *  prompt template. Strip its scaffolding — fences, section headers, empty
+ *  placeholders — so old conversations render like new ones. */
+export function stripKickoffScaffolding(text: string): string {
+  return text
+    .replace(/^<<<CANDIDATE_MATERIAL$/gm, '')
+    .replace(/^CANDIDATE_MATERIAL>>>$/gm, '')
+    .replace(/^I'm preparing for: .*$/m, '')
+    .replace(/^Reference material I collected.*$/m, '')
+    .replace(/^\(none\)$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 /** Conversation → display shape. Tool plumbing (tool_result acks) and
  *  empty-prose turns are dropped; the LATEST proposal wins (the gate shows
  *  one current proposal, not a history of superseded ones — the client
@@ -305,11 +324,12 @@ export function renderConversation(turns: PlannerTurn[]): RenderedTurn[] {
   const out: RenderedTurn[] = [];
   for (const t of turns) {
     if (t.role === 'user') {
-      const prose = t.content
-        .filter((b) => b.type === 'text' && typeof b.text === 'string')
-        .map((b) => String(b.text))
-        .join('\n\n')
-        .trim();
+      const prose = t.display ?? stripKickoffScaffolding(
+        t.content
+          .filter((b) => b.type === 'text' && typeof b.text === 'string')
+          .map((b) => String(b.text))
+          .join('\n\n'),
+      );
       const attachments = t.content
         .filter((b) => b.type === 'image' || b.type === 'document')
         .map((b, i) => String((b as { title?: unknown }).title ?? `image ${i + 1}`));
@@ -409,7 +429,8 @@ export async function runPlannerTurn(opts: {
 
   if (persisted.length === 0) {
     // Kickoff: attachments first (stable prefix, and the model reads them
-    // before the words about them), then the interpolated intake.
+    // before the words about them), then the interpolated intake. The
+    // candidate sees their own words (display), never the template.
     pending.push({
       role: 'user',
       at: new Date().toISOString(),
@@ -417,6 +438,7 @@ export async function runPlannerTurn(opts: {
         ...attachmentBlocks(root, target),
         { type: 'text', text: kickoff },
       ],
+      display: target.description || target.label,
     });
   } else if (opts.userMessage?.trim()) {
     pending.push({
