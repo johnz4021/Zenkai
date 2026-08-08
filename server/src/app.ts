@@ -388,6 +388,17 @@ export function appPage(): string {
      composer. body.wide widens the page column for this route only. */
   body.wide { max-width: 1180px; }
   #plan-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 28px; align-items: start; }
+  /* Empty state (no conversation yet): no panel to reserve a rail for —
+     single column, centered, so the intake moment isn't lopsided (QA ISSUE-001). */
+  #plan-wrap.nopanel { grid-template-columns: minmax(0, 1fr); min-height: calc(100vh - 230px); align-content: center; }
+  #plan-wrap.nopanel #plan-main { max-width: 62ch; margin: 0 auto; width: 100%; }
+  /* This moment IS the intake — "paste everything you have" needs room to
+     land in, not a two-row sliver. Conversation mode stays compact. */
+  #plan-wrap.nopanel #plan-composer { position: static; }
+  #plan-wrap.nopanel #plan-composer textarea { min-height: 170px; flex-basis: 100%; }
+  #plan-wrap.nopanel #plan-composer .row { flex-wrap: wrap; }
+  #plan-wrap.nopanel #plan-composer .row button:first-of-type { margin-left: auto; }
+  #plan-wrap.nopanel #plan-intro { margin-top: 0; }
   #plan-main { min-width: 0; }
   #plan-chat { max-width: 62ch; }
   .turn-user { border-left: 1px solid var(--line); padding-left: 16px; margin: 24px 0; white-space: pre-wrap; }
@@ -436,13 +447,24 @@ export function appPage(): string {
   #plan-composer textarea { flex: 1; min-height: 58px; resize: none; }
   #plan-composer .helper { font-size: 12px; color: var(--text-3); margin-top: 7px; line-height: 1.5; }
   #plan-attach { margin-bottom: 6px; }
+  /* Optional link row: deliberately quiet — links are one more kind of
+     evidence, not a required field. */
+  #plan-composer .linkrow { display: flex; gap: 8px; margin-top: 8px; }
+  #plan-composer .linkrow input { flex: 1; font-size: 13px; padding: 7px 10px; color: var(--text-2); }
+  #plan-composer .linkrow input:focus { color: var(--text-1); }
+  #plan-composer .linkrow button { min-height: 0; padding: 4px 12px; font-size: 13px; color: var(--text-2); }
+  #plan-composer .linkrow button:hover { color: var(--text-1); }
   @media (max-width: 1099px) {
     body.wide { max-width: 760px; }
-    #plan-wrap { display: flex; flex-direction: column; }
+    /* The base grid rule's align-items:start would leak into this flex
+       context and shrink the panel to content width (QA ISSUE-004). */
+    #plan-wrap { display: flex; flex-direction: column; align-items: stretch; }
     #plan-main { display: contents; }
     #plan-chat { order: 1; }
     #plan-panel { order: 2; position: sticky; bottom: 0; top: auto; max-height: 45vh; }
-    #plan-composer { order: 3; }
+    /* Only ONE bottom-sticky element per stack: a sticky composer here would
+       sit on top of the panel and hide the confirm button (QA ISSUE-003). */
+    #plan-composer { order: 3; position: static; }
   }
   .carddel { border: 0; color: var(--text-2); font-size: 12px; padding: 0; min-height: 0; margin-top: 8px; }
   .carddel:hover { color: var(--weak-text); }

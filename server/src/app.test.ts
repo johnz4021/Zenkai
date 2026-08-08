@@ -47,6 +47,9 @@ describe('home app page', () => {
     // The file input survives as the composer's Attach target.
     expect(html).toContain('id="e-file"');
     expect(js).toContain('plan-attach-btn');
+    // Links keep an explicit, clearly-optional input (user call, 2026-08-07).
+    expect(js).toContain('add a link (optional)');
+    expect(js).toContain('plan-addlink');
     expect(html).not.toMatch(/how it works/i);
   });
 

@@ -69,7 +69,10 @@ const plan = {
   flash: false,            // one render's worth of row-flash after an update
 };
 
+let renderedTurnCount = 0; // autoscroll fires only when this grows
+
 function resetPlan() {
+  renderedTurnCount = 0;
   plan.tid = null; plan.turns = []; plan.proposal = null; plan.busy = false;
   plan.error = ''; plan.gateOpen = null; plan.include = {}; plan.tier = {};
   plan.openChips = {}; plan.flash = false;
@@ -290,6 +293,8 @@ function renderComposer() {
     (plan.busy ? ' disabled' : '') + '></textarea>' +
     '<button id="plan-attach-btn" class="mini" type="button" style="min-height:40px">Attach</button>' +
     '<button id="plan-send" type="button"' + (plan.busy ? ' disabled' : '') + '>Send</button></div>' +
+    '<div class="linkrow"><input id="plan-link" placeholder="add a link (optional) — a repo, a thread, a writeup" aria-label="Add a link (optional)" />' +
+    '<button id="plan-addlink" type="button">add</button></div>' +
     '<div class="helper">Correct me where I am wrong. What you saw yourself outranks anything I find.</div>' +
     '</div>';
 }
@@ -298,7 +303,9 @@ function renderPlan() {
   if (route().page !== 'new') return;
   const f = el('entry-flow');
   const prevMsg = el('plan-msg') ? el('plan-msg').value : '';
-  const hadFocus = document.activeElement && document.activeElement.id === 'plan-msg';
+  const prevLink = el('plan-link') ? el('plan-link').value : '';
+  const focusId = document.activeElement ? document.activeElement.id : '';
+  const hadFocus = focusId === 'plan-msg';
 
   let chat = '';
   if (!plan.tid && plan.turns.length === 0) {
@@ -310,9 +317,10 @@ function renderPlan() {
     chat = renderTurns();
   }
 
-  f.innerHTML = '<div id="plan-wrap">' +
+  const hasPanel = Boolean(plan.tid || plan.turns.length);
+  f.innerHTML = '<div id="plan-wrap"' + (hasPanel ? '' : ' class="nopanel"') + '>' +
     '<div id="plan-main"><div id="plan-chat">' + chat + '</div>' + renderComposer() + '</div>' +
-    ((plan.tid || plan.turns.length) ? renderPanel() : '') +
+    (hasPanel ? renderPanel() : '') +
     '</div>';
   plan.flash = false;
 
@@ -320,9 +328,18 @@ function renderPlan() {
     el('plan-msg').value = prevMsg;
     if (hadFocus) el('plan-msg').focus();
   }
+  if (el('plan-link')) {
+    el('plan-link').value = prevLink;
+    if (focusId === 'plan-link') el('plan-link').focus();
+  }
   wirePlan(f);
-  const chatEl = el('plan-chat');
-  if (chatEl && plan.turns.length) chatEl.scrollTop = chatEl.scrollHeight;
+  // The PAGE scrolls, not #plan-chat — scroll to the composer when a new
+  // turn arrived so the reply is never invisible below the fold (QA
+  // ISSUE-002). Count-gated: re-renders from tier clicks etc. must not yank.
+  if (plan.turns.length !== renderedTurnCount) {
+    renderedTurnCount = plan.turns.length;
+    if (plan.turns.length && el('plan-composer')) el('plan-composer').scrollIntoView({ block: 'end' });
+  }
 }
 
 function wirePlan(f) {
@@ -330,12 +347,24 @@ function wirePlan(f) {
     const box = el('plan-msg');
     const text = box.value.trim();
     if (plan.busy) return;
-    if (!text && !plan.tid) return;
+    if (!plan.tid) {
+      if (!text) return;
+      box.value = '';
+      planFirstSend(text);
+      return;
+    }
+    // Mid-conversation, link/pasted chips ride the message itself — the
+    // target's context field was consumed by the kickoff and /api/plan/turn
+    // takes only text. Without this, a chip added later silently vanished.
+    const extra = buildContext();
+    if (!text && !extra) return;
     box.value = '';
-    if (!plan.tid) { planFirstSend(text); return; }
-    if (!text) return;
-    plan.turns.push({ role: 'user', at: new Date().toISOString(), prose: text });
-    planTurn(text);
+    const message = text + (extra ? (text ? '\n\n' : '') + extra : '');
+    for (let i = attachments.length - 1; i >= 0; i--) {
+      if (!attachments[i].data) attachments.splice(i, 1);
+    }
+    plan.turns.push({ role: 'user', at: new Date().toISOString(), prose: message });
+    planTurn(message);
   };
   if (el('plan-send')) el('plan-send').addEventListener('click', send);
   if (el('plan-msg')) {
@@ -353,6 +382,19 @@ function wirePlan(f) {
     });
   }
   if (el('plan-attach-btn')) el('plan-attach-btn').addEventListener('click', () => el('e-file').click());
+  const addLink = () => {
+    const box = el('plan-link');
+    let url = (box.value || '').trim();
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    attachments.push({ kind: 'link', name: url, content: url });
+    box.value = '';
+    renderPlan();
+  };
+  if (el('plan-addlink')) el('plan-addlink').addEventListener('click', addLink);
+  if (el('plan-link')) el('plan-link').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addLink(); }
+  });
   const attach = el('plan-attach');
   if (attach) {
     for (const b of attach.querySelectorAll('button[data-i]')) {
