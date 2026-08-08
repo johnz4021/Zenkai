@@ -35,6 +35,25 @@ describe('draftToSpec', () => {
     unsupported: '',
   };
 
+  it('a DECLINED round skips the coherence gate — the decline is the point', () => {
+    // Live failure 2026-08-08: the planner declined Datadog's behavioral
+    // session, the vocabulary gate sank the draft, and the panel silently
+    // lacked the row the model's prose said was there. A declined round is
+    // never generated, scheduled, or run.
+    const behavioral = {
+      ...oaDraft,
+      id: 'datadog-behavioral',
+      label: 'Datadog behavioral',
+      check_kind: 'diff_present' as const, // incoherent — nothing to check
+      unsupported: '45 minutes of conversation with no code to run',
+    };
+    const { spec, unsupported } = draftToSpec(behavioral);
+    expect(unsupported).toMatch(/no code/);
+    expect(spec.label).toBe('Datadog behavioral');
+    // The same shape WITHOUT the decline still fails loudly.
+    expect(() => draftToSpec({ ...behavioral, unsupported: '' })).toThrow(/vocabulary gate/);
+  });
+
   it('converts minutes to ms, slugifies the id, derives the tags', () => {
     const { spec, rationale, unsupported } = draftToSpec(oaDraft);
     expect(spec.capabilities.time_limit_ms).toBe(90 * 60_000);

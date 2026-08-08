@@ -254,11 +254,19 @@ export function draftToSpec(out: DraftToolOutput): SpecDraft {
     ...(date ? { date } : {}),
     ...(asText(out.evidence_tier) ? { evidence_tier: asText(out.evidence_tier) as RoundSpec['evidence_tier'] } : {}),
   };
-  const failures = validateRoundSpec(spec);
-  if (failures.length > 0) {
-    throw new Error(`inferred spec failed the vocabulary gate: ${failures.join('; ')}`);
-  }
   const unsupported = asText(out.unsupported);
+  // A DECLINED round is never generated, scheduled, or run — holding it to
+  // the capability vocabulary sinks exactly the rounds the decline exists
+  // to name (a behavioral session has no honest check_kind at all). Live
+  // failure 2026-08-08: the model declined Datadog's behavioral round, the
+  // gate dropped it, and the panel silently lacked the row the model's
+  // prose promised was there.
+  if (!unsupported) {
+    const failures = validateRoundSpec(spec);
+    if (failures.length > 0) {
+      throw new Error(`inferred spec failed the vocabulary gate: ${failures.join('; ')}`);
+    }
+  }
   return {
     spec,
     rationale: asText(out.rationale),

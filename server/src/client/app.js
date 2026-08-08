@@ -221,6 +221,10 @@ function renderTurns() {
       }
       html += '</div>';
     } else {
+      // A tool-only message (the model calls propose_rounds, then narrates
+      // in the NEXT message) carries no words — the panel is its feedback.
+      // Rendering it painted an empty bubble on every proposal turn.
+      if (!(t.prose || '').trim() && !(t.questions && t.questions.length)) return;
       html += '<div class="turn-planner' + (i > lastUser ? '' : ' history') + '">';
       for (const para of (t.prose || '').split('\n\n')) {
         if (para.trim()) html += '<p>' + linkify(esc(para.trim())) + '</p>';

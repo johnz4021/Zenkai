@@ -144,6 +144,10 @@ describe('home app page', () => {
     // 2026-08-07): shortcuts to typing, only live on the latest turn.
     expect(js).toContain('.qopt');
     expect(js).toContain('or just type below');
+    // A tool-only message carries no words — the panel is its feedback.
+    // Rendering it painted an empty bubble on EVERY proposal turn (live
+    // failure 2026-08-08).
+    expect(js).toContain("if (!(t.prose || '').trim() && !(t.questions && t.questions.length)) return;");
     expect(html).toContain('.qopt');
     // The widgets the panel replaced must stay dead.
     expect(js).not.toContain('renderQuestionBlock');
