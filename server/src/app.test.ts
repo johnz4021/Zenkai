@@ -165,6 +165,15 @@ describe('home app page', () => {
     expect(html).toContain('prefers-reduced-motion');
   });
 
+  it('a missing API key never hides an existing conversation or its plan', () => {
+    // Live failure 2026-08-08: no key threw away 11 turns and a complete
+    // proposal, leaving a blank page. Replay + confirm survive; only
+    // sending dies (accept-spec needs no key).
+    expect(js).toContain('plan.readOnly');
+    expect(js).toContain('your conversation and plan are intact');
+    expect(js).toContain('(plan.busy || plan.readOnly ? \' disabled\' : \'\')');
+  });
+
   it('an abandoned plan is resumable or deletable, never a dead end', () => {
     expect(js).toContain('resume planning');
     expect(js).toContain('/api/plan/conversation');

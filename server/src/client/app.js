@@ -67,6 +67,7 @@ const plan = {
   tier: {},                // draft index -> user's tier override (free, T2-B)
   openChips: {},           // turn index -> expanded paste chip
   flash: false,            // one render's worth of row-flash after an update
+  readOnly: false,         // no API key: replay + confirm, but no sending
 };
 
 let renderedTurnCount = 0; // autoscroll fires only when this grows
@@ -75,7 +76,7 @@ function resetPlan() {
   renderedTurnCount = 0;
   plan.tid = null; plan.turns = []; plan.proposal = null; plan.busy = false;
   plan.error = ''; plan.gateOpen = null; plan.include = {}; plan.tier = {};
-  plan.openChips = {}; plan.flash = false;
+  plan.openChips = {}; plan.flash = false; plan.readOnly = false;
   attachments.length = 0;
 }
 
@@ -112,13 +113,20 @@ function planResume(id) {
     .then((d) => {
       plan.busy = false;
       if (d.error) { plan.error = d.error; renderPlan(); return; }
-      if (!d.planner_available) {
-        plan.error = 'conversational planning needs ANTHROPIC_API_KEY in .env — set it and restart the app';
+      // A conversation already on disk is shown even without a key: the
+      // candidate keeps sight of their plan and can still confirm it
+      // (accept-spec needs no key; naming and blueprints degrade on their
+      // own). Only sending is dead, and the notice says so.
+      plan.turns = d.turns || [];
+      plan.proposal = d.proposal || null;
+      plan.readOnly = !d.planner_available;
+      if (plan.readOnly) {
+        plan.error = plan.turns.length
+          ? 'ANTHROPIC_API_KEY is not set, so I cannot reply — your conversation and plan are intact, and you can still confirm below'
+          : 'conversational planning needs ANTHROPIC_API_KEY in .env — set it and restart the app';
         renderPlan();
         return;
       }
-      plan.turns = d.turns || [];
-      plan.proposal = d.proposal || null;
       if (plan.turns.length === 0) planTurn(null);
       else renderPlan();
     })
@@ -328,9 +336,9 @@ function renderComposer() {
     '<div class="row">' +
     '<textarea id="plan-msg" rows="2" aria-label="Message the planner" placeholder="' +
     (plan.tid ? 'Answer, correct me, or ask what a round shape is' : 'Describe the interview — paste everything you have') + '"' +
-    (plan.busy ? ' disabled' : '') + '></textarea>' +
-    '<button id="plan-attach-btn" class="mini" type="button" style="min-height:40px">Attach</button>' +
-    '<button id="plan-send" type="button"' + (plan.busy ? ' disabled' : '') + '>Send</button></div>' +
+    (plan.busy || plan.readOnly ? ' disabled' : '') + '></textarea>' +
+    '<button id="plan-attach-btn" class="mini" type="button" style="min-height:40px"' + (plan.readOnly ? ' disabled' : '') + '>Attach</button>' +
+    '<button id="plan-send" type="button"' + (plan.busy || plan.readOnly ? ' disabled' : '') + '>Send</button></div>' +
     '<div class="linkrow"><input id="plan-link" placeholder="add a link (optional) — a repo, a thread, a writeup" aria-label="Add a link (optional)" />' +
     '<button id="plan-addlink" type="button">add</button></div>' +
     '<div class="helper">Correct me where I am wrong. What you saw yourself outranks anything I find.</div>' +
