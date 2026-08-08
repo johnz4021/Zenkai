@@ -241,10 +241,22 @@ function renderTurns() {
       // A tool-only message (the model calls propose_rounds, then narrates
       // in the NEXT message) carries no words — the panel is its feedback.
       // Rendering it painted an empty bubble on every proposal turn.
-      if (!(t.prose || '').trim() && !(t.questions && t.questions.length)) return;
+      if (!(t.prose || '').trim() && !(t.questions && t.questions.length) && !(t.unreadable && t.unreadable.length)) return;
       html += '<div class="turn-planner' + (i > lastUser ? '' : ' history') + '">';
       for (const para of (t.prose || '').split('\n\n')) {
         if (para.trim()) html += '<p>' + linkify(esc(para.trim())) + '</p>';
+      }
+      // A link the fetch tool could not read is a dead end unless the
+      // candidate hears about it — many sites (reddit.com among them) are
+      // blocked at the tool layer, and their OWN links are the ones that
+      // fail. Name the site, say why, point at the composer.
+      if (t.unreadable && t.unreadable.length) {
+        for (const u of t.unreadable) {
+          let host = u.url;
+          try { host = new URL(u.url).hostname.replace(/^www\./, ''); } catch { /* keep raw */ }
+          html += '<div class="unread"><b>' + esc(host) + '</b> — ' + esc(u.reason) +
+            '. Paste the text here instead and I\'ll use it.</div>';
+        }
       }
       // ask_user options: tappable ONLY on the latest turn — a settled
       // question's options are history, not live controls. Indexes, not

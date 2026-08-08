@@ -417,6 +417,10 @@ export function appPage(): string {
   .pastechip:hover { color: var(--text-1); }
   .pastebody { margin: 0; padding: 4px 0 10px 20px; font-size: 13px; line-height: 1.6; color: var(--text-2); white-space: pre-wrap; }
   #plan-intro { color: var(--text-2); margin: 28px 0; line-height: 1.65; }
+  /* An unreadable link: a fact about the plan's evidence, not an app error
+     — stated calmly, with the repair (paste it) in the same sentence. */
+  .unread { border-left: 2px solid var(--weak); padding: 8px 0 8px 12px; margin: 12px 0; color: var(--text-2); font-size: 13px; line-height: 1.6; }
+  .unread b { color: var(--text-1); font-weight: 500; }
   /* ask_user options: tappable shortcuts under the latest planner turn.
      Pills, not radios — tapping IS answering. */
   .askrow { margin: 14px 0 4px; }

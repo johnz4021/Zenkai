@@ -135,6 +135,47 @@ describe('gateQuestion — the ask_user option picker', () => {
   });
 });
 
+describe('unreadable links — a dead fetch becomes "paste it instead"', () => {
+  const fetchCall = (id: string, url: string) => ({ type: 'server_tool_use', id, name: 'web_fetch', input: { url } });
+  const fetchFail = (id: string, code: string) => ({ type: 'web_fetch_tool_result', tool_use_id: id, content: { type: 'web_fetch_tool_result_error', error_code: code } });
+
+  it('names the failed url with a reason the candidate can act on', () => {
+    const reply = gatePlannerTurn([
+      fetchCall('f1', 'https://www.reddit.com/r/leetcode/comments/abc/'),
+      fetchFail('f1', 'url_not_allowed'),
+      { type: 'text', text: 'I could not open that thread.' },
+    ] as never);
+    expect(reply.unreadable).toEqual([
+      { url: 'https://www.reddit.com/r/leetcode/comments/abc/', reason: 'this site cannot be read automatically' },
+    ]);
+  });
+
+  it('a SUCCESSFUL fetch reports nothing, and repeats collapse', () => {
+    const ok = gatePlannerTurn([
+      fetchCall('f1', 'https://example.test/a'),
+      { type: 'web_fetch_tool_result', tool_use_id: 'f1', content: { type: 'web_fetch_result', url: 'https://example.test/a' } },
+    ] as never);
+    expect(ok.unreadable).toEqual([]);
+    const dup = gatePlannerTurn([
+      fetchCall('f1', 'https://x.test/a'), fetchFail('f1', 'url_not_accessible'),
+      fetchCall('f2', 'https://x.test/a'), fetchFail('f2', 'url_not_accessible'),
+    ] as never);
+    expect(dup.unreadable).toHaveLength(1);
+    expect(dup.unreadable[0]?.reason).toBe('the page would not load');
+  });
+
+  it('an unknown error code still surfaces, and a tool-only turn still renders', () => {
+    const reply = gatePlannerTurn([fetchCall('f1', 'https://y.test'), fetchFail('f1', 'teapot')] as never);
+    expect(reply.unreadable[0]?.reason).toBe('it could not be read');
+    // No prose, no proposal — the turn must survive rendering for the notice.
+    const rendered = renderConversation([
+      { role: 'assistant', at: 't1', content: [fetchCall('f1', 'https://y.test'), fetchFail('f1', 'url_not_allowed')] as never },
+    ]);
+    expect(rendered).toHaveLength(1);
+    expect(rendered[0]?.unreadable).toHaveLength(1);
+  });
+});
+
 describe('conversation store', () => {
   it('round-trips turns and tolerates a torn tail line', () => {
     const root = scratch();

@@ -175,7 +175,25 @@ export interface PlannerReply {
   /** Closed questions from ask_user — tappable options, answers arrive as
    *  the next user message (tapped label or typed text). Max 2 per turn. */
   questions: PlannerQuestion[];
+  /** Links the fetch tool could not read this turn. Surfaced so a dead
+   *  link becomes "paste it instead" rather than silence — reddit.com and
+   *  other sites are blocked at the tool layer, and the candidate's own
+   *  links are exactly the ones that fail (2026-08-08). */
+  unreadable: { url: string; reason: string }[];
 }
+
+/** Fetch failures the candidate can act on, in their words. */
+const FETCH_REASONS: Record<string, string> = {
+  url_not_allowed: 'this site cannot be read automatically',
+  url_not_in_prior_context: 'this site cannot be read automatically',
+  url_not_accessible: 'the page would not load',
+  unsupported_content_type: 'this file type cannot be read',
+  url_too_long: 'the link is too long to follow',
+  too_many_requests: 'the site is rate-limiting us',
+  max_uses_exceeded: 'too many pages fetched this turn',
+  unavailable: 'the reader was unavailable',
+  invalid_tool_input: 'the link could not be parsed',
+};
 
 function text(v: unknown): string {
   return typeof v === 'string' ? v.trim() : '';
@@ -242,6 +260,9 @@ export function gatePlannerTurn(content: Record<string, unknown>[]): PlannerRepl
   let prose = '';
   let proposal: PlannerProposal | null = null;
   const questions: PlannerQuestion[] = [];
+  // tool_use_id -> requested url, so a failed result can name the link.
+  const fetched = new Map<string, string>();
+  const unreadable: { url: string; reason: string }[] = [];
   for (const block of content) {
     if (block.type === 'text' && typeof block.text === 'string') {
       prose += (prose ? '\n\n' : '') + block.text.trim();
@@ -249,10 +270,20 @@ export function gatePlannerTurn(content: Record<string, unknown>[]): PlannerRepl
       proposal = gateProposal(block.input);
     } else if (block.type === 'tool_use' && block.name === ASK_TOOL.name) {
       questions.push(gateQuestion(block.input));
+    } else if (block.type === 'server_tool_use' && block.name === 'web_fetch') {
+      const url = text((block.input as Record<string, unknown> | undefined)?.url);
+      if (url) fetched.set(String(block.id ?? ''), url);
+    } else if (block.type === 'web_fetch_tool_result') {
+      const c = block.content as Record<string, unknown> | undefined;
+      const code = text(c?.error_code);
+      if (!code) continue;
+      const url = fetched.get(String(block.tool_use_id ?? '')) ?? '';
+      if (!url || unreadable.some((u) => u.url === url)) continue;
+      unreadable.push({ url, reason: FETCH_REASONS[code] ?? 'it could not be read' });
     }
   }
   if (questions.length > 2) throw new Error(`planner: ${questions.length} ask_user calls in one turn (max 2)`);
-  return { prose, proposal, questions };
+  return { prose, proposal, questions, unreadable };
 }
 
 // ---- turn rendering for the client (replay + live) ----
@@ -265,6 +296,8 @@ export interface RenderedTurn {
   /** Closed questions with tappable options (only the latest assistant
    *  turn's are interactive client-side). */
   questions?: PlannerQuestion[];
+  /** Links the fetch tool could not read — rendered as a paste nudge. */
+  unreadable?: { url: string; reason: string }[];
   /** Names of binary attachments carried by this turn (kickoff only). */
   attachments?: string[];
 }
@@ -309,13 +342,14 @@ export function renderConversation(turns: PlannerTurn[]): RenderedTurn[] {
       } catch {
         continue; // a turn whose stored proposal no longer gates renders as nothing
       }
-      if (!reply.prose && !reply.proposal && reply.questions.length === 0) continue;
+      if (!reply.prose && !reply.proposal && reply.questions.length === 0 && reply.unreadable.length === 0) continue;
       out.push({
         role: 'assistant',
         at: t.at,
         prose: reply.prose,
         ...(reply.proposal ? { proposal: reply.proposal } : {}),
         ...(reply.questions.length ? { questions: reply.questions } : {}),
+        ...(reply.unreadable.length ? { unreadable: reply.unreadable } : {}),
       });
     }
   }

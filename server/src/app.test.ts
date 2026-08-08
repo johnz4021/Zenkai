@@ -147,7 +147,9 @@ describe('home app page', () => {
     // A tool-only message carries no words — the panel is its feedback.
     // Rendering it painted an empty bubble on EVERY proposal turn (live
     // failure 2026-08-08).
-    expect(js).toContain("if (!(t.prose || '').trim() && !(t.questions && t.questions.length)) return;");
+    // Behavioural pin, not a source snapshot: a wordless assistant turn is
+    // skipped, whatever else the condition grows to allow through.
+    expect(js).toMatch(/if \(!\(t\.prose \|\| ''\)\.trim\(\)[\s\S]{0,160}?\) return;/);
     expect(html).toContain('.qopt');
     // The widgets the panel replaced must stay dead.
     expect(js).not.toContain('renderQuestionBlock');
@@ -163,6 +165,14 @@ describe('home app page', () => {
     expect(js).toContain('rounds/week');
     expect(html).toContain('.gaterow.flash');        // row-flash on proposal updates
     expect(html).toContain('prefers-reduced-motion');
+  });
+
+  it('a link the fetcher cannot read becomes a paste nudge, never silence', () => {
+    // Many sites (reddit.com among them) are blocked at the tool layer, and
+    // the candidate's OWN links are the ones that fail (2026-08-08).
+    expect(js).toContain('t.unreadable');
+    expect(js).toContain("Paste the text here instead");
+    expect(html).toContain('.unread');
   });
 
   it('a missing API key never hides an existing conversation or its plan', () => {
