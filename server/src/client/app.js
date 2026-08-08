@@ -161,9 +161,11 @@ function planTurn(message) {
 /** First Send: the message IS the intake. Create the target, then kick off. */
 async function planFirstSend(text) {
   plan.busy = true; plan.error = '';
-  plan.turns.push({ role: 'user', at: new Date().toISOString(), prose: text });
+  if (text) plan.turns.push({ role: 'user', at: new Date().toISOString(), prose: text });
   renderPlan();
-  const label = text.split(/[.,\n]/)[0].split(/\s+/).slice(0, 5).join(' ').slice(0, 40) || 'plan';
+  // Label from typed words, else from the first pasted chip's words.
+  const seed = text || (attachments.find((a) => a.content) || {}).content || '';
+  const label = seed.split(/[.,\n]/)[0].split(/\s+/).slice(0, 5).join(' ').slice(0, 40) || 'plan';
   try {
     const r = await fetch('/api/target', {
       method: 'POST',
@@ -171,7 +173,7 @@ async function planFirstSend(text) {
       body: JSON.stringify({ label, description: text, context: buildContext(), attachments: buildBinaryAttachments() }),
     });
     const sBody = await r.json();
-    if (sBody.error) { plan.busy = false; plan.error = sBody.error; plan.turns.pop(); renderPlan(); return; }
+    if (sBody.error) { plan.busy = false; plan.error = sBody.error; if (text) plan.turns.pop(); renderPlan(); return; }
     plan.tid = sBody.id;
     flowTargetId = sBody.id;
     attachments.length = 0;
@@ -364,7 +366,9 @@ function wirePlan(f) {
     const text = box.value.trim();
     if (plan.busy) return;
     if (!plan.tid) {
-      if (!text) return;
+      // Chips alone are a valid intake — a candidate who pasted Erik's
+      // messages has said plenty without typing a word.
+      if (!text && attachments.length === 0) return;
       box.value = '';
       planFirstSend(text);
       return;
