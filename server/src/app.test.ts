@@ -140,6 +140,11 @@ describe('home app page', () => {
     expect(js).toContain('nothing is generated until you confirm');
     expect(html).toContain('#plan-panel');           // panel styles ship with the page
     expect(html).toContain('#plan-wrap');            // two-pane layout
+    // Closed questions get Cowork-style tappable options (user call,
+    // 2026-08-07): shortcuts to typing, only live on the latest turn.
+    expect(js).toContain('.qopt');
+    expect(js).toContain('or just type below');
+    expect(html).toContain('.qopt');
     // The widgets the panel replaced must stay dead.
     expect(js).not.toContain('renderQuestionBlock');
     expect(js).not.toContain('renderConflict');

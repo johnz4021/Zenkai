@@ -415,6 +415,16 @@ export function appPage(): string {
   .pastechip:hover { color: var(--text-1); }
   .pastebody { margin: 0; padding: 4px 0 10px 20px; font-size: 13px; line-height: 1.6; color: var(--text-2); white-space: pre-wrap; }
   #plan-intro { color: var(--text-2); margin: 28px 0; line-height: 1.65; }
+  /* ask_user options: tappable shortcuts under the latest planner turn.
+     Pills, not radios — tapping IS answering. */
+  .askrow { margin: 14px 0 4px; }
+  .askq { font-weight: 500; margin-bottom: 8px; }
+  .askopts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .qopt { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 6px 14px; min-height: 0; font-size: 13px; color: var(--text-1); cursor: pointer; }
+  .qopt:hover { border-color: var(--steel); }
+  .qopt .rec { color: var(--steel-text); font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; margin-left: 7px; }
+  .optdetail { color: var(--text-3); font-size: 12px; margin-right: 4px; }
+  .askor { color: var(--text-3); font-size: 12px; margin-top: 7px; }
   /* The plan panel: the ONE structured surface. */
   #plan-panel { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; position: sticky; top: 64px; display: flex; flex-direction: column; max-height: calc(100vh - 90px); }
   #plan-panel .phead { padding: 12px 16px 8px; border-bottom: 1px solid var(--line); }

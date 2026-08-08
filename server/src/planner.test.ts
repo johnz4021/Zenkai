@@ -10,7 +10,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { saveTarget, type Target } from './intake.js';
 import {
-  appendTurns, conversationPath, gatePlannerTurn, gateProposal, latestProposal,
+  appendTurns, conversationPath, gatePlannerTurn, gateProposal, gateQuestion, latestProposal,
   loadConversation, renderConversation, renderPlannerSplit, runPlannerTurn,
   type PlannerModel, type PlannerTurn,
 } from './planner.js';
@@ -106,6 +106,35 @@ describe('gatePlannerTurn', () => {
   });
 });
 
+describe('gateQuestion — the ask_user option picker', () => {
+  const Q = { question: 'Which language?', options: [{ label: 'Python' }, { label: 'Java', detail: 'matches the stubs' }], recommended: 'Python' };
+
+  it('gates a well-formed question, keeping details and the recommendation', () => {
+    const q = gateQuestion(Q);
+    expect(q.options).toHaveLength(2);
+    expect(q.options[1]?.detail).toBe('matches the stubs');
+    expect(q.recommended).toBe('Python');
+  });
+
+  it('options out of 2-4 throw; an empty question throws', () => {
+    expect(() => gateQuestion({ ...Q, options: [{ label: 'only' }] })).toThrow(/2-4 options/);
+    expect(() => gateQuestion({ ...Q, options: Array.from({ length: 5 }, (_, i) => ({ label: 'o' + i })) })).toThrow(/2-4 options/);
+    expect(() => gateQuestion({ ...Q, question: '' })).toThrow(/without a question/);
+  });
+
+  it('a recommendation naming no real option is dropped, not fatal', () => {
+    expect(gateQuestion({ ...Q, recommended: 'Rust' }).recommended).toBeUndefined();
+  });
+
+  it('rides an assistant turn next to prose; more than 2 per turn throws', () => {
+    const ask = (id: string) => ({ type: 'tool_use', id, name: 'ask_user', input: Q });
+    const reply = gatePlannerTurn([{ type: 'text', text: 'Two things.' }, ask('a')] as never);
+    expect(reply.questions).toHaveLength(1);
+    expect(reply.questions[0]?.question).toBe('Which language?');
+    expect(() => gatePlannerTurn([ask('a'), ask('b'), ask('c')] as never)).toThrow(/max 2/);
+  });
+});
+
 describe('conversation store', () => {
   it('round-trips turns and tolerates a torn tail line', () => {
     const root = scratch();
@@ -157,6 +186,31 @@ describe('renderPlannerSplit', () => {
 describe('runPlannerTurn (fake model)', () => {
   const propose = (id: string) => ({
     type: 'tool_use', id: 'tu1', name: 'propose_rounds', input: { rounds: [{ ...ROUND, id }] },
+  });
+
+  it('an ask_user call is acked and rendered with tappable options', async () => {
+    const root = scratch();
+    const t = target();
+    saveTarget(root, t);
+    const model: PlannerModel = async () => ({
+      content: [
+        { type: 'text', text: 'Which language will the rounds be in?' },
+        { type: 'tool_use', id: 'ask1', name: 'ask_user', input: { question: 'Which language?', options: [{ label: 'Python' }, { label: 'Java' }], recommended: 'Python' } },
+      ] as never,
+      stop_reason: 'tool_use',
+    });
+    const result = await runPlannerTurn({
+      root, target: t,
+      templatePath: path.join(__dirname, '..', '..', 'prompts', 'planner.md'),
+      model,
+    });
+    expect(result.reply.questions[0]?.options.map((o) => o.label)).toEqual(['Python', 'Java']);
+    const last = result.turns[result.turns.length - 1];
+    expect(last?.questions?.[0]?.recommended).toBe('Python');
+    // The ack persists so the stored conversation replays legally.
+    const stored = loadConversation(root, t.id);
+    expect(stored[2]?.content[0]?.type).toBe('tool_result');
+    expect(String(stored[2]?.content[0]?.content)).toContain('tappable');
   });
 
   it('kickoff turn: attachments + interpolated intake reach the model; propose gets a tool_result ack', async () => {

@@ -216,6 +216,22 @@ function renderTurns() {
       for (const para of (t.prose || '').split('\n\n')) {
         if (para.trim()) html += '<p>' + linkify(esc(para.trim())) + '</p>';
       }
+      // ask_user options: tappable ONLY on the latest turn — a settled
+      // question's options are history, not live controls. Indexes, not
+      // labels, ride the dataset (labels are model text, not attr-safe).
+      if (t.questions && t.questions.length && i === lastAssistant && !plan.busy) {
+        t.questions.forEach((q, qi) => {
+          html += '<div class="askrow"><div class="askq">' + esc(q.question) + '</div><div class="askopts">';
+          q.options.forEach((o, oi) => {
+            html += '<button type="button" class="qopt" data-t="' + i + '" data-q="' + qi + '" data-o="' + oi + '">' +
+              esc(o.label) +
+              (q.recommended === o.label ? '<span class="rec">suggested</span>' : '') +
+              '</button>';
+            if (o.detail) html += '<span class="optdetail">' + esc(o.detail) + '</span>';
+          });
+          html += '</div><div class="askor">or just type below</div></div>';
+        });
+      }
       html += '</div>';
     }
   });
@@ -400,6 +416,17 @@ function wirePlan(f) {
     for (const b of attach.querySelectorAll('button[data-i]')) {
       b.addEventListener('click', () => { attachments.splice(Number(b.dataset.i), 1); renderPlan(); });
     }
+  }
+  for (const b of f.querySelectorAll('.qopt')) {
+    b.addEventListener('click', () => {
+      if (plan.busy) return;
+      const turn = plan.turns[Number(b.dataset.t)];
+      const q = turn && turn.questions && turn.questions[Number(b.dataset.q)];
+      const opt = q && q.options[Number(b.dataset.o)];
+      if (!opt) return;
+      plan.turns.push({ role: 'user', at: new Date().toISOString(), prose: opt.label });
+      planTurn(opt.label);
+    });
   }
   for (const b of f.querySelectorAll('[data-chip]')) {
     b.addEventListener('click', () => {

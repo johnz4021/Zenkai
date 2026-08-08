@@ -118,6 +118,37 @@ const PROPOSE_TOOL = {
   },
 };
 
+// ---- the ask_user tool (Cowork-style option picker) ----
+// Options are SHORTCUTS to typing, never the only path: the tool is acked
+// immediately and the candidate's next message — tapped or typed — is the
+// answer. Use only for closed answer sets; open questions stay prose.
+
+const ASK_TOOL = {
+  name: 'ask_user',
+  description:
+    'Present ONE question whose realistic answers form a short closed set (language, editor kind, yes/no, this-or-that) as 2-4 tappable options. The tapped label arrives verbatim as the candidate\'s next message; they can always type something else instead. Open-ended questions stay prose — do not call this for them.',
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      question: { type: 'string', description: 'The question, one sentence, exactly as you would say it in chat.' },
+      options: {
+        type: 'array',
+        description: '2-4 options.',
+        items: {
+          type: 'object',
+          properties: {
+            label: { type: 'string', description: '2-6 words; sent verbatim as the answer when tapped.' },
+            detail: { type: 'string', description: 'Optional half-sentence of consequence.' },
+          },
+          required: ['label'],
+        },
+      },
+      recommended: { type: 'string', description: 'Label of the option you would default to, if you have one.' },
+    },
+    required: ['question', 'options'],
+  },
+};
+
 // ---- pure gate over one assistant turn ----
 
 export interface PlannerProposal {
@@ -127,13 +158,23 @@ export interface PlannerProposal {
   summary?: string;
 }
 
+export interface PlannerQuestion {
+  question: string;
+  options: { label: string; detail?: string }[];
+  /** Label of the model's default, when it stated one. */
+  recommended?: string;
+}
+
 export interface PlannerReply {
-  /** Concatenated text blocks — what the candidate reads. Questions,
+  /** Concatenated text blocks — what the candidate reads. Open questions,
    *  retrieval reports, and conflicts all live HERE as prose (Cowork
-   *  grammar, design D1 2026-08-07): the chat has no widgets. */
+   *  grammar, design D1 2026-08-07). */
   prose: string;
   /** The gated proposal, when the model called propose_rounds this turn. */
   proposal: PlannerProposal | null;
+  /** Closed questions from ask_user — tappable options, answers arrive as
+   *  the next user message (tapped label or typed text). Max 2 per turn. */
+  questions: PlannerQuestion[];
 }
 
 function text(v: unknown): string {
@@ -169,6 +210,30 @@ export function gateProposal(raw: unknown): PlannerProposal {
   return { drafts, ...(pace !== undefined ? { pace_per_week: pace } : {}), ...(summary ? { summary } : {}) };
 }
 
+/** Gate one ask_user input. Strict: a malformed question is a model
+ *  failure the caller retries (gate-before-persist), not something to
+ *  render broken. */
+export function gateQuestion(raw: unknown): PlannerQuestion {
+  const o = raw as Record<string, unknown>;
+  const question = text(o.question);
+  if (!question) throw new Error('planner: ask_user without a question');
+  const options = coerceArray(o.options ?? [])
+    .map((x) => {
+      const opt = x as Record<string, unknown>;
+      const label = text(opt.label);
+      const detail = text(opt.detail);
+      return label ? { label, ...(detail ? { detail } : {}) } : null;
+    })
+    .filter((x): x is { label: string; detail?: string } => x !== null);
+  if (options.length < 2 || options.length > 4) {
+    throw new Error(`planner: ask_user needs 2-4 options (got ${options.length})`);
+  }
+  const recommended = text(o.recommended);
+  // A recommendation that names no real option is dropped, not fatal.
+  const rec = options.some((x) => x.label === recommended) ? recommended : '';
+  return { question, options, ...(rec ? { recommended: rec } : {}) };
+}
+
 /** One assistant turn's content blocks → what the candidate sees. Pure.
  *  Server-tool blocks (search/fetch results) are skipped silently — the
  *  model reports retrieval in prose with inline links; the chat renders no
@@ -176,14 +241,18 @@ export function gateProposal(raw: unknown): PlannerProposal {
 export function gatePlannerTurn(content: Record<string, unknown>[]): PlannerReply {
   let prose = '';
   let proposal: PlannerProposal | null = null;
+  const questions: PlannerQuestion[] = [];
   for (const block of content) {
     if (block.type === 'text' && typeof block.text === 'string') {
       prose += (prose ? '\n\n' : '') + block.text.trim();
     } else if (block.type === 'tool_use' && block.name === PROPOSE_TOOL.name) {
       proposal = gateProposal(block.input);
+    } else if (block.type === 'tool_use' && block.name === ASK_TOOL.name) {
+      questions.push(gateQuestion(block.input));
     }
   }
-  return { prose, proposal };
+  if (questions.length > 2) throw new Error(`planner: ${questions.length} ask_user calls in one turn (max 2)`);
+  return { prose, proposal, questions };
 }
 
 // ---- turn rendering for the client (replay + live) ----
@@ -193,6 +262,9 @@ export interface RenderedTurn {
   at: string;
   prose: string;
   proposal?: PlannerProposal;
+  /** Closed questions with tappable options (only the latest assistant
+   *  turn's are interactive client-side). */
+  questions?: PlannerQuestion[];
   /** Names of binary attachments carried by this turn (kickoff only). */
   attachments?: string[];
 }
@@ -237,12 +309,13 @@ export function renderConversation(turns: PlannerTurn[]): RenderedTurn[] {
       } catch {
         continue; // a turn whose stored proposal no longer gates renders as nothing
       }
-      if (!reply.prose && !reply.proposal) continue;
+      if (!reply.prose && !reply.proposal && reply.questions.length === 0) continue;
       out.push({
         role: 'assistant',
         at: t.at,
         prose: reply.prose,
         ...(reply.proposal ? { proposal: reply.proposal } : {}),
+        ...(reply.questions.length ? { questions: reply.questions } : {}),
       });
     }
   }
@@ -351,6 +424,7 @@ export async function runPlannerTurn(opts: {
     { type: 'web_search_20260209', name: 'web_search', max_uses: 5, blocked_domains: BLOCKED_SOURCE_DOMAINS },
     { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: 3, blocked_domains: BLOCKED_SOURCE_DOMAINS },
     PROPOSE_TOOL,
+    ASK_TOOL,
   ];
 
   // Cache breakpoint on the tail of the persisted history: each turn re-reads
@@ -383,18 +457,23 @@ export async function runPlannerTurn(opts: {
     }
     replyContent = msg.content;
     pending.push({ role: 'assistant', at: new Date().toISOString(), content: msg.content });
-    const propose = msg.content.find((b) => b.type === 'tool_use' && b.name === PROPOSE_TOOL.name);
-    if (propose && msg.stop_reason === 'tool_use') {
-      // Ack the client tool so the stored conversation replays legally; the
-      // turn is over — the candidate reads the proposal, not a follow-up.
+    const clientCalls = msg.content.filter(
+      (b) => b.type === 'tool_use' && (b.name === PROPOSE_TOOL.name || b.name === ASK_TOOL.name),
+    );
+    if (clientCalls.length > 0 && msg.stop_reason === 'tool_use') {
+      // Ack every client tool so the stored conversation replays legally;
+      // the turn is over. propose_rounds' payload IS the panel; ask_user's
+      // answer arrives as the candidate's next message (tapped or typed).
       pending.push({
         role: 'user',
         at: new Date().toISOString(),
-        content: [{
+        content: clientCalls.map((c) => ({
           type: 'tool_result',
-          tool_use_id: String((propose as { id?: unknown }).id ?? ''),
-          content: 'Recorded — the candidate now sees this proposal in the confirm gate.',
-        }],
+          tool_use_id: String((c as { id?: unknown }).id ?? ''),
+          content: c.name === PROPOSE_TOOL.name
+            ? 'Recorded — the candidate now sees this proposal in the confirm gate.'
+            : 'Displayed — the options are tappable in the chat; the candidate\'s next message is their answer.',
+        })),
       });
     }
     break;
