@@ -68,6 +68,7 @@ const plan = {
   openChips: {},           // turn index -> expanded paste chip
   flash: false,            // one render's worth of row-flash after an update
   readOnly: false,         // no API key: replay + confirm, but no sending
+  askDismissed: null,      // turn index whose pinned options were waved off
 };
 
 let renderedTurnCount = 0; // autoscroll fires only when this grows
@@ -76,7 +77,7 @@ function resetPlan() {
   renderedTurnCount = 0;
   plan.tid = null; plan.turns = []; plan.proposal = null; plan.busy = false;
   plan.error = ''; plan.gateOpen = null; plan.include = {}; plan.tier = {};
-  plan.openChips = {}; plan.flash = false; plan.readOnly = false;
+  plan.openChips = {}; plan.flash = false; plan.readOnly = false; plan.askDismissed = null;
   attachments.length = 0;
 }
 
@@ -215,11 +216,7 @@ function renderTurns() {
   // then narration). "Current" is everything after the last user message;
   // an ask's pills stay live until a user message answers them.
   let lastUser = -1;
-  let lastAsk = -1;
-  plan.turns.forEach((t, i) => {
-    if (t.role === 'user') lastUser = i;
-    else if (t.questions && t.questions.length) lastAsk = i;
-  });
+  plan.turns.forEach((t, i) => { if (t.role === 'user') lastUser = i; });
   let html = '';
   plan.turns.forEach((t, i) => {
     if (t.role === 'user') {
@@ -257,22 +254,6 @@ function renderTurns() {
           html += '<div class="unread"><b>' + esc(host) + '</b> — ' + esc(u.reason) +
             '. Paste the text here instead and I\'ll use it.</div>';
         }
-      }
-      // ask_user options: tappable ONLY on the latest turn — a settled
-      // question's options are history, not live controls. Indexes, not
-      // labels, ride the dataset (labels are model text, not attr-safe).
-      if (i === lastAsk && lastAsk > lastUser && !plan.busy) {
-        t.questions.forEach((q, qi) => {
-          html += '<div class="askrow"><div class="askq">' + esc(q.question) + '</div><div class="askopts">';
-          q.options.forEach((o, oi) => {
-            html += '<button type="button" class="qopt" data-t="' + i + '" data-q="' + qi + '" data-o="' + oi + '">' +
-              esc(o.label) +
-              (q.recommended === o.label ? '<span class="rec">suggested</span>' : '') +
-              '</button>';
-            if (o.detail) html += '<span class="optdetail">' + esc(o.detail) + '</span>';
-          });
-          html += '</div><div class="askor">or just type below</div></div>';
-        });
       }
       html += '</div>';
     }
@@ -335,6 +316,39 @@ function renderPanel() {
     '</aside>';
 }
 
+/** The open question, if any: the latest ask with no user message after it
+ *  and no dismissal. Options are pinned to the composer rather than left in
+ *  the transcript — scrolling back to find a live control is not a UI. */
+function pendingAsk() {
+  let lastUser = -1;
+  let ask = null;
+  plan.turns.forEach((t, i) => {
+    if (t.role === 'user') { lastUser = i; ask = null; return; }
+    if (t.questions && t.questions.length && i > lastUser) ask = { turn: i, questions: t.questions };
+  });
+  if (!ask || plan.askDismissed === ask.turn || plan.busy) return null;
+  return ask;
+}
+
+function renderAskCard() {
+  const ask = pendingAsk();
+  if (!ask) return '';
+  let html = '<div id="plan-ask"><button type="button" id="ask-dismiss" aria-label="Dismiss and type instead">×</button>';
+  ask.questions.forEach((q, qi) => {
+    html += '<div class="askrow"><div class="askq">' + esc(q.question) + '</div><div class="askopts">';
+    q.options.forEach((o, oi) => {
+      // Indexes, not labels, ride the dataset — labels are model text.
+      html += '<button type="button" class="qopt" data-t="' + ask.turn + '" data-q="' + qi + '" data-o="' + oi + '">' +
+        esc(o.label) +
+        (q.recommended === o.label ? '<span class="rec">suggested</span>' : '') +
+        '</button>';
+      if (o.detail) html += '<span class="optdetail">' + esc(o.detail) + '</span>';
+    });
+    html += '</div></div>';
+  });
+  return html + '<div class="askor">or just type your answer below</div></div>';
+}
+
 function renderComposer() {
   let chips = '';
   if (attachments.length) {
@@ -344,7 +358,7 @@ function renderComposer() {
       '<button type="button" data-i="' + i + '" aria-label="remove ' + esc(a.name) + '">×</button></div>'
     ).join('') + '</div>';
   }
-  return '<div id="plan-composer">' + chips +
+  return '<div id="plan-composer">' + renderAskCard() + chips +
     '<div class="row">' +
     '<textarea id="plan-msg" rows="2" aria-label="Message the planner" placeholder="' +
     (plan.tid ? 'Answer, correct me, or ask what a round shape is' : 'Describe the interview — paste everything you have') + '"' +
@@ -441,6 +455,12 @@ function wirePlan(f) {
       }
     });
   }
+  if (el('ask-dismiss')) el('ask-dismiss').addEventListener('click', () => {
+    const ask = pendingAsk();
+    if (ask) plan.askDismissed = ask.turn;
+    renderPlan();
+    if (el('plan-msg')) el('plan-msg').focus();
+  });
   if (el('plan-attach-btn')) el('plan-attach-btn').addEventListener('click', () => el('e-file').click());
   const addLink = () => {
     const box = el('plan-link');

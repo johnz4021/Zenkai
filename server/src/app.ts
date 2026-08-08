@@ -423,14 +423,22 @@ export function appPage(): string {
   .unread b { color: var(--text-1); font-weight: 500; }
   /* ask_user options: tappable shortcuts under the latest planner turn.
      Pills, not radios — tapping IS answering. */
-  .askrow { margin: 14px 0 4px; }
+  /* The open question rides the COMPOSER, not the transcript: a live
+     control you have to scroll back to find is not a control. Inside
+     #plan-composer it inherits the sticky bottom in both layouts. */
+  #plan-ask { position: relative; border: 1px solid var(--line); border-bottom: 0; background: var(--panel); border-radius: 6px 6px 0 0; padding: 12px 14px 10px; }
+  #plan-ask + #plan-attach { margin-top: 6px; }
+  #ask-dismiss { position: absolute; top: 6px; right: 8px; background: none; border: 0; min-height: 0; padding: 2px 6px; color: var(--text-3); font-size: 14px; line-height: 1; cursor: pointer; }
+  #ask-dismiss:hover { color: var(--text-1); }
+  .askrow { margin: 0 0 4px; padding-right: 20px; }
+  .askrow + .askrow { margin-top: 12px; border-top: 1px solid var(--line-soft); padding-top: 12px; }
   .askq { font-weight: 500; margin-bottom: 8px; }
   .askopts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .qopt { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 6px 14px; min-height: 0; font-size: 13px; color: var(--text-1); cursor: pointer; }
   .qopt:hover { border-color: var(--steel); }
   .qopt .rec { color: var(--steel-text); font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; margin-left: 7px; }
   .optdetail { color: var(--text-3); font-size: 12px; margin-right: 4px; }
-  .askor { color: var(--text-3); font-size: 12px; margin-top: 7px; }
+  .askor { color: var(--text-3); font-size: 12px; margin-top: 9px; }
   /* The plan panel: the ONE structured surface. */
   #plan-panel { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; position: sticky; top: 64px; display: flex; flex-direction: column; max-height: calc(100vh - 90px); }
   #plan-panel .phead { padding: 12px 16px 8px; border-bottom: 1px solid var(--line); }

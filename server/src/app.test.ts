@@ -143,7 +143,14 @@ describe('home app page', () => {
     // Closed questions get Cowork-style tappable options (user call,
     // 2026-08-07): shortcuts to typing, only live on the latest turn.
     expect(js).toContain('.qopt');
-    expect(js).toContain('or just type below');
+    // The open question is PINNED to the composer, not left in the
+    // transcript — a live control you must scroll back to find is not one.
+    expect(js).toContain('function pendingAsk');
+    expect(js).toContain('id="plan-ask"');
+    expect(js).toContain('id="ask-dismiss"');
+    expect(js).toContain('renderAskCard() + chips');
+    expect(js).toContain('or just type your answer below');
+    expect(html).toContain('#plan-ask');
     // A tool-only message carries no words — the panel is its feedback.
     // Rendering it painted an empty bubble on EVERY proposal turn (live
     // failure 2026-08-08).
