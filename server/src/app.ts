@@ -850,7 +850,11 @@ export function runApp(cfg: AppConfig): http.Server {
           // client to fall back to the classic wizard.
           return json(501, { error: 'the conversational planner needs ANTHROPIC_API_KEY — falling back to the classic intake' });
         }
-        if (!t.description && !b.message?.trim()) return json(400, { error: 'describe the round first' });
+        // A chip-only intake is valid: pasted material lands in context and
+        // attachments, not description. Empty-of-everything is the real error.
+        if (!t.description && !t.context && !(t.attachments?.length) && !b.message?.trim()) {
+          return json(400, { error: 'describe the round first — type or paste something' });
+        }
         if ((b.message ?? '').length > 32 * 1024) return json(400, { error: 'message too long — trim it to the relevant part' });
         const { runPlannerTurn } = await import('./planner.js');
         try {
