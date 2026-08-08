@@ -186,11 +186,20 @@ async function planFirstSend(text) {
   }
 }
 
-// Markdown links in planner prose → real anchors. Escape FIRST, then link —
-// the model reports retrieval as prose with inline links (no trace widget).
+// The planner writes markdown — links, bold, inline code, short numbered
+// lists. Render the small subset it actually uses; raw ** and merged list
+// items read as broken output (live failure 2026-08-08). Escape FIRST,
+// then mark up: esc() has already neutralised '<', so every tag below is
+// one we wrote.
 function linkify(escaped) {
-  return escaped.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  return escaped
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    // Single newlines are the model's line breaks (list items, short
+    // enumerations); paragraphs were already split on blank lines.
+    .replace(/\n/g, '<br>');
 }
 
 function renderTurns() {

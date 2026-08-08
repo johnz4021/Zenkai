@@ -406,6 +406,8 @@ export function appPage(): string {
   .turn-planner { margin: 24px 0; }
   .turn-planner p { margin: 0 0 12px; line-height: 1.65; }
   .turn-planner a { color: var(--steel-text); text-decoration: none; border-bottom: 1px solid rgba(126, 169, 194, .4); overflow-wrap: anywhere; }
+  .turn-planner strong { color: var(--text-1); font-weight: 500; }
+  .turn-planner code { font-family: var(--mono); font-size: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 3px; padding: 1px 5px; }
   /* Settled turns recede; the current turn is where the eye should land. */
   .turn-planner.history { opacity: .55; }
   .turn-planner.history:hover { opacity: 1; }
