@@ -192,23 +192,36 @@ describe('runPlannerTurn (fake model)', () => {
     const root = scratch();
     const t = target();
     saveTarget(root, t);
-    const model: PlannerModel = async () => ({
-      content: [
-        { type: 'text', text: 'Which language will the rounds be in?' },
-        { type: 'tool_use', id: 'ask1', name: 'ask_user', input: { question: 'Which language?', options: [{ label: 'Python' }, { label: 'Java' }], recommended: 'Python' } },
-      ] as never,
-      stop_reason: 'tool_use',
-    });
+    let calls = 0;
+    const model: PlannerModel = async () => {
+      calls++;
+      if (calls === 1) {
+        return {
+          content: [
+            { type: 'text', text: 'Which language will the rounds be in?' },
+            { type: 'tool_use', id: 'ask1', name: 'ask_user', input: { question: 'Which language?', options: [{ label: 'Python' }, { label: 'Java' }], recommended: 'Python' } },
+          ] as never,
+          stop_reason: 'tool_use',
+        };
+      }
+      // The continuation after the ack: the model narrates, turn ends.
+      return { content: [{ type: 'text', text: 'Tap one, or type.' }] as never, stop_reason: 'end_turn' };
+    };
     const result = await runPlannerTurn({
       root, target: t,
       templatePath: path.join(__dirname, '..', '..', 'prompts', 'planner.md'),
       model,
     });
+    expect(calls).toBe(2);
     expect(result.reply.questions[0]?.options.map((o) => o.label)).toEqual(['Python', 'Java']);
-    const last = result.turns[result.turns.length - 1];
-    expect(last?.questions?.[0]?.recommended).toBe('Python');
+    // The ask turn keeps its options in the render even though the
+    // narration bubble follows it (the client keeps them live until a
+    // user message answers them).
+    const askTurn = result.turns.find((x) => x.questions);
+    expect(askTurn?.questions?.[0]?.recommended).toBe('Python');
     // The ack persists so the stored conversation replays legally.
     const stored = loadConversation(root, t.id);
+    expect(stored.map((x) => x.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
     expect(stored[2]?.content[0]?.type).toBe('tool_result');
     expect(String(stored[2]?.content[0]?.content)).toContain('tappable');
   });
@@ -224,10 +237,13 @@ describe('runPlannerTurn (fake model)', () => {
     const seen: unknown[] = [];
     const model: PlannerModel = async (params) => {
       seen.push(params);
-      return {
-        content: [{ type: 'text', text: 'The email settles it.' }, propose('r1')] as never,
-        stop_reason: 'tool_use',
-      };
+      if (seen.length === 1) {
+        return {
+          content: [{ type: 'text', text: 'The email settles it.' }, propose('r1')] as never,
+          stop_reason: 'tool_use',
+        };
+      }
+      return { content: [{ type: 'text', text: 'The proposal is on the panel.' }] as never, stop_reason: 'end_turn' };
     };
     const result = await runPlannerTurn({
       root, target: t,
@@ -235,14 +251,18 @@ describe('runPlannerTurn (fake model)', () => {
       model,
     });
     expect(result.reply.proposal?.drafts[0]?.spec.id).toBe('r1');
+    // The gate sees the WHOLE turn: proposal from the first message, prose
+    // from both.
+    expect(result.reply.prose).toContain('The email settles it.');
+    expect(result.reply.prose).toContain('on the panel');
 
     const sent = (seen[0] as { messages: { role: string; content: Record<string, unknown>[] }[] }).messages;
     expect(sent[0]?.content[0]?.type).toBe('image');
     expect(String(sent[0]?.content[1]?.text)).toContain('Stripe backend loop');
 
-    // Persisted: kickoff user turn, assistant turn, tool_result ack.
+    // Persisted: kickoff, assistant (tool), ack, assistant (narration).
     const stored = loadConversation(root, t.id);
-    expect(stored.map((x) => x.role)).toEqual(['user', 'assistant', 'user']);
+    expect(stored.map((x) => x.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
     expect(stored[2]?.content[0]?.type).toBe('tool_result');
   });
 

@@ -194,8 +194,15 @@ function linkify(escaped) {
 }
 
 function renderTurns() {
-  let lastAssistant = -1;
-  plan.turns.forEach((t, i) => { if (t.role === 'assistant') lastAssistant = i; });
+  // One model turn can render as SEVERAL assistant bubbles (tool call,
+  // then narration). "Current" is everything after the last user message;
+  // an ask's pills stay live until a user message answers them.
+  let lastUser = -1;
+  let lastAsk = -1;
+  plan.turns.forEach((t, i) => {
+    if (t.role === 'user') lastUser = i;
+    else if (t.questions && t.questions.length) lastAsk = i;
+  });
   let html = '';
   plan.turns.forEach((t, i) => {
     if (t.role === 'user') {
@@ -214,14 +221,14 @@ function renderTurns() {
       }
       html += '</div>';
     } else {
-      html += '<div class="turn-planner' + (i === lastAssistant ? '' : ' history') + '">';
+      html += '<div class="turn-planner' + (i > lastUser ? '' : ' history') + '">';
       for (const para of (t.prose || '').split('\n\n')) {
         if (para.trim()) html += '<p>' + linkify(esc(para.trim())) + '</p>';
       }
       // ask_user options: tappable ONLY on the latest turn — a settled
       // question's options are history, not live controls. Indexes, not
       // labels, ride the dataset (labels are model text, not attr-safe).
-      if (t.questions && t.questions.length && i === lastAssistant && !plan.busy) {
+      if (i === lastAsk && lastAsk > lastUser && !plan.busy) {
         t.questions.forEach((q, qi) => {
           html += '<div class="askrow"><div class="askq">' + esc(q.question) + '</div><div class="askopts">';
           q.options.forEach((o, oi) => {

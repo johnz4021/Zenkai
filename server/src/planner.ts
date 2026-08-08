@@ -438,9 +438,14 @@ export async function runPlannerTurn(opts: {
     return { role: t.role, content: [...content, last] };
   });
 
-  // The loop: pause_turn resumes server tools; a propose_rounds call gets
-  // its tool_result ack and ends the turn (the proposal IS the payload).
-  let replyContent: Record<string, unknown>[] = [];
+  // The loop: pause_turn resumes server tools; a client tool call
+  // (propose_rounds / ask_user) is acked and the loop CONTINUES so the
+  // model narrates what it did. Models often lead with the tool call and
+  // write prose after the result — ending the turn at the first call
+  // rendered an empty bubble next to a filled panel (live failure,
+  // 2026-08-08). Break on a response with no client calls; the cap bounds
+  // runaway chains, and every ack keeps the stored conversation replay-legal.
+  const assistantContent: Record<string, unknown>[] = [];
   for (let i = 0; i < 5; i++) {
     const msg = await model({
       system: systemBlocks,
@@ -450,20 +455,15 @@ export async function runPlannerTurn(opts: {
       ],
       tools,
     });
-    if (msg.stop_reason === 'pause_turn') {
-      // Server tool hit its iteration limit mid-thought; append and resume.
-      pending.push({ role: 'assistant', at: new Date().toISOString(), content: msg.content });
-      continue;
-    }
-    replyContent = msg.content;
     pending.push({ role: 'assistant', at: new Date().toISOString(), content: msg.content });
+    assistantContent.push(...msg.content);
+    if (msg.stop_reason === 'pause_turn') {
+      continue; // server tool hit its iteration limit mid-thought; resume
+    }
     const clientCalls = msg.content.filter(
       (b) => b.type === 'tool_use' && (b.name === PROPOSE_TOOL.name || b.name === ASK_TOOL.name),
     );
     if (clientCalls.length > 0 && msg.stop_reason === 'tool_use') {
-      // Ack every client tool so the stored conversation replays legally;
-      // the turn is over. propose_rounds' payload IS the panel; ask_user's
-      // answer arrives as the candidate's next message (tapped or typed).
       pending.push({
         role: 'user',
         at: new Date().toISOString(),
@@ -475,16 +475,19 @@ export async function runPlannerTurn(opts: {
             : 'Displayed — the options are tappable in the chat; the candidate\'s next message is their answer.',
         })),
       });
+      continue;
     }
     break;
   }
-  if (replyContent.length === 0) {
+  if (assistantContent.length === 0) {
     throw new Error('planner: the turn never completed (pause_turn limit exceeded)');
   }
 
-  // Gate BEFORE persisting: a turn that fails the gate is a model failure
-  // the caller retries; nothing half-broken lands on disk.
-  const reply = gatePlannerTurn(replyContent);
+  // Gate the WHOLE turn before persisting: with the continue-after-ack
+  // loop the proposal usually lands in an EARLIER message than the prose,
+  // so gating only the last response would miss it. A turn that fails the
+  // gate is a model failure the caller retries; nothing lands on disk.
+  const reply = gatePlannerTurn(assistantContent);
   appendTurns(root, target.id, pending);
   return { reply, turns: renderConversation(pending) };
 }
