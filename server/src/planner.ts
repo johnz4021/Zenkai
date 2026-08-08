@@ -347,12 +347,20 @@ export function renderPlannerSplit(
   return { system, kickoff };
 }
 
-/** Injectable model call — one API request. Tests fake this. */
+/** Injectable model call — one API request. Tests fake this.
+ *  `container` threads the code-execution container id that the
+ *  2026-02-09 server tools run in: resuming a turn with a pending server
+ *  tool use is a 400 without it ("container_id is required..."). */
 export type PlannerModel = (params: {
   system: Record<string, unknown>[];
   messages: { role: string; content: unknown }[];
   tools: Record<string, unknown>[];
-}) => Promise<{ content: Record<string, unknown>[]; stop_reason: string | null }>;
+  container?: string;
+}) => Promise<{
+  content: Record<string, unknown>[];
+  stop_reason: string | null;
+  container?: string | null;
+}>;
 
 export function apiPlannerModel(model = 'claude-opus-5'): PlannerModel {
   return async (params) => {
@@ -366,10 +374,12 @@ export function apiPlannerModel(model = 'claude-opus-5'): PlannerModel {
       system: params.system as never,
       messages: params.messages as never,
       tools: params.tools as never,
+      ...(params.container ? { container: params.container } : {}),
     });
     return {
       content: msg.content as unknown as Record<string, unknown>[],
       stop_reason: msg.stop_reason,
+      container: msg.container?.id ?? null,
     };
   };
 }
@@ -446,6 +456,7 @@ export async function runPlannerTurn(opts: {
   // 2026-08-08). Break on a response with no client calls; the cap bounds
   // runaway chains, and every ack keeps the stored conversation replay-legal.
   const assistantContent: Record<string, unknown>[] = [];
+  let container: string | undefined; // this turn's code-execution container
   for (let i = 0; i < 5; i++) {
     const msg = await model({
       system: systemBlocks,
@@ -454,7 +465,9 @@ export async function runPlannerTurn(opts: {
         ...pending.map((t) => ({ role: t.role, content: t.content })),
       ],
       tools,
+      ...(container ? { container } : {}),
     });
+    if (msg.container) container = msg.container;
     pending.push({ role: 'assistant', at: new Date().toISOString(), content: msg.content });
     assistantContent.push(...msg.content);
     if (msg.stop_reason === 'pause_turn') {

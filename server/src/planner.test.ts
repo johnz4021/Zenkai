@@ -292,6 +292,30 @@ describe('runPlannerTurn (fake model)', () => {
     expect(loadConversation(root, t.id).map((x) => x.role)).toEqual(['user', 'assistant', 'assistant']);
   });
 
+  it('threads the code-execution container id across a resumed turn', async () => {
+    // The 2026-02-09 server tools run in a container; resuming a turn with
+    // a pending server tool use 400s without the id (live failure, 2026-08-08).
+    const root = scratch();
+    const t = target();
+    saveTarget(root, t);
+    const seen: (string | undefined)[] = [];
+    let calls = 0;
+    const model: PlannerModel = async (params) => {
+      seen.push(params.container);
+      calls++;
+      if (calls === 1) {
+        return {
+          content: [{ type: 'server_tool_use', id: 's1', name: 'web_fetch', input: {} }] as never,
+          stop_reason: 'pause_turn',
+          container: 'ctr_abc123',
+        };
+      }
+      return { content: [{ type: 'text', text: 'done' }] as never, stop_reason: 'end_turn', container: 'ctr_abc123' };
+    };
+    await runPlannerTurn({ root, target: t, templatePath: path.join(__dirname, '..', '..', 'prompts', 'planner.md'), model });
+    expect(seen).toEqual([undefined, 'ctr_abc123']);
+  });
+
   it('a gate failure persists NOTHING (idempotent retry)', async () => {
     const root = scratch();
     const t = target();
