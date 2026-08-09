@@ -299,6 +299,66 @@ if (cmd === 'generate') {
   } finally {
     rmf(marker, { force: true });
   }
+} else if (cmd === 'rep-build') {
+  // The practice door's build: draft the blueprint, then generate — ONE
+  // detached child for both phases, so the .generating marker written at
+  // request time carries a single honest pid across drafting AND building
+  // (sweepVerdict stays correct if the app restarts during either).
+  const { loadReps, repBlueprintPath, repProblemDir, REP_ID_RE, DRAFT_FAILURE_PREFIX } =
+    await import('./reps.js');
+  const bp = await import('./blueprint.js');
+  const { clearGeneratingMarker } = await import('./generation-state.js');
+  const { writeFileSync: wf, mkdirSync: mkd } = await import('node:fs');
+  if (!target || !REP_ID_RE.test(target)) {
+    console.error('usage: cli.ts rep-build <rep-id>');
+    process.exit(64);
+  }
+  const rep = loadReps(repoRoot).items.find((r) => r.id === target);
+  if (!rep) {
+    console.error(`no rep "${target}" in reps.json`);
+    process.exit(2);
+  }
+  const problemDir = repProblemDir(repoRoot, rep.id);
+  const bpFile = repBlueprintPath(repoRoot, rep.id);
+  // Draft, idempotent: an existing blueprint is the terminal state, so a
+  // retry after a GENERATION failure skips the ~30s redraft for free.
+  if (!existsSync(bpFile)) {
+    try {
+      const skeleton = readFileSync(
+        path.join(repoRoot, 'prompts', 'blueprints', bp.pickSkeletonFile(rep.spec)),
+        'utf8',
+      );
+      const markdown = bp.gateBlueprint(
+        await bp.pickBlueprintDrafter(path.join(repoRoot, 'prompts', 'draft-blueprint.md'))({
+          spec: rep.spec,
+          description: rep.description,
+          context: rep.context ?? '',
+          skeleton,
+        }),
+      );
+      wf(bpFile, markdown);
+      console.log(`[rep-build] blueprint drafted (${markdown.length} chars)`);
+    } catch (e) {
+      // The "draft: " prefix IS the draft_failed encoding — stored statuses
+      // never leave the QueueItem union; derivePhase reads this prefix.
+      mkd(problemDir, { recursive: true });
+      clearGeneratingMarker(problemDir);
+      wf(path.join(problemDir, '.failed'), `${DRAFT_FAILURE_PREFIX}${String(e).slice(0, 500)}\n`);
+      console.error(`[rep-build] blueprint draft failed for ${rep.id}: ${String(e)}`);
+      process.exit(1);
+    }
+  }
+  const brief = (await import('./blueprint.js')).composeRoundBrief({
+    spec: rep.spec,
+    blueprint: readFileSync(bpFile, 'utf8'),
+    description: rep.description,
+    context: rep.context,
+  });
+  // Gap-graph emphasis travels in exactly like generate-for's.
+  const store = loadStore(path.join(repoRoot, 'gaps'), userId);
+  const note = buildTargetNote(buildGraphView(store), store);
+  console.log(`[rep-build] ${rep.id} → ${problemDir}`);
+  process.exit(await generateInto(problemDir, note, brief, rep.spec));
 } else if (cmd === 'app') {
   const { runApp } = await import('./app.js');
   runApp({ port: 3300, sessionPort: 3200, userId });
@@ -535,6 +595,7 @@ if (cmd === 'generate') {
       '  cli.ts target <add|list|infer> ...   season-program targets\n' +
       '  cli.ts generate-for <target-id> [spec-id]   generate from a confirmed spec\n' +
       '  cli.ts blueprint <target-id> <spec-id>   draft the round blueprint (idempotent)\n' +
+      '  cli.ts rep-build <rep-id>   build a practice rep (draft blueprint + generate)\n' +
       '  cli.ts app               run the home app (:3300) - targets, queues, launch',
   );
   process.exit(64);
