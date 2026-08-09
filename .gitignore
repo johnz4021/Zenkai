@@ -28,3 +28,7 @@ shared/dist/
 .ide-data/
 targets/
 feedback/
+
+# target-less practice reps (same class of data as targets/ and problems/)
+reps/
+reps.json

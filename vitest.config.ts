@@ -7,7 +7,8 @@ export default defineConfig({
     // Without these exclusions every `npm test` at the root goes red the
     // moment a problem is generated, and the signal from our own suite is
     // destroyed. targets/ holds per-target generated problems (season
-    // program); spike dirs are throwaway and self-contained.
-    exclude: ['**/node_modules/**', '**/dist/**', 'problems/**', 'targets/**', 'spikes/**'],
+    // program); reps/ holds target-less practice problems (same reason);
+    // spike dirs are throwaway and self-contained.
+    exclude: ['**/node_modules/**', '**/dist/**', 'problems/**', 'targets/**', 'reps/**', 'spikes/**'],
   },
 });
