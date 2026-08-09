@@ -261,3 +261,26 @@ export function claudePClarifier(templatePath: string, model = 'sonnet'): Intake
 export function pickClarifier(templatePath: string): IntakeClarifier {
   return process.env.ANTHROPIC_API_KEY ? apiClarifier(templatePath) : claudePClarifier(templatePath);
 }
+
+/**
+ * A clarify/infer failure the CANDIDATE can act on. Uncaught, these throws
+ * become json(500, String(e)) — raw gate internals as UI copy. The practice
+ * door is the first surface where a stranger meets them, so each failure
+ * class gets a sentence that names the fix, not the plumbing.
+ */
+export function clarifyFailureMessage(e: unknown): string {
+  const msg = String(e instanceof Error ? e.message : e);
+  if (msg.includes('every draft failed the gate') || msg.includes('no rounds')) {
+    return "couldn't turn that into a round shape — add a sentence about the format (live or async? timed? build or debug?)";
+  }
+  if (msg.includes('no tool call') || msg.includes('no JSON in output')) {
+    return "the model didn't return a usable answer — try again";
+  }
+  if (msg.includes('ENOENT') || msg.includes('spawn claude')) {
+    return 'no ANTHROPIC_API_KEY in .env and no claude CLI on PATH — set one up first';
+  }
+  if (msg.includes('timed out')) {
+    return 'inference timed out — try again';
+  }
+  return msg.slice(0, 200);
+}

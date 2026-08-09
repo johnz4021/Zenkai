@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { gateClarify } from './clarify.js';
+import { clarifyFailureMessage, gateClarify } from './clarify.js';
 
 const round = (over: Record<string, unknown> = {}) => ({
   id: 'palantir-oa',
@@ -129,5 +129,24 @@ describe('clarify-intake.md — the fence stays (TODOS #19 regression pin)', () 
       before.lastIndexOf('CANDIDATE_MATERIAL>>>'),
     );
     expect(template.slice(at)).toContain('CANDIDATE_MATERIAL>>>');
+  });
+});
+
+describe('clarifyFailureMessage — failure copy names the fix, not the plumbing', () => {
+  it.each([
+    [new Error('clarify: every draft failed the gate: spec x | spec y'), 'add a sentence about the format'],
+    [new Error('clarify: no rounds — best-guess drafts are mandatory'), 'add a sentence about the format'],
+    [new Error('clarify: no tool call'), "didn't return a usable answer"],
+    [new Error('clarify: no JSON in output'), "didn't return a usable answer"],
+    [new Error('spawn claude ENOENT'), 'no ANTHROPIC_API_KEY'],
+    [new Error('clarify: timed out'), 'timed out — try again'],
+  ])('%s → actionable copy', (err, want) => {
+    expect(clarifyFailureMessage(err)).toContain(want);
+  });
+
+  it('unknown errors pass through trimmed, never a stack', () => {
+    const out = clarifyFailureMessage(new Error('x'.repeat(500)));
+    expect(out.length).toBeLessThanOrEqual(200);
+    expect(out).not.toContain('at ');
   });
 });
