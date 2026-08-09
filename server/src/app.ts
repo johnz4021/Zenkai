@@ -29,6 +29,20 @@ import { appendLearnings, gateBlueprint, loadBlueprint, writeBlueprintWithBackup
 import { clearGeneratingMarker, generationProgress, pidAlive, readGeneratingMarker, sweepVerdict, writeGeneratingMarker } from './generation-state.js';
 import { pickTopicNamer } from './plan-topics.js';
 import { clientScript } from './chrome.js';
+import {
+  acquireRepLock,
+  createRepRecord,
+  gateRepInput,
+  launchVerdict,
+  loadReps,
+  REP_ID_RE,
+  repProblemDir,
+  repStateView,
+  retryVerdict,
+  saveReps,
+  sweepReps,
+  type Rep,
+} from './reps.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
@@ -118,6 +132,52 @@ function nearestDeadline(t: {
   return min ?? t.interview_date ?? undefined;
 }
 
+/** Attachment validation shared by /api/target and /api/practice/clarify:
+ *  count, media-type allowlist, non-empty, 10MB cap, name trimmed. Byte-
+ *  identical to the original /api/target loop it was extracted from. */
+function decodeAttachments(
+  incoming: { name?: string; media_type?: string; data?: string }[],
+): { decoded: { name: string; media_type: string; bytes: Buffer }[] } | { error: string } {
+  if (incoming.length > MAX_ATTACHMENTS) {
+    return { error: `${incoming.length} attachments — max ${MAX_ATTACHMENTS}` };
+  }
+  const decoded: { name: string; media_type: string; bytes: Buffer }[] = [];
+  for (const a of incoming) {
+    const mediaType = a.media_type ?? '';
+    if (!ATTACHMENT_MEDIA_TYPES.has(mediaType)) {
+      return { error: `"${a.name ?? 'file'}": unsupported type ${mediaType || '(none)'} — images and PDFs only` };
+    }
+    const bytes = Buffer.from(a.data ?? '', 'base64');
+    if (bytes.length === 0) return { error: `"${a.name ?? 'file'}" is empty` };
+    if (bytes.length > MAX_ATTACHMENT_BYTES) {
+      return { error: `"${a.name ?? 'file'}" is ${Math.round(bytes.length / 1024 / 1024)}MB — max 10MB` };
+    }
+    decoded.push({ name: (a.name ?? 'attachment').slice(0, 120), media_type: mediaType, bytes });
+  }
+  return { decoded };
+}
+
+/** The typed content blocks attachmentBlocks() builds from a target's disk —
+ *  built here straight from request memory instead: reps never persist
+ *  attachments (no re-draft path exists to re-read them). */
+function attachmentBlocksFromDecoded(
+  decoded: { name: string; media_type: string; bytes: Buffer }[],
+): Record<string, unknown>[] {
+  return decoded.map((d) =>
+    d.media_type === 'application/pdf'
+      ? {
+          type: 'document',
+          source: { type: 'base64', media_type: 'application/pdf', data: d.bytes.toString('base64') },
+          title: d.name,
+          citations: { enabled: true },
+        }
+      : {
+          type: 'image',
+          source: { type: 'base64', media_type: d.media_type, data: d.bytes.toString('base64') },
+        },
+  );
+}
+
 function spawnDetached(args: string[], env: Record<string, string> = {}): void {
   const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), ...args], {
     cwd: repoRoot,
@@ -158,6 +218,34 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
   });
 }
 
+/** Rep build spawn — same failure bookkeeping as spawnGeneration, but the
+ *  child is `rep-build` (drafts the blueprint, then generates) and the log
+ *  lines are rep-shaped: a rep has no target/item pair to interpolate. */
+function spawnRepBuild(rep: Rep): void {
+  const dir = repProblemDir(repoRoot, rep.id);
+  liveGenerations.add(dir);
+  mkdirSync(dir, { recursive: true });
+  const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), 'rep-build', rep.id], {
+    cwd: repoRoot,
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env },
+  });
+  child.unref();
+  // Marker at REQUEST time with the child's pid — drafting happens inside
+  // this child, so one pid honestly covers both phases and the wait UI's
+  // elapsed includes the ~30s draft (design decision 4A/T6).
+  if (child.pid) writeGeneratingMarker(dir, child.pid);
+  child.on('close', (code) => {
+    liveGenerations.delete(dir);
+    clearGeneratingMarker(dir);
+    if (code !== 0 && !existsSync(path.join(dir, '.validated')) && !existsSync(path.join(dir, '.failed'))) {
+      writeFileSync(path.join(dir, '.failed'), `exit ${code} at ${new Date().toISOString()}\n`);
+      console.warn(`[app] rep ${rep.id} build failed (exit ${code})`);
+    }
+  });
+}
+
 /** App restart while a generation was mid-flight: probe the marker's pid
  *  before judging (ISSUE-003 — the old sweep trusted an in-memory Set that
  *  restarts empty, and marked HEALTHY generations failed while their agent
@@ -188,6 +276,13 @@ function sweepOrphanedGenerations(isAlive: (pid: number) => boolean = pidAlive):
         console.log(`[app] ${t.id}/${item.id} still generating (pid ${marker!.pid} alive) — left alone`);
       }
     }
+  }
+  // The reps half: same verdicts, rep-shaped logs. Without this loop a rep
+  // orphaned by a restart would show "building" forever — the exact failure
+  // class generation-state.ts was written to kill, reintroduced through a
+  // door the sweep never knew about (CEO review GAP 1A).
+  for (const line of sweepReps(repoRoot, loadReps(repoRoot), isAlive, liveGenerations)) {
+    console.warn(line);
   }
 }
 
@@ -753,8 +848,15 @@ export function runApp(cfg: AppConfig): http.Server {
           // Nearest ROUND first (a loop's rounds carry their own dates);
           // the target date stands in for undated specs; undated targets last.
           .sort((a, b) => (nearestDeadline(a.target) ?? '9999') < (nearestDeadline(b.target) ?? '9999') ? -1 : 1);
+        // The practice door's rows — reconciled + phase-derived on every
+        // poll, same one-poll-drives-everything contract as targets, same
+        // save-if-changed discipline as refreshQueue.
+        const repsStored = loadReps(repoRoot);
+        const repsFresh = reconcileWithDisk(repoRoot, repsStored) as typeof repsStored;
+        if (JSON.stringify(repsFresh) !== JSON.stringify(repsStored)) saveReps(repoRoot, repsFresh);
         return json(200, {
           targets,
+          reps: repStateView(repoRoot, repsFresh),
           focus,
           today: new Date(now).toISOString(),
           session_live: live,
@@ -776,23 +878,9 @@ export function runApp(cfg: AppConfig): http.Server {
         // Binary attachments: media-type allowlist + size caps, decoded and
         // written under the target dir. Rejecting BEFORE the target exists
         // keeps a bad upload from leaving a half-made plan behind.
-        const incoming = b.attachments ?? [];
-        if (incoming.length > MAX_ATTACHMENTS) {
-          return json(400, { error: `${incoming.length} attachments — max ${MAX_ATTACHMENTS}` });
-        }
-        const decoded: { name: string; media_type: string; bytes: Buffer }[] = [];
-        for (const a of incoming) {
-          const mediaType = a.media_type ?? '';
-          if (!ATTACHMENT_MEDIA_TYPES.has(mediaType)) {
-            return json(400, { error: `"${a.name ?? 'file'}": unsupported type ${mediaType || '(none)'} — images and PDFs only` });
-          }
-          const bytes = Buffer.from(a.data ?? '', 'base64');
-          if (bytes.length === 0) return json(400, { error: `"${a.name ?? 'file'}" is empty` });
-          if (bytes.length > MAX_ATTACHMENT_BYTES) {
-            return json(400, { error: `"${a.name ?? 'file'}" is ${Math.round(bytes.length / 1024 / 1024)}MB — max 10MB` });
-          }
-          decoded.push({ name: (a.name ?? 'attachment').slice(0, 120), media_type: mediaType, bytes });
-        }
+        const att = decodeAttachments(b.attachments ?? []);
+        if ('error' in att) return json(400, { error: att.error });
+        const decoded = att.decoded;
         const t: Target = {
           id: `${slugify(b.label)}-${Date.now().toString(36)}`,
           label: b.label.trim(),
@@ -849,6 +937,141 @@ export function runApp(cfg: AppConfig): http.Server {
             return json(502, { error: `inference failed: ${String(e2).slice(0, 300)}` });
           }
         }
+      }
+      if (url === '/api/practice/clarify' && req.method === 'POST') {
+        // The practice door's inference: same clarifier as intake, but the
+        // material arrives INLINE — a rep has no target to read from. Same
+        // fallback ladder as /api/clarify; failures reach the candidate as
+        // actionable copy, never gate internals (clarifyFailureMessage).
+        const b = JSON.parse((await readBody(req)) || '{}') as {
+          description?: string;
+          context?: string;
+          answers?: { question: string; answer: string }[];
+          attachments?: { name?: string; media_type?: string; data?: string }[];
+        };
+        const { clarifyFailureMessage, pickClarifier } = await import('./clarify.js');
+        let input: { description: string; context: string };
+        try {
+          input = gateRepInput(b);
+        } catch (e) {
+          return json(400, { error: String(e instanceof Error ? e.message : e) });
+        }
+        const att = decodeAttachments(b.attachments ?? []);
+        if ('error' in att) return json(400, { error: att.error });
+        try {
+          const result = await pickClarifier(path.join(repoRoot, 'prompts', 'clarify-intake.md'))({
+            description: input.description,
+            context: input.context,
+            answers: b.answers,
+            attachments: attachmentBlocksFromDecoded(att.decoded),
+          });
+          return json(200, result);
+        } catch (e) {
+          console.warn(`[app] practice clarify failed, falling back to infer: ${String(e).slice(0, 200)}`);
+          try {
+            const infer = pickSpecInferrer(path.join(repoRoot, 'prompts', 'infer-round-spec.md'));
+            const draft = await infer(input.description, input.context);
+            return json(200, { questions: [], drafts: [draft] });
+          } catch (e2) {
+            return json(502, { error: clarifyFailureMessage(e2) });
+          }
+        }
+      }
+      if (url === '/api/practice' && req.method === 'POST') {
+        // Start a rep build. Gate order matters: identity, vocabulary,
+        // size, THEN the lock — nothing is created until every check holds,
+        // and the mkdir lock is what makes a double-click spawn exactly one
+        // detached agent (both clicks carry the same client-generated id).
+        const b = JSON.parse((await readBody(req)) || '{}') as {
+          rep_id?: string; spec?: unknown; description?: string; context?: string;
+        };
+        if (typeof b.rep_id !== 'string' || !REP_ID_RE.test(b.rep_id)) {
+          return json(400, { error: 'bad rep id' });
+        }
+        const specErrors = validateRoundSpec(b.spec);
+        if (specErrors.length > 0) {
+          // The server re-proves the spec no matter what the client edited —
+          // the accept-spec discipline.
+          return json(400, { error: `spec failed the gate: ${specErrors.join('; ')}` });
+        }
+        let input: { description: string; context: string };
+        try {
+          input = gateRepInput(b);
+        } catch (e) {
+          return json(400, { error: String(e instanceof Error ? e.message : e) });
+        }
+        try {
+          acquireRepLock(repoRoot, b.rep_id);
+        } catch (e) {
+          return json(409, { error: String(e instanceof Error ? e.message : e) });
+        }
+        const rep = createRepRecord({
+          id: b.rep_id,
+          spec: b.spec as RoundSpec,
+          description: input.description,
+          ...(input.context ? { context: input.context } : {}),
+        });
+        const file = loadReps(repoRoot);
+        file.items.push(rep);
+        if (!file.created) file.created = rep.created;
+        saveReps(repoRoot, file);
+        console.log(`[app] rep ${rep.id} requested (${rep.spec.label})`);
+        spawnRepBuild(rep);
+        return json(200, { ok: true, rep_id: rep.id });
+      }
+      if (url === '/api/practice/launch' && req.method === 'POST') {
+        const b = JSON.parse((await readBody(req)) || '{}') as { rep_id?: string };
+        if (typeof b.rep_id !== 'string' || !REP_ID_RE.test(b.rep_id)) {
+          return json(400, { error: 'bad rep id' });
+        }
+        const views = repStateView(repoRoot, loadReps(repoRoot));
+        const rep = views.find((r) => r.id === b.rep_id);
+        if (!rep) return json(404, { error: 'no such rep' });
+        const dir = repProblemDir(repoRoot, rep.id);
+        const probe = await probeSession(cfg.sessionPort);
+        const verdict = launchVerdict(rep, {
+          usedExists: existsSync(path.join(dir, '.used')),
+          sessionLive: probe.reachable && !probe.ended,
+        });
+        if (verdict === 'not-ready') return json(400, { error: 'rep is not ready' });
+        if (verdict === 'already-used') return json(409, { error: 'that rep already ran — its card is on the home page' });
+        if (verdict === 'session-live') return json(409, { error: 'a session is already running — finish or end it first' });
+        if (probe.reachable && probe.ended) {
+          // Reap a graded session's lingering card server (the /api/launch
+          // pattern, verbatim) so port 3200 frees up for the new session.
+          await postSession(cfg.sessionPort, '/api/shutdown');
+          for (let i = 0; i < 10; i++) {
+            if (!(await probeSession(cfg.sessionPort)).reachable) break;
+            await new Promise((r) => setTimeout(r, 500));
+          }
+        }
+        const sessionId = `sess-${Date.now()}`;
+        spawnDetached(['session', dir], {
+          IP_SESSION_ID: sessionId,
+          IP_USER_ID: cfg.userId,
+          IP_PREPARE_NEXT: '0',
+          IP_APP_URL: `http://localhost:${cfg.port}`,
+        });
+        console.log(`[app] rep ${rep.id} launching as ${sessionId}`);
+        return json(200, { session_id: sessionId, url: `http://localhost:${cfg.sessionPort}/session` });
+      }
+      if (url === '/api/practice/retry' && req.method === 'POST') {
+        const b = JSON.parse((await readBody(req)) || '{}') as { rep_id?: string };
+        if (typeof b.rep_id !== 'string' || !REP_ID_RE.test(b.rep_id)) {
+          return json(400, { error: 'bad rep id' });
+        }
+        const views = repStateView(repoRoot, loadReps(repoRoot));
+        const rep = views.find((r) => r.id === b.rep_id);
+        if (!rep) return json(404, { error: 'no such rep' });
+        const dir = repProblemDir(repoRoot, rep.id);
+        const gm = readGeneratingMarker(dir);
+        const verdict = retryVerdict(rep, { markerAlive: Boolean(gm && pidAlive(gm.pid)) });
+        if (verdict === 'not-failed') return json(400, { error: 'rep is not in a failed state' });
+        if (verdict === 'still-running') return json(409, { error: 'that build is actually still running — give it a minute' });
+        rmSync(path.join(dir, '.failed'), { force: true });
+        console.log(`[app] rep ${rep.id} retrying`);
+        spawnRepBuild(rep);
+        return json(200, { ok: true });
       }
       if (url === '/api/plan/turn' && req.method === 'POST') {
         // One planner conversation turn, awaited inline (the repo's pattern

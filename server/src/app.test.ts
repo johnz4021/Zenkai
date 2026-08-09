@@ -6,6 +6,9 @@
  * desktop-only notice, and the a11y landmarks the timeline relies on.
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { appPage } from './app.js';
 import { clientScript } from './chrome.js';
 
@@ -269,5 +272,42 @@ describe('product identity', () => {
   it('the scrollbar belongs to the instrument, not the OS', () => {
     expect(html).toContain('::-webkit-scrollbar');
     expect(html).toContain('scrollbar-color');
+  });
+});
+
+describe('practice door — server wiring (pinned via source, app.test.ts never runs the server)', () => {
+  const appSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'app.ts'), 'utf8');
+
+  it('every practice endpoint exists', () => {
+    for (const route of ['/api/practice/clarify', '/api/practice/launch', '/api/practice/retry']) {
+      expect(appSource).toContain(`url === '${route}'`);
+    }
+    expect(appSource).toContain(`url === '/api/practice'`);
+  });
+
+  it('the sweep covers reps and failures speak with actionable copy', () => {
+    expect(appSource).toContain('sweepReps(');
+    expect(appSource).toContain('clarifyFailureMessage');
+  });
+
+  it('rep builds write the marker at request time via spawnRepBuild', () => {
+    const spawnBlock = appSource.slice(appSource.indexOf('function spawnRepBuild'));
+    expect(spawnBlock.indexOf('writeGeneratingMarker')).toBeGreaterThan(-1);
+    expect(spawnBlock.indexOf('writeGeneratingMarker')).toBeLessThan(spawnBlock.indexOf('function sweepOrphanedGenerations'));
+  });
+
+  it("a rep-build close-handler never overwrites the CLI's draft-failure marker", () => {
+    // The child writes .failed with the "draft: " prefix; overwriting it with
+    // "exit 1" would erase the draft_failed phase.
+    const spawnBlock = appSource.slice(
+      appSource.indexOf('function spawnRepBuild'),
+      appSource.indexOf('function sweepOrphanedGenerations'),
+    );
+    expect(spawnBlock).toContain("!existsSync(path.join(dir, '.failed'))");
+  });
+
+  it('/api/state carries reps with the save-if-changed discipline', () => {
+    expect(appSource).toContain('repStateView(repoRoot, repsFresh)');
+    expect(appSource).toMatch(/JSON\.stringify\(repsFresh\) !== JSON\.stringify\(repsStored\)/);
   });
 });
