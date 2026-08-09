@@ -411,8 +411,50 @@ export function appPage(): string {
   #nav-kill:hover { color: var(--weak-text); }
   #nav-live .pulse { width: 6px; height: 6px; background: var(--steel-text); animation: pulse 1.8s ease-in-out infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+  /* "practice" is the daily action, so it wears the primary text weight;
+     "+ new plan" (a ~8-times-a-season act) demotes to secondary (design 1A). */
+  #nav-practice { color: var(--text-1); font-size: 12px; font-weight: 500; transition: color .18s; }
+  #nav-practice:hover { color: #fff; }
   #nav-new { color: var(--text-2); font-size: 12px; transition: color .18s; }
   #nav-new:hover { color: var(--text-1); }
+
+  /* ---- the practice door (design review 2026-08-08, approved mockup) ---- */
+  #practice-wrap { max-width: 62ch; margin: 0 auto; }
+  #practice-wrap .micro { margin-bottom: 10px; }
+  #rep-paste {
+    width: 100%; min-height: 120px; resize: vertical;
+    background: var(--panel); color: var(--text-1); border: 1px solid var(--line);
+    border-radius: 6px; padding: 12px 14px; font: inherit; line-height: 1.55;
+  }
+  /* The readback: ONE chevron select for the closed vocabulary; open prose
+     values are real inputs styled flat — affordance matches constraint (D4). */
+  .rep-shape { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 6px; margin: 14px 0 4px; }
+  .rep-shape select {
+    background: var(--raised); color: var(--text-1); border: 1px solid var(--line);
+    border-radius: 6px; padding: 10px 12px; font: inherit; min-height: 44px;
+  }
+  .rep-shape .shape-word { color: var(--text-2); }
+  .rep-shape input {
+    background: transparent; color: var(--text-1); border: 0;
+    border-bottom: 1px solid var(--line); border-radius: 0; padding: 10px 2px;
+    font: inherit; min-height: 44px; width: 9ch;
+  }
+  .rep-shape input:focus { border-bottom-color: var(--text-1); }
+  .rep-shape label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  #rep-note { color: var(--text-3); font-size: 12px; margin: 6px 0 14px; }
+  /* One sticky-bottom element per stack (QA ISSUE-003): the practice screen
+     has NO sticky at all — it fits a viewport; Start sits in flow. */
+  .rep-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
+  .rep-strip { margin-top: 34px; }
+  .rep-strip .err { font-size: 12px; }
+  .reprow {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 12px 2px; border-top: 1px solid var(--rule);
+  }
+  .reprow .grow { flex: 1; min-width: 0; }
+  .reprow .metaline { color: var(--text-2); margin-top: 3px; font-size: 12px; }
+  .reprow .primary { min-width: 96px; min-height: 44px; }
+  .reprow b { font-weight: 500; }
 
   /* ---- first paint: the shape of the page before data lands ---- */
   #boot { padding-top: 6px; }
@@ -723,6 +765,7 @@ export function appPage(): string {
     <span class="navright">
       <a href="#/t/" id="nav-live" aria-live="polite"><span class="pulse"></span>session live</a>
       <a href="#" id="nav-kill" title="end the running session without grading">end session</a>
+      <a href="#/practice" id="nav-practice">practice</a>
       <a href="#/new" id="nav-new">+ new plan</a>
     </span>
   </nav>
@@ -737,6 +780,13 @@ export function appPage(): string {
          the whole surface — composer, chat, panel — into entry-flow. -->
     <div id="entry-flow" aria-live="polite"></div>
     <input id="e-file" type="file" multiple hidden aria-hidden="true" />
+  </section>
+
+  <section id="practice" hidden>
+    <!-- The second door (CEO review 2026-08-08): paste what you gathered,
+         confirm the inferred shape, one rep — no target, no queue, no pace.
+         Rendered whole by the client, same contract as entry-flow. -->
+    <div id="practice-flow" aria-live="polite"></div>
   </section>
 
   <section id="timeline" hidden></section>

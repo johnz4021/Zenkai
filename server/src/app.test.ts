@@ -311,3 +311,71 @@ describe('practice door — server wiring (pinned via source, app.test.ts never 
     expect(appSource).toMatch(/JSON\.stringify\(repsFresh\) !== JSON\.stringify\(repsStored\)/);
   });
 });
+
+describe('practice door — client surface', () => {
+  const html = appPage();
+  const js = clientScript('app.js') ?? '';
+
+  it('the masthead promotes practice to the primary action (design 1A)', () => {
+    expect(html).toContain('id="nav-practice"');
+    // primary weight for the daily action; "+ new plan" stays secondary
+    expect(html).toMatch(/#nav-practice \{ color: var\(--text-1\)/);
+    expect(html).toMatch(/#nav-new \{ color: var\(--text-2\)/);
+    expect(html).toContain('<section id="practice" hidden>');
+  });
+
+  it('#/practice routes and the no-plans redirect exempts it', () => {
+    expect(js).toContain("h.startsWith('#/practice')");
+    // the door exists FOR the person with no plan — the empty-state redirect
+    // to #/new must not swallow it
+    expect(js).toMatch(/r\.page !== 'new' && r\.page !== 'practice'/);
+  });
+
+  it('the readback is a menu ONLY where the vocabulary is closed (design D4)', () => {
+    // one select for check.kind; language/size/difficulty are inputs
+    expect(js).toContain("id=\"rep-kind\"");
+    for (const id of ['rep-lang', 'rep-size', 'rep-diff']) expect(js).toContain('id="' + id + '"');
+    // a kind flip re-infers rather than editing the spec client-side
+    expect(js).toContain('Which round shape should this practice be?');
+  });
+
+  it('every shape control has a real label and 44px height (design 3A)', () => {
+    for (const id of ['rep-kind', 'rep-lang', 'rep-size', 'rep-diff', 'rep-paste', 'rep-change']) {
+      expect(js).toContain('for="' + id + '"');
+    }
+    expect(html).toMatch(/\.rep-shape select \{[^}]*min-height: 44px/);
+    expect(html).toMatch(/\.rep-shape input \{[^}]*min-height: 44px/);
+  });
+
+  it('the practice screen keeps the one-sticky rule by having NO sticky', () => {
+    const practiceCss = html.slice(html.indexOf('the practice door'), html.indexOf('.rep-strip'));
+    expect(practiceCss).not.toContain('position: sticky');
+  });
+
+  it('the wait state is honest and says leaving is safe (design 4A)', () => {
+    expect(js).toContain('shaping the round');
+    expect(js).toContain('You can close this.');
+    // reuses the genclock machinery, no parallel timer
+    expect(js).toMatch(/renderRepWait[\s\S]*genProgressLine/);
+  });
+
+  it('the return signal flips title and favicon, no notification prompt (design 2A)', () => {
+    expect(js).toContain("'✓ Ready · Zenkai'");
+    expect(js).toContain('(building) ');
+    expect(js).toContain('FAVICON_READY');
+    expect(js).not.toContain('Notification.requestPermission');
+  });
+
+  it('the reps strip distinguishes failed from ready and has a real empty state', () => {
+    expect(js).toContain('No practice yet');
+    expect(js).toContain('repretry');
+    // failed rows carry error copy and NO primary start button
+    expect(js).toMatch(/draft_failed[\s\S]{0,200}couldn’t shape the round/);
+  });
+
+  it('rep launches share the boot poll with queue launches', () => {
+    expect(js).toContain('function launchCommon');
+    expect(js).toMatch(/launchCommon\('\/api\/launch'/);
+    expect(js).toMatch(/launchCommon\('\/api\/practice\/launch'/);
+  });
+});

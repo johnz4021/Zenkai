@@ -32,6 +32,7 @@ function el(id) { return document.getElementById(id); }
 function route() {
   const h = window.location.hash || '#/';
   if (h.startsWith('#/new')) return { page: 'new' };
+  if (h.startsWith('#/practice')) return { page: 'practice' };
   if (h.startsWith('#/t/')) return { page: 'timeline', id: decodeURIComponent(h.slice(4)) };
   return { page: 'index' };
 }
@@ -43,6 +44,9 @@ window.addEventListener('hashchange', () => {
     flowTargetId = null;
     resetPlan();
   }
+  // Leaving practice drops the un-started flow the same way — a rep that
+  // reached Start lives in reps.json and needs nothing from this tab.
+  if (!window.location.hash.startsWith('#/practice')) resetRep();
   if (lastStateJson) render(JSON.parse(lastStateJson));
 });
 
@@ -554,22 +558,34 @@ function wirePlan(f) {
   });
 }
 
+// The #e-file input is shared by the plan composer and the practice door;
+// re-render whichever surface owns the current route.
+function rerenderComposerHost() {
+  if (route().page === 'practice') renderPractice();
+  else renderPlan();
+}
+
 // Binary/text file attach — the input lives in static HTML so this binds once.
 el('e-file').addEventListener('change', () => {
   for (const file of el('e-file').files) {
     const kind = BINARY_KINDS[file.type];
     const reader = new FileReader();
     if (kind) {
-      if (file.size > 10 * 1024 * 1024) { plan.error = file.name + ' is over 10MB — trim it down'; renderPlan(); continue; }
+      if (file.size > 10 * 1024 * 1024) {
+        const msg = file.name + ' is over 10MB — trim it down';
+        if (route().page === 'practice') rep.error = msg; else plan.error = msg;
+        rerenderComposerHost();
+        continue;
+      }
       reader.onload = () => {
         attachments.push({ kind, name: file.name, media_type: file.type, data: String(reader.result).split(',')[1] || '' });
-        renderPlan();
+        rerenderComposerHost();
       };
       reader.readAsDataURL(file);
     } else {
       reader.onload = () => {
         attachments.push({ kind: 'file', name: file.name, content: String(reader.result).slice(0, 100_000) });
-        renderPlan();
+        rerenderComposerHost();
       };
       reader.readAsText(file);
     }
@@ -577,6 +593,280 @@ el('e-file').addEventListener('change', () => {
   el('e-file').value = '';
 });
 
+
+// ---- the practice door (CEO + design reviews, 2026-08-08) ----
+// Paste what you gathered, confirm the inferred shape, one rep — no target,
+// no queue, no pace. State lives OUTSIDE the DOM (the plan/adapt pattern)
+// so the 5s poll can't destroy a half-typed correction. The readback shows
+// a menu ONLY where a closed vocabulary exists (check.kind); language /
+// size / difficulty are open blueprint prose and render as editable text —
+// affordance matches constraint (design D4).
+
+const rep = {
+  phase: 'input',        // input | clarifying | confirm | started
+  repId: null,           // client-generated at confirm so a double-click
+                         // carries the SAME id into the server's mkdir lock
+  description: '',
+  drafts: [], questions: [], answers: [], chosen: 0,
+  overrides: { language: '', size: '', difficulty: '' },
+  error: '',
+};
+
+function resetRep() {
+  rep.phase = 'input'; rep.repId = null; rep.description = '';
+  rep.drafts = []; rep.questions = []; rep.answers = []; rep.chosen = 0;
+  rep.overrides = { language: '', size: '', difficulty: '' };
+  rep.error = '';
+}
+
+// The closed vocabulary, human-labeled. These four ARE all the round kinds
+// the validator can prove — an honest menu (anything else is prose).
+const REP_KINDS = [
+  ['one_failing_test', 'Debugging'],
+  ['all_failing', 'Build to a test suite'],
+  ['all_passing', 'Extend / refactor (keep green)'],
+  ['diff_present', 'Code review'],
+];
+
+function repKindLabel(kind) {
+  const hit = REP_KINDS.find((k) => k[0] === kind);
+  return hit ? hit[1] : kind;
+}
+
+function renderPractice() {
+  if (route().page !== 'practice') return;
+  const host = el('practice-flow');
+  const paste = el('rep-paste');
+  const keep = paste ? paste.value : rep.description;
+  const chips = attachments.length
+    ? '<div id="plan-attach">' + attachments.map((a, i) =>
+        '<span class="attach"><span class="name">' + esc(a.name) + '</span>' +
+        '<button type="button" data-ri="' + i + '" aria-label="remove ' + esc(a.name) + '">×</button></span>').join('') + '</div>'
+    : '';
+  let html = '<div id="practice-wrap">';
+  if (rep.phase === 'started') {
+    html += renderRepWait() + '</div>';
+    host.innerHTML = html;
+    for (const b of host.querySelectorAll('.repstart')) {
+      b.addEventListener('click', () => launchRep(b.dataset.rep, b));
+    }
+    for (const b of host.querySelectorAll('.repretry')) {
+      b.addEventListener('click', () => repRetry(b.dataset.rep, b));
+    }
+    return;
+  }
+  html += '<label class="micro" for="rep-paste">Practice now</label>' +
+    '<textarea id="rep-paste" placeholder=""></textarea>' + chips +
+    '<div class="metaline">paste a recruiter email, a JD, a friend’s description — ' +
+    '<a href="#" id="rep-attach">attach a file</a></div>';
+
+  if (rep.phase === 'confirm' && rep.drafts.length) {
+    const d = rep.drafts[rep.chosen];
+    const kind = d.spec.check.kind;
+    html += '<div class="micro" style="margin-top:22px">Inferred shape</div>' +
+      '<div class="rep-shape">' +
+      '<label for="rep-kind">round type</label>' +
+      '<select id="rep-kind">' + REP_KINDS.map((k) =>
+        '<option value="' + k[0] + '"' + (k[0] === kind ? ' selected' : '') + '>' + k[1] + '</option>').join('') + '</select>' +
+      '<span class="shape-word">in</span>' +
+      '<label for="rep-lang">language</label>' +
+      '<input id="rep-lang" value="' + esc(rep.overrides.language) + '" placeholder="any language">' +
+      '<span class="shape-word">· about</span>' +
+      '<label for="rep-size">size in files</label>' +
+      '<input id="rep-size" inputmode="numeric" value="' + esc(rep.overrides.size) + '" placeholder="' +
+        esc(String(d.spec.check.max_source_files || '')) + '" style="width:5ch">' +
+      '<span class="shape-word">files ·</span>' +
+      '<label for="rep-diff">difficulty</label>' +
+      '<input id="rep-diff" value="' + esc(rep.overrides.difficulty) + '" placeholder="medium">' +
+      '</div>' +
+      '<div class="metaline">' + esc(specShapeLine(d.spec.capabilities)) + '</div>';
+    if (rep.questions.length) {
+      // The clarifier genuinely couldn't guess — its questions render inline,
+      // options as pills (the ask-card pattern); an answer re-infers.
+      for (let qi = 0; qi < rep.questions.length; qi++) {
+        const q = rep.questions[qi];
+        html += '<div class="askrow" style="margin-top:14px"><div class="askq">' + esc(q.question) + '</div><div class="askopts">' +
+          q.options.map((o, oi) =>
+            '<button type="button" class="qopt" data-q="' + qi + '" data-o="' + oi + '">' + esc(o.label) +
+            (q.recommended === o.label ? ' <span class="rec">suggested</span>' : '') + '</button>').join('') +
+          '</div></div>';
+      }
+    }
+    html += '<div id="rep-note">not right? change it above, or say so below — plain words work</div>' +
+      '<div class="row" style="display:flex;gap:8px;margin-top:6px">' +
+      '<label for="rep-change" class="rep-srlabel" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">what should be different</label>' +
+      '<input id="rep-change" placeholder="e.g. actually it’s Rust, and harder" style="flex:1;background:var(--panel);color:var(--text-1);border:1px solid var(--line);border-radius:6px;padding:10px 12px;font:inherit;min-height:44px">' +
+      '<button type="button" id="rep-rechecks" class="mini" style="min-height:44px">apply</button></div>';
+  }
+  if (rep.phase === 'clarifying') {
+    html += '<div class="metaline" style="margin-top:18px">reading your notes…</div>' +
+      '<div class="progress"><div class="fill"></div></div>';
+  }
+  if (rep.error) html += '<div class="err" style="margin-top:12px">' + esc(rep.error) + '</div>';
+  html += '<div class="rep-actions">' +
+    (rep.phase === 'confirm'
+      ? '<button type="button" class="primary" id="rep-start">Start →</button>'
+      : rep.phase === 'input'
+        ? '<button type="button" class="primary" id="rep-infer">Read my notes →</button>'
+        : '') +
+    '</div></div>';
+  host.innerHTML = html;
+  const pasteEl = el('rep-paste');
+  if (pasteEl) pasteEl.value = keep;
+  wirePractice();
+}
+
+/** The wait state (design 4A): honest elapsed from the .generating marker,
+ *  the shape named in plain words, and explicit permission to leave. */
+function renderRepWait() {
+  const mine = (lastReps || []).find((x) => x.id === rep.repId);
+  if (!mine) {
+    return '<div class="micro">Building your round</div><div class="metaline">starting…</div>';
+  }
+  if (mine.status === 'ready') {
+    return '<div class="micro">Ready</div>' +
+      '<h2 style="margin:10px 0 4px">' + esc(mine.title) + '</h2>' +
+      '<div class="metaline">' + esc(specShapeLine(mine.spec.capabilities)) + '</div>' +
+      '<div class="rep-actions"><button type="button" class="primary repstart" data-rep="' + esc(mine.id) + '">Start session →</button></div>';
+  }
+  if (mine.status === 'failed') {
+    return '<div class="micro">Build failed</div>' +
+      '<div class="err" style="margin:10px 0">' + (mine.phase === 'draft_failed'
+        ? 'couldn’t shape the round from your notes — retry, or start over with more detail'
+        : 'the build died partway — retry usually works') + '</div>' +
+      '<div class="rep-actions"><button type="button" class="mini repretry" data-rep="' + esc(mine.id) + '">Retry</button></div>';
+  }
+  const g = mine.generating || {};
+  return '<div class="micro">Building your round</div>' +
+    '<h2 style="margin:10px 0 4px">' + esc(mine.label) + '</h2>' +
+    '<div class="metaline">' +
+      (mine.phase === 'drafting' ? 'shaping the round' : genProgressLine(mine)) +
+      (mine.phase === 'drafting' && g.since ? ' · <span class="genclock" data-since="' + esc(g.since) + '"></span>' : '') +
+    '</div>' +
+    '<div class="progress"><div class="fill det" data-since="' + esc(g.since || '') + '"></div></div>' +
+    '<p class="meta" style="margin-top:16px">You can close this. It’ll be waiting under <b>practice</b> on the home page — the tab title flips when it’s ready (~5 min).</p>';
+}
+
+function wirePractice() {
+  const attach = el('rep-attach');
+  if (attach) attach.addEventListener('click', (e) => { e.preventDefault(); el('e-file').click(); });
+  const f = el('practice-flow');
+  for (const b of f.querySelectorAll('[data-ri]')) {
+    b.addEventListener('click', () => { attachments.splice(Number(b.dataset.ri), 1); renderPractice(); });
+  }
+  const infer = el('rep-infer');
+  if (infer) infer.addEventListener('click', () => practiceClarify());
+  const paste = el('rep-paste');
+  if (paste) paste.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) practiceClarify();
+  });
+  for (const b of f.querySelectorAll('.qopt')) {
+    b.addEventListener('click', () => {
+      const q = rep.questions[Number(b.dataset.q)];
+      const o = q.options[Number(b.dataset.o)];
+      practiceClarify(rep.answers.concat([{ question: q.question, answer: o.label }]));
+    });
+  }
+  const kind = el('rep-kind');
+  if (kind) kind.addEventListener('change', () => {
+    // A check.kind flip has coherence consequences (can_run_tests,
+    // starts_from…) that live in the server's draftToSpec gate — re-infer
+    // with the choice as an answer instead of editing the spec by hand.
+    practiceClarify(rep.answers.concat([
+      { question: 'Which round shape should this practice be?', answer: repKindLabel(kind.value) },
+    ]));
+  });
+  const recheck = el('rep-rechecks');
+  if (recheck) recheck.addEventListener('click', () => {
+    const change = el('rep-change');
+    if (!change || !change.value.trim()) return;
+    rep.description = rep.description + '\n\nCorrection: ' + change.value.trim();
+    practiceClarify(rep.answers);
+  });
+  const change = el('rep-change');
+  if (change) change.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); el('rep-rechecks').click(); }
+  });
+  for (const [lang, key] of [['rep-lang', 'language'], ['rep-size', 'size'], ['rep-diff', 'difficulty']]) {
+    const input = el(lang);
+    if (input) input.addEventListener('input', () => { rep.overrides[key] = input.value; });
+  }
+  const start = el('rep-start');
+  if (start) start.addEventListener('click', () => practiceStart(start));
+}
+
+async function practiceClarify(answers) {
+  const paste = el('rep-paste');
+  if (paste && rep.phase === 'input') rep.description = paste.value;
+  if (paste && rep.phase === 'confirm') rep.description = paste.value + (rep.description.includes('\n\nCorrection: ') ? rep.description.slice(rep.description.indexOf('\n\nCorrection: ')) : '');
+  if (!rep.description.trim()) { rep.error = 'describe the round in a sentence or two first'; renderPractice(); return; }
+  rep.phase = 'clarifying'; rep.error = ''; rep.answers = answers || [];
+  renderPractice();
+  const r = await fetch('/api/practice/clarify', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      description: rep.description,
+      context: buildContext(),
+      answers: rep.answers.length ? rep.answers : undefined,
+      attachments: buildBinaryAttachments(),
+    }),
+  });
+  const s = await r.json();
+  if (s.error) { rep.phase = rep.drafts.length ? 'confirm' : 'input'; rep.error = s.error; renderPractice(); return; }
+  rep.drafts = s.drafts || []; rep.questions = s.questions || []; rep.chosen = 0;
+  // The rep id is minted at confirm-render, ONCE — Start can be mashed and
+  // every click carries this same id into the server's mkdir lock.
+  rep.repId = rep.repId || 'rep-' + Date.now().toString(36);
+  rep.phase = 'confirm';
+  renderPractice();
+}
+
+async function practiceStart(btn) {
+  const d = rep.drafts[rep.chosen];
+  if (!d) return;
+  btn.disabled = true; btn.textContent = 'Starting…';
+  const spec = JSON.parse(JSON.stringify(d.spec));
+  const size = parseInt(rep.overrides.size, 10);
+  if (Number.isInteger(size) && size >= 1) spec.check.max_source_files = size;
+  // Language/difficulty are open blueprint prose, not spec vocabulary —
+  // they ride into the drafter as context lines (design D4).
+  const prose = [
+    rep.overrides.language ? 'Language: ' + rep.overrides.language : '',
+    rep.overrides.difficulty ? 'Difficulty: ' + rep.overrides.difficulty : '',
+  ].filter(Boolean).join('\n');
+  const r = await fetch('/api/practice', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      rep_id: rep.repId,
+      spec,
+      description: rep.description,
+      context: [buildContext(), prose].filter(Boolean).join('\n\n') || undefined,
+    }),
+  });
+  const s = await r.json();
+  if (s.error && !String(s.error).startsWith('already building')) {
+    btn.disabled = false; btn.textContent = 'Start →'; rep.error = s.error; renderPractice(); return;
+  }
+  rep.phase = 'started';
+  renderPractice();
+  refresh(true);
+}
+
+async function launchRep(repId, btn) {
+  repReadyUnseen = false;
+  await launchCommon('/api/practice/launch', { rep_id: repId }, btn, 'Start session →');
+}
+
+async function repRetry(repId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Retrying…'; }
+  const r = await fetch('/api/practice/retry', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rep_id: repId }) });
+  const s = await r.json();
+  if (s.error) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Retry'; launchStatus(btn, s.error, true); }
+    return;
+  }
+  refresh(true);
+}
 
 // ---- season timeline ----
 
@@ -947,7 +1237,65 @@ function renderIndex(state) {
       '<div class="bar"><div class="fill" style="width:' + pct + '%"></div></div>' +
       '<div class="nextline">' + nextLine + '</div></a>';
   }
+  // ---- the practice strip (design D4-task): reps live on the home page
+  //      beside the plans — failed ≠ ready visually, and the empty state is
+  //      a door, not an apology. ----
+  const reps = state.reps || [];
+  html += '<div class="rep-strip"><div class="micro">practice</div>';
+  if (!reps.length) {
+    html += '<div class="meta">No practice yet — <a href="#/practice">paste a JD or recruiter email</a> and be mid-problem in ten minutes. No plan needed.</div>';
+  }
+  for (const x of reps) {
+    const shape = x.spec && x.spec.capabilities ? specShapeLine(x.spec.capabilities) : '';
+    let line = '';
+    let action = '';
+    if (x.status === 'generating') {
+      line = (x.phase === 'drafting' ? 'shaping the round' : genProgressLine(x));
+    } else if (x.status === 'ready') {
+      line = 'ready · ' + shape;
+      if (!state.session_live) action = '<button type="button" class="primary repstart" data-rep="' + esc(x.id) + '">Start</button>';
+    } else if (x.status === 'failed') {
+      line = '<span class="err">' + (x.phase === 'draft_failed' ? 'couldn’t shape the round from those notes' : 'build failed') + '</span>';
+      action = '<button type="button" class="mini repretry" data-rep="' + esc(x.id) + '">Retry</button>';
+    } else if (x.status === 'done') {
+      line = 'done' + (x.done_at ? ' · ' + fmtDate(x.done_at) : '');
+      if (x.session_id) action = feedbackToggle({ session_id: x.session_id });
+    } else {
+      line = x.status;
+    }
+    html += '<div class="reprow"><div class="grow"><b>' + esc(x.title || x.label) + '</b>' +
+      '<div class="metaline">' + line + '</div>' +
+      feedbackPanel({ session_id: x.session_id }) +
+      '</div>' + action + '</div>';
+  }
+  html += '</div>';
   el('index').innerHTML = html;
+  for (const b of el('index').querySelectorAll('.repstart')) {
+    b.addEventListener('click', () => launchRep(b.dataset.rep, b));
+  }
+  for (const b of el('index').querySelectorAll('.repretry')) {
+    b.addEventListener('click', () => repRetry(b.dataset.rep, b));
+  }
+  // Judged cards work on rep rows for free — reps carry a session_id, and
+  // the card store is session-keyed. Same toggle wiring as the timeline.
+  for (const a of el('index').querySelectorAll('a.fbtoggle')) {
+    a.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const sid = a.dataset.s;
+      if (openFeedback.has(sid)) { openFeedback.delete(sid); rerender(); return; }
+      openFeedback.add(sid);
+      if (!feedbackCache[sid]) {
+        try {
+          const r = await fetch('/api/feedback?session=' + encodeURIComponent(sid));
+          const d = await r.json();
+          feedbackCache[sid] = d.card || { state: 'unassessed', reason: d.error || 'No feedback recorded for this session.' };
+        } catch {
+          feedbackCache[sid] = { state: 'unassessed', reason: 'Could not load feedback.' };
+        }
+      }
+      rerender();
+    });
+  }
   for (const a of el('index').querySelectorAll('[data-resume]')) {
     a.addEventListener('click', (e) => {
       e.preventDefault();
@@ -1224,20 +1572,47 @@ function choreograph(section, routeKey) {
   }
 }
 
+// ---- the rep return signal (design 2A): the user is INVITED to close the
+//      tab during a ~5-min build, so the tab itself says when to come back —
+//      title flips, favicon plate fills. No notification permission prompt.
+let lastReps = [];
+let repWasGenerating = new Set();
+let repReadyUnseen = false;
+const FAVICON_EL = document.querySelector('link[rel="icon"]');
+const FAVICON_IDLE = FAVICON_EL ? FAVICON_EL.href : '';
+const FAVICON_READY = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' fill='none'%3E%3Crect width='64' height='64' fill='%230e0e0f'/%3E%3Ccircle cx='32' cy='32' r='28' fill='%230088b0'/%3E%3Cpath d='M18 46 L52 12' stroke='%23f4f4f5' stroke-width='8'/%3E%3Cpath d='M40 12 L52 12 L52 24' stroke='%23f4f4f5' stroke-width='8' stroke-linejoin='miter'/%3E%3C/svg%3E";
+
+function trackRepSignal(state, page) {
+  lastReps = state.reps || [];
+  for (const x of lastReps) {
+    if (x.status === 'ready' && repWasGenerating.has(x.id)) repReadyUnseen = true;
+  }
+  repWasGenerating = new Set(lastReps.filter((x) => x.status === 'generating').map((x) => x.id));
+  // Looking at the practice page IS seeing the ready rep.
+  if (page === 'practice') repReadyUnseen = false;
+  if (FAVICON_EL) FAVICON_EL.href = repReadyUnseen ? FAVICON_READY : FAVICON_IDLE;
+}
+
 /** The tab is one of thirty. Name the page, and for a season put the
  *  countdown itself in the title — the days remaining are readable
  *  without switching to the tab. */
 function setTitle(r, state) {
-  if (r.page === 'new') { document.title = 'new plan · Zenkai'; return; }
+  // Rep signals outrank page names: "come back" is the one thing a
+  // backgrounded tab can usefully say.
+  if (repReadyUnseen) { document.title = '✓ Ready · Zenkai'; return; }
+  const building = (state.reps || []).some((x) => x.status === 'generating');
+  const prefix = building ? '(building) ' : '';
+  if (r.page === 'practice') { document.title = prefix + 'practice · Zenkai'; return; }
+  if (r.page === 'new') { document.title = prefix + 'new plan · Zenkai'; return; }
   if (r.page === 'timeline') {
     const row = state.targets.find((x) => x.target.id === r.id);
     if (row) {
       const n = daysUntil(row.target.interview_date);
-      document.title = (n === null ? '' : n + ' days · ') + row.target.label;
+      document.title = prefix + (n === null ? '' : n + ' days · ') + row.target.label;
       return;
     }
   }
-  document.title = 'your plans · Zenkai';
+  document.title = prefix + 'your plans · Zenkai';
 }
 
 function render(state) {
@@ -1253,24 +1628,36 @@ function render(state) {
   if (boot) boot.remove();
 
   const r = route();
+  trackRepSignal(state, r.page);
   setTitle(r, state);
   // Data-driven redirects only — never visibility flips: with nothing set
-  // up yet, the only page that exists is the intake.
-  if (!state.targets.length && r.page !== 'new') {
+  // up yet, the only pages that exist are the intake and the practice door —
+  // practice is EXACTLY for the person with no plan yet (CEO review 2026-08-08).
+  if (!state.targets.length && !(state.reps || []).length && r.page !== 'new' && r.page !== 'practice') {
     window.location.hash = '#/new';
     return; // hashchange re-renders
   }
 
   el('index').hidden = r.page !== 'index';
   el('entry').hidden = r.page !== 'new';
+  el('practice').hidden = r.page !== 'practice';
   el('timeline').hidden = r.page !== 'timeline';
   el('nav-new').hidden = r.page === 'new';
+  el('nav-practice').hidden = r.page === 'practice';
   // The planning surface gets a wider page column for its two-pane layout.
   document.body.classList.toggle('wide', r.page === 'new');
 
   if (r.page === 'index') {
     renderIndex(state);
     choreograph(el('index'), 'index');
+    return;
+  }
+  if (r.page === 'practice') {
+    // input/confirm hold a half-typed correction — the poll must not repaint
+    // under the user (the plan-page rule). The wait state has no inputs, so
+    // it repaints freely and the phase flips (drafting → building → ready)
+    // arrive within one poll.
+    if (rep.phase === 'started' || !el('practice-wrap')) renderPractice();
     return;
   }
   if (r.page === 'new') {
@@ -1308,12 +1695,15 @@ function launchStatus(btn, text, isError) {
   line.classList.toggle('err', Boolean(isError));
 }
 
-async function launch(targetId, itemId, btn) {
+/** Shared launch: POST, then poll session-live until the editor is up —
+ *  identical boot semantics for queue items and reps, one copy of the
+ *  Docker error truth. */
+async function launchCommon(endpoint, body, btn, idleLabel) {
   if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
-  const r = await fetch('/api/launch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: targetId, item_id: itemId }) });
+  const r = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const s = await r.json();
   if (s.error) {
-    if (btn) { btn.disabled = false; btn.textContent = 'Start'; launchStatus(btn, s.error, true); }
+    if (btn) { btn.disabled = false; btn.textContent = idleLabel; launchStatus(btn, s.error, true); }
     else el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>';
     return;
   }
@@ -1327,11 +1717,15 @@ async function launch(targetId, itemId, btn) {
     if (Date.now() < until) { window.setTimeout(tick, 2000); return; }
     if (btn) {
       btn.disabled = false;
-      btn.textContent = 'Start';
+      btn.textContent = idleLabel;
       launchStatus(btn, "couldn't start — is Docker running? Try again.", true);
     }
   };
   tick();
+}
+
+async function launch(targetId, itemId, btn) {
+  await launchCommon('/api/launch', { target_id: targetId, item_id: itemId }, btn, 'Start');
 }
 
 // Masthead "end session" — discard, never grade (QA D1). Submit inside the
