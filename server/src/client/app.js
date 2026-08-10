@@ -1232,7 +1232,10 @@ document.addEventListener('focusout', () => {
 // ---- all plans (index) ----
 
 function renderIndex(state) {
-  let html = '<h2 class="daysleft" style="font-size:15px">your plans</h2>';
+  // "+ new plan" moved here from the masthead when the tabs took its slot —
+  // plan creation belongs to the plans page (design 2026-08-10).
+  let html = '<h2 class="daysleft" style="font-size:15px">your plans' +
+    ' <a href="#/new" class="addlink">+ new plan</a></h2>';
   for (const row of state.targets) {
     const t = row.target;
     if (!t.specs.length) {
@@ -1691,6 +1694,13 @@ function render(state) {
   el('practice').hidden = r.page !== 'practice';
   el('history').hidden = r.page !== 'history';
   el('timeline').hidden = r.page !== 'timeline';
+  // You-are-here: the active tab wears the steel underline (aria-current
+  // drives the CSS, so wayfinding and a11y are one mechanism). The landing
+  // marks no tab active — it's home, not a tab.
+  if (r.page === 'plans') el('nav-plans').setAttribute('aria-current', 'page');
+  else el('nav-plans').removeAttribute('aria-current');
+  if (r.page === 'history') el('nav-history').setAttribute('aria-current', 'page');
+  else el('nav-history').removeAttribute('aria-current');
   // The planning surface gets a wider page column for its two-pane layout.
   document.body.classList.toggle('wide', r.page === 'new');
 

@@ -31,7 +31,8 @@ describe('home app page', () => {
 
   it('navigation is routes, not visibility toggles', () => {
     expect(html).toContain('href="#/" id="nav-home"');
-    expect(html).toContain('href="#/new" id="nav-new"');
+    expect(html).toContain('href="#/plans" id="nav-plans"');
+    expect(html).toContain('href="#/history" id="nav-history"');
     expect(js).toContain('function route()');
     expect(js).toContain("addEventListener('hashchange'");
     // The poll-stomps-navigation bug: visibility must never derive from
@@ -239,7 +240,7 @@ describe('product identity', () => {
     expect(html).toContain('class="brand"');
     expect(html).toContain('class="word"');
     expect(html).toContain('>Zenkai<');
-    expect(html).toContain('aria-label="Zenkai — all plans"');
+    expect(html).toContain('aria-label="Zenkai — home"');
     // The folded-Z mark: one ribbon split corner-to-corner across the
     // diagonal, each half carrying a lit face and the fold behind it.
     expect(html).toContain('class="plate-blue"');
@@ -338,12 +339,19 @@ describe('practice door — client surface', () => {
   const html = appPage();
   const js = clientScript('app.js') ?? '';
 
-  it('the masthead promotes practice to the primary action (design 1A)', () => {
-    expect(html).toContain('id="nav-practice"');
-    // primary weight for the daily action; "+ new plan" stays secondary
-    expect(html).toMatch(/#nav-practice \{ color: var\(--text-1\)/);
-    expect(html).toMatch(/#nav-new \{ color: var\(--text-2\)/);
+  it('the masthead is tabs with a steel you-are-here (composer-first, 2026-08-10)', () => {
+    // The daily action IS the page under the wordmark; plans and history are
+    // secondary tabs. Active tab wears the steel underline via aria-current —
+    // wayfinding and a11y as one mechanism. The landing marks no tab active.
+    expect(html).not.toContain('id="nav-practice"');
+    expect(html).not.toContain('id="nav-new"');
+    expect(html).toMatch(/#nav-plans, #nav-history \{ color: var\(--text-2\)/);
+    expect(html).toMatch(/\.navright a\[aria-current="page"\]/);
+    expect(html).toMatch(/text-decoration-color: var\(--steel\)/);
+    expect(js).toContain("setAttribute('aria-current', 'page')");
     expect(html).toContain('<section id="practice" hidden>');
+    // Plan creation moved to the plans page with the masthead slot.
+    expect(js).toContain('class="addlink">+ new plan');
   });
 
   it('the composer owns #/ and the tabs route; #/practice canonicalizes home', () => {

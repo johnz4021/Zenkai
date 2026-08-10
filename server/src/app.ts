@@ -421,12 +421,19 @@ export function appPage(): string {
   #nav-kill:hover { color: var(--weak-text); }
   #nav-live .pulse { width: 6px; height: 6px; background: var(--steel-text); animation: pulse 1.8s ease-in-out infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
-  /* "practice" is the daily action, so it wears the primary text weight;
-     "+ new plan" (a ~8-times-a-season act) demotes to secondary (design 1A). */
-  #nav-practice { color: var(--text-1); font-size: 12px; font-weight: 500; transition: color .18s; }
-  #nav-practice:hover { color: #fff; }
-  #nav-new { color: var(--text-2); font-size: 12px; transition: color .18s; }
-  #nav-new:hover { color: var(--text-1); }
+  /* The tabs (composer-first IA, 2026-08-10). The daily action IS the page
+     under the wordmark now; plans and history are secondary destinations.
+     Active tab = 2px steel underline — steel marks POSITION, never action.
+     The attribute selector outranks the nav-wide text-decoration reset. */
+  #nav-plans, #nav-history { color: var(--text-2); font-size: 12px; transition: color .18s; }
+  #nav-plans:hover, #nav-history:hover { color: var(--text-1); }
+  .navright a[aria-current="page"] {
+    color: var(--text-1);
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 6px;
+    text-decoration-color: var(--steel);
+  }
 
   /* ---- the practice door (design review 2026-08-08, approved mockup) ---- */
   #practice-wrap { max-width: 62ch; margin: 0 auto; }
@@ -775,7 +782,7 @@ export function appPage(): string {
 </div>
 <div id="page">
   <nav>
-    <a href="#/" id="nav-home" class="brand" aria-label="Zenkai — all plans">
+    <a href="#/" id="nav-home" class="brand" aria-label="Zenkai — home">
       <!-- One ribbon folded into a Z, split corner-to-corner across the
            diagonal: blue half above the fold, red half below, each with its
            own darker fold face. The whole mark is 180°-rotationally
@@ -793,8 +800,8 @@ export function appPage(): string {
     <span class="navright">
       <a href="#/t/" id="nav-live" aria-live="polite"><span class="pulse"></span>session live</a>
       <a href="#" id="nav-kill" title="end the running session without grading">end session</a>
-      <a href="#/practice" id="nav-practice">practice</a>
-      <a href="#/new" id="nav-new">+ new plan</a>
+      <a href="#/plans" id="nav-plans">plans</a>
+      <a href="#/history" id="nav-history">history</a>
     </span>
   </nav>
   <div id="banner" aria-live="polite"></div>
