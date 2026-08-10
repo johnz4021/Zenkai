@@ -484,7 +484,6 @@ export function appPage(): string {
   }
   #home-status a { color: var(--text-3); text-decoration: none; }
   #home-status a:hover { color: var(--text-1); }
-  #home-status .in-days { color: var(--steel-text); }
   /* The composer is ONE instrument: a single frame holding the borderless
      textarea and its footer row (affordances left, the action right). Focus
      lifts the whole frame's hairline to steel — the established focus

@@ -466,14 +466,18 @@ describe('composer-first landing — hero + status line (design round2-A-minimal
     expect(js).toMatch(/renderPractice\(\);\s*\n\s*renderHomeStatus\(state\)/);
   });
 
-  it('the segments speak only when true and route to their tabs', () => {
+  it('the readout feeds the generator: building / ready / last + regenerate', () => {
     expect(js).toContain('building your round');
     expect(js).toContain("ready →");
-    expect(js).toContain('next planned: ');
     expect(js).toMatch(/href="#\/history"/);
-    // countdown reuses roundDates + daysUntil, steel-TEXT tier for contrast
-    expect(js).toMatch(/renderHomeStatus[\s\S]*roundDates\(row\.target\)/);
-    expect(html).toMatch(/#home-status \.in-days \{ color: var\(--steel-text\)/);
+    // Last-session segment: one tap re-posts the same confirmed shape under
+    // a new id, with a variation line naming the previous title so the
+    // generator can't re-roll the same domain (never-a-copy, aimed inward).
+    expect(js).toContain('id="rep-regen"');
+    expect(js).toContain('function regenerateLike');
+    expect(js).toContain('do not repeat the previous one');
+    // seasons live in their own tab now; the readout doesn't point there
+    expect(js).not.toContain('next planned: ');
   });
 
   it('the ready signal counts the landing as seen — the line shows it there', () => {

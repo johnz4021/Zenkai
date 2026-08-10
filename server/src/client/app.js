@@ -1344,23 +1344,59 @@ function renderHomeStatus(state) {
       bits.push('<a href="#/history">' + ready + ' ready →</a>');
     }
   }
-  // Plans segment — targets arrive nearest-deadline-first, but passed
-  // seasons sort FIRST (earlier dates), so prefer the first target with an
-  // actionable today row AND an upcoming round; fall back to any actionable
-  // one. Countdown via the same roundDates the plan cards use.
-  let fallback = null;
-  let planBit = null;
-  for (const row of state.targets || []) {
-    const today = (row.days || []).find((d) => d.kind === 'day' && d.today && (d.items || []).length);
-    if (!today) continue;
-    const upcoming = roundDates(row.target).filter((r) => !r.passed);
-    const line = '<a href="#/plans">next planned: ' + esc(row.target.label) +
-      (upcoming.length ? ' in <span class="in-days">' + daysUntil(upcoming[0].date) + 'd</span>' : '') + ' →</a>';
-    if (upcoming.length) { planBit = line; break; }
-    if (!fallback) fallback = line;
+  // Last-session segment (user call 2026-08-10, echoing codex's "practice
+  // another like this"): the landing is the generator's page, so its readout
+  // feeds the generator — the newest generated rep offers one-tap
+  // regeneration in the same confirmed shape. The seasons have their own
+  // tab; the readout doesn't need to point there.
+  const last = (state.reps || []).find((x) => x.status === 'ready' || x.status === 'done');
+  if (last) {
+    const title = (last.title || last.label || '');
+    const short = title.length > 34 ? title.slice(0, 31) + '…' : title;
+    bits.push('last: ' + esc(short) +
+      ' · <a href="#" id="rep-regen" data-rep="' + esc(last.id) + '">regenerate →</a>');
   }
-  if (planBit || fallback) bits.push(planBit || fallback);
   host.innerHTML = bits.length ? '<div class="statusline">' + bits.join(' · ') + '</div>' : '';
+  const regen = el('rep-regen');
+  if (regen) regen.addEventListener('click', (e) => {
+    e.preventDefault();
+    if (regen.dataset.busy) return;
+    regen.dataset.busy = '1';
+    regen.textContent = 'starting…';
+    regenerateLike(regen.dataset.rep, state);
+  });
+}
+
+/**
+ * One tap, same confirmed shape, fresh problem: re-post the last rep's
+ * spec/description/context under a new id. The server re-proves the spec;
+ * a fresh blueprint draft plus the current gap note vary the problem, and
+ * the variation line names the previous title so the generator is TOLD not
+ * to re-roll the same domain (the never-a-copy rule, aimed at itself).
+ */
+async function regenerateLike(lastId, state) {
+  const last = (state.reps || []).find((x) => x.id === lastId);
+  if (!last || !last.spec) return;
+  const newId = 'rep-' + Date.now().toString(36);
+  const r = await fetch('/api/practice', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      rep_id: newId,
+      spec: last.spec,
+      description: (last.description || last.label) +
+        '\n\nVariation: a fresh problem, same shape — do not repeat the previous one ("' + (last.title || last.label) + '").',
+      context: last.context || undefined,
+    }),
+  });
+  const s = await r.json();
+  if (s.error && !String(s.error).startsWith('already building')) {
+    el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>';
+    return;
+  }
+  rep.repId = newId;
+  rep.phase = 'started';
+  renderPractice();
+  refresh(true);
 }
 
 // ---- practice history (#/history): the reps strip, extracted from the old
