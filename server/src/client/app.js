@@ -1602,7 +1602,10 @@ let repWasGenerating = new Set();
 let repReadyUnseen = false;
 const FAVICON_EL = document.querySelector('link[rel="icon"]');
 const FAVICON_IDLE = FAVICON_EL ? FAVICON_EL.href : '';
-const FAVICON_READY = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' fill='none'%3E%3Crect width='64' height='64' fill='%230e0e0f'/%3E%3Ccircle cx='32' cy='32' r='28' fill='%230088b0'/%3E%3Cpath d='M18 46 L52 12' stroke='%23f4f4f5' stroke-width='8'/%3E%3Cpath d='M40 12 L52 12 L52 24' stroke='%23f4f4f5' stroke-width='8' stroke-linejoin='miter'/%3E%3C/svg%3E";
+// Ready = the tile inverts: plate blue floods the ground and the Z drops to
+// graphite. At 16px the color swap is the whole signal — the mark's internal
+// fold is unreadable that small, so don't lean on it.
+const FAVICON_READY = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%235099c2'/%3E%3Cpath d='M21.2 8 L45.5 8 L44.15 21.5 L36.5 42.5 L53.6 42.5 L42.8 56 L18.5 56 L19.85 42.5 L27.5 21.5 L10.4 21.5 Z' fill='%230e0e0f'/%3E%3C/svg%3E";
 
 function trackRepSignal(state, page) {
   lastReps = state.reps || [];

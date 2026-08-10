@@ -112,7 +112,7 @@ export function sessionPage(sessionId: string, partial: Partial<SessionPageView>
   return /* html */ `<!doctype html>
 <meta charset="utf-8" />
 <title>session ${sessionId}</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' fill='none'%3E%3Crect width='64' height='64' fill='%230e0e0f'/%3E%3Ccircle cx='32' cy='32' r='24' stroke='%230088b0' stroke-width='8' stroke-dasharray='118 33'/%3E%3Cpath d='M18 46 L52 12' stroke='%23f4f4f5' stroke-width='8'/%3E%3Cpath d='M40 12 L52 12 L52 24' stroke='%23f4f4f5' stroke-width='8' stroke-linejoin='miter'/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%230e0e0f'/%3E%3Cpath d='M42.8 56 L18.5 56 L19.85 42.5 L44.15 21.5 L36.5 42.5 L53.6 42.5 Z' fill='%23bf2b50'/%3E%3Cpath d='M19.85 42.5 L44.15 21.5 L36.5 42.5 Z' fill='%2399203f'/%3E%3Cpath d='M21.2 8 L45.5 8 L44.15 21.5 L19.85 42.5 L27.5 21.5 L10.4 21.5 Z' fill='%235099c2'/%3E%3Cpath d='M44.15 21.5 L19.85 42.5 L27.5 21.5 Z' fill='%2338708f'/%3E%3Cpath d='M44.15 21.5 L19.85 42.5' stroke='%230e0e0f' stroke-width='1.5'/%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet" />

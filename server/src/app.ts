@@ -348,15 +348,18 @@ export function appPage(): string {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Zenkai</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' fill='none'%3E%3Crect width='64' height='64' fill='%230e0e0f'/%3E%3Ccircle cx='32' cy='32' r='24' stroke='%230088b0' stroke-width='8' stroke-dasharray='118 33'/%3E%3Cpath d='M18 46 L52 12' stroke='%23f4f4f5' stroke-width='8'/%3E%3Cpath d='M40 12 L52 12 L52 24' stroke='%23f4f4f5' stroke-width='8' stroke-linejoin='miter'/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%230e0e0f'/%3E%3Cpath d='M42.8 56 L18.5 56 L19.85 42.5 L44.15 21.5 L36.5 42.5 L53.6 42.5 Z' fill='%23bf2b50'/%3E%3Cpath d='M19.85 42.5 L44.15 21.5 L36.5 42.5 Z' fill='%2399203f'/%3E%3Cpath d='M21.2 8 L45.5 8 L44.15 21.5 L19.85 42.5 L27.5 21.5 L10.4 21.5 Z' fill='%235099c2'/%3E%3Cpath d='M44.15 21.5 L19.85 42.5 L27.5 21.5 Z' fill='%2338708f'/%3E%3Cpath d='M44.15 21.5 L19.85 42.5' stroke='%230e0e0f' stroke-width='1.5'/%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
 <style>
   :root {
     /* Graphite Steel (direction 3a). Brand plates survive at full saturation —
-       the ONLY branded pixels in a monochrome shell. */
-    --plate-cyan: #0088b0; --plate-mag: #d6006c;
+       the ONLY branded pixels in a monochrome shell. The mark is one ribbon
+       folded into a Z, so each plate ships a lit face and the fold behind it;
+       the pair is what makes the mark read as folded rather than drawn. */
+    --plate-blue: #5099c2; --plate-blue-fold: #38708f;
+    --plate-red: #bf2b50;  --plate-red-fold: #99203f;
     /* Ground: one tone-step per layer, no elevation. */
     --bg: #0e0e0f; --panel: #151517; --raised: #1d1e20; --sunk: #131314;
     --text-1: #f4f4f5; --text-2: #96979b; --text-3: #66676b;
@@ -391,15 +394,22 @@ export function appPage(): string {
   }
   nav a { text-decoration: none; }
   /* Lockup: mark and wordmark side by side. The plates keep full saturation —
-     deliberately the only branded pixels in the graphite shell. */
-  .brand { display: flex; align-items: center; gap: 13px; }
-  .brand svg { display: block; overflow: visible; }
-  .brand .plate-mag { stroke: var(--plate-mag); }
-  .brand .plate-cyan { stroke: var(--plate-cyan); }
-  .brand .vector { stroke: var(--text-1); }  /* reversed for the dark ground, per the sheet's own reversed-on-black variant */
+     deliberately the only branded pixels in the graphite shell. The wordmark
+     is Archivo in sentence case, NOT mono caps: mono is reserved for micro
+     labels and instrument readouts (DESIGN.md, Type), and the shipped
+     mono-caps wordmark was that rule's one standing violation. */
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand svg { display: block; height: 30px; width: auto; }
+  .brand .plate-blue { fill: var(--plate-blue); }
+  .brand .plate-blue-fold { fill: var(--plate-blue-fold); }
+  .brand .plate-red { fill: var(--plate-red); }
+  .brand .plate-red-fold { fill: var(--plate-red-fold); }
+  /* The fold gap is ground showing through, not a drawn line — so it tracks
+     --bg and stays invisible as a shape if the ground ever moves. */
+  .brand .seam { stroke: var(--bg); }
   .brand .word {
-    font-family: var(--mono); font-size: 16px; font-weight: 500;
-    text-transform: uppercase; letter-spacing: .16em; line-height: 1; color: var(--text-1);
+    font-size: 20px; font-weight: 500; letter-spacing: -.005em;
+    line-height: 1; color: var(--text-1);
     transition: color .18s;
   }
   #nav-home:hover .word { color: #fff; }
@@ -766,11 +776,17 @@ export function appPage(): string {
 <div id="page">
   <nav>
     <a href="#/" id="nav-home" class="brand" aria-label="Zenkai — all plans">
-      <svg width="32" height="32" viewBox="0 0 64 64" fill="none" aria-hidden="true">
-        <circle class="plate-mag" cx="32" cy="32" r="24" stroke-width="5" stroke-dasharray="118 33" transform="translate(3.4 2.8)" />
-        <circle class="plate-cyan" cx="32" cy="32" r="24" stroke-width="5" stroke-dasharray="118 33" />
-        <path class="vector" d="M18 46 L52 12" stroke-width="5" />
-        <path class="vector" d="M40 12 L52 12 L52 24" stroke-width="5" stroke-linejoin="miter" />
+      <!-- One ribbon folded into a Z, split corner-to-corner across the
+           diagonal: blue half above the fold, red half below, each with its
+           own darker fold face. The whole mark is 180°-rotationally
+           symmetric — the red half IS the blue half turned over — so the two
+           paths are the same shape and only the colors differ. -->
+      <svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true">
+        <path class="plate-red" d="M34.8 48 L10.5 48 L11.85 34.5 L36.15 13.5 L28.5 34.5 L45.6 34.5 Z" />
+        <path class="plate-red-fold" d="M11.85 34.5 L36.15 13.5 L28.5 34.5 Z" />
+        <path class="plate-blue" d="M13.2 0 L37.5 0 L36.15 13.5 L11.85 34.5 L19.5 13.5 L2.4 13.5 Z" />
+        <path class="plate-blue-fold" d="M36.15 13.5 L11.85 34.5 L19.5 13.5 Z" />
+        <path class="seam" d="M36.15 13.5 L11.85 34.5" stroke-width="1.3" />
       </svg>
       <span class="word">Zenkai</span>
     </a>

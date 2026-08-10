@@ -239,12 +239,33 @@ describe('product identity', () => {
     expect(html).toContain('class="word"');
     expect(html).toContain('>Zenkai<');
     expect(html).toContain('aria-label="Zenkai — all plans"');
-    // The identity sheet's ascent ring: two plates out of register, a
-    // vector escaping through the break in the ring.
-    expect(html).toContain('class="plate-mag"');
-    expect(html).toContain('class="plate-cyan"');
-    expect(html).toContain('class="vector"');
-    expect(html).toContain('stroke-dasharray="118 33"');
+    // The folded-Z mark: one ribbon split corner-to-corner across the
+    // diagonal, each half carrying a lit face and the fold behind it.
+    expect(html).toContain('class="plate-blue"');
+    expect(html).toContain('class="plate-blue-fold"');
+    expect(html).toContain('class="plate-red"');
+    expect(html).toContain('class="plate-red-fold"');
+    expect(html).toContain('class="seam"');
+  });
+
+  it('the mark is 180°-rotationally symmetric — red is blue turned over', () => {
+    // Both halves trace the same outline, so a coordinate typo in one shows
+    // up as an asymmetry here rather than as a lopsided logo in production.
+    const d = (cls: string) =>
+      html.match(new RegExp(`class="${cls}" d="([^"]+)"`))?.[1] ?? '';
+    const pts = (path: string) =>
+      [...path.matchAll(/(-?[\d.]+) (-?[\d.]+)/g)].map((m) => [Number(m[1]), Number(m[2])]);
+    // Rotate the blue half a half-turn about the mark's center (24, 24).
+    // Round after rotating: 48 - 36.15 lands at 11.850000000000001 in binary
+    // float, and the mark is authored to two decimals anyway.
+    const turned = pts(d('plate-blue')).map(([x, y]) => [48 - x!, 48 - y!]);
+    const red = pts(d('plate-red'));
+    expect(red.length).toBe(6); // guard: a failed match makes the compare vacuous
+    expect(red.length).toBe(turned.length);
+    // Same cycle, different starting vertex: compare as sorted point sets.
+    const key = (ps: number[][]) =>
+      ps.map((p) => p.map((n) => n.toFixed(2)).join(',')).sort().join(' ');
+    expect(key(red)).toBe(key(turned));
   });
 
   it('the tab is identifiable: favicon plus per-route titles', () => {

@@ -12,7 +12,8 @@ Every color has exactly one job. A color used outside its job is a bug.
 
 | Token | Value | Job — and what it must NEVER mean |
 |---|---|---|
-| `--plate-cyan` / `--plate-mag` | `#0088b0` / `#d6006c` | **Identity.** The brand plates in the logo lockup — deliberately the ONLY branded pixels in a monochrome shell. Never action, never status. |
+| `--plate-blue` / `--plate-blue-fold` | `#5099c2` / `#38708f` | **Identity.** The upper half of the folded-Z mark: lit face, then the fold behind it. Deliberately the ONLY branded pixels in a monochrome shell. Never action, never status. The fold face sits a hair off `--steel` — same neighborhood, different job; do not merge them. |
+| `--plate-red` / `--plate-red-fold` | `#bf2b50` / `#99203f` | **Identity.** The lower half of the mark, same lit-face/fold pair. Not a verdict color: `--weak` is the pink that grades, and these two must never appear on a grade or a status. |
 | `--bg` / `--panel` / `--raised` / `--sunk` | `#0e0e0f` `#151517` `#1d1e20` `#131314` | **Ground.** One flat tone-step per layer. No shadows, no glows, no gradients — elevation does not exist in this system. |
 | `--text-1` / `--text-2` / `--text-3` | `#f4f4f5` `#96979b` `#66676b` | **Voice.** Primary / secondary / micro-label tiers. `--text-3` is for decorative micro labels only — it sits near the 4.5:1 contrast floor. |
 | `--steel` / `--steel-text` | `#35708f` / `#7ea9c2` | **Time and position.** The timeline spine, date markers, the live-session pulse, focus outlines. Never action, never grade, never identity. |
@@ -21,10 +22,12 @@ Every color has exactly one job. A color used outside its job is a bug.
 
 ## Type
 
-- **Archivo** (grotesque sans), 14px / 1.55 — body, headings, controls.
+- **Archivo** (grotesque sans), 14px / 1.55 — body, headings, controls. Also
+  the wordmark: 20px / 500 / sentence case, set against a 30px mark.
 - **JetBrains Mono** — 11px, UPPERCASE, `.18em` letterspacing, `--text-3` —
   micro labels (`.micro`) and instrument readouts (`.genclock`) ONLY.
-  Mono as body type is terminal cosplay; don't.
+  Mono as body type is terminal cosplay; don't. The wordmark used to be mono
+  caps — the rule's one standing violation, fixed with the folded-Z mark.
 
 ## Rules that keep the system honest
 
