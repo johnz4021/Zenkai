@@ -32,3 +32,6 @@ feedback/
 # target-less practice reps (same class of data as targets/ and problems/)
 reps/
 reps.json
+
+# launch-origin metric (the composer-landing falsifier)
+launches.jsonl

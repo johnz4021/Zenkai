@@ -16,7 +16,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -176,6 +176,22 @@ function attachmentBlocksFromDecoded(
           source: { type: 'base64', media_type: d.media_type, data: d.bytes.toString('base64') },
         },
   );
+}
+
+/** One durable line per session launch — the falsifier's data (2026-08-10
+ *  CEO review: if plan-queue launches dominate, the composer landing is
+ *  optimizing for the wrong user). Origin is sanitized to the two call-site
+ *  values; console scrollback is not a metric, a JSONL file is. */
+function logLaunch(origin: unknown, sessionId: string): void {
+  const o = origin === 'plans' || origin === 'practice' ? origin : 'unknown';
+  try {
+    appendFileSync(
+      path.join(repoRoot, 'launches.jsonl'),
+      JSON.stringify({ ts: new Date().toISOString(), origin: o, session_id: sessionId }) + '\n',
+    );
+  } catch {
+    /* metrics never block a launch */
+  }
 }
 
 function spawnDetached(args: string[], env: Record<string, string> = {}): void {
@@ -1130,7 +1146,7 @@ export function runApp(cfg: AppConfig): http.Server {
         return json(200, { ok: true, rep_id: rep.id });
       }
       if (url === '/api/practice/launch' && req.method === 'POST') {
-        const b = JSON.parse((await readBody(req)) || '{}') as { rep_id?: string };
+        const b = JSON.parse((await readBody(req)) || '{}') as { rep_id?: string; origin?: string };
         if (typeof b.rep_id !== 'string' || !REP_ID_RE.test(b.rep_id)) {
           return json(400, { error: 'bad rep id' });
         }
@@ -1156,6 +1172,7 @@ export function runApp(cfg: AppConfig): http.Server {
           }
         }
         const sessionId = `sess-${Date.now()}`;
+        logLaunch(b.origin, sessionId);
         spawnDetached(['session', dir], {
           IP_SESSION_ID: sessionId,
           IP_USER_ID: cfg.userId,
@@ -1527,7 +1544,7 @@ export function runApp(cfg: AppConfig): http.Server {
         return json(200, { ok: true });
       }
       if (url === '/api/launch' && req.method === 'POST') {
-        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
+        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string; origin?: string };
         const q = b.target_id ? loadQueue(repoRoot, b.target_id) : null;
         const item = q?.items.find((i) => i.id === b.item_id);
         if (!q || !item?.problem_dir || item.status !== 'ready') {
@@ -1547,6 +1564,7 @@ export function runApp(cfg: AppConfig): http.Server {
           }
         }
         const sessionId = `sess-${Date.now()}`;
+        logLaunch(b.origin, sessionId);
         // IP_PREPARE_NEXT=0: the queue drives generation now; the legacy
         // post-session prepare would write into the generic pool nobody is
         // drawing from in queue mode.

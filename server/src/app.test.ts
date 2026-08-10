@@ -469,3 +469,20 @@ describe('composer-first landing — hero + status line (design round2-A-minimal
     expect(js).toContain("if (page === 'history' || page === 'practice') repReadyUnseen = false;");
   });
 });
+
+describe('launch origin — the falsifier is durable, not scrollback', () => {
+  const appSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'app.ts'), 'utf8');
+  const js = clientScript('app.js') ?? '';
+
+  it('every call site names its origin; nothing defaults', () => {
+    expect(js).toMatch(/origin: 'plans'/);
+    expect(js).toMatch(/origin: 'practice'/);
+  });
+
+  it('both handlers log to launches.jsonl with a sanitized origin', () => {
+    expect(appSource).toContain('launches.jsonl');
+    expect(appSource).toMatch(/origin === 'plans' \|\| origin === 'practice' \? origin : 'unknown'/);
+    // one logLaunch per handler, after the session id exists
+    expect(appSource.match(/logLaunch\(b\.origin, sessionId\)/g)).toHaveLength(2);
+  });
+});

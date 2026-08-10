@@ -886,7 +886,9 @@ async function practiceStart(btn) {
 
 async function launchRep(repId, btn) {
   repReadyUnseen = false;
-  await launchCommon('/api/practice/launch', { rep_id: repId }, btn, 'Start session →');
+  // origin is per call site, never defaulted — the falsifier metric divides
+  // on it (2026-08-10 CEO review).
+  await launchCommon('/api/practice/launch', { rep_id: repId, origin: 'practice' }, btn, 'Start session →');
 }
 
 async function repRetry(repId, btn) {
@@ -1824,7 +1826,7 @@ async function launchCommon(endpoint, body, btn, idleLabel) {
 }
 
 async function launch(targetId, itemId, btn) {
-  await launchCommon('/api/launch', { target_id: targetId, item_id: itemId }, btn, 'Start');
+  await launchCommon('/api/launch', { target_id: targetId, item_id: itemId, origin: 'plans' }, btn, 'Start');
 }
 
 // Masthead "end session" — discard, never grade (QA D1). Submit inside the
