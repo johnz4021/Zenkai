@@ -1378,12 +1378,15 @@ async function regenerateLike(lastId, state) {
   const last = (state.reps || []).find((x) => x.id === lastId);
   if (!last || !last.spec) return;
   const newId = 'rep-' + Date.now().toString(36);
+  // Strip any variation line a previous regeneration appended, so chained
+  // regenerations don't stack directives — each round names only its parent.
+  const base = (last.description || last.label).replace(/\n\nVariation: a fresh problem[\s\S]*$/, '');
   const r = await fetch('/api/practice', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       rep_id: newId,
       spec: last.spec,
-      description: (last.description || last.label) +
+      description: base +
         '\n\nVariation: a fresh problem, same shape — do not repeat the previous one ("' + (last.title || last.label) + '").',
       context: last.context || undefined,
     }),
