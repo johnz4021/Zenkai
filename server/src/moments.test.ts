@@ -59,6 +59,42 @@ describe('one_failing_test moments', () => {
     const fired = new Set(['first_failure_read']);
     expect(detectMoment(events, 'one_failing_test', fired, at(10) + FIRST_READ_MS + 1000)).toBeNull();
   });
+
+  it('edit_without_theory: first edit with no stated mechanism, before its run', () => {
+    const silent = [fail(10), edit(60)];
+    const m = detectMoment(silent, 'one_failing_test', none, at(70))!;
+    expect(m.kind).toBe('edit_without_theory');
+    expect(m.observation).toContain('without having said');
+  });
+
+  it('edit_without_theory: a stated theory before the edit disarms it', () => {
+    const theory = ev('utterance', 40, {
+      text: 'I think the retry loop drops the record because the index never resets there',
+    });
+    expect(detectMoment([fail(10), theory, edit(60)], 'one_failing_test', none, at(70))).toBeNull();
+  });
+
+  it('edit_without_theory: once the run completed, first_fix_ran owns the beat', () => {
+    const m = detectMoment([fail(10), edit(60), fail(90)], 'one_failing_test', none, at(95))!;
+    expect(m.kind).toBe('first_fix_ran');
+  });
+
+  it('reran_without_change: same suite twice with nothing edited between', () => {
+    // Run #2 right after the kickoff is exempt (looking at output again);
+    // run #3 with nothing changed since #2 is re-running and hoping.
+    const rerunAfterKickoff = [fail(10), fail(40)];
+    const fired = new Set(['first_failure_read']);
+    expect(detectMoment(rerunAfterKickoff, 'one_failing_test', fired, at(50))).toBeNull();
+    const hoping = [fail(10), fail(40), fail(70)];
+    const m = detectMoment(hoping, 'one_failing_test', fired, at(75))!;
+    expect(m.kind).toBe('reran_without_change');
+  });
+
+  it('reran_without_change: an edit or save between runs is a real attempt', () => {
+    const fired = new Set(['first_failure_read', 'edit_without_theory', 'first_fix_ran']);
+    const attempted = [fail(10), fail(40), edit(50), fail(70)];
+    expect(detectMoment(attempted, 'one_failing_test', fired, at(75))).toBeNull();
+  });
 });
 
 describe('all_failing moments', () => {

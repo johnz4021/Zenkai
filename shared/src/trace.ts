@@ -161,6 +161,10 @@ export interface InterviewerPayload {
   nudge: boolean;
   /** True when the turn was unprompted (a pressure beat, not a reply). */
   unprompted: boolean;
+  /** True on wrap-up phase turns (post-work evaluation questions and the
+   *  closing) — the timeline labels these so the judge reads the answers as
+   *  reflection under questioning, not mid-work narration. */
+  wrap?: boolean;
 }
 
 /**

@@ -30,6 +30,8 @@ import { clientScript, sessionPage } from './chrome.js';
 import { injectWorkbenchDefaults } from './workbench-inject.js';
 import { describeStuck, detectStuck, type StuckState } from './stuck.js';
 import { describeAdrift, describeWarm, detectAdrift, regionContainsAnswer } from './adrift.js';
+import { assessAgenda, renderAgenda } from './agenda.js';
+import { CLOSING_TOPIC, WRAP_UP_QUESTIONS, detectWrapSignal, renderWrapState, selectWrapTopic } from './wrapup.js';
 import { isModelPath, listWorkspaceFiles, runGuard, safeWorkspacePath, summarizeTail } from './panes.js';
 import { isCorrectionFollowUp, isExplicitAsk } from './addressing.js';
 import { decideAck } from './ack.js';
@@ -80,12 +82,30 @@ export interface SessionConfig {
 
 /** Nominal round length — what the interviewer's time pressure counts down. */
 const SESSION_LENGTH_MS = 45 * 60_000;
-/** Floor between unprompted pressure beats. An interviewer that talks every
- *  minute stops being pressure and starts being noise. */
+/**
+ * Initiative clocks (sess-1786220758002 redesign). The old single clock —
+ * "5 minutes since ANY spoken turn" — meant every reply reset the initiative
+ * budget: the more the candidate talked to the interviewer, the quieter it
+ * got, and a 26-minute session with 8 candidate questions produced ZERO
+ * unprompted-lane turns after the opening. Now:
+ *   - the ANY-turn guard is only anti-stacking (don't talk on top of a
+ *     reply just delivered);
+ *   - the lanes pace themselves on time since the last UNPROMPTED turn.
+ */
+/** No unprompted turn within this of ANY spoken turn (anti-stacking). */
+const ANY_TURN_GUARD_MS = 60_000;
+/** Scaffolding (stuck/adrift) fires this soon after the last exchange —
+ *  help is paced by need, not by the metronome. */
+const SCAFFOLD_FLOOR_MS = 90_000;
+/** Floor between warm-adrift encouragements. Uncapped per session (unlike
+ *  the redirect), but "keep pulling on that" every 90 seconds is nagging —
+ *  replayed sess-1786220758002 showed back-to-back warms without this. */
+const WARM_COOLDOWN_MS = 3 * 60_000;
+/** Floor between unprompted pressure beats, on the UNPROMPTED clock. */
 const PRESSURE_INTERVAL_MS = 5 * 60_000;
 /** Floor for event-anchored moment probes — shorter than pressure: a probe
  *  about something that JUST happened tolerates less staleness. */
-const MOMENT_INTERVAL_MS = 3 * 60_000;
+const MOMENT_INTERVAL_MS = 2.5 * 60_000;
 const PRESSURE_TICK_MS = 30_000;
 
 const IDE_IMAGE = 'gitpod/openvscode-server:latest';
@@ -436,6 +456,13 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // tour. The warm inversion (they are already in the right place) carries
   // no location content and is deliberately not capped by this.
   let adriftFired = false;
+  // Wrap-up phase state (I3): set once by detectWrapSignal; questions are
+  // counted by wrap turns that actually SPOKE, and after the closing the
+  // interviewer goes quiet for good. All verbal — /api/end is untouched.
+  let wrapUpAt: number | null = null;
+  let wrapQuestionsAsked = 0;
+  let wrapClosed = false;
+  let lastWarmTs = 0;
   // The live extension socket, so the chrome's Run Tests button can reach
   // the IDE's own runner (see /api/ide-run).
   let traceSocket: WebSocket | null = null;
@@ -470,10 +497,15 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // contact; the pressure timer stays quiet until then.
   let sessionStartedAt: number | null = null;
   let lastInterviewerTs = 0;
+  // The initiative clock: reset ONLY by unprompted turns, so replying to the
+  // candidate never buys the interviewer silence (see the clock comment at
+  // the constants).
+  let lastUnpromptedTs = 0;
   const markCandidateContact = () => {
     if (sessionStartedAt === null) {
       sessionStartedAt = Date.now();
       lastInterviewerTs = sessionStartedAt;
+      lastUnpromptedTs = sessionStartedAt;
       console.log('[session] candidate arrived — clock started');
       // OPENING: a real interviewer runs the room from the first second —
       // the round used to begin in dead silence. Fires exactly once, on
@@ -639,6 +671,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     stuck: StuckState | null = null,
     moment: { kind: string; observation: string } | null = null,
     adriftObservation: string | null = null,
+    /** Set on wrap-lane turns: this turn asks the next evaluation question
+     *  (or delivers the closing). Bookkeeping happens only if it speaks. */
+    wrapTopic: string | null = null,
   ): Promise<void> => {
     if (!interviewer || ended) return;
     if (interviewerBusy) {
@@ -701,6 +736,19 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         momentObservation: moment ? moment.observation : null,
         checkKind: roundSpec.check.kind,
         codebase: codebaseView,
+        // The evaluation agenda rides on EVERY turn (replies included) so
+        // even a reply can be aimed at an uncovered dimension.
+        agenda: renderAgenda(assessAgenda(events, now)),
+        // During wrap-up every turn sees the phase state; the wrap-lane turn
+        // additionally carries its assigned topic.
+        wrapState:
+          wrapTopic !== null
+            ? renderWrapState(wrapQuestionsAsked, wrapTopic)
+            : wrapUpAt !== null
+              ? wrapClosed
+                ? 'WRAP-UP is over — you have signed off. Stay silent unless directly asked.'
+                : `WRAP-UP phase is active (${wrapQuestionsAsked} of ${WRAP_UP_QUESTIONS} questions asked). This turn is a reply — answer, then you may segue into your next evaluation question if it flows.`
+              : undefined,
       });
       if (turn.redacted) {
         console.warn('[interviewer] leak guard fired — reply replaced');
@@ -725,6 +773,17 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         return;
       }
       lastInterviewerTs = Date.now();
+      if (candidateMessage === null) lastUnpromptedTs = lastInterviewerTs;
+      if (wrapTopic !== null) {
+        // Count only turns that actually spoke; a silent wrap turn retries.
+        if (wrapTopic === CLOSING_TOPIC) {
+          wrapClosed = true;
+          console.log('[wrapup] closed — interviewer signed off');
+        } else {
+          wrapQuestionsAsked++;
+          console.log(`[wrapup] question ${wrapQuestionsAsked}/${WRAP_UP_QUESTIONS} asked`);
+        }
+      }
       store.emitChrome('interviewer', {
         text: turn.say,
         kind: turn.kind,
@@ -734,6 +793,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // Marked so replays can tell scaffolding from pressure — this is
         // how the K=3 threshold gets tuned from real sessions.
         ...(stuck ? { stuck: true } : {}),
+        ...(wrapTopic !== null ? { wrap: true } : {}),
       });
       notifyTurn();
     } catch (e) {
@@ -1321,12 +1381,39 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       if (ended || interviewerBusy || sessionStartedAt === null) return;
       const events = store.readAll();
       if (!hasFailingRun(events)) return;
-      const sinceTurn = Date.now() - lastInterviewerTs;
-      // Priority: stuck/adrift/pressure (5-min floor) over moments (3-min).
-      // Stuck is help, adrift is help, a moment is engagement, pressure is
-      // the metronome — help beats engagement beats rhythm.
-      if (sinceTurn >= PRESSURE_INTERVAL_MS) {
-        const stuck = detectStuck(events, Date.now(), sessionStartedAt);
+      const now = Date.now();
+
+      // Wrap signal: checked every tick regardless of clocks, set once.
+      if (wrapUpAt === null) {
+        const sig = detectWrapSignal(events, now);
+        if (sig !== null) {
+          wrapUpAt = now;
+          console.log('[wrapup] working phase over — evaluation questions begin');
+        }
+      }
+
+      // Anti-stacking guard only: never talk on top of a turn just
+      // delivered. Everything else paces on the UNPROMPTED clock — replies
+      // no longer buy the interviewer silence (the single-clock bug that
+      // produced ZERO unprompted turns in a 26-minute session).
+      if (now - lastInterviewerTs < ANY_TURN_GUARD_MS) return;
+
+      // Wrap-up lane: once active it OWNS initiative — no scaffolding, no
+      // moments, no pressure aimed at work that is already done.
+      if (wrapUpAt !== null) {
+        if (wrapClosed) return;
+        const topic =
+          wrapQuestionsAsked >= WRAP_UP_QUESTIONS
+            ? CLOSING_TOPIC
+            : selectWrapTopic(assessAgenda(events, now), wrapQuestionsAsked);
+        void runInterviewer(null, null, null, null, topic);
+        return;
+      }
+
+      // Priority unchanged: help > engagement > rhythm.
+      // Scaffolding lane — paced by NEED (the detectors), not the metronome.
+      if (now - lastInterviewerTs >= SCAFFOLD_FLOOR_MS) {
+        const stuck = detectStuck(events, now, sessionStartedAt);
         const episodeSpent = stuck ? (stuckRedactions.get(stuck.since_ms) ?? 0) >= 2 : false;
         if (stuck && !episodeSpent) {
           void runInterviewer(null, stuck);
@@ -1336,7 +1423,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // detectStuck is blind to a candidate who only reads (its own doc
         // says reading must never trip it), which left the wrong-file reader
         // with no help at all for 35 minutes in sess-1786072934316.
-        const adrift = detectAdrift(events, Date.now(), sessionStartedAt);
+        const adrift = detectAdrift(events, now, sessionStartedAt);
         // The once-per-session budget is spent on the REDIRECT only: "the
         // region you are in is spent" is a location signal, and repeating it
         // turns the round into a guided tour. The warm inversion carries no
@@ -1345,31 +1432,37 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // asked for ("rarely making me feel like I was on to something").
         if (adrift) {
           const warm = regionContainsAnswer(adrift, bugFile, problem.planted_bug?.line);
-          if (warm || !adriftFired) {
-            if (!warm) adriftFired = true;
+          const warmCooling = warm && now - lastWarmTs < WARM_COOLDOWN_MS;
+          if ((warm && !warmCooling) || (!warm && !adriftFired)) {
+            if (warm) lastWarmTs = now;
+            else adriftFired = true;
             console.log(`[adrift] ${warm ? 'WARM — answer is in their region; encouraging, not redirecting' : 'REDIRECT'}`);
             void runInterviewer(
               null,
               null,
               null,
-              warm ? describeWarm(adrift, Date.now()) : describeAdrift(adrift, Date.now()),
+              warm ? describeWarm(adrift, now) : describeAdrift(adrift, now),
             );
             return;
           }
         }
-        void runInterviewer(null, null);
-        return;
       }
-      if (sinceTurn >= MOMENT_INTERVAL_MS) {
+
+      const sinceUnprompted = now - lastUnpromptedTs;
+      if (sinceUnprompted >= MOMENT_INTERVAL_MS) {
         // Event-anchored probes: the first failure read, the first fix that
         // ran, the pass after a struggle. Each fires ONCE — marked before
         // dispatch so even a guard-silenced turn never re-fires it.
-        const moment = detectMoment(events, roundSpec.check.kind, firedMoments, Date.now());
+        const moment = detectMoment(events, roundSpec.check.kind, firedMoments, now);
         if (moment) {
           firedMoments.add(moment.kind);
           console.log(`[moment] ${moment.kind}`);
           void runInterviewer(null, null, moment);
+          return;
         }
+      }
+      if (sinceUnprompted >= PRESSURE_INTERVAL_MS) {
+        void runInterviewer(null, null);
       }
     }, PRESSURE_TICK_MS);
     pressureTimer.unref();
@@ -1380,10 +1473,12 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     // deliberately do NOT touch lastInterviewerTs, so they never delay or
     // replace a real turn.
     ackTimer = setInterval(() => {
-      if (ended || interviewerBusy || sessionStartedAt === null || timeUpAt !== null) return;
+      // No "Mm-hm" during the wrap-up: the interviewer is actively leading
+      // the conversation there, and a canned continuer reads as checked-out.
+      if (ended || interviewerBusy || sessionStartedAt === null || timeUpAt !== null || wrapUpAt !== null) return;
       const events = store.readAll();
       if (!hasFailingRun(events)) return; // same "genuinely underway" gate as pressure
-      if (Date.now() - lastInterviewerTs >= PRESSURE_INTERVAL_MS) return; // a real turn is due — let it speak
+      if (Date.now() - lastUnpromptedTs >= PRESSURE_INTERVAL_MS) return; // a real turn is due — let it speak
       const ack = decideAck(events, Date.now(), { askPending: turnQueue.size > 0 });
       if (!ack) return;
       store.emitChrome('interviewer', { text: ack, kind: 'ack', nudge: false, unprompted: true });

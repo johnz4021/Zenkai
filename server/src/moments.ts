@@ -20,6 +20,7 @@
 
 import type { RoundSpec, TraceEvent, TestRunPayload } from '@interview-prep/shared';
 import { isFailingRun } from '@interview-prep/shared';
+import { assessAgenda } from './agenda.js';
 
 export interface Moment {
   kind: string;
@@ -43,8 +44,10 @@ export function detectMoment(
   if (checkKind === 'one_failing_test') {
     return (
       firstFailureRead(events, fired, nowMs) ??
+      editWithoutTheory(events, fired, nowMs) ??
       firstFixRan(events, fired) ??
-      passAfterStruggle(events, fired)
+      passAfterStruggle(events, fired) ??
+      reranWithoutChange(events, fired)
     );
   }
   if (checkKind === 'all_failing') {
@@ -105,6 +108,51 @@ function passAfterStruggle(events: TraceEvent[], fired: ReadonlySet<string>): Mo
         observation: `The suite just passed after ${failures} failing runs.`,
       };
     }
+  }
+  return null;
+}
+
+/** First edit landed with the agenda's `approach` still empty — they are
+ *  changing code without ever having said what the change is meant to fix.
+ *  Only before that edit's run: once a run completes, firstFixRan owns the
+ *  beat and a stale "before you run that" would read as not watching. */
+function editWithoutTheory(events: TraceEvent[], fired: ReadonlySet<string>, nowMs: number): Moment | null {
+  if (fired.has('edit_without_theory')) return null;
+  const firstEdit = events.find((e) => e.type === 'edit');
+  if (!firstEdit) return null;
+  if (events.some((e) => e.type === 'test_run' && e.ts > firstEdit.ts)) return null;
+  if (assessAgenda(events, nowMs).approach !== 'none') return null;
+  return {
+    kind: 'edit_without_theory',
+    observation:
+      'They just started editing without having said what they think is wrong or what the change is meant to fix.',
+  };
+}
+
+/** Two completed runs with nothing changed between them — re-running and
+ *  hoping. The kickoff pair is exempt: re-running right after the autorun
+ *  is just looking at the output again, not a debugging pattern. */
+function reranWithoutChange(events: TraceEvent[], fired: ReadonlySet<string>): Moment | null {
+  if (fired.has('reran_without_change')) return null;
+  const completed = (e: TraceEvent) =>
+    e.type === 'test_run' && (e.payload as TestRunPayload | null)?.exit_code != null;
+  let prevRunIdx = -1;
+  let runNumber = 0;
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i]!;
+    if (!completed(e)) continue;
+    runNumber++;
+    if (prevRunIdx !== -1 && runNumber > 2) {
+      const between = events.slice(prevRunIdx + 1, i);
+      if (!between.some((b) => b.type === 'edit' || b.type === 'file_save')) {
+        return {
+          kind: 'reran_without_change',
+          observation:
+            'They just re-ran the suite without changing anything since the previous run.',
+        };
+      }
+    }
+    prevRunIdx = i;
   }
   return null;
 }

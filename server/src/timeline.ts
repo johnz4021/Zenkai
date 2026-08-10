@@ -108,7 +108,11 @@ function eventLine(e: TraceEvent, t0: number): Line | null {
       // edit/save runs), so they are dropped like sensor events.
       if ((p as { kind?: string }).kind === 'ack') return null;
       const nudge = p.nudge === true ? ' [NUDGE — this narrowed the search; what follows was prompted, not self-directed]' : '';
-      return { ts: e.ts, text: `${at}  interviewer: "${String(p.text ?? '')}"${nudge}` };
+      // Wrap-up turns are the post-work evaluation phase — labeled so the
+      // judge reads the candidate's answers as reflection under questioning,
+      // not as thinking aloud mid-debug.
+      const wrap = (p as { wrap?: boolean }).wrap === true ? ' [wrap-up phase]' : '';
+      return { ts: e.ts, text: `${at}  interviewer: "${String(p.text ?? '')}"${nudge}${wrap}` };
     }
     case 'spec_mutation':
       return { ts: e.ts, text: `${at}  SPEC CHANGED: ${String(p.diff_summary ?? '')}` };

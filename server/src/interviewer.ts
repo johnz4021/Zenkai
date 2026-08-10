@@ -139,6 +139,13 @@ export interface InterviewerContext {
    *  half. The interviewer had never seen a line of the problem it was
    *  probing; this is the fix, bounded. */
   codebase?: string;
+  /** renderAgenda() output: which evaluation dimensions still lack
+   *  evidence. PER-TURN (it changes as evidence accumulates) — the running
+   *  to-do list that makes unprompted probes purposeful instead of generic. */
+  agenda?: string;
+  /** renderWrapState() output while the wrap-up phase is active: which
+   *  evaluation question is next, or the closing instruction. PER-TURN. */
+  wrapState?: string;
 }
 
 export type Interviewer = (ctx: InterviewerContext) => Promise<InterviewerTurn>;
@@ -511,6 +518,8 @@ export function render(template: string, ctx: InterviewerContext): string {
     ADRIFT: ctx.adriftObservation
       ? `ADRIFT — ${ctx.adriftObservation} Follow the adrift rules above: one move, nudge true.`
       : 'no',
+    AGENDA: ctx.agenda ?? '(no agenda computed for this round)',
+    WRAPUP: ctx.wrapState ?? 'no — the working phase is still on.',
     STUCK: ctx.stuckObservation
       ? `STUCK — ${ctx.stuckObservation} Follow the stuck rules above: one move, their vocabulary only, nudge true.`
       : 'no',
