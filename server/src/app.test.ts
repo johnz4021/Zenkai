@@ -436,3 +436,36 @@ describe('practice door — the explicit link input (planner parity, user call 2
     expect(placeholder && placeholder[1]).not.toMatch(/\b(read|reads|fetch|look)\b/i);
   });
 });
+
+describe('composer-first landing — hero + status line (design round2-A-minimal)', () => {
+  const html = appPage();
+  const js = clientScript('app.js') ?? '';
+
+  it('the hero is the label — heading semantics and a11y in one element', () => {
+    expect(js).toContain('<h1 class="hero"><label for="rep-paste">What are you preparing for?</label></h1>');
+    expect(html).toMatch(/#practice-wrap \.hero label \{[\s\S]{0,200}font-size: 26px/);
+  });
+
+  it('one status line, repainted every poll, outside the typing guard', () => {
+    expect(html).toContain('id="home-status"');
+    // no aria-live: the genclock rewrites textContent every second
+    expect(html).not.toMatch(/id="home-status"[^>]*aria-live/);
+    expect(js).toContain('function renderHomeStatus');
+    // fresh every poll: called AFTER the guarded renderPractice, unconditionally
+    expect(js).toMatch(/renderPractice\(\);\s*\n\s*renderHomeStatus\(state\)/);
+  });
+
+  it('the segments speak only when true and route to their tabs', () => {
+    expect(js).toContain('building your round');
+    expect(js).toContain("ready →");
+    expect(js).toContain('next planned: ');
+    expect(js).toMatch(/href="#\/history"/);
+    // countdown reuses roundDates + daysUntil, steel-TEXT tier for contrast
+    expect(js).toMatch(/renderHomeStatus[\s\S]*roundDates\(row\.target\)/);
+    expect(html).toMatch(/#home-status \.in-days \{ color: var\(--steel-text\)/);
+  });
+
+  it('the ready signal counts the landing as seen — the line shows it there', () => {
+    expect(js).toContain("if (page === 'history' || page === 'practice') repReadyUnseen = false;");
+  });
+});

@@ -664,7 +664,9 @@ function renderPractice() {
     }
     return;
   }
-  html += '<label class="micro" for="rep-paste">Practice now</label>' +
+  // The hero IS the textarea's label (label-in-h1: heading semantics and the
+  // a11y association in one element — the real-labels rule, no duplication).
+  html += '<h1 class="hero"><label for="rep-paste">What are you preparing for?</label></h1>' +
     '<textarea id="rep-paste" placeholder=""></textarea>' + chips +
     '<div class="metaline">paste a recruiter email, a JD, a friend’s description — ' +
     '<a href="#" id="rep-attach">attach a file</a></div>' +
@@ -1292,6 +1294,42 @@ function renderIndex(state) {
 
 /** Pick an unfinished plan's conversation back up — replayed from disk, so
  *  a closed tab or restarted app costs nothing. */
+// ---- the landing's one status line (design round2-A-minimal, 2026-08-10):
+//      everything the old strip and NEXT row said, compressed to a sentence.
+//      Repainted every poll — it lives OUTSIDE the composer's repaint guard,
+//      so it stays fresh while a half-typed correction stays protected. ----
+function renderHomeStatus(state) {
+  const host = el('home-status');
+  if (!host) return;
+  const bits = [];
+  // Practice segment — suppressed while the wait card is up (it already
+  // says "building" in a much bigger voice).
+  if (rep.phase !== 'started') {
+    const reps = state.reps || [];
+    const building = reps.find((x) => x.status === 'generating');
+    const ready = reps.filter((x) => x.status === 'ready').length;
+    if (building) {
+      const since = (building.generating || {}).since;
+      bits.push('building your round' +
+        (since ? ' · <span class="genclock" data-since="' + esc(since) + '"></span>' : ''));
+    } else if (ready > 0) {
+      bits.push('<a href="#/history">' + ready + ' ready →</a>');
+    }
+  }
+  // Plans segment — the first target (already nearest-deadline-first) with an
+  // actionable today row; countdown via the same roundDates the plan cards use.
+  for (const row of state.targets || []) {
+    const today = (row.days || []).find((d) => d.kind === 'day' && d.today && (d.items || []).length);
+    if (!today) continue;
+    const upcoming = roundDates(row.target).filter((r) => !r.passed);
+    const n = upcoming.length ? daysUntil(upcoming[0].date) : null;
+    bits.push('<a href="#/plans">next planned: ' + esc(row.target.label) +
+      (n === null ? '' : ' in <span class="in-days">' + n + 'd</span>') + ' →</a>');
+    break;
+  }
+  host.innerHTML = bits.length ? '<div class="statusline">' + bits.join(' · ') + '</div>' : '';
+}
+
 // ---- practice history (#/history): the reps strip, extracted from the old
 //      index when the composer took over '#/' (2026-08-10). Failed ≠ ready
 //      visually, the empty state is a door, and judged cards work for free —
@@ -1629,11 +1667,9 @@ function trackRepSignal(state, page) {
   }
   repWasGenerating = new Set(lastReps.filter((x) => x.status === 'generating').map((x) => x.id));
   // "Seen" means the ready rep is actually ON SCREEN: the history strip, or
-  // the landing's wait card. The landing input/confirm screen shows nothing
-  // about it yet — clearing there swallowed the signal (QA ISSUE-004).
-  // (Simplifies to page === 'practice' unconditionally once the status line
-  // lands and the signal is visible in every landing phase.)
-  if (page === 'history' || (page === 'practice' && rep.phase === 'started')) repReadyUnseen = false;
+  // the landing — where the status line now shows "N ready" in every phase
+  // (the QA ISSUE-004 rationale, satisfied by the line itself).
+  if (page === 'history' || page === 'practice') repReadyUnseen = false;
   if (FAVICON_EL) FAVICON_EL.href = repReadyUnseen ? FAVICON_READY : FAVICON_IDLE;
 }
 
@@ -1717,8 +1753,10 @@ function render(state) {
     // input/confirm hold a half-typed correction — the poll must not repaint
     // under the user (the plan-page rule). The wait state has no inputs, so
     // it repaints freely and the phase flips (drafting → building → ready)
-    // arrive within one poll.
+    // arrive within one poll. The status line is a sibling of the flow and
+    // repaints on EVERY poll — it carries no inputs, only fresh state.
     if (rep.phase === 'started' || !el('practice-wrap')) renderPractice();
+    renderHomeStatus(state);
     return;
   }
   if (r.page === 'new') {

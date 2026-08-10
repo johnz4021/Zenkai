@@ -438,6 +438,20 @@ export function appPage(): string {
   /* ---- the practice door (design review 2026-08-08, approved mockup) ---- */
   #practice-wrap { max-width: 62ch; margin: 0 auto; }
   #practice-wrap .micro { margin-bottom: 10px; }
+  /* The landing hero: the a11y label IS the heading (real-labels rule) —
+     the largest Archivo on any surface, but quiet next to the 54px countdown. */
+  #practice-wrap .hero { margin: 0 0 22px; }
+  #practice-wrap .hero label {
+    display: inline; margin: 0;
+    font-size: 26px; font-weight: 500; letter-spacing: -.01em;
+    line-height: 1.25; color: var(--text-1);
+  }
+  /* The one status line beneath the composer. Steel-TEXT on the countdown
+     (time in its readable tier — raw steel fails contrast on the ground). */
+  #home-status { max-width: 62ch; margin: 18px auto 0; font-size: 12px; color: var(--text-2); }
+  #home-status a { color: var(--text-2); text-decoration: none; }
+  #home-status a:hover { color: var(--text-1); }
+  #home-status .in-days { color: var(--steel-text); }
   #rep-paste {
     width: 100%; min-height: 120px; resize: vertical;
     background: var(--panel); color: var(--text-1); border: 1px solid var(--line);
@@ -823,6 +837,11 @@ export function appPage(): string {
          queue, no pace. Rendered whole by the client, same contract as
          entry-flow. -->
     <div id="practice-flow" aria-live="polite"></div>
+    <!-- The one status line beneath the composer — a SIBLING of the flow so
+         renderPractice's innerHTML wipes never touch it, repainted on every
+         poll from render() (outside the typing-protection guard). No
+         aria-live: the genclock rewrites its text every second. -->
+    <div id="home-status"></div>
   </section>
 
   <section id="history" hidden>
