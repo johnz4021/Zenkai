@@ -449,6 +449,11 @@ export function appPage(): string {
      its own copy or helper lines shout in body white (QA ISSUE-001). */
   #practice-wrap .metaline { color: var(--text-2); font-size: 12px; margin-top: 6px; }
   #practice-wrap .metaline a { color: var(--text-2); }
+  /* The explicit link input — same row the planner composer carries. */
+  #practice-wrap .linkrow { display: flex; gap: 8px; margin-top: 8px; }
+  #practice-wrap .linkrow input { flex: 1; font-size: 13px; padding: 7px 10px; color: var(--text-2); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font-family: inherit; }
+  #practice-wrap .linkrow input:focus { color: var(--text-1); }
+  #practice-wrap .linkrow button { min-height: 0; padding: 4px 12px; font-size: 13px; color: var(--text-2); }
   /* One sticky-bottom element per stack (QA ISSUE-003): the practice screen
      has NO sticky at all — it fits a viewport; Start sits in flow. */
   .rep-actions { display: flex; justify-content: flex-end; margin-top: 14px; }

@@ -638,6 +638,7 @@ function renderPractice() {
   const host = el('practice-flow');
   const paste = el('rep-paste');
   const keep = paste ? paste.value : rep.description;
+  const keepLink = el('rep-link') ? el('rep-link').value : '';
   const chips = attachments.length
     ? '<div id="plan-attach">' + attachments.map((a, i) =>
         '<span class="attach"><span class="name">' + esc(a.name) + '</span>' +
@@ -658,7 +659,12 @@ function renderPractice() {
   html += '<label class="micro" for="rep-paste">Practice now</label>' +
     '<textarea id="rep-paste" placeholder=""></textarea>' + chips +
     '<div class="metaline">paste a recruiter email, a JD, a friend’s description — ' +
-    '<a href="#" id="rep-attach">attach a file</a></div>';
+    '<a href="#" id="rep-attach">attach a file</a></div>' +
+    // The explicit link input (planner precedent, user call 2026-08-07:
+    // affordances beat discovery). Honest copy: the practice path never
+    // fetches — a link rides along with the notes as-is.
+    '<div class="linkrow"><input id="rep-link" placeholder="add a link (optional) — the posting, a thread; it rides along with your notes" aria-label="Add a link (optional)" />' +
+    '<button id="rep-addlink" type="button">add</button></div>';
 
   if (rep.phase === 'confirm' && rep.drafts.length) {
     const d = rep.drafts[rep.chosen];
@@ -715,6 +721,7 @@ function renderPractice() {
   host.innerHTML = html;
   const pasteEl = el('rep-paste');
   if (pasteEl) pasteEl.value = keep;
+  if (el('rep-link')) el('rep-link').value = keepLink;
   wirePractice();
 }
 
@@ -752,6 +759,19 @@ function renderRepWait() {
 function wirePractice() {
   const attach = el('rep-attach');
   if (attach) attach.addEventListener('click', (e) => { e.preventDefault(); el('e-file').click(); });
+  const addRepLink = () => {
+    const box = el('rep-link');
+    let url = (box.value || '').trim();
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    attachments.push({ kind: 'link', name: url, content: url });
+    box.value = '';
+    renderPractice();
+  };
+  if (el('rep-addlink')) el('rep-addlink').addEventListener('click', addRepLink);
+  if (el('rep-link')) el('rep-link').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addRepLink(); }
+  });
   const f = el('practice-flow');
   for (const b of f.querySelectorAll('[data-ri]')) {
     b.addEventListener('click', () => { attachments.splice(Number(b.dataset.ri), 1); renderPractice(); });

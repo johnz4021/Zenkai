@@ -379,3 +379,24 @@ describe('practice door — client surface', () => {
     expect(js).toMatch(/launchCommon\('\/api\/practice\/launch'/);
   });
 });
+
+describe('practice door — the explicit link input (planner parity, user call 2026-08-07)', () => {
+  const html = appPage();
+  const js = clientScript('app.js') ?? '';
+
+  it('carries the same clearly-optional link row the planner has', () => {
+    expect(js).toContain('id="rep-link"');
+    expect(js).toContain('rep-addlink');
+    expect(js).toMatch(/rep-link[^>]*add a link \(optional\)/);
+    expect(html).toContain('#practice-wrap .linkrow');
+  });
+
+  it('links ride along as text — the copy never promises fetching', () => {
+    // The practice clarify is one forced tool call with no fetch path; a
+    // "we'll read it" promise here would be the dead-link broken-promise
+    // class the external-bridge review killed.
+    expect(js).toContain('it rides along with your notes');
+    const placeholder = js.match(/rep-link[^>]*placeholder="([^"]*)"/);
+    expect(placeholder && placeholder[1]).not.toMatch(/\b(read|reads|fetch|look)\b/i);
+  });
+});
