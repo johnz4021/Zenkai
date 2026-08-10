@@ -831,6 +831,13 @@ async function practiceClarify(answers) {
   const paste = el('rep-paste');
   if (paste && rep.phase === 'input') rep.description = paste.value;
   if (paste && rep.phase === 'confirm') rep.description = paste.value + (rep.description.includes('\n\nCorrection: ') ? rep.description.slice(rep.description.indexOf('\n\nCorrection: ')) : '');
+  // Link-only input works: a landing that says "paste anything" must accept
+  // someone who only dropped a link or a file. Seed the description from the
+  // first text-bearing attachment; binary-only gets a stock line (the server
+  // gate requires a non-empty description).
+  if (!rep.description.trim() && attachments.length) {
+    rep.description = (attachments.find((a) => a.content) || {}).content || 'see the attached material';
+  }
   if (!rep.description.trim()) { rep.error = 'describe the round in a sentence or two first'; renderPractice(); return; }
   rep.phase = 'clarifying'; rep.error = ''; rep.answers = answers || [];
   renderPractice();

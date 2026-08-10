@@ -486,3 +486,11 @@ describe('launch origin — the falsifier is durable, not scrollback', () => {
     expect(appSource.match(/logLaunch\(b\.origin, sessionId\)/g)).toHaveLength(2);
   });
 });
+
+describe('link-only input — "paste anything" includes just a link', () => {
+  const js = clientScript('app.js') ?? '';
+  it('an empty composer with attachments seeds the description instead of erroring', () => {
+    expect(js).toMatch(/!rep\.description\.trim\(\) && attachments\.length/);
+    expect(js).toContain("'see the attached material'");
+  });
+});
