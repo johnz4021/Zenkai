@@ -589,3 +589,94 @@ segment and debriefs it.
 
 **Effort:** human ~1 wk / CC ~3-4 hrs. **Priority:** P2 once the criterion fires.
 **Blocked on:** portfolio planning shipping (the accepted scope).
+
+---
+
+## 27. Retention policy for generated problems and rep metadata
+
+**What:** A reaping rule for `problems/` and `targets/*/problems/` (used problems older
+than N days), plus failed reps, stale `ready` reps, and abandoned generations in
+`reps.json`.
+
+**Why:** `problems/` already holds 22 full generated repos with no reaping code anywhere
+in the product. The "Practice now" door adds a second unbounded producer, and rep
+metadata compounds it — a failed rep leaves both a directory and a row. Nothing breaks at
+22 or at 200, which is exactly why it will never get fixed unless it's written down.
+
+**Pros:** bounded disk, and a `ready` rep that has sat for three weeks is stale signal the
+UI shouldn't offer. **Cons:** a reaping rule is a destructive code path in a product that
+currently has none, and the right N is unknown — a used problem you failed is arguably
+worth keeping forever (see #28, which wants exactly that corpus).
+
+**Context:** Raised by Codex in the 2026-08-08 CEO review on spontaneous practice. Note
+the dependency inversion with #28: retention must NOT reap unsolved problems, because #28
+proposes re-serving them. Reap on `.used` + assessment-says-solved, never on age alone.
+
+**Effort:** human ~half day / CC ~45 min. **Priority:** P3. **Blocked on:** nothing, but
+sequence after #28 so the keep-rule is known.
+
+---
+
+## 28. "One more" — extra practice when today's plan is done
+
+**What:** The other half of the spontaneous-practice question (2026-08-08 CEO review): you
+finished today's queue items and want another rep. Two sources, in order: a warm pool kept
+stocked for your targets' *confirmed* specs (shapes are known and stable, so pre-warming
+actually works there), then the already-generated corpus — 21 of 22 problems on disk are
+used, and `feedback.ts:19` already states the design intent that *"a problem you didn't
+crack stays re-runnable."* Rank by the gap graph's focus dimension.
+
+**Why:** This is user case (a), and the shipped "Practice now" door deliberately does not
+serve it: that door infers a round from pasted information, so it must generate, and five
+minutes is intrinsic. "Give me one more" is the opposite — it wants instant, and instant
+is only possible where the shape is already known.
+
+**Pros:** near-zero generation cost (the corpus is paid for); re-serving a problem you
+failed, aimed at your focus gap, is better pedagogy than a fresh random one; the warm pool
+(`pool.ts`, complete and tested at 8 passing tests) is currently unreachable from the app
+and would finally be used. **Cons:** a memorized problem stops teaching, so re-runs need a
+staleness rule; warm-pool depth costs speculative opus spend (see TODOS #12).
+
+**Blocking bug this must fix first:** `markUsed` (`pool.ts:56`) OVERWRITES `.used` with the
+new session id, and `rejudge`'s reverse lookup (`cli.ts:411`) matches on that file's first
+line. Re-running any problem therefore makes the *earlier* session permanently
+un-rejudgeable. Append, don't overwrite, and have the lookup scan all lines.
+
+**Context:** Set aside during the 2026-08-08 CEO review to keep the second door's build
+clean — it's a different mechanism (pre-warm + re-serve) from the door's (infer +
+generate). Codex independently argued the simplest useful version of practice is close to
+this; the counter is that it doesn't answer "a round like the info I gathered," which is
+what the door exists for. Both are real; they're just two features.
+
+**Effort:** human ~1 wk / CC ~2 hrs. **Priority:** P2. **Blocked on:** nothing. Revisit
+after the second door has real usage — if a 5-minute build always feels fine, this may
+never be wanted.
+
+---
+
+## 29. Motion vocabulary is undecided
+
+**What:** Decide whether this app animates at all, and if so, name the two or three
+intentional motions (entrance, state arrival, focus) as tokens rather than per-component
+guesses.
+
+**Why:** The design litmus check came back NOT SPEC'D on motion in the 2026-08-08 design
+review. Nothing in the app animates today, which may well be correct for an instrument
+panel, but nobody decided it — so the first implementer who wants a spinner introduces one
+and the vocabulary is set by accident. The "Practice now" wait state is the first surface
+where motion would actually carry meaning (build progress, arrival of a ready round), and
+it's shipping with honest elapsed text instead, which is a defensible answer but an
+undocumented one.
+
+**Pros:** cheap to decide; prevents a spinner-shaped accident; "no motion" is a legitimate
+and rare position that's worth stating out loud. **Cons:** hard to decide well against one
+surface — a motion vocabulary wants several screens to calibrate against, and guessing now
+risks a rule that the timeline or the session chrome immediately breaks.
+
+**Context:** Deferred from the 2026-08-08 plan-design review. Note the constraint it has to
+live inside: `app.ts:260-276` states the shell has no elevation, so any motion cannot rely
+on shadow, lift, or depth. That rules out most conventional "rise on hover" patterns and
+pushes toward opacity, position, and hairline-weight changes.
+
+**Effort:** human ~half day / CC ~15 min. **Priority:** P3. **Blocked on:** nothing, but
+worth waiting until the wait state and the reps strip both exist to decide against.
