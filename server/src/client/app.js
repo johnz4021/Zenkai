@@ -1590,8 +1590,10 @@ function trackRepSignal(state, page) {
     if (x.status === 'ready' && repWasGenerating.has(x.id)) repReadyUnseen = true;
   }
   repWasGenerating = new Set(lastReps.filter((x) => x.status === 'generating').map((x) => x.id));
-  // Looking at the practice page IS seeing the ready rep.
-  if (page === 'practice') repReadyUnseen = false;
+  // "Seen" means the ready rep is actually ON SCREEN: the index strip, or
+  // the practice wait card. The practice input/confirm screen shows nothing
+  // about it — clearing there swallowed the signal (QA ISSUE-004).
+  if (page === 'index' || (page === 'practice' && rep.phase === 'started')) repReadyUnseen = false;
   if (FAVICON_EL) FAVICON_EL.href = repReadyUnseen ? FAVICON_READY : FAVICON_IDLE;
 }
 
