@@ -680,3 +680,55 @@ pushes toward opacity, position, and hairline-weight changes.
 
 **Effort:** human ~half day / CC ~15 min. **Priority:** P3. **Blocked on:** nothing, but
 worth waiting until the wait state and the reps strip both exist to decide against.
+
+---
+
+## 30. Promotion: rep → season (spec frozen, presser doesn't exist yet)
+
+**What:** `POST /api/practice/promote {rep_id, label, date?}` — one endpoint turning a
+finished target-less rep into a new season. Full spec in
+ceo-plans/2026-08-10-composer-first-landing.md (Phase 2): guards, `promoted_from`
+self-heal key (NOT spec.id — model-authored, not unique), queue-repair on heal,
+`acceptSpecsCore()` extraction so promotion never forks accept-spec's logic, CTA on
+the landing strip card only (the session server never learns rep identity), copy
+"seeded {label}" not "part of" (season starts 0/N), text-context-only seeding
+(rep attachments were never persisted, by design).
+
+**Why deferred (2026-08-10, codex tension, user call):** mid-season with seasons
+already built, nobody presses this button; the person it serves is a future new
+user. The spec cost 19 spec-loop + 15 codex findings to pin — freezing it beats
+rebuilding it.
+
+**Un-defer trigger:** a second real user exists, OR a rep of yours genuinely
+deserved a season and couldn't get one.
+
+**Effort:** human ~3 days / CC ~1.5 hrs. **Priority:** P2 once the trigger fires.
+
+---
+
+## 31. Gap-aimed suggestion line in the empty composer
+
+**What:** When the landing composer is empty and a gap graph exists, one quiet line:
+"your focus gap is {gap} — want a rep aimed at it?" One tap → generation briefed by
+`buildTargetNote` (the doorless `cli.ts prepare` machinery, given a door).
+
+**Why deferred (2026-08-10 CEO review):** the landing should prove itself plain
+first, and the suggestion copy deserves design against a REAL gap-graph state —
+which a week of composer-first reps will produce.
+
+**Effort:** human ~1 day / CC ~40 min. **Priority:** P3. **Blocked on:** the
+composer landing shipping + a non-empty gap graph.
+
+---
+
+## 32. Bare-company-name quick start ("Palantir" → a round)
+
+**What:** The composer accepts one word; clarify infers a representative round from
+the name plus any existing target context for that company.
+
+**Why deferred (2026-08-10 CEO review):** step one is a TEST, not code — the
+clarifier may already handle a one-word description passably (it's just a short
+description). If it does, this is placeholder copy, not a feature. Guard the
+invented-company-facts failure the blueprint rules exist to prevent.
+
+**Effort:** test ~10 min; if real, human ~2 days / CC ~1 hr. **Priority:** P3.
