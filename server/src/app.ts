@@ -427,8 +427,11 @@ export function appPage(): string {
     border-radius: 6px; padding: 12px 14px; font: inherit; line-height: 1.55;
   }
   /* The readback: ONE chevron select for the closed vocabulary; open prose
-     values are real inputs styled flat — affordance matches constraint (D4). */
+     values are real inputs styled flat — affordance matches constraint (D4).
+     Segments (.shape-seg) wrap as units so a narrow viewport never orphans
+     a bare input from the words that label it (QA ISSUE-002). */
   .rep-shape { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 6px; margin: 14px 0 4px; }
+  .rep-shape .shape-seg { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
   .rep-shape select {
     background: var(--raised); color: var(--text-1); border: 1px solid var(--line);
     border-radius: 6px; padding: 10px 12px; font: inherit; min-height: 44px;
@@ -442,6 +445,10 @@ export function appPage(): string {
   .rep-shape input:focus { border-bottom-color: var(--text-1); }
   .rep-shape label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   #rep-note { color: var(--text-3); font-size: 12px; margin: 6px 0 14px; }
+  /* .metaline is runway/reprow-scoped elsewhere; the practice surface needs
+     its own copy or helper lines shout in body white (QA ISSUE-001). */
+  #practice-wrap .metaline { color: var(--text-2); font-size: 12px; margin-top: 6px; }
+  #practice-wrap .metaline a { color: var(--text-2); }
   /* One sticky-bottom element per stack (QA ISSUE-003): the practice screen
      has NO sticky at all — it fits a viewport; Start sits in flow. */
   .rep-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
