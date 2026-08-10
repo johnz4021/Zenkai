@@ -23,30 +23,38 @@ function esc(s) { return String(s).replace(/</g, '&lt;'); }
 function el(id) { return document.getElementById(id); }
 
 // ---- routing: the route decides what's visible; the poll only fills it ----
-// #/       all plans (index)
-// #/new    make a plan (intake + flow)
-// #/t/<id> one season timeline
+// #/         the composer landing (practice IS the front door, 2026-08-10)
+// #/plans    all plans (the old index)
+// #/history  practice history — the reps strip + judged cards
+// #/new      make a plan (intake + flow)
+// #/t/<id>   one season timeline
+// #/practice legacy alias — render() canonicalizes it to #/
 // The old design derived visibility from hasTargets on every poll and
 // focusout, which yanked the user off the intake page — navigation intent
 // and data state are separate things.
 function route() {
   const h = window.location.hash || '#/';
   if (h.startsWith('#/new')) return { page: 'new' };
-  if (h.startsWith('#/practice')) return { page: 'practice' };
+  if (h.startsWith('#/plans')) return { page: 'plans' };
+  if (h.startsWith('#/history')) return { page: 'history' };
   if (h.startsWith('#/t/')) return { page: 'timeline', id: decodeURIComponent(h.slice(4)) };
-  return { page: 'index' };
+  // '#/' and the legacy '#/practice' alias are both the composer landing.
+  return { page: 'practice' };
 }
 
 window.addEventListener('hashchange', () => {
+  const h = window.location.hash;
   // Leaving the intake abandons the client-side flow; the target AND its
-  // conversation persist on disk and surface on the index as resumable.
-  if (!window.location.hash.startsWith('#/new')) {
+  // conversation persist on disk and surface on the plans page as resumable.
+  if (!h.startsWith('#/new')) {
     flowTargetId = null;
     resetPlan();
   }
-  // Leaving practice drops the un-started flow the same way — a rep that
-  // reached Start lives in reps.json and needs nothing from this tab.
-  if (!window.location.hash.startsWith('#/practice')) resetRep();
+  // Leaving the landing drops the un-started flow the same way — a rep that
+  // reached Start lives in reps.json and needs nothing from this tab. The
+  // '#/practice' → '#/' canonicalizing redirect must NOT count as leaving,
+  // or the transient would erase in-progress composer state.
+  if (!(h === '' || h === '#/' || h.startsWith('#/practice'))) resetRep();
   if (lastStateJson) render(JSON.parse(lastStateJson));
 });
 
@@ -753,7 +761,7 @@ function renderRepWait() {
       (mine.phase === 'drafting' && g.since ? ' · <span class="genclock" data-since="' + esc(g.since) + '"></span>' : '') +
     '</div>' +
     '<div class="progress"><div class="fill det" data-since="' + esc(g.since || '') + '"></div></div>' +
-    '<p class="meta" style="margin-top:16px">You can close this. It’ll be waiting under <b>practice</b> on the home page — the tab title flips when it’s ready (~5 min).</p>';
+    '<p class="meta" style="margin-top:16px">You can close this. It’ll be waiting under <b>history</b> — the tab title flips when it’s ready (~5 min).</p>';
 }
 
 function wirePractice() {
@@ -1259,13 +1267,37 @@ function renderIndex(state) {
       '<div class="bar"><div class="fill" style="width:' + pct + '%"></div></div>' +
       '<div class="nextline">' + nextLine + '</div></a>';
   }
-  // ---- the practice strip (design D4-task): reps live on the home page
-  //      beside the plans — failed ≠ ready visually, and the empty state is
-  //      a door, not an apology. ----
+  el('index').innerHTML = html;
+  for (const a of el('index').querySelectorAll('[data-resume]')) {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      resumeIntake(a.dataset.resume);
+    });
+  }
+  for (const b of el('index').querySelectorAll('[data-del]')) {
+    b.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!window.confirm('Delete this plan and its conversation? This cannot be undone.')) return;
+      const r = await fetch('/api/target/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: b.dataset.del }) });
+      const s = await r.json();
+      if (s.error) { el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>'; return; }
+      refresh(true);
+    });
+  }
+}
+
+/** Pick an unfinished plan's conversation back up — replayed from disk, so
+ *  a closed tab or restarted app costs nothing. */
+// ---- practice history (#/history): the reps strip, extracted from the old
+//      index when the composer took over '#/' (2026-08-10). Failed ≠ ready
+//      visually, the empty state is a door, and judged cards work for free —
+//      reps carry a session_id and the card store is session-keyed. ----
+function renderHistory(state) {
   const reps = state.reps || [];
-  html += '<div class="rep-strip"><div class="micro">practice</div>';
+  let html = '<div class="rep-strip"><h2 class="daysleft" style="font-size:15px">practice history</h2>';
   if (!reps.length) {
-    html += '<div class="meta">No practice yet — <a href="#/practice">paste a JD or recruiter email</a> and be mid-problem in ten minutes. No plan needed.</div>';
+    html += '<div class="meta">No practice yet — <a href="#/">paste a JD or recruiter email</a> and be mid-problem in ten minutes. No plan needed.</div>';
   }
   for (const x of reps) {
     const shape = x.spec && x.spec.capabilities ? specShapeLine(x.spec.capabilities) : '';
@@ -1291,16 +1323,15 @@ function renderIndex(state) {
       '</div>' + action + '</div>';
   }
   html += '</div>';
-  el('index').innerHTML = html;
-  for (const b of el('index').querySelectorAll('.repstart')) {
+  const host = el('history');
+  host.innerHTML = html;
+  for (const b of host.querySelectorAll('.repstart')) {
     b.addEventListener('click', () => launchRep(b.dataset.rep, b));
   }
-  for (const b of el('index').querySelectorAll('.repretry')) {
+  for (const b of host.querySelectorAll('.repretry')) {
     b.addEventListener('click', () => repRetry(b.dataset.rep, b));
   }
-  // Judged cards work on rep rows for free — reps carry a session_id, and
-  // the card store is session-keyed. Same toggle wiring as the timeline.
-  for (const a of el('index').querySelectorAll('a.fbtoggle')) {
+  for (const a of host.querySelectorAll('a.fbtoggle')) {
     a.addEventListener('click', async (e) => {
       e.preventDefault();
       const sid = a.dataset.s;
@@ -1318,27 +1349,8 @@ function renderIndex(state) {
       rerender();
     });
   }
-  for (const a of el('index').querySelectorAll('[data-resume]')) {
-    a.addEventListener('click', (e) => {
-      e.preventDefault();
-      resumeIntake(a.dataset.resume);
-    });
-  }
-  for (const b of el('index').querySelectorAll('[data-del]')) {
-    b.addEventListener('click', async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (!window.confirm('Delete this plan and its conversation? This cannot be undone.')) return;
-      const r = await fetch('/api/target/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: b.dataset.del }) });
-      const s = await r.json();
-      if (s.error) { el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>'; return; }
-      refresh(true);
-    });
-  }
 }
 
-/** Pick an unfinished plan's conversation back up — replayed from disk, so
- *  a closed tab or restarted app costs nothing. */
 function resumeIntake(id) {
   window.location.hash = '#/new';
   flowTargetId = id;
@@ -1613,10 +1625,12 @@ function trackRepSignal(state, page) {
     if (x.status === 'ready' && repWasGenerating.has(x.id)) repReadyUnseen = true;
   }
   repWasGenerating = new Set(lastReps.filter((x) => x.status === 'generating').map((x) => x.id));
-  // "Seen" means the ready rep is actually ON SCREEN: the index strip, or
-  // the practice wait card. The practice input/confirm screen shows nothing
-  // about it — clearing there swallowed the signal (QA ISSUE-004).
-  if (page === 'index' || (page === 'practice' && rep.phase === 'started')) repReadyUnseen = false;
+  // "Seen" means the ready rep is actually ON SCREEN: the history strip, or
+  // the landing's wait card. The landing input/confirm screen shows nothing
+  // about it yet — clearing there swallowed the signal (QA ISSUE-004).
+  // (Simplifies to page === 'practice' unconditionally once the status line
+  // lands and the signal is visible in every landing phase.)
+  if (page === 'history' || (page === 'practice' && rep.phase === 'started')) repReadyUnseen = false;
   if (FAVICON_EL) FAVICON_EL.href = repReadyUnseen ? FAVICON_READY : FAVICON_IDLE;
 }
 
@@ -1629,7 +1643,9 @@ function setTitle(r, state) {
   if (repReadyUnseen) { document.title = '✓ Ready · Zenkai'; return; }
   const building = (state.reps || []).some((x) => x.status === 'generating');
   const prefix = building ? '(building) ' : '';
-  if (r.page === 'practice') { document.title = prefix + 'practice · Zenkai'; return; }
+  if (r.page === 'practice') { document.title = prefix + 'Zenkai'; return; }
+  if (r.page === 'plans') { document.title = prefix + 'your plans · Zenkai'; return; }
+  if (r.page === 'history') { document.title = prefix + 'practice history · Zenkai'; return; }
   if (r.page === 'new') { document.title = prefix + 'new plan · Zenkai'; return; }
   if (r.page === 'timeline') {
     const row = state.targets.find((x) => x.target.id === r.id);
@@ -1654,29 +1670,37 @@ function render(state) {
   const boot = el('boot');
   if (boot) boot.remove();
 
+  // Canonicalize the legacy practice route — the composer lives at '#/'
+  // now. Same redirect-in-render pattern as the deleted-target fallback
+  // below; hashchange re-renders, and its guard treats the transient and
+  // the destination as one surface so composer state survives.
+  if (window.location.hash.startsWith('#/practice')) {
+    window.location.hash = '#/';
+    return;
+  }
+
   const r = route();
   trackRepSignal(state, r.page);
   setTitle(r, state);
-  // Data-driven redirects only — never visibility flips: with nothing set
-  // up yet, the only pages that exist are the intake and the practice door —
-  // practice is EXACTLY for the person with no plan yet (CEO review 2026-08-08).
-  if (!state.targets.length && !(state.reps || []).length && r.page !== 'new' && r.page !== 'practice') {
-    window.location.hash = '#/new';
-    return; // hashchange re-renders
-  }
+  // The old zero-plans redirect to #/new is GONE (2026-08-10): the composer
+  // at '#/' IS the correct page for someone with nothing set up — that's
+  // the whole point of the flip. Data-driven redirects only.
 
-  el('index').hidden = r.page !== 'index';
+  el('index').hidden = r.page !== 'plans';
   el('entry').hidden = r.page !== 'new';
   el('practice').hidden = r.page !== 'practice';
+  el('history').hidden = r.page !== 'history';
   el('timeline').hidden = r.page !== 'timeline';
-  el('nav-new').hidden = r.page === 'new';
-  el('nav-practice').hidden = r.page === 'practice';
   // The planning surface gets a wider page column for its two-pane layout.
   document.body.classList.toggle('wide', r.page === 'new');
 
-  if (r.page === 'index') {
+  if (r.page === 'plans') {
     renderIndex(state);
-    choreograph(el('index'), 'index');
+    choreograph(el('index'), 'plans');
+    return;
+  }
+  if (r.page === 'history') {
+    renderHistory(state);
     return;
   }
   if (r.page === 'practice') {
@@ -1697,11 +1721,11 @@ function render(state) {
   // timeline
   const row = state.targets.find((x) => x.target.id === r.id);
   if (!row) {
-    window.location.hash = '#/';
+    window.location.hash = '#/plans';
     return;
   }
   const tl = el('timeline');
-  tl.innerHTML = '<a href="#/" class="backlink">← all plans</a>' + renderSeason(row, state);
+  tl.innerHTML = '<a href="#/plans" class="backlink">← all plans</a>' + renderSeason(row, state);
   wireTimeline(tl);
   choreograph(tl, 'timeline:' + r.id);
 }

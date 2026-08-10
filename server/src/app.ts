@@ -811,10 +811,16 @@ export function appPage(): string {
   </section>
 
   <section id="practice" hidden>
-    <!-- The second door (CEO review 2026-08-08): paste what you gathered,
-         confirm the inferred shape, one rep — no target, no queue, no pace.
-         Rendered whole by the client, same contract as entry-flow. -->
+    <!-- The front door (CEO review 2026-08-10, composer-first): paste what
+         you gathered, confirm the inferred shape, one rep — no target, no
+         queue, no pace. Rendered whole by the client, same contract as
+         entry-flow. -->
     <div id="practice-flow" aria-live="polite"></div>
+  </section>
+
+  <section id="history" hidden>
+    <!-- Practice history: the reps strip + judged cards. Reps and seasons
+         never share a page (design review 2026-08-10). -->
   </section>
 
   <section id="timeline" hidden></section>
@@ -1112,7 +1118,7 @@ export function runApp(cfg: AppConfig): http.Server {
           sessionLive: probe.reachable && !probe.ended,
         });
         if (verdict === 'not-ready') return json(400, { error: 'rep is not ready' });
-        if (verdict === 'already-used') return json(409, { error: 'that rep already ran — its card is on the home page' });
+        if (verdict === 'already-used') return json(409, { error: 'that rep already ran — its card is under history' });
         if (verdict === 'session-live') return json(409, { error: 'a session is already running — finish or end it first' });
         if (probe.reachable && probe.ended) {
           // Reap a graded session's lingering card server (the /api/launch

@@ -25,6 +25,7 @@ describe('home app page', () => {
     expect(html).toContain('/client/app.js');
     expect(html).toContain('id="index"');
     expect(html).toContain('id="entry"');
+    expect(html).toContain('id="history"');
     expect(html).toContain('id="timeline"');
   });
 
@@ -345,11 +346,17 @@ describe('practice door — client surface', () => {
     expect(html).toContain('<section id="practice" hidden>');
   });
 
-  it('#/practice routes and the no-plans redirect exempts it', () => {
+  it('the composer owns #/ and the tabs route; #/practice canonicalizes home', () => {
+    // composer-first IA (2026-08-10): '#/' falls through to the practice
+    // page; plans and history are their own routes.
+    expect(js).toContain("h.startsWith('#/plans')");
+    expect(js).toContain("h.startsWith('#/history')");
     expect(js).toContain("h.startsWith('#/practice')");
-    // the door exists FOR the person with no plan — the empty-state redirect
-    // to #/new must not swallow it
-    expect(js).toMatch(/r\.page !== 'new' && r\.page !== 'practice'/);
+    expect(js).toContain("window.location.hash = '#/'");
+    // The zero-plans redirect to #/new is DEAD — a new visitor's correct
+    // page IS the composer. (Condition pin, not a hash pin: resumeIntake
+    // legitimately sets '#/new'.)
+    expect(js).not.toContain('!state.targets.length');
   });
 
   it('the readback is a menu ONLY where the vocabulary is closed (design D4)', () => {
@@ -387,7 +394,7 @@ describe('practice door — client surface', () => {
     expect(js).not.toContain('Notification.requestPermission');
   });
 
-  it('the reps strip distinguishes failed from ready and has a real empty state', () => {
+  it('the history strip distinguishes failed from ready and has a real empty state', () => {
     expect(js).toContain('No practice yet');
     expect(js).toContain('repretry');
     // failed rows carry error copy and NO primary start button
