@@ -16,7 +16,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -204,6 +204,15 @@ function spawnDetached(args: string[], env: Record<string, string> = {}): void {
   child.unref();
 }
 
+/** Build output goes to `<dir>.build.log` — BESIDE the problem dir, never
+ *  inside it: the dir reaches the candidate's IDE and generation output
+ *  discusses the planted bug. Truncated per attempt so the log is always
+ *  the latest build's. Forced by rep-msnrmt0d (2026-08-10): a build died
+ *  partway with stdio ignored and left nothing to diagnose. */
+function openBuildLog(dir: string): number {
+  return openSync(dir + '.build.log', 'w');
+}
+
 /** Generation spawn with failure bookkeeping: a non-zero exit writes a
  *  .failed marker into the item dir so reconcile derives `failed` and the
  *  timeline can offer retry — a silent stuck "generating" row was the
@@ -213,10 +222,11 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
   if (item.planned_title) args.push('--title', item.planned_title);
   liveGenerations.add(dir);
   mkdirSync(dir, { recursive: true });
+  const logFd = openBuildLog(dir);
   const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), ...args], {
     cwd: repoRoot,
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', logFd, logFd],
     env: { ...process.env },
   });
   child.unref();
@@ -225,10 +235,11 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
   // orphan — and the UI gets an honest start time.
   if (child.pid) writeGeneratingMarker(dir, child.pid);
   child.on('close', (code) => {
+    closeSync(logFd);
     liveGenerations.delete(dir);
     clearGeneratingMarker(dir);
     if (code !== 0 && !existsSync(path.join(dir, '.validated'))) {
-      writeFileSync(path.join(dir, '.failed'), `exit ${code} at ${new Date().toISOString()}\n`);
+      writeFileSync(path.join(dir, '.failed'), `exit ${code} at ${new Date().toISOString()}; output in ${dir}.build.log\n`);
       console.warn(`[app] generation failed for ${item.id} (exit ${code})`);
     }
   });
@@ -241,10 +252,11 @@ function spawnRepBuild(rep: Rep): void {
   const dir = repProblemDir(repoRoot, rep.id);
   liveGenerations.add(dir);
   mkdirSync(dir, { recursive: true });
+  const logFd = openBuildLog(dir);
   const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), 'rep-build', rep.id], {
     cwd: repoRoot,
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', logFd, logFd],
     env: { ...process.env },
   });
   child.unref();
@@ -253,10 +265,11 @@ function spawnRepBuild(rep: Rep): void {
   // elapsed includes the ~30s draft (design decision 4A/T6).
   if (child.pid) writeGeneratingMarker(dir, child.pid);
   child.on('close', (code) => {
+    closeSync(logFd);
     liveGenerations.delete(dir);
     clearGeneratingMarker(dir);
     if (code !== 0 && !existsSync(path.join(dir, '.validated')) && !existsSync(path.join(dir, '.failed'))) {
-      writeFileSync(path.join(dir, '.failed'), `exit ${code} at ${new Date().toISOString()}\n`);
+      writeFileSync(path.join(dir, '.failed'), `exit ${code} at ${new Date().toISOString()}; output in ${dir}.build.log\n`);
       console.warn(`[app] rep ${rep.id} build failed (exit ${code})`);
     }
   });

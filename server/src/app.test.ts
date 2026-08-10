@@ -502,6 +502,20 @@ describe('launch origin — the falsifier is durable, not scrollback', () => {
   });
 });
 
+describe('build logs — recoverable, never candidate-visible', () => {
+  const appSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'app.ts'), 'utf8');
+
+  it('both build spawns pipe to a sibling .build.log, truncated per attempt', () => {
+    // BESIDE the problem dir (`dir + '.build.log'`), never inside it — the
+    // dir reaches the candidate's IDE and the output discusses the planted
+    // bug. 'w' so each attempt's log is the latest build's, not a mix.
+    expect(appSource).toContain("openSync(dir + '.build.log', 'w')");
+    expect(appSource.match(/stdio: \['ignore', logFd, logFd\]/g)).toHaveLength(2);
+    // both .failed markers point at the log so a failure is diagnosable
+    expect(appSource.match(/output in \$\{dir\}\.build\.log/g)).toHaveLength(2);
+  });
+});
+
 describe('link-only input — "paste anything" includes just a link', () => {
   const js = clientScript('app.js') ?? '';
   it('an empty composer with attachments seeds the description instead of erroring', () => {
