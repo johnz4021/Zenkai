@@ -668,16 +668,18 @@ function renderPractice() {
       '<label for="rep-kind">round type</label>' +
       '<select id="rep-kind">' + REP_KINDS.map((k) =>
         '<option value="' + k[0] + '"' + (k[0] === kind ? ' selected' : '') + '>' + k[1] + '</option>').join('') + '</select>' +
-      '<span class="shape-word">in</span>' +
+      '<span class="shape-seg"><span class="shape-word">in</span>' +
       '<label for="rep-lang">language</label>' +
-      '<input id="rep-lang" value="' + esc(rep.overrides.language) + '" placeholder="any language">' +
-      '<span class="shape-word">· about</span>' +
+      '<input id="rep-lang" value="' + esc(rep.overrides.language) + '" placeholder="any language" style="width:13ch"></span>' +
+      '<span class="shape-seg"><span class="shape-word">· about</span>' +
       '<label for="rep-size">size in files</label>' +
       '<input id="rep-size" inputmode="numeric" value="' + esc(rep.overrides.size) + '" placeholder="' +
         esc(String(d.spec.check.max_source_files || '')) + '" style="width:5ch">' +
-      '<span class="shape-word">files ·</span>' +
+      '<span class="shape-word">files</span></span>' +
+      '<span class="shape-seg"><span class="shape-word">·</span>' +
       '<label for="rep-diff">difficulty</label>' +
-      '<input id="rep-diff" value="' + esc(rep.overrides.difficulty) + '" placeholder="medium">' +
+      '<input id="rep-diff" value="' + esc(rep.overrides.difficulty) + '" placeholder="medium" style="width:9ch">' +
+      '<span class="shape-word">difficulty</span></span>' +
       '</div>' +
       '<div class="metaline">' + esc(specShapeLine(d.spec.capabilities)) + '</div>';
     if (rep.questions.length) {
