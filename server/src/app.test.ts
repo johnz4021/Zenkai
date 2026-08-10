@@ -340,18 +340,23 @@ describe('practice door — client surface', () => {
   const js = clientScript('app.js') ?? '';
 
   it('the masthead is tabs with a steel you-are-here (composer-first, 2026-08-10)', () => {
-    // The daily action IS the page under the wordmark; plans and history are
-    // secondary tabs. Active tab wears the steel underline via aria-current —
-    // wayfinding and a11y as one mechanism. The landing marks no tab active.
-    expect(html).not.toContain('id="nav-practice"');
+    // Three tabs: practice (→ '#/', the generator — the wordmark alone was
+    // an undiscoverable way back), plans, history. Active tab wears the
+    // steel underline via aria-current — wayfinding and a11y as one
+    // mechanism.
+    expect(html).toContain('href="#/" id="nav-practice"');
     expect(html).not.toContain('id="nav-new"');
-    expect(html).toMatch(/#nav-plans, #nav-history \{ color: var\(--text-2\)/);
+    expect(html).toMatch(/#nav-practice, #nav-plans, #nav-history \{ color: var\(--text-2\)/);
     expect(html).toMatch(/\.navright a\[aria-current="page"\]/);
     expect(html).toMatch(/text-decoration-color: var\(--steel\)/);
-    expect(js).toContain("setAttribute('aria-current', 'page')");
+    expect(js).toContain("el('nav-practice').setAttribute('aria-current', 'page')");
     expect(html).toContain('<section id="practice" hidden>');
     // Plan creation moved to the plans page with the masthead slot.
     expect(js).toContain('class="addlink">+ new plan');
+    // The primary button sells the outcome, not the mechanism (user call:
+    // "Read my notes" signaled nothing about generation).
+    expect(js).toContain('Generate my round →');
+    expect(js).not.toContain('Read my notes');
   });
 
   it('the composer owns #/ and the tabs route; #/practice canonicalizes home', () => {

@@ -725,7 +725,7 @@ function renderPractice() {
     (rep.phase === 'confirm'
       ? '<button type="button" class="primary" id="rep-start">Start →</button>'
       : rep.phase === 'input'
-        ? '<button type="button" class="primary" id="rep-infer">Read my notes →</button>'
+        ? '<button type="button" class="primary" id="rep-infer">Generate my round →</button>'
         : '') +
     '</div></div>';
   host.innerHTML = html;
@@ -1746,7 +1746,10 @@ function render(state) {
   el('timeline').hidden = r.page !== 'timeline';
   // You-are-here: the active tab wears the steel underline (aria-current
   // drives the CSS, so wayfinding and a11y are one mechanism). The landing
-  // marks no tab active — it's home, not a tab.
+  // has its own tab too (user call 2026-08-10: the wordmark alone was an
+  // undiscoverable way back to the generator).
+  if (r.page === 'practice') el('nav-practice').setAttribute('aria-current', 'page');
+  else el('nav-practice').removeAttribute('aria-current');
   if (r.page === 'plans') el('nav-plans').setAttribute('aria-current', 'page');
   else el('nav-plans').removeAttribute('aria-current');
   if (r.page === 'history') el('nav-history').setAttribute('aria-current', 'page');

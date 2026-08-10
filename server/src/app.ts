@@ -441,8 +441,8 @@ export function appPage(): string {
      under the wordmark now; plans and history are secondary destinations.
      Active tab = 2px steel underline — steel marks POSITION, never action.
      The attribute selector outranks the nav-wide text-decoration reset. */
-  #nav-plans, #nav-history { color: var(--text-2); font-size: 12px; transition: color .18s; }
-  #nav-plans:hover, #nav-history:hover { color: var(--text-1); }
+  #nav-practice, #nav-plans, #nav-history { color: var(--text-2); font-size: 12px; transition: color .18s; }
+  #nav-practice:hover, #nav-plans:hover, #nav-history:hover { color: var(--text-1); }
   .navright a[aria-current="page"] {
     color: var(--text-1);
     text-decoration: underline;
@@ -833,6 +833,7 @@ export function appPage(): string {
     <span class="navright">
       <a href="#/t/" id="nav-live" aria-live="polite"><span class="pulse"></span>session live</a>
       <a href="#" id="nav-kill" title="end the running session without grading">end session</a>
+      <a href="#/" id="nav-practice">practice</a>
       <a href="#/plans" id="nav-plans">plans</a>
       <a href="#/history" id="nav-history">history</a>
     </span>
