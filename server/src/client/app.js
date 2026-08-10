@@ -1325,17 +1325,22 @@ function renderHomeStatus(state) {
       bits.push('<a href="#/history">' + ready + ' ready →</a>');
     }
   }
-  // Plans segment — the first target (already nearest-deadline-first) with an
-  // actionable today row; countdown via the same roundDates the plan cards use.
+  // Plans segment — targets arrive nearest-deadline-first, but passed
+  // seasons sort FIRST (earlier dates), so prefer the first target with an
+  // actionable today row AND an upcoming round; fall back to any actionable
+  // one. Countdown via the same roundDates the plan cards use.
+  let fallback = null;
+  let planBit = null;
   for (const row of state.targets || []) {
     const today = (row.days || []).find((d) => d.kind === 'day' && d.today && (d.items || []).length);
     if (!today) continue;
     const upcoming = roundDates(row.target).filter((r) => !r.passed);
-    const n = upcoming.length ? daysUntil(upcoming[0].date) : null;
-    bits.push('<a href="#/plans">next planned: ' + esc(row.target.label) +
-      (n === null ? '' : ' in <span class="in-days">' + n + 'd</span>') + ' →</a>');
-    break;
+    const line = '<a href="#/plans">next planned: ' + esc(row.target.label) +
+      (upcoming.length ? ' in <span class="in-days">' + daysUntil(upcoming[0].date) + 'd</span>' : '') + ' →</a>';
+    if (upcoming.length) { planBit = line; break; }
+    if (!fallback) fallback = line;
   }
+  if (planBit || fallback) bits.push(planBit || fallback);
   host.innerHTML = bits.length ? '<div class="statusline">' + bits.join(' · ') + '</div>' : '';
 }
 

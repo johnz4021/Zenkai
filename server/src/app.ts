@@ -463,8 +463,11 @@ export function appPage(): string {
     line-height: 1.25; color: var(--text-1);
   }
   /* The one status line beneath the composer. Steel-TEXT on the countdown
-     (time in its readable tier — raw steel fails contrast on the ground). */
-  #home-status { max-width: 62ch; margin: 18px auto 0; font-size: 12px; color: var(--text-2); }
+     (time in its readable tier — raw steel fails contrast on the ground).
+     The container keeps the body font-size so 62ch computes the SAME width
+     as the composer wrap — the inner line drops to 12px. */
+  #home-status { max-width: 62ch; margin: 0 auto; color: var(--text-2); }
+  #home-status .statusline { font-size: 12px; margin-top: 18px; }
   #home-status a { color: var(--text-2); text-decoration: none; }
   #home-status a:hover { color: var(--text-1); }
   #home-status .in-days { color: var(--steel-text); }
