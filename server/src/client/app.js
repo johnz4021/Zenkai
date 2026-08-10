@@ -617,6 +617,7 @@ const rep = {
   description: '',
   drafts: [], questions: [], answers: [], chosen: 0,
   overrides: { language: '', size: '', difficulty: '' },
+  linkOpen: false,       // the link input appears on request, not by default
   error: '',
 };
 
@@ -624,6 +625,7 @@ function resetRep() {
   rep.phase = 'input'; rep.repId = null; rep.description = '';
   rep.drafts = []; rep.questions = []; rep.answers = []; rep.chosen = 0;
   rep.overrides = { language: '', size: '', difficulty: '' };
+  rep.linkOpen = false;
   rep.error = '';
 }
 
@@ -666,15 +668,27 @@ function renderPractice() {
   }
   // The hero IS the textarea's label (label-in-h1: heading semantics and the
   // a11y association in one element — the real-labels rule, no duplication).
+  // The composer is ONE framed instrument: borderless textarea, chips, an
+  // optional link row (progressive disclosure — the always-open input read
+  // as form furniture), and a footer with quiet affordances + the action.
+  // The example copy lives in the placeholder; the hero is the real label.
   html += '<h1 class="hero"><label for="rep-paste">What are you preparing for?</label></h1>' +
-    '<textarea id="rep-paste" placeholder=""></textarea>' + chips +
-    '<div class="metaline">paste a recruiter email, a JD, a friend’s description — ' +
-    '<a href="#" id="rep-attach">attach a file</a></div>' +
-    // The explicit link input (planner precedent, user call 2026-08-07:
-    // affordances beat discovery). Honest copy: the practice path never
-    // fetches — a link rides along with the notes as-is.
-    '<div class="linkrow"><input id="rep-link" placeholder="add a link (optional) — the posting, a thread; it rides along with your notes" aria-label="Add a link (optional)" />' +
-    '<button id="rep-addlink" type="button">add</button></div>';
+    '<div class="composer-frame">' +
+    '<textarea id="rep-paste" placeholder="paste a recruiter email, a JD, a friend’s description…"></textarea>' + chips +
+    (rep.linkOpen
+      // The explicit link input (planner precedent, user call 2026-08-07:
+      // affordances beat discovery). Honest copy: the practice path never
+      // fetches — a link rides along with the notes as-is.
+      ? '<div class="linkrow"><input id="rep-link" placeholder="add a link (optional) — the posting, a thread; it rides along with your notes" aria-label="Add a link (optional)" />' +
+        '<button id="rep-addlink" type="button">add</button></div>'
+      : '') +
+    '<div class="composer-foot">' +
+    '<span class="quiet-affordances"><a href="#" id="rep-attach">attach a file</a> · ' +
+    '<a href="#" id="rep-linktoggle">add a link</a></span>' +
+    (rep.phase === 'input'
+      ? '<button type="button" class="primary" id="rep-infer">Generate my round →</button>'
+      : '<span></span>') +
+    '</div></div>';
 
   if (rep.phase === 'confirm' && rep.drafts.length) {
     const d = rep.drafts[rep.chosen];
@@ -724,9 +738,7 @@ function renderPractice() {
   html += '<div class="rep-actions">' +
     (rep.phase === 'confirm'
       ? '<button type="button" class="primary" id="rep-start">Start →</button>'
-      : rep.phase === 'input'
-        ? '<button type="button" class="primary" id="rep-infer">Generate my round →</button>'
-        : '') +
+      : '') +
     '</div></div>';
   host.innerHTML = html;
   const pasteEl = el('rep-paste');
@@ -767,6 +779,13 @@ function renderRepWait() {
 }
 
 function wirePractice() {
+  const linktoggle = el('rep-linktoggle');
+  if (linktoggle) linktoggle.addEventListener('click', (e) => {
+    e.preventDefault();
+    rep.linkOpen = !rep.linkOpen;
+    renderPractice();
+    if (rep.linkOpen && el('rep-link')) el('rep-link').focus();
+  });
   const attach = el('rep-attach');
   if (attach) attach.addEventListener('click', (e) => { e.preventDefault(); el('e-file').click(); });
   const addRepLink = () => {

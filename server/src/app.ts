@@ -454,28 +454,59 @@ export function appPage(): string {
   /* ---- the practice door (design review 2026-08-08, approved mockup) ---- */
   #practice-wrap { max-width: 62ch; margin: 0 auto; }
   #practice-wrap .micro { margin-bottom: 10px; }
+  /* The landing composes VERTICALLY: the empty field is deliberate framing,
+     not leftover space — the hero block floats at the visual center until
+     content (confirm/wait) grows past it. */
+  #practice {
+    min-height: calc(100vh - 240px);
+    display: flex; flex-direction: column; justify-content: center;
+  }
   /* The landing hero: the a11y label IS the heading (real-labels rule) —
-     the largest Archivo on any surface, but quiet next to the 54px countdown. */
-  #practice-wrap .hero { margin: 0 0 22px; }
+     the page's voice, centered over the instrument. */
+  #practice-wrap .hero { margin: 0 0 30px; text-align: center; }
   #practice-wrap .hero label {
     display: inline; margin: 0;
-    font-size: 26px; font-weight: 500; letter-spacing: -.01em;
-    line-height: 1.25; color: var(--text-1);
+    font-size: 38px; font-weight: 500; letter-spacing: -.015em;
+    line-height: 1.2; color: var(--text-1);
   }
   /* The one status line beneath the composer. Steel-TEXT on the countdown
      (time in its readable tier — raw steel fails contrast on the ground).
      The container keeps the body font-size so 62ch computes the SAME width
      as the composer wrap — the inner line drops to 12px. */
   #home-status { max-width: 62ch; margin: 0 auto; color: var(--text-2); }
-  #home-status .statusline { font-size: 12px; margin-top: 18px; }
-  #home-status a { color: var(--text-2); text-decoration: none; }
+  /* The readout strip: the status sentence spoken in the system's own
+     instrument voice — mono micro, centered under the composer. Same JS
+     strings; the telemetry look is pure presentation. */
+  #home-status .statusline {
+    margin-top: 22px; text-align: center;
+    font-family: var(--mono); font-size: 11px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: .14em; color: var(--text-3);
+  }
+  #home-status a { color: var(--text-3); text-decoration: none; }
   #home-status a:hover { color: var(--text-1); }
   #home-status .in-days { color: var(--steel-text); }
-  #rep-paste {
-    width: 100%; min-height: 120px; resize: vertical;
-    background: var(--panel); color: var(--text-1); border: 1px solid var(--line);
-    border-radius: 6px; padding: 12px 14px; font: inherit; line-height: 1.55;
+  /* The composer is ONE instrument: a single frame holding the borderless
+     textarea and its footer row (affordances left, the action right). Focus
+     lifts the whole frame's hairline to steel — the established focus
+     convention, applied to the unit the user is actually operating. */
+  .composer-frame {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    transition: border-color .18s;
   }
+  .composer-frame:focus-within { border-color: var(--steel); }
+  #rep-paste {
+    width: 100%; min-height: 132px; resize: vertical; display: block;
+    background: transparent; color: var(--text-1); border: 0;
+    padding: 16px 18px 8px; font: inherit; font-size: 15px; line-height: 1.6;
+  }
+  #rep-paste::placeholder { color: var(--text-3); }
+  .composer-foot {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; padding: 8px 10px 10px 18px;
+  }
+  .composer-foot .quiet-affordances { font-size: 12px; color: var(--text-3); }
+  .composer-foot .quiet-affordances a { color: var(--text-2); text-decoration: none; }
+  .composer-foot .quiet-affordances a:hover { color: var(--text-1); }
   /* The readback: ONE chevron select for the closed vocabulary; open prose
      values are real inputs styled flat — affordance matches constraint (D4).
      Segments (.shape-seg) wrap as units so a narrow viewport never orphans
@@ -499,8 +530,12 @@ export function appPage(): string {
      its own copy or helper lines shout in body white (QA ISSUE-001). */
   #practice-wrap .metaline { color: var(--text-2); font-size: 12px; margin-top: 6px; }
   #practice-wrap .metaline a { color: var(--text-2); }
-  /* The explicit link input — same row the planner composer carries. */
+  /* Chips and the link row live INSIDE the composer frame. */
+  .composer-frame #plan-attach { padding: 0 18px; }
+  /* The explicit link input — same row the planner composer carries,
+     revealed on request (progressive disclosure). */
   #practice-wrap .linkrow { display: flex; gap: 8px; margin-top: 8px; }
+  .composer-frame .linkrow { margin: 4px 10px 0 18px; }
   #practice-wrap .linkrow input { flex: 1; font-size: 13px; padding: 7px 10px; color: var(--text-2); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font-family: inherit; }
   #practice-wrap .linkrow input:focus { color: var(--text-1); }
   #practice-wrap .linkrow button { min-height: 0; padding: 4px 12px; font-size: 13px; color: var(--text-2); }

@@ -448,7 +448,13 @@ describe('composer-first landing — hero + status line (design round2-A-minimal
 
   it('the hero is the label — heading semantics and a11y in one element', () => {
     expect(js).toContain('<h1 class="hero"><label for="rep-paste">What are you preparing for?</label></h1>');
-    expect(html).toMatch(/#practice-wrap \.hero label \{[\s\S]{0,200}font-size: 26px/);
+    expect(html).toMatch(/#practice-wrap \.hero label \{[\s\S]{0,200}font-size: 38px/);
+    // one instrument: frame holds textarea + footer; focus lifts the hairline
+    expect(html).toMatch(/\.composer-frame:focus-within \{ border-color: var\(--steel\)/);
+    expect(js).toContain('class="composer-frame"');
+    // link input is progressive disclosure, not standing furniture
+    expect(js).toContain('rep.linkOpen');
+    expect(js).toContain('id="rep-linktoggle"');
   });
 
   it('one status line, repainted every poll, outside the typing guard', () => {
