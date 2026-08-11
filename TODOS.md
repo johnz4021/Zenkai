@@ -286,7 +286,16 @@ external items store a single-slot `debrief` note, and mapping self-reported not
 dimension evidence (polarity, weight, idempotency) belongs here, where judge-lite
 grading gives self-reported signal a principled design.
 
-**Priority:** P2 after the queue proves itself in real use.
+**Amendment (2026-08-10, memory-layer CEO review):** trigger REWRITTEN from the vague
+"after the queue proves itself in real use" to a computable one: **memory-layer Pass 1
+has run for N sessions AND one cause tag accounts for a plurality of weak dimensions.**
+Reasoning: drills are the cheap intervention for the `couldnt` cause specifically, and
+building them before the cause distribution is known means targeting a guess. Pass 1
+produces that distribution. This is the other half of the efficiency thesis — cause
+tells you a 3-minute drill would fix it, and today the only response the system owns is
+a 60-minute round.
+
+**Priority:** P2, un-defer on the trigger above.
 
 ---
 
@@ -587,6 +596,13 @@ the multi-file-vs-LOC question by construction.
 sessions. Un-defer criterion: the author completes one season containing ≥1 hedged
 segment and debriefs it.
 
+**Amendment (2026-08-10, memory-layer CEO review):** the one-tap too-easy/right/brutal
+grade was offered for the memory-layer's Pass 1 (it would ride the same card control)
+and DEFERRED. Reasoning: it competes with the cause click at the moment of highest exit
+intent, risking the more valuable of the two signals, and #26 is independently blocked
+so the grade would accumulate with nothing reading it. **Second un-defer condition:**
+the cause click demonstrates that candidates use a card-time control at all.
+
 **Effort:** human ~1 wk / CC ~3-4 hrs. **Priority:** P2 once the criterion fires.
 **Blocked on:** portfolio planning shipping (the accepted scope).
 
@@ -716,6 +732,13 @@ deserved a season and couldn't get one.
 first, and the suggestion copy deserves design against a REAL gap-graph state —
 which a week of composer-first reps will produce.
 
+**RESOLVED 2026-08-10 (memory-layer CEO review): trigger fired, accepted into scope.**
+Both blockers are satisfied — the composer landing shipped, and the gap graph holds 7
+sessions. Scheduled inside memory layer v2 Pass 2a so the copy is written against a
+real cause CONDITIONAL ("you go silent when timed") rather than the current constant
+("communicate"), which is what the original deferral was waiting for. See
+`~/.gstack/projects/interview_prep/ceo-plans/2026-08-10-memory-layer-v2.md`.
+
 **Effort:** human ~1 day / CC ~40 min. **Priority:** P3. **Blocked on:** the
 composer landing shipping + a non-empty gap graph.
 
@@ -732,3 +755,69 @@ description). If it does, this is placeholder copy, not a feature. Guard the
 invented-company-facts failure the blueprint rules exist to prevent.
 
 **Effort:** test ~10 min; if real, human ~2 days / CC ~1 hr. **Priority:** P3.
+
+---
+
+## 33. The golden-set regression loop has never had an input
+
+**What:** `promote-fixture` turns a candidate-confirmed session into a golden judge
+fixture. It reads `assessments/<sid>.confirm.json`. As of 2026-08-10 there are 12
+assessments, **0 confirm files, and `fixtures/judge/golden/` is empty.**
+
+**Why:** CLAUDE.md calls `eval-judge` "the judge's whole regression suite" and
+promote-fixture the way "the library grows from REAL sessions." That library has been
+empty since it shipped, so judge quality has no regression protection from real data.
+
+**Root cause (found 2026-08-10, memory-layer CEO review):** the only control that
+writes `confirm.json` is `client/session.js:257`, which renders only on the live
+session tab — reachable from exactly two places (`:104` time-up, `:202` End button)
+and gone when that tab closes. The durable surface people actually revisit,
+`renderCardHtml` (`client/app.js:1573`), deliberately omits it, and `app.test.ts:93`
+asserts the omission. So the 0/12 rate is an ARCHITECTURE artifact, not a signal that
+nobody wants to confirm.
+
+**Where to start:** `session.ts:1046` writes the file, `cli.ts:398-410` reads it.
+The memory-layer plan's app-side capture endpoint unblocks this for nearly free.
+
+**Effort:** human ~1 day / CC ~20 min once app-side capture exists. **Priority:** P2.
+**Blocked on:** app-side capture (memory layer v2, Pass 1).
+
+---
+
+## 34. `rejudge --record` appends duplicate gap instances
+
+**What:** `cli.ts rejudge --record` (`cli.ts:501-505`) calls `recordAssessment` again
+for a session already in the store. `recordSession` (`gap-graph.ts:113-165`) appends
+unconditionally, so a second instance lands for the same `(session_id, dimension)`.
+
+**Why:** it silently inflates `fired_count` and `weight` for any rejudged session,
+which skews the focus ranking the entire memory layer is built on. Rejudge is how a
+judge prompt change gets re-scored against history, so the tool that keeps history
+comparable is the one that corrupts it. Found independently by two reviewers
+(2026-08-10 CEO review and the codex outside voice).
+
+**The design question to settle first:** does a rejudge REPLACE the prior instance or
+SUPERSEDE it (keeping both, with the older marked)? Specs are append-only elsewhere in
+this codebase for a reason, so superseding is more consistent, but it needs a
+version/row id — which is also what a cause needs to attach to safely.
+
+**Effort:** human ~1 day / CC ~30 min. **Priority:** P1 if you rejudge, P3 if never.
+
+---
+
+## 35. 17 feedback files, 12 assessments — five sessions unaccounted for
+
+**What:** `feedback/` holds 17 cards; `assessments/` holds 12. Five sessions have a
+rendered card with no assessment behind them.
+
+**Why it matters:** `session.ts:858-891` writes both in the same finalize path, so
+they should move together. Benign explanation: those five predate the assessment
+write. Bad explanation: a path exists where a card renders without an assessment
+landing, which would mean the gap graph has silently missed sessions and every count
+it makes is off.
+
+**Where to start:** compare session ids across the two directories and check dates
+against the `gaps/archive/` reset points (the store was intentionally re-baselined
+three times, so some discontinuity is expected and not a bug).
+
+**Effort:** human ~1 hour / CC ~10 min. **Priority:** P3.
