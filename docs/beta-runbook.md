@@ -53,11 +53,39 @@ alter table sessions enable row level security;
    key, service role key. **New projects sign JWTs asymmetrically** and the
    server verifies via public JWKS automatically. If the dashboard shows a
    legacy HS256 "JWT secret" instead, also set `IP_SUPABASE_JWT_SECRET`.
-7. Invite management = **Auth → Users**: the beta gate is "can they sign in
-   with an email you expect." To revoke someone: delete the user. (Google
-   sign-in is open to any Google account by default — if you want a hard
-   allowlist, keep Google off and use email OTP, or check off-list emails by
-   watching the `users` table.)
+7. Invite management: see 1b — Google's **test users list IS the allowlist**.
+   To revoke someone, remove them there (and delete the row in Supabase
+   Auth → Users to clear the session).
+
+## 1b. Google OAuth credentials (~15 min, required for Google sign-in)
+
+Supabase does not provide Google credentials — you create an OAuth client and
+paste it in. Google renamed this surface in 2024: the old "OAuth consent
+screen" menu is now **Google Auth Platform**, three tabs.
+
+1. **Branding** — app name (Zenkai), support email.
+2. **Audience** — user type **External**, publishing status **Testing**, and
+   **add each invitee's Gmail address as a test user**.
+3. **Data access** — `userinfo.email` and `userinfo.profile` are default;
+   **add `openid` manually**, Supabase needs it and it is not there by default.
+4. **Clients** → Create OAuth client → **Web application**:
+   - Authorized JavaScript origin: `https://zenkai.run`
+   - Authorized redirect URI: **Supabase's callback**, copied verbatim from
+     the Google provider page in the Supabase dashboard —
+     `https://<project-ref>.supabase.co/auth/v1/callback`. A mismatch here is
+     the most common failure and it surfaces as an opaque redirect error.
+5. Paste **Client ID + Client Secret** into Supabase → Auth → Providers → Google.
+
+**Why Testing status is the right answer, not a limitation:** an External app
+in Testing only permits explicitly-listed test users (cap 100), so Google
+enforces the invite allowlist for you. No verification is needed either —
+email/profile are non-sensitive scopes, so there is no multi-day Google review.
+
+**The one caveat:** test-user authorizations expire 7 days after consent. An
+invitee returning after a week re-sees the consent screen. It does not break
+their Zenkai session (that runs on the Supabase JWT, set to 24h) — it is
+friction, not a wall. Publishing the app removes the expiry but also removes
+the allowlist, so keep Testing for the beta.
 
 ## 2. Cloudflare tunnel (~20 min, needs zenkai.run on Cloudflare DNS)
 
