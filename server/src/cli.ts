@@ -569,6 +569,30 @@ if (cmd === 'generate') {
   const targetMatch = path
     .relative(repoRoot, problemDir)
     .match(/^targets\/([^/]+)\/problems\//);
+  // Session-side auth config (beta WU3): built from raw env, NOT
+  // resolvePublicConfig — a spawned session deliberately receives no service
+  // key (WU8), so the all-or-nothing supabase check would refuse to boot.
+  // JWKS is public; the internal token arrives pre-derived from the app, or
+  // is derived here when this is a direct `cli.ts session` run with a .env.
+  const { deriveInternalToken } = await import('./auth.js');
+  const sessionAuth = process.env.IP_SUPABASE_URL
+    ? {
+        supabaseUrl: process.env.IP_SUPABASE_URL.replace(/\/+$/, ''),
+        ...(process.env.IP_SUPABASE_JWT_SECRET
+          ? { jwtSecret: process.env.IP_SUPABASE_JWT_SECRET }
+          : {}),
+        adminEmails: (process.env.IP_AUTH_ADMIN_EMAILS ?? '')
+          .split(',')
+          .map((s) => s.trim().toLowerCase())
+          .filter(Boolean),
+        localUserId: userId,
+        internalToken:
+          process.env.IP_INTERNAL_TOKEN ??
+          (process.env.IP_SUPABASE_SERVICE_KEY
+            ? deriveInternalToken(process.env.IP_SUPABASE_SERVICE_KEY)
+            : null),
+      }
+    : undefined;
   await runSession({
     onReady: () => markUsed(problemDir, sessionId),
     repoRoot,
@@ -577,6 +601,7 @@ if (cmd === 'generate') {
     userId,
     targetId: targetMatch?.[1],
     appUrl: process.env.IP_APP_URL,
+    auth: sessionAuth,
     port: 3200,
     idePort: 3100,
     autorunTests: process.env.IP_AUTORUN_TESTS !== '0',

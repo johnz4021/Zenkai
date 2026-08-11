@@ -29,6 +29,7 @@ import { appendLearnings, gateBlueprint, loadBlueprint, writeBlueprintWithBackup
 import { clearGeneratingMarker, generationProgress, pidAlive, readGeneratingMarker, sweepVerdict, writeGeneratingMarker } from './generation-state.js';
 import { pickTopicNamer } from './plan-topics.js';
 import { clientScript } from './chrome.js';
+import { authConfigFromPublic, makeAuth } from './auth.js';
 import type { PublicConfig } from './public-config.js';
 import {
   acquireRepLock,
@@ -69,9 +70,14 @@ function readBody(req: http.IncomingMessage): Promise<string> {
  *  graded session's server lingers to keep serving the card, and treating
  *  its 200 as "live" soft-locked every future launch. Probed, never
  *  remembered. */
+/** Server-to-server auth for the session probes below. Set once in runApp;
+ *  stable across app restarts (derived, not random) so a session spawned by
+ *  a previous app process still honors it. */
+let internalHeaders: Record<string, string> = {};
+
 function probeSession(port: number): Promise<{ reachable: boolean; ended: boolean }> {
   return new Promise((resolve) => {
-    const r = http.get({ host: '127.0.0.1', port, path: '/api/status', timeout: 1_000 }, (res) => {
+    const r = http.get({ host: '127.0.0.1', port, path: '/api/status', timeout: 1_000, headers: internalHeaders }, (res) => {
       let body = '';
       res.on('data', (d) => (body += d));
       res.on('end', () => {
@@ -101,7 +107,7 @@ async function sessionLive(port: number): Promise<boolean> {
 function postSession(port: number, apiPath: string): Promise<{ ok: boolean }> {
   return new Promise((resolve) => {
     const r = http.request(
-      { host: '127.0.0.1', port, path: apiPath, method: 'POST', timeout: 5_000 },
+      { host: '127.0.0.1', port, path: apiPath, method: 'POST', timeout: 5_000, headers: internalHeaders },
       (res) => {
         res.resume();
         res.on('end', () => resolve({ ok: (res.statusCode ?? 500) < 300 }));
@@ -927,6 +933,13 @@ export function appPage(): string {
 }
 
 export function runApp(cfg: AppConfig): http.Server {
+  // In-process auth (WU3). The HTML shell and client scripts stay open (no
+  // data lives in them); every /api/* route requires a resolved user. When
+  // auth is off (no supabase config) resolve() always returns the local
+  // admin, so the gate below never fires — pre-beta behavior, byte-identical.
+  const auth = makeAuth(authConfigFromPublic(cfg.pub.supabase, cfg.pub.adminEmails, cfg.userId));
+  internalHeaders = auth.internalToken ? { 'x-ip-internal': auth.internalToken } : {};
+
   const server = http.createServer(async (req, res) => {
     const url = req.url ?? '/';
     const json = (code: number, body: unknown) => {
@@ -950,6 +963,21 @@ export function runApp(cfg: AppConfig): http.Server {
         // on a new row kind and reported itself as a dead server).
         res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'no-store' });
         return res.end(body);
+      }
+      if (url === '/api/auth-config' && req.method === 'GET') {
+        // The one unauthenticated API route: the login screen needs to know
+        // whether auth is on and where to send the OTP/OAuth calls. Anon key
+        // only — it is designed to live in the browser.
+        return json(200, {
+          enabled: auth.enabled,
+          ...(cfg.pub.supabase
+            ? { supabase_url: cfg.pub.supabase.url, anon_key: cfg.pub.supabase.anonKey }
+            : {}),
+        });
+      }
+      const user = await auth.resolve(req);
+      if (url.startsWith('/api/') && !user) {
+        return json(401, { error: 'sign in required' });
       }
       if (url.startsWith('/api/feedback') && req.method === 'GET') {
         // A finished round's judged card, read from the file finalize (and
@@ -1042,6 +1070,7 @@ export function runApp(cfg: AppConfig): http.Server {
           today: new Date(now).toISOString(),
           session_live: live,
           session_url: `${cfg.pub.sessionPublicUrl}/session`,
+          user: { id: user!.id, email: user!.email, admin: user!.admin },
         });
       }
       if (url === '/api/target' && req.method === 'POST') {
@@ -1233,6 +1262,9 @@ export function runApp(cfg: AppConfig): http.Server {
           IP_USER_ID: cfg.userId,
           IP_PREPARE_NEXT: '0',
           IP_APP_URL: cfg.pub.appPublicUrl,
+          ...(internalHeaders['x-ip-internal']
+            ? { IP_INTERNAL_TOKEN: internalHeaders['x-ip-internal'] }
+            : {}),
         });
         console.log(`[app] rep ${rep.id} launching as ${sessionId}`);
         return json(200, { session_id: sessionId, url: `${cfg.pub.sessionPublicUrl}/session` });
@@ -1628,6 +1660,9 @@ export function runApp(cfg: AppConfig): http.Server {
           IP_USER_ID: cfg.userId,
           IP_PREPARE_NEXT: '0',
           IP_APP_URL: cfg.pub.appPublicUrl,
+          ...(internalHeaders['x-ip-internal']
+            ? { IP_INTERNAL_TOKEN: internalHeaders['x-ip-internal'] }
+            : {}),
         });
         return json(200, { session_id: sessionId, url: `${cfg.pub.sessionPublicUrl}/session` });
       }

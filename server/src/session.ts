@@ -24,6 +24,7 @@ import httpProxy from 'http-proxy';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
 import { isFailingRun, resolveRoundSpec, resolveSurface } from '@interview-prep/shared';
+import { makeAuth } from './auth.js';
 import { judgeSession } from './judge.js';
 import { buildAssessmentCard } from './feedback.js';
 import { buildGraphView, buildTargetNote, loadStore, recordAssessment, saveStore } from './gap-graph.js';
@@ -62,6 +63,10 @@ export interface SessionConfig {
   port: number;
   idePort: number;
   autorunTests: boolean;
+  /** Beta auth (WU3). Omitted/enabled:false = local dev, everything open.
+   *  The session verifies JWTs itself — it must, since it listens on all
+   *  interfaces for the container's trace WS and the LAN can reach it. */
+  auth?: import('./auth.js').AuthConfig;
   /** Generate the next (gap-targeted) problem when this session ends. */
   prepareNext: boolean;
   /** Injectable; omit for the real agent, null to run without one. */
@@ -332,6 +337,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // Per-session /trace credential — minted here, delivered to the container
   // via IP_WS_URL, checked at the WS upgrade. See traceUpgradeAllowed.
   const traceToken = randomBytes(16).toString('hex');
+
+  // Browser + server-to-server auth (WU3). Auth off → local admin always.
+  const auth = makeAuth(
+    cfg.auth ?? { supabaseUrl: null, adminEmails: [], localUserId: cfg.userId },
+  );
 
   const problem = JSON.parse(
     readFileSync(path.join(cfg.problemDir, 'problem.json'), 'utf8'),
@@ -938,6 +948,18 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
   const server = http.createServer(async (req, res) => {
     const url = req.url ?? '/';
+    // WU3 gate. Open: the chrome shell + its statics (no data in them — the
+    // shell reads everything through /api/*). Everything else, including the
+    // IDE proxy fall-through and the TTS stream, needs a user. The app's
+    // server-to-server probes authenticate via x-ip-internal.
+    {
+      const openPath =
+        url === '/session' || url.startsWith('/client/') || url.startsWith('/vendor/monaco/');
+      if (!openPath && !(await auth.resolve(req))) {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'sign in required' }));
+      }
+    }
     if (url === '/session') {
       markCandidateContact();
       const backUrl = cfg.appUrl
@@ -1370,18 +1392,30 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     // the trace socket into openvscode and tracing would die.
     const upgradePath = new URL(req.url ?? '', 'http://x').pathname;
     if (upgradePath === '/trace') {
+      // Token-gated, NOT JWT-gated: the emitter dials from inside the
+      // container with no cookie. See traceUpgradeAllowed.
       if (!traceUpgradeAllowed(req.url, traceToken)) {
         socket.destroy();
         return;
       }
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
-    } else if (upgradePath === '/voice') {
-      voiceWss.handleUpgrade(req, socket, head, (ws) => voiceWss.emit('connection', ws, req));
-    } else if (upgradePath === '/events') {
-      eventsWss.handleUpgrade(req, socket, head, (ws) => eventsWss.emit('connection', ws, req));
-    } else {
-      proxy.ws(req, socket, head);
+      return;
     }
+    // Everything else — /voice, /events, and the openvscode workbench WS
+    // through the proxy — carries the browser's auth cookie.
+    void auth.resolve(req).then((user) => {
+      if (!user) {
+        socket.destroy();
+        return;
+      }
+      if (upgradePath === '/voice') {
+        voiceWss.handleUpgrade(req, socket, head, (ws) => voiceWss.emit('connection', ws, req));
+      } else if (upgradePath === '/events') {
+        eventsWss.handleUpgrade(req, socket, head, (ws) => eventsWss.emit('connection', ws, req));
+      } else {
+        proxy.ws(req, socket, head);
+      }
+    });
   });
 
   await new Promise<void>((resolve, reject) => {

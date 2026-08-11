@@ -22,6 +22,8 @@ export interface SupabaseConfig {
   anonKey: string;
   /** Server-side only. Never reaches the client or any spawned child. */
   serviceKey: string;
+  /** Legacy HS256 projects only; new projects verify via JWKS. */
+  jwtSecret?: string;
 }
 
 export interface PublicConfig {
@@ -71,7 +73,17 @@ export function resolvePublicConfig(env: Record<string, string | undefined>): Pu
     appPublicUrl: strip(env.IP_PUBLIC_APP_URL?.trim() || 'http://localhost:3300'),
     sessionPublicUrl: strip(env.IP_PUBLIC_SESSION_URL?.trim() || 'http://localhost:3200'),
     ...(env.IP_APP_BIND?.trim() ? { appBindHost: env.IP_APP_BIND.trim() } : {}),
-    supabase: url && anonKey && serviceKey ? { url: strip(url), anonKey, serviceKey } : null,
+    supabase:
+      url && anonKey && serviceKey
+        ? {
+            url: strip(url),
+            anonKey,
+            serviceKey,
+            ...(env.IP_SUPABASE_JWT_SECRET?.trim()
+              ? { jwtSecret: env.IP_SUPABASE_JWT_SECRET.trim() }
+              : {}),
+          }
+        : null,
     adminEmails: (env.IP_AUTH_ADMIN_EMAILS ?? '')
       .split(',')
       .map((s) => s.trim().toLowerCase())
