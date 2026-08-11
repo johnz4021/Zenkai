@@ -15,7 +15,7 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { assertPortFree } from './session.js';
+import { assertPortFree, traceUpgradeAllowed } from './session.js';
 
 const listeners: http.Server[] = [];
 
@@ -54,5 +54,22 @@ describe('assertPortFree', () => {
       listeners.splice(0).map((s) => new Promise<void>((resolve) => s.close(() => resolve()))),
     );
     expect(() => assertPortFree(port)).not.toThrow();
+  });
+});
+
+// --- beta WU2: /trace per-session token -----------------------------------
+describe('traceUpgradeAllowed', () => {
+  const TOKEN = 'a'.repeat(32);
+  it('accepts the minted token', () => {
+    expect(traceUpgradeAllowed(`/trace?token=${TOKEN}`, TOKEN)).toBe(true);
+  });
+  it('rejects a wrong, missing, or truncated token', () => {
+    expect(traceUpgradeAllowed(`/trace?token=${'b'.repeat(32)}`, TOKEN)).toBe(false);
+    expect(traceUpgradeAllowed('/trace', TOKEN)).toBe(false);
+    expect(traceUpgradeAllowed(`/trace?token=${TOKEN.slice(0, 16)}`, TOKEN)).toBe(false);
+    expect(traceUpgradeAllowed(undefined, TOKEN)).toBe(false);
+  });
+  it('tolerates extra query params and ignores them', () => {
+    expect(traceUpgradeAllowed(`/trace?x=1&token=${TOKEN}&y=2`, TOKEN)).toBe(true);
   });
 });

@@ -16,6 +16,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -307,10 +308,30 @@ export function assertPortFree(port: number): void {
   );
 }
 
+/**
+ * /trace upgrade gate (beta WU2). The trace-emitter extension runs inside the
+ * container and dials host.docker.internal — the docker GATEWAY IP — so the
+ * session server must listen on all interfaces and cannot rely on network
+ * binding to keep the trace channel private. The extension carries no auth
+ * header either (DurableEmitter uses IP_WS_URL verbatim), so the session
+ * mints a random token at boot and delivers it inside IP_WS_URL itself.
+ * Pure; timing-safe via hash-then-compare (lengths differ on raw compare).
+ */
+export function traceUpgradeAllowed(reqUrl: string | undefined, expectedToken: string): boolean {
+  const got = new URL(reqUrl ?? '', 'http://x').searchParams.get('token') ?? '';
+  const a = createHash('sha256').update(got).digest();
+  const b = createHash('sha256').update(expectedToken).digest();
+  return timingSafeEqual(a, b);
+}
+
 export async function runSession(cfg: SessionConfig): Promise<void> {
   // First statement in the function, on purpose: everything below this line
   // mutates state the running session owns.
   assertPortFree(cfg.port);
+
+  // Per-session /trace credential — minted here, delivered to the container
+  // via IP_WS_URL, checked at the WS upgrade. See traceUpgradeAllowed.
+  const traceToken = randomBytes(16).toString('hex');
 
   const problem = JSON.parse(
     readFileSync(path.join(cfg.problemDir, 'problem.json'), 'utf8'),
@@ -376,7 +397,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     '--add-host=host.docker.internal:host-gateway',
     '-e', `IP_SESSION_ID=${cfg.sessionId}`,
     '-e', `IP_USER_ID=${cfg.userId}`,
-    '-e', `IP_WS_URL=ws://host.docker.internal:${cfg.port}/trace`,
+    '-e', `IP_WS_URL=ws://host.docker.internal:${cfg.port}/trace?token=${traceToken}`,
     '-e', `IP_TEST_CMD=${testCmd}`,
     // Kickoff run is the DEFAULT for failure-triggered rounds: the debugging
     // trigger must not depend on the candidate finding the status-bar button
@@ -1344,11 +1365,19 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   };
 
   server.on('upgrade', (req, socket, head) => {
-    if (req.url === '/trace') {
+    // Route on pathname: /trace now carries ?token=…, and the emitter uses
+    // IP_WS_URL verbatim, so the exact-match routing would silently proxy
+    // the trace socket into openvscode and tracing would die.
+    const upgradePath = new URL(req.url ?? '', 'http://x').pathname;
+    if (upgradePath === '/trace') {
+      if (!traceUpgradeAllowed(req.url, traceToken)) {
+        socket.destroy();
+        return;
+      }
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
-    } else if (req.url === '/voice') {
+    } else if (upgradePath === '/voice') {
       voiceWss.handleUpgrade(req, socket, head, (ws) => voiceWss.emit('connection', ws, req));
-    } else if (req.url === '/events') {
+    } else if (upgradePath === '/events') {
       eventsWss.handleUpgrade(req, socket, head, (ws) => eventsWss.emit('connection', ws, req));
     } else {
       proxy.ws(req, socket, head);
