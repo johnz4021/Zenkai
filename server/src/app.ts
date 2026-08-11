@@ -859,6 +859,15 @@ export function appPage(): string {
   .runway li.interview .dot { border-color: var(--steel); background: var(--steel); transform: rotate(45deg); }
   .runway li.interview .body { font-weight: 500; letter-spacing: .02em; }
 
+  /* ---- beta login (WU4) — shown only when auth is on and no token ---- */
+  #login { display: flex; justify-content: center; padding-top: 12vh; }
+  .loginbox { max-width: 420px; width: 100%; display: flex; flex-direction: column; gap: 14px; }
+  .loginbox h1 { font-size: 26px; line-height: 1.25; margin: 0; font-weight: 600; }
+  .loginsep { color: var(--text-3); font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .18em; text-align: center; }
+  .loginrow { display: flex; gap: 8px; }
+  .loginrow input { flex: 1; }
+  #login-msg.bad { color: var(--weak-text); }
+
   /* ---- desktop only (design decision D7: stated, not broken) ---- */
   #narrow { display: none; }
   @media (max-width: 700px) {

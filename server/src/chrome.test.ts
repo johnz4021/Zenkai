@@ -263,3 +263,15 @@ describe('panes surface (the HackerRank-classic renderer)', () => {
     expect(oaPanes()).toContain('body.ended main #panes { display: none; }');
   });
 });
+
+describe('beta auth — session-origin token handoff (WU4)', () => {
+  it('catches #token= before any request-firing script runs', () => {
+    const page = sessionPage('sess-test');
+    const catcher = page.indexOf("'#token='");
+    const firstScriptSrc = page.indexOf('<script src=');
+    expect(catcher).toBeGreaterThan(-1);
+    expect(firstScriptSrc).toBeGreaterThan(-1);
+    expect(catcher).toBeLessThan(firstScriptSrc);
+    expect(page).toContain("document.cookie = 'ip_jwt='");
+  });
+});

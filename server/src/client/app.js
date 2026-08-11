@@ -22,6 +22,107 @@
 function esc(s) { return String(s).replace(/</g, '&lt;'); }
 function el(id) { return document.getElementById(id); }
 
+// ---- beta auth (WU4) ------------------------------------------------------
+// Server truth: every /api/* route 401s without a valid JWT (cookie ip_jwt).
+// This block only manages the token's lifecycle in the browser: acquire it
+// (Google OAuth redirect or email OTP, both plain GoTrue REST — no SDK, the
+// repo has a no-bundler rule), persist it (localStorage + cookie, the cookie
+// is what the server reads), hand it to the session origin (#token fragment
+// on session links), and clear it on 401. Auth off = this is all inert.
+let authCfg = null; // {enabled, supabase_url?, anon_key?}
+let loggedOut = false;
+
+function jwt() { try { return window.localStorage.getItem('ip_jwt') || ''; } catch { return ''; } }
+function setJwt(t) {
+  try { window.localStorage.setItem('ip_jwt', t); } catch { /* private mode */ }
+  document.cookie = 'ip_jwt=' + t + '; path=/; SameSite=Lax; max-age=86400' +
+    (window.location.protocol === 'https:' ? '; Secure' : '');
+}
+function clearJwt() {
+  try { window.localStorage.removeItem('ip_jwt'); } catch { /* private mode */ }
+  document.cookie = 'ip_jwt=; path=/; max-age=0';
+}
+/** Session links carry the token as a fragment: the session origin is a
+ *  different host, so the cookie does not travel — the chrome sets its own. */
+function sessionHref(u) {
+  return authCfg && authCfg.enabled && jwt()
+    ? u + '#token=' + encodeURIComponent(jwt())
+    : u;
+}
+
+function renderLogin(msg) {
+  loggedOut = true;
+  for (const s of document.querySelectorAll('main > section')) s.hidden = true;
+  let box = el('login');
+  if (!box) {
+    box = document.createElement('section');
+    box.id = 'login';
+    document.querySelector('main').appendChild(box);
+  }
+  box.hidden = false;
+  box.innerHTML =
+    '<div class="loginbox">' +
+    '<h1>Practice the interview you actually have.</h1>' +
+    '<p class="desc">Zenkai is in a small invited beta. Sign in to start a round.</p>' +
+    '<button id="login-google" class="primary" type="button">Continue with Google</button>' +
+    '<div class="loginsep">or</div>' +
+    '<div class="loginrow"><input id="login-email" type="email" placeholder="you@school.edu" autocomplete="email">' +
+    '<button id="login-otp" type="button">Email me a code</button></div>' +
+    '<div class="loginrow" id="login-code-row" hidden><input id="login-code" inputmode="numeric" placeholder="6-digit code">' +
+    '<button id="login-verify" type="button">Sign in</button></div>' +
+    '<p class="cite" id="login-msg">' + esc(msg || '') + '</p>' +
+    '</div>';
+  const say = (m, bad) => { const n = el('login-msg'); n.textContent = m; n.classList.toggle('bad', Boolean(bad)); };
+  el('login-google').addEventListener('click', () => {
+    window.location.href = authCfg.supabase_url + '/auth/v1/authorize?provider=google&redirect_to=' +
+      encodeURIComponent(window.location.origin + '/');
+  });
+  const gotrue = (p, body) => fetch(authCfg.supabase_url + '/auth/v1/' + p, {
+    method: 'POST',
+    headers: { apikey: authCfg.anon_key, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  el('login-otp').addEventListener('click', async () => {
+    const email = el('login-email').value.trim();
+    if (!email) { say('enter your email first', true); return; }
+    say('sending…');
+    const r = await gotrue('otp', { email, create_user: true });
+    if (r.ok) { el('login-code-row').hidden = false; say('code sent — check your email'); }
+    else say('could not send a code (' + r.status + ') — was this email invited?', true);
+  });
+  el('login-verify').addEventListener('click', async () => {
+    const email = el('login-email').value.trim();
+    const code = el('login-code').value.trim();
+    if (!code) { say('enter the code from the email', true); return; }
+    say('verifying…');
+    const r = await gotrue('verify', { type: 'email', email, token: code });
+    if (!r.ok) { say('that code did not verify — request a fresh one', true); return; }
+    const body = await r.json();
+    if (!body.access_token) { say('no token in the reply — try again', true); return; }
+    setJwt(body.access_token);
+    window.location.reload();
+  });
+}
+
+async function initAuth() {
+  try {
+    authCfg = await (await fetch('/api/auth-config')).json();
+  } catch {
+    authCfg = { enabled: false }; // server unreachable: refresh() shows that
+  }
+  if (!authCfg.enabled) return true;
+  // OAuth return lands as #access_token=… in the fragment.
+  const h = window.location.hash || '';
+  if (h.indexOf('access_token=') !== -1) {
+    const p = new window.URLSearchParams(h.replace(/^#/, ''));
+    const t = p.get('access_token');
+    if (t) setJwt(t);
+    window.history.replaceState(null, '', '#/');
+  }
+  if (!jwt()) { renderLogin(); return false; }
+  return true;
+}
+
 // ---- routing: the route decides what's visible; the poll only fills it ----
 // #/         the composer landing (practice IS the front door, 2026-08-10)
 // #/plans    all plans (the old index)
@@ -1230,9 +1331,11 @@ async function refresh(force) {
   // them sent this QA hunting a healthy server: a render TypeError (stale
   // cached client meeting a newer payload) reported itself as "app server
   // unreachable". Each failure now names itself.
+  if (loggedOut) return;
   let text;
   try {
     const r = await fetch('/api/state');
+    if (r.status === 401) { clearJwt(); renderLogin('signed out — sign in again'); return; }
     text = await r.text();
   } catch {
     const boot = el('boot');
@@ -1792,7 +1895,7 @@ function render(state) {
   // problems only. A full-width bar on every page for a usually-false
   // condition was pure vertical tax.
   el('nav-live').classList.toggle('on', Boolean(state.session_live));
-  el('nav-live').href = state.session_url || '#/';
+  el('nav-live').href = state.session_url ? sessionHref(state.session_url) : '#/';
   el('nav-kill').classList.toggle('on', Boolean(state.session_live));
   el('banner').innerHTML = '';
 
@@ -1905,7 +2008,7 @@ async function launchCommon(endpoint, body, btn, idleLabel) {
   const until = Date.now() + 180000;
   const tick = async () => {
     const live = (await (await fetch('/api/session-live')).json()).live;
-    if (live) { window.location.href = s.url; return; }
+    if (live) { window.location.href = sessionHref(s.url); return; }
     if (Date.now() < until) { window.setTimeout(tick, 2000); return; }
     if (btn) {
       btn.disabled = false;
@@ -1932,5 +2035,8 @@ el('nav-kill').addEventListener('click', async (e) => {
   refresh(true);
 });
 
-window.setInterval(refresh, 5000);
-refresh(true);
+initAuth().then((ok) => {
+  if (!ok) return; // login screen owns the page; success path reloads
+  window.setInterval(refresh, 5000);
+  refresh(true);
+});

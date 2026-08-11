@@ -531,3 +531,25 @@ describe('link-only input — "paste anything" includes just a link', () => {
     expect(js).toContain("'see the attached material'");
   });
 });
+
+describe('beta auth — client wiring (WU4)', () => {
+  const html = appPage();
+  const js = clientScript('app.js') ?? '';
+  it('the client acquires, persists, and hands off the JWT', () => {
+    // Login flow exists and uses plain GoTrue REST (no SDK — no-bundler rule).
+    expect(js).toContain("'/api/auth-config'");
+    expect(js).toContain('/auth/v1/authorize?provider=google');
+    expect(js).toContain("gotrue('otp'");
+    expect(js).toContain("gotrue('verify'");
+    // Cookie is what the servers read; session links carry the fragment
+    // because the session origin cannot see the app origin's cookie.
+    expect(js).toContain('ip_jwt=');
+    expect(js).toContain('function sessionHref(');
+    expect(js).toContain("'#token=' + encodeURIComponent(jwt())");
+    // 401 clears the token instead of looping.
+    expect(js).toContain('clearJwt(); renderLogin(');
+  });
+  it('login styles ship in the shell', () => {
+    expect(html).toContain('.loginbox');
+  });
+});
