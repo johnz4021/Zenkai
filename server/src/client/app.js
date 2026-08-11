@@ -1365,8 +1365,11 @@ function renderHomeStatus(state) {
     if (x.status !== 'ready' && x.status !== 'done') continue;
     if (!x.spec || seenShapes.has(x.spec.id)) continue;
     seenShapes.add(x.spec.id);
+    // "another like this", never "regenerate": regenerate reads as
+    // rebuild-the-same-thing (which is Retry's job on failed reps) — this
+    // link means a FRESH problem in the same confirmed format.
     rows.push('<div>' + esc(x.spec.label) + ' — ' + specShapeShort(x.spec.capabilities) +
-      ' · <a href="#" class="rep-regen" data-rep="' + esc(x.id) + '">regenerate →</a></div>');
+      ' · <a href="#" class="rep-regen" data-rep="' + esc(x.id) + '">another like this →</a></div>');
     if (rows.length >= 3) break;
   }
   const lines = (bits.length ? ['<div>' + bits.join(' · ') + '</div>'] : []).concat(rows);
