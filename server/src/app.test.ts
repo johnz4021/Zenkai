@@ -606,3 +606,13 @@ describe('multi-session app branch (WU-D)', () => {
     expect(appSource).toContain('that problem is already starting');
   });
 });
+
+describe('per-sid launch tick (WU-F)', () => {
+  const js = clientScript('app.js') ?? '';
+  it('polls its own sid and fails fast on gone', () => {
+    expect(js).toContain("'/api/session-live' + sidQ");
+    expect(js).toContain('if (r.gone)');
+    // The global-boolean navigation bug must not come back.
+    expect(js).not.toContain("(await (await fetch('/api/session-live')).json()).live");
+  });
+});

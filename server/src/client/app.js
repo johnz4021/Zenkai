@@ -2046,8 +2046,20 @@ async function launchCommon(endpoint, body, btn, idleLabel) {
   if (btn) launchStatus(btn, 'booting the container and editor — up to a minute the first time…');
   const until = Date.now() + 180000;
   const tick = async () => {
-    const live = (await (await fetch('/api/session-live')).json()).live;
-    if (live) { window.location.href = sessionHref(s.url); return; }
+    // Per-sid poll (WU-F): under multi-session, a global boolean would fire
+    // on ANOTHER user's boot and navigate this user into their round. The
+    // server ignores sid in legacy mode, so this is backward compatible.
+    const sidQ = s.session_id ? '?sid=' + encodeURIComponent(s.session_id) : '';
+    const r = await (await fetch('/api/session-live' + sidQ)).json();
+    if (r.gone) {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = idleLabel;
+        launchStatus(btn, "couldn't start — is Docker running? Try again.", true);
+      }
+      return;
+    }
+    if (r.live) { window.location.href = sessionHref(s.url); return; }
     if (Date.now() < until) { window.setTimeout(tick, 2000); return; }
     if (btn) {
       btn.disabled = false;
