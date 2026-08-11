@@ -32,6 +32,7 @@ import { clientScript } from './chrome.js';
 import { authConfigFromPublic, makeAuth } from './auth.js';
 import { childEnv } from './child-env.js';
 import { makeDb, repRow, sessionRow, targetRow, type SessionRow } from './db.js';
+import { applyReaping, gatherRepDiskFacts, planReaping } from './retention.js';
 import type { PublicConfig } from './public-config.js';
 import {
   acquireRepLock,
@@ -1860,7 +1861,26 @@ export function runApp(cfg: AppConfig): http.Server {
       return json(500, { error: String(e).slice(0, 300) });
     }
   });
-  sweepOrphanedGenerations();
+  // Boot-only sweeps were fine when the founder was the only watcher; with
+  // strangers, a detached build that dies mid-beta must not show "building"
+  // until a restart, and the reaper needs a heartbeat. 10 min, unref'd.
+  const sweep = () => {
+    sweepOrphanedGenerations();
+    if (cfg.pub.retention.days !== null || cfg.pub.retention.reapNodeModules) {
+      try {
+        applyReaping(
+          planReaping(gatherRepDiskFacts(repoRoot), Date.now(), {
+            days: cfg.pub.retention.days,
+            reapNodeModules: cfg.pub.retention.reapNodeModules,
+          }),
+        );
+      } catch (e) {
+        console.warn(`[retention] sweep failed: ${String(e).slice(0, 160)}`);
+      }
+    }
+  };
+  sweep();
+  setInterval(sweep, 10 * 60_000).unref();
   // IP_APP_BIND=127.0.0.1 in the beta: the tunnel is the only ingress to the
   // app. (The SESSION server must stay on all interfaces — the container's
   // trace WS dials the docker gateway IP, never loopback.)
