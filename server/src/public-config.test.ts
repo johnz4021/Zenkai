@@ -59,3 +59,16 @@ describe('resolvePublicConfig', () => {
     expect(c.retention.reapNodeModules).toBe(true);
   });
 });
+
+describe('multi-session config (WU-D)', () => {
+  it('defaults: multi OFF, sane caps', () => {
+    const c = resolvePublicConfig({});
+    expect(c.multiSession).toBe(false);
+    expect(c.sessions).toEqual({ maxConcurrentSessions: 2, maxSessionsPerUser: 1 });
+  });
+  it('beta env enables and caps', () => {
+    const c = resolvePublicConfig({ IP_MULTI_SESSION: '1', IP_MAX_CONCURRENT_SESSIONS: '3' });
+    expect(c.multiSession).toBe(true);
+    expect(c.sessions.maxConcurrentSessions).toBe(3);
+  });
+});

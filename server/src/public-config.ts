@@ -44,6 +44,14 @@ export interface PublicConfig {
     maxRepsPerUserDay: number;
     maxPendingPerUser: number;
   };
+  /** Multi-session (TODOS #22). false = legacy single-session, byte-identical. */
+  multiSession: boolean;
+  sessions: {
+    /** Live rooms at once; RAM-bound (~1GB per room on the beta box). */
+    maxConcurrentSessions: number;
+    /** Per person. Admins bypass (the founder tests concurrency alone). */
+    maxSessionsPerUser: number;
+  };
   retention: {
     /** null = reaper off. */
     days: number | null;
@@ -96,6 +104,11 @@ export function resolvePublicConfig(env: Record<string, string | undefined>): Pu
     retention: {
       days: env.IP_RETENTION_DAYS ? intOr(env.IP_RETENTION_DAYS, 0) || null : null,
       reapNodeModules: env.IP_REAP_NODE_MODULES === '1',
+    },
+    multiSession: env.IP_MULTI_SESSION === '1',
+    sessions: {
+      maxConcurrentSessions: intOr(env.IP_MAX_CONCURRENT_SESSIONS, 2),
+      maxSessionsPerUser: intOr(env.IP_MAX_SESSIONS_PER_USER, 1),
     },
   };
 }

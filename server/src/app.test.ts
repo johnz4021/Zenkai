@@ -586,3 +586,23 @@ describe('app-side card confirms (WU-C)', () => {
     expect(appSource).toContain('card: fb.card, confirms');
   });
 });
+
+describe('multi-session app branch (WU-D)', () => {
+  const appSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'app.ts'), 'utf8');
+  it('the multi branch never probes the router port and serializes launches', () => {
+    expect(appSource).toContain('const multiLaunch = async');
+    // Critical-section discipline: allocate → spawn → append+persist with no
+    // awaits — the mutex is the launchChain promise.
+    expect(appSource).toContain('launchChain = launchChain.then');
+    expect(appSource).toContain("NEVER probe cfg.sessionPort here — that's the router");
+  });
+  it('session-live is sid-aware with a gone signal; state URL carries ?sid', () => {
+    expect(appSource).toContain('{ live: false, gone: true }');
+    expect(appSource).toContain("/session?sid=${encodeURIComponent(mine.sid)}");
+  });
+  it('launch 409 copy names the three multi verdicts', () => {
+    expect(appSource).toContain('your session is live — finish or end it first');
+    expect(appSource).toContain('interview rooms are busy');
+    expect(appSource).toContain('that problem is already starting');
+  });
+});

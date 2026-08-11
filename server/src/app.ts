@@ -34,6 +34,14 @@ import { authConfigFromPublic, makeAuth } from './auth.js';
 import { childEnv } from './child-env.js';
 import { makeDb, repRow, sessionRow, targetRow, type SessionRow } from './db.js';
 import { applyReaping, gatherRepDiskFacts, planReaping } from './retention.js';
+import {
+  allocateSlot,
+  launchVerdict2,
+  loadRegistry,
+  newSessionId,
+  reconcileEntries,
+  saveRegistry,
+} from './session-registry.js';
 import type { PublicConfig } from './public-config.js';
 import {
   acquireRepLock,
@@ -77,6 +85,31 @@ function readBody(req: http.IncomingMessage): Promise<string> {
  *  graded session's server lingers to keep serving the card, and treating
  *  its 200 as "live" soft-locked every future launch. Probed, never
  *  remembered. */
+/**
+ * Multi-session manager (WU-D, TODOS #22). Registry on disk is truth; every
+ * read reconciles against live probes + pids, same discipline as the queue's
+ * marker files. Launches serialize behind a promise mutex: verdict →
+ * allocate → spawn → append+persist runs with NO awaits between allocate and
+ * persist, so two concurrent launches cannot pick one slot — and the entry
+ * always exists before the container it names is born (the orphan-container
+ * sweep depends on that ordering).
+ */
+let launchChain: Promise<void> = Promise.resolve();
+
+async function reconcileRegistryNow(): Promise<import('./session-registry.js').Registry> {
+  const reg = loadRegistry(repoRoot);
+  const probes = new Map<string, import('./session-registry.js').ProbeResult>();
+  await Promise.all(
+    reg.entries.map(async (e) => {
+      const p = await probeSession(e.port);
+      probes.set(e.sid, { reachable: p.reachable, ended: p.ended, session_id: p.session_id });
+    }),
+  );
+  const out = reconcileEntries(reg.entries, probes, pidAlive, Date.now());
+  if (out.changed) saveRegistry(repoRoot, { entries: out.entries });
+  return { entries: out.entries };
+}
+
 /** Server-to-server auth for the session probes below. Set once in runApp;
  *  stable across app restarts (derived, not random) so a session spawned by
  *  a previous app process still honors it. */
@@ -85,24 +118,29 @@ let internalHeaders: Record<string, string> = {};
  *  helpers that run outside runApp's closure. Set once in runApp. */
 let legacyUserId = 'u1';
 
-function probeSession(port: number): Promise<{ reachable: boolean; ended: boolean }> {
+function probeSession(port: number): Promise<{ reachable: boolean; ended: boolean; session_id: string | null; user_id: string | null }> {
   return new Promise((resolve) => {
     const r = http.get({ host: '127.0.0.1', port, path: '/api/status', timeout: 1_000, headers: internalHeaders }, (res) => {
       let body = '';
       res.on('data', (d) => (body += d));
       res.on('end', () => {
         try {
-          const parsed = JSON.parse(body) as { ended?: boolean };
-          resolve({ reachable: res.statusCode === 200, ended: Boolean(parsed.ended) });
+          const parsed = JSON.parse(body) as { ended?: boolean; session_id?: string; user_id?: string };
+          resolve({
+            reachable: res.statusCode === 200,
+            ended: Boolean(parsed.ended),
+            session_id: parsed.session_id ?? null,
+            user_id: parsed.user_id ?? null,
+          });
         } catch {
-          resolve({ reachable: res.statusCode === 200, ended: false });
+          resolve({ reachable: res.statusCode === 200, ended: false, session_id: null, user_id: null });
         }
       });
     });
-    r.on('error', () => resolve({ reachable: false, ended: false }));
+    r.on('error', () => resolve({ reachable: false, ended: false, session_id: null, user_id: null }));
     r.on('timeout', () => {
       r.destroy();
-      resolve({ reachable: false, ended: false });
+      resolve({ reachable: false, ended: false, session_id: null, user_id: null });
     });
   });
 }
@@ -236,7 +274,7 @@ function logLaunch(origin: unknown, sessionId: string): void {
   }
 }
 
-function spawnDetached(args: string[], env: Record<string, string> = {}): void {
+function spawnDetached(args: string[], env: Record<string, string> = {}): number | null {
   const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), ...args], {
     cwd: repoRoot,
     detached: true,
@@ -245,6 +283,7 @@ function spawnDetached(args: string[], env: Record<string, string> = {}): void {
     env: childEnv('session', process.env, env),
   });
   child.unref();
+  return child.pid ?? null;
 }
 
 /** Build output goes to `<dir>.build.log` — BESIDE the problem dir, never
@@ -1010,6 +1049,62 @@ export function runApp(cfg: AppConfig): http.Server {
   internalHeaders = auth.internalToken ? { 'x-ip-internal': auth.internalToken } : {};
   legacyUserId = cfg.userId;
 
+  /** Multi-session launch (WU-D): verdict → allocate → spawn → append+persist,
+   *  serialized behind launchChain with no awaits inside the critical block —
+   *  concurrent launches can't share a slot, and the registry entry exists
+   *  before the container it names. Returns the HTTP response to send. */
+  const multiLaunch = async (
+    who: { id: string; admin: boolean },
+    problemDirArg: string,
+  ): Promise<{ code: number; body: Record<string, unknown> }> => {
+    await reconcileRegistryNow();
+    let result: { code: number; body: Record<string, unknown> } = {
+      code: 500, body: { error: 'launch did not run' },
+    };
+    const busy = {
+      code: 409,
+      body: { error: `all ${cfg.pub.sessions.maxConcurrentSessions} interview rooms are busy — try again in ~45 minutes` },
+    };
+    await (launchChain = launchChain.then(() => {
+      const reg = loadRegistry(repoRoot);
+      const verdict = launchVerdict2(reg.entries, who.id, who.admin, problemDirArg, cfg.pub.sessions);
+      if (verdict === 'your-session-live') {
+        result = { code: 409, body: { error: 'your session is live — finish or end it first' } };
+        return;
+      }
+      if (verdict === 'already-launching') {
+        result = { code: 409, body: { error: 'that problem is already starting — give it a moment' } };
+        return;
+      }
+      if (verdict === 'all-slots-busy') { result = busy; return; }
+      const slot = allocateSlot(reg.entries, cfg.pub.sessions.maxConcurrentSessions);
+      if (!slot) { result = busy; return; }
+      const sid = newSessionId(Date.now());
+      const pid = spawnDetached(['session', problemDirArg], {
+        IP_SESSION_ID: sid,
+        IP_USER_ID: who.id,
+        IP_PREPARE_NEXT: '0',
+        IP_APP_URL: cfg.pub.appPublicUrl,
+        IP_MULTI_SESSION: '1',
+        IP_SESSION_PORT: String(slot.port),
+        IP_IDE_PORT: String(slot.idePort),
+        ...(internalHeaders['x-ip-internal']
+          ? { IP_INTERNAL_TOKEN: internalHeaders['x-ip-internal'] }
+          : {}),
+      });
+      reg.entries.push({
+        sid, user_id: who.id, port: slot.port, ide_port: slot.idePort,
+        pid: pid ?? -1, problem_dir: problemDirArg, started_at: Date.now(),
+      });
+      saveRegistry(repoRoot, reg);
+      result = {
+        code: 200,
+        body: { session_id: sid, url: `${cfg.pub.sessionPublicUrl}/session?sid=${encodeURIComponent(sid)}` },
+      };
+    }));
+    return result;
+  };
+
   // WU7: the Postgres mirror — records only, disk stays truth. Sessions are
   // swept from feedback/ by mtime watermark (starts at 0 = one-time backfill
   // of pre-beta history; upserts make re-mirroring harmless).
@@ -1154,7 +1249,19 @@ export function runApp(cfg: AppConfig): http.Server {
       }
       if (url === '/api/state') {
         const now = Date.now();
-        const live = await sessionLive(cfg.sessionPort);
+        // Multi mode: liveness and the session link are the CALLER's — the
+        // URL carries ?sid so a browser restart (no ip_sid cookie) still
+        // resumes into the right room through the router.
+        let live: boolean;
+        let sessionUrl = `${cfg.pub.sessionPublicUrl}/session`;
+        if (cfg.pub.multiSession) {
+          const reg = await reconcileRegistryNow();
+          const mine = reg.entries.find((e) => e.user_id === user!.id && e.ended_at === undefined);
+          live = Boolean(mine);
+          if (mine) sessionUrl = `${cfg.pub.sessionPublicUrl}/session?sid=${encodeURIComponent(mine.sid)}`;
+        } else {
+          live = await sessionLive(cfg.sessionPort);
+        }
         // The candidate's active gap, as a sentence — TODAY's "aimed at:"
         // line. The raw key ("clarify") explained nothing on the old page.
         const focus = (() => {
@@ -1234,7 +1341,7 @@ export function runApp(cfg: AppConfig): http.Server {
           focus,
           today: new Date(now).toISOString(),
           session_live: live,
-          session_url: `${cfg.pub.sessionPublicUrl}/session`,
+          session_url: sessionUrl,
           user: { id: user!.id, email: user!.email, admin: user!.admin },
         });
       }
@@ -1424,6 +1531,22 @@ export function runApp(cfg: AppConfig): http.Server {
         if (!rep) return json(404, { error: 'no such rep' });
         if (!ownsRep(rep)) return json(403, { error: 'not your rep' });
         const dir = repProblemDir(repoRoot, rep.id);
+        if (cfg.pub.multiSession) {
+          // Ready/used checks still apply; liveness verdicts live in the
+          // registry. NEVER probe cfg.sessionPort here — that's the router.
+          const pre = launchVerdict(rep, {
+            usedExists: existsSync(path.join(dir, '.used')),
+            sessionLive: false,
+          });
+          if (pre === 'not-ready') return json(400, { error: 'rep is not ready' });
+          if (pre === 'already-used') return json(409, { error: 'that rep already ran — its card is under history' });
+          const out = await multiLaunch({ id: user!.id, admin: user!.admin }, dir);
+          if (out.code === 200) {
+            logLaunch(b.origin, String(out.body.session_id));
+            console.log(`[app] rep ${rep.id} launching as ${String(out.body.session_id)}`);
+          }
+          return json(out.code, out.body);
+        }
         const probe = await probeSession(cfg.sessionPort);
         const verdict = launchVerdict(rep, {
           usedExists: existsSync(path.join(dir, '.used')),
@@ -1847,6 +1970,11 @@ export function runApp(cfg: AppConfig): http.Server {
         if (!q || !item?.problem_dir || item.status !== 'ready') {
           return json(400, { error: 'item is not ready' });
         }
+        if (cfg.pub.multiSession) {
+          const out = await multiLaunch({ id: user!.id, admin: user!.admin }, item.problem_dir);
+          if (out.code === 200) logLaunch(b.origin, String(out.body.session_id));
+          return json(out.code, out.body);
+        }
         const probe = await probeSession(cfg.sessionPort);
         if (probe.reachable && !probe.ended) {
           const owner = await probeSessionOwner(cfg.sessionPort);
@@ -1882,7 +2010,17 @@ export function runApp(cfg: AppConfig): http.Server {
         });
         return json(200, { session_id: sessionId, url: `${cfg.pub.sessionPublicUrl}/session` });
       }
-      if (url === '/api/session-live') {
+      if (url === '/api/session-live' || url.startsWith('/api/session-live?')) {
+        if (cfg.pub.multiSession) {
+          const sidQ = new URL(url, 'http://x').searchParams.get('sid');
+          const reg = await reconcileRegistryNow();
+          const entry = sidQ
+            ? reg.entries.find((e) => e.sid === sidQ)
+            : reg.entries.find((e) => e.user_id === user!.id && e.ended_at === undefined);
+          if (!entry) return json(200, { live: false, gone: true });
+          const p = await probeSession(entry.port);
+          return json(200, { live: p.reachable && !p.ended });
+        }
         return json(200, { live: await sessionLive(cfg.sessionPort) });
       }
       if (url === '/api/session-kill' && req.method === 'POST') {
@@ -1891,6 +2029,17 @@ export function runApp(cfg: AppConfig): http.Server {
         // the trace stays on disk for a CLI rejudge.
         // WU5: only the session's owner (or an admin) may kill it — the
         // session reports its user_id on /api/status.
+        if (cfg.pub.multiSession) {
+          const kb = JSON.parse((await readBody(req)) || '{}') as { sid?: string };
+          const reg = await reconcileRegistryNow();
+          const mine = kb.sid && user!.admin
+            ? reg.entries.find((e) => e.sid === kb.sid)
+            : reg.entries.find((e) => e.user_id === user!.id && e.ended_at === undefined);
+          if (!mine) return json(404, { error: 'no live session of yours to end' });
+          const rr = await postSession(mine.port, '/api/abandon');
+          if (!rr.ok) return json(502, { error: 'the session did not respond — it may already be gone' });
+          return json(200, { ok: true });
+        }
         const owner = await probeSessionOwner(cfg.sessionPort);
         if (!user!.admin && owner !== null && owner !== user!.id) {
           return json(403, { error: "someone else is mid-round — that session isn't yours to end" });
