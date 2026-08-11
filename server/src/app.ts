@@ -493,9 +493,10 @@ export function appPage(): string {
   #home-status .statusline {
     margin-top: 22px; text-align: center;
     font-family: var(--mono); font-size: 11px; font-weight: 500;
-    text-transform: uppercase; letter-spacing: .14em; color: var(--text-3);
+    text-transform: uppercase; letter-spacing: .14em; color: var(--text-2);
   }
-  #home-status a { color: var(--text-3); text-decoration: none; }
+  #home-status .statusline > div + div { margin-top: 7px; }
+  #home-status a { color: var(--text-2); text-decoration: none; }
   #home-status a:hover { color: var(--text-1); }
   /* The composer is ONE instrument: a single frame holding the borderless
      textarea and its footer row (affordances left, the action right). Focus

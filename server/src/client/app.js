@@ -110,6 +110,14 @@ function specShapeLine(c) {
     (c.submit === 'one_shot' ? 'graded once at submit' : 'iterate freely');
 }
 
+/** Same vocabulary as specShapeLine, compressed for the landing readout —
+ *  the three words that distinguish one round shape from another. */
+function specShapeShort(c) {
+  return (c.interviewer ? 'live' : 'OA') + ' · ' +
+    (c.time_limit_ms ? Math.round(c.time_limit_ms / 60000) + 'm' : 'untimed') + ' · ' +
+    (c.starts_from === 'blank' ? 'from scratch' : c.starts_from === 'diff' ? 'review' : 'repo');
+}
+
 function specDateLine(spec) {
   if (!spec.date) return 'date not set';
   const n = daysUntil(spec.date);
@@ -1344,27 +1352,34 @@ function renderHomeStatus(state) {
       bits.push('<a href="#/history">' + ready + ' ready →</a>');
     }
   }
-  // Last-session segment (user call 2026-08-10, echoing codex's "practice
-  // another like this"): the landing is the generator's page, so its readout
-  // feeds the generator — the newest generated rep offers one-tap
-  // regeneration in the same confirmed shape. The seasons have their own
-  // tab; the readout doesn't need to point there.
-  const last = (state.reps || []).find((x) => x.status === 'ready' || x.status === 'done');
-  if (last) {
-    const title = (last.title || last.label || '');
-    const short = title.length > 34 ? title.slice(0, 31) + '…' : title;
-    bits.push('last: ' + esc(short) +
-      ' · <a href="#" id="rep-regen" data-rep="' + esc(last.id) + '">regenerate →</a>');
+  // Recent-formats segment (user calls 2026-08-10): the landing is the
+  // generator's page, so its readout feeds the generator — the last few
+  // distinct SHAPES you generated in, each one tap from a fresh problem.
+  // Shapes, not titles: the user remembers "backend live debugging round",
+  // never "Hourly usage metering". Dedup by spec.id — regenerate chains
+  // share their parent's spec verbatim, so a chain collapses to one row.
+  // The seasons have their own tab; the readout doesn't point there.
+  const rows = [];
+  const seenShapes = new Set();
+  for (const x of state.reps || []) {
+    if (x.status !== 'ready' && x.status !== 'done') continue;
+    if (!x.spec || seenShapes.has(x.spec.id)) continue;
+    seenShapes.add(x.spec.id);
+    rows.push('<div>' + esc(x.spec.label) + ' — ' + specShapeShort(x.spec.capabilities) +
+      ' · <a href="#" class="rep-regen" data-rep="' + esc(x.id) + '">regenerate →</a></div>');
+    if (rows.length >= 3) break;
   }
-  host.innerHTML = bits.length ? '<div class="statusline">' + bits.join(' · ') + '</div>' : '';
-  const regen = el('rep-regen');
-  if (regen) regen.addEventListener('click', (e) => {
-    e.preventDefault();
-    if (regen.dataset.busy) return;
-    regen.dataset.busy = '1';
-    regen.textContent = 'starting…';
-    regenerateLike(regen.dataset.rep, state);
-  });
+  const lines = (bits.length ? ['<div>' + bits.join(' · ') + '</div>'] : []).concat(rows);
+  host.innerHTML = lines.length ? '<div class="statusline">' + lines.join('') + '</div>' : '';
+  for (const regen of host.querySelectorAll('.rep-regen')) {
+    regen.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (regen.dataset.busy) return;
+      regen.dataset.busy = '1';
+      regen.textContent = 'starting…';
+      regenerateLike(regen.dataset.rep, state);
+    });
+  }
 }
 
 /**

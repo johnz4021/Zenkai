@@ -466,14 +466,22 @@ describe('composer-first landing — hero + status line (design round2-A-minimal
     expect(js).toMatch(/renderPractice\(\);\s*\n\s*renderHomeStatus\(state\)/);
   });
 
-  it('the readout feeds the generator: building / ready / last + regenerate', () => {
+  it('the readout feeds the generator: building / ready / recent formats + regenerate', () => {
     expect(js).toContain('building your round');
     expect(js).toContain("ready →");
     expect(js).toMatch(/href="#\/history"/);
-    // Last-session segment: one tap re-posts the same confirmed shape under
-    // a new id, with a variation line naming the previous title so the
-    // generator can't re-roll the same domain (never-a-copy, aimed inward).
-    expect(js).toContain('id="rep-regen"');
+    // Recent-formats rows: up to 3 distinct SHAPES (spec label + compressed
+    // caps, deduped by spec.id so regenerate chains collapse), each one tap
+    // from a fresh problem. Shapes, not titles — the user remembers the
+    // format they confirmed, never the generated problem's name.
+    expect(js).toContain('function specShapeShort');
+    expect(js).toMatch(/seenShapes\.has\(x\.spec\.id\)/);
+    expect(js).toMatch(/esc\(x\.spec\.label\) \+ ' — ' \+ specShapeShort/);
+    expect(js).toContain('class="rep-regen"');
+    expect(js).toContain("querySelectorAll('.rep-regen')");
+    // one tap re-posts the same confirmed shape under a new id, with a
+    // variation line naming the previous title so the generator can't
+    // re-roll the same domain (never-a-copy, aimed inward)
     expect(js).toContain('function regenerateLike');
     expect(js).toContain('do not repeat the previous one');
     // seasons live in their own tab now; the readout doesn't point there
