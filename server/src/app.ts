@@ -29,6 +29,7 @@ import { appendLearnings, gateBlueprint, loadBlueprint, writeBlueprintWithBackup
 import { clearGeneratingMarker, generationProgress, pidAlive, readGeneratingMarker, sweepVerdict, writeGeneratingMarker } from './generation-state.js';
 import { pickTopicNamer } from './plan-topics.js';
 import { clientScript } from './chrome.js';
+import type { PublicConfig } from './public-config.js';
 import {
   acquireRepLock,
   createRepRecord,
@@ -51,6 +52,8 @@ export interface AppConfig {
   port: number;
   sessionPort: number;
   userId: string;
+  /** Browser-facing origins + beta knobs; resolvePublicConfig({}) ≡ pre-beta. */
+  pub: PublicConfig;
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {
@@ -1038,7 +1041,7 @@ export function runApp(cfg: AppConfig): http.Server {
           focus,
           today: new Date(now).toISOString(),
           session_live: live,
-          session_url: `http://localhost:${cfg.sessionPort}/session`,
+          session_url: `${cfg.pub.sessionPublicUrl}/session`,
         });
       }
       if (url === '/api/target' && req.method === 'POST') {
@@ -1229,10 +1232,10 @@ export function runApp(cfg: AppConfig): http.Server {
           IP_SESSION_ID: sessionId,
           IP_USER_ID: cfg.userId,
           IP_PREPARE_NEXT: '0',
-          IP_APP_URL: `http://localhost:${cfg.port}`,
+          IP_APP_URL: cfg.pub.appPublicUrl,
         });
         console.log(`[app] rep ${rep.id} launching as ${sessionId}`);
-        return json(200, { session_id: sessionId, url: `http://localhost:${cfg.sessionPort}/session` });
+        return json(200, { session_id: sessionId, url: `${cfg.pub.sessionPublicUrl}/session` });
       }
       if (url === '/api/practice/retry' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { rep_id?: string };
@@ -1624,9 +1627,9 @@ export function runApp(cfg: AppConfig): http.Server {
           IP_SESSION_ID: sessionId,
           IP_USER_ID: cfg.userId,
           IP_PREPARE_NEXT: '0',
-          IP_APP_URL: `http://localhost:${cfg.port}`,
+          IP_APP_URL: cfg.pub.appPublicUrl,
         });
-        return json(200, { session_id: sessionId, url: `http://localhost:${cfg.sessionPort}/session` });
+        return json(200, { session_id: sessionId, url: `${cfg.pub.sessionPublicUrl}/session` });
       }
       if (url === '/api/session-live') {
         return json(200, { live: await sessionLive(cfg.sessionPort) });
@@ -1646,8 +1649,13 @@ export function runApp(cfg: AppConfig): http.Server {
     }
   });
   sweepOrphanedGenerations();
-  server.listen(cfg.port, () => {
-    console.log(`[app] open http://localhost:${cfg.port}/`);
-  });
+  // IP_APP_BIND=127.0.0.1 in the beta: the tunnel is the only ingress to the
+  // app. (The SESSION server must stay on all interfaces — the container's
+  // trace WS dials the docker gateway IP, never loopback.)
+  const announce = () => {
+    console.log(`[app] open ${cfg.pub.appPublicUrl}/`);
+  };
+  if (cfg.pub.appBindHost) server.listen(cfg.port, cfg.pub.appBindHost, announce);
+  else server.listen(cfg.port, announce);
   return server;
 }

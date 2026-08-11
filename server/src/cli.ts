@@ -361,7 +361,8 @@ if (cmd === 'generate') {
   process.exit(await generateInto(problemDir, note, brief, rep.spec));
 } else if (cmd === 'app') {
   const { runApp } = await import('./app.js');
-  runApp({ port: 3300, sessionPort: 3200, userId });
+  const { resolvePublicConfig } = await import('./public-config.js');
+  runApp({ port: 3300, sessionPort: 3200, userId, pub: resolvePublicConfig(process.env) });
 } else if (cmd === 'prepare') {
   // Targeting note comes either from the env (set by the session that just
   // ended) or is derived here from the stored gap graph.

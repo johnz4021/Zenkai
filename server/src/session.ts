@@ -369,7 +369,10 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     `${BUNDLED_NODE} ${workspacePath}/node_modules/vitest/vitest.mjs run`;
   sh('docker', [
     'run', '-d', '--name', CONTAINER,
-    '-p', `${cfg.idePort}:3000`,
+    // Loopback publish: the only consumer of the IDE port is the host-side
+    // proxy (target 127.0.0.1). Publishing on 0.0.0.0 exposed a TOKENLESS
+    // remote IDE to the LAN, beside whatever auth the servers enforce.
+    '-p', `127.0.0.1:${cfg.idePort}:3000`,
     '--add-host=host.docker.internal:host-gateway',
     '-e', `IP_SESSION_ID=${cfg.sessionId}`,
     '-e', `IP_USER_ID=${cfg.userId}`,
