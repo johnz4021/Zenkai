@@ -64,6 +64,9 @@ export interface SessionConfig {
   port: number;
   idePort: number;
   autorunTests: boolean;
+  /** Multi-session mode (WU-A): per-session container name + ide-data dir.
+   *  Unset/false = legacy single-session, byte-identical. */
+  multiSession?: boolean;
   /** Beta auth (WU3). Omitted/enabled:false = local dev, everything open.
    *  The session verifies JWTs itself — it must, since it listens on all
    *  interfaces for the container's trace WS and the LAN can reach it. */
@@ -116,15 +119,22 @@ const MOMENT_INTERVAL_MS = 2.5 * 60_000;
 const PRESSURE_TICK_MS = 30_000;
 
 const IDE_IMAGE = 'gitpod/openvscode-server:latest';
-const CONTAINER = 'ip-session';
 const BUNDLED_NODE = '/home/.openvscode-server/node';
+
+/** Container identity (multi-session WU-A). Legacy single-session keeps the
+ *  historic fixed name; multi mode names per session so launch B can never
+ *  `docker rm -f` session A's container — the exact incident assertPortFree's
+ *  header documents. Pure; unit-tested. */
+export function containerNameFor(sessionId: string, multiSession: boolean): string {
+  return multiSession ? `ip-session-${sessionId}` : 'ip-session';
+}
 
 /** The one way the IDE container dies. Called after grading, on abandon, on
  *  shutdown, and from the signal handlers — a session that ends by ANY path
  *  must not leave a live container behind (QA ISSUE-001: it did, and every
  *  finished round soft-locked the product until a terminal intervened). */
-function teardownContainer(): void {
-  spawnSync('docker', ['rm', '-f', CONTAINER], { encoding: 'utf8' });
+function teardownContainerByName(name: string): void {
+  spawnSync('docker', ['rm', '-f', name], { encoding: 'utf8' });
 }
 
 function sh(cmd: string, args: string[], opts: { cwd?: string } = {}): string {
@@ -215,8 +225,18 @@ function loadIdeSettings(repoRoot: string): Record<string, unknown> {
   return settings;
 }
 
-function ensureIdeDataDir(repoRoot: string): string {
-  const dataDir = path.join(repoRoot, '.ide-data');
+/** Multi mode gives each session its own dir: the legacy shared path holds
+ *  VS Code's SQLite globalStorage, and two concurrent containers on one
+ *  bind-mounted SQLite file is a corruption class, not a race. Pure path
+ *  derivation exported for tests. */
+export function ideDataDirFor(repoRoot: string, sessionId: string | null): string {
+  return sessionId
+    ? path.join(repoRoot, '.ide-data', sessionId)
+    : path.join(repoRoot, '.ide-data');
+}
+
+function ensureIdeDataDir(repoRoot: string, sessionId: string | null): string {
+  const dataDir = ideDataDirFor(repoRoot, sessionId);
   const userDir = path.join(dataDir, 'User');
   const machineDir = path.join(dataDir, 'Machine');
   mkdirSync(userDir, { recursive: true });
@@ -339,6 +359,10 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // via IP_WS_URL, checked at the WS upgrade. See traceUpgradeAllowed.
   const traceToken = randomBytes(16).toString('hex');
 
+  // Per-session identities (WU-A): legacy mode keeps the historic values.
+  const containerName = containerNameFor(cfg.sessionId, Boolean(cfg.multiSession));
+  const teardownContainer = (): void => teardownContainerByName(containerName);
+
   // Browser + server-to-server auth (WU3). Auth off → local admin always.
   const auth = makeAuth(
     cfg.auth ?? { supabaseUrl: null, adminEmails: [], localUserId: cfg.userId },
@@ -371,7 +395,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   const ideImage = ensureRuntimeImage(runtime);
   if (runtime === 'node') ensureLinuxDeps(cfg.problemDir);
   const extDist = ensureExtensionBuilt(cfg.repoRoot);
-  const ideDataDir = ensureIdeDataDir(cfg.repoRoot);
+  const ideDataDir = ensureIdeDataDir(cfg.repoRoot, cfg.multiSession ? cfg.sessionId : null);
 
   const tracesDir = path.join(cfg.repoRoot, 'traces');
   const gapsDir = path.join(cfg.repoRoot, 'gaps');
@@ -388,7 +412,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // docker). The openvscode process inside simply idles unused — nobody
   // loads the workbench, so the extension never activates. Accepted idle
   // cost over a second launch path.
-  spawnSync('docker', ['rm', '-f', CONTAINER], { encoding: 'utf8' });
+  spawnSync('docker', ['rm', '-f', containerName], { encoding: 'utf8' });
   // Per-session workspace path (QA ISSUE-005): VS Code Web keys workbench
   // state (open tabs, layout) by folder URI in BROWSER IndexedDB — a
   // constant path meant every round opened on the previous round's tabs.
@@ -400,7 +424,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     problem.test_command ??
     `${BUNDLED_NODE} ${workspacePath}/node_modules/vitest/vitest.mjs run`;
   sh('docker', [
-    'run', '-d', '--name', CONTAINER,
+    'run', '-d', '--name', containerName,
     // Loopback publish: the only consumer of the IDE port is the host-side
     // proxy (target 127.0.0.1). Publishing on 0.0.0.0 exposed a TOKENLESS
     // remote IDE to the LAN, beside whatever auth the servers enforce.
@@ -865,7 +889,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       const t0 = Date.now();
       const run = spawnSync(
         'docker',
-        ['exec', CONTAINER, 'bash', '-lc', `cd ${workspacePath} && ${testCmd}`],
+        ['exec', containerName, 'bash', '-lc', `cd ${workspacePath} && ${testCmd}`],
         { encoding: 'utf8', timeout: 180_000 },
       );
       const tail = `${run.stdout ?? ''}\n${run.stderr ?? ''}`.slice(-4_000);
@@ -1250,7 +1274,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       const t0 = Date.now();
       // spawn, not spawnSync: a suite can take minutes and the status /
       // message polls must keep answering while it runs.
-      const child = spawn('docker', ['exec', CONTAINER, 'bash', '-lc', `cd ${workspacePath} && ${testCmd}`]);
+      const child = spawn('docker', ['exec', containerName, 'bash', '-lc', `cd ${workspacePath} && ${testCmd}`]);
       let tail = '';
       const keep = (chunk: Buffer) => {
         tail = (tail + chunk.toString()).slice(-4_000);
@@ -1603,7 +1627,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       if (timeUpAt !== null && Date.now() - timeUpAt > 30_000 && !ended) {
         ended = true;
         console.log('[session] grace elapsed — finalizing server-side');
-        void finalize().catch((e) => console.error('[session] cap finalize failed:', e));
+        void finalize()
+          // The card never needs the container; in multi mode an idle
+          // openvscode container would burn ~1GB beside live rooms.
+          .then(() => setImmediate(teardownContainer))
+          .catch((e) => console.error('[session] cap finalize failed:', e));
       }
     }, 5_000);
     capTimer.unref();

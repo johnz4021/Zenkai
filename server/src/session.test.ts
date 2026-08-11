@@ -13,9 +13,10 @@
  * worth a test that actually binds a socket.
  */
 import http from 'node:http';
+import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { assertPortFree, traceUpgradeAllowed } from './session.js';
+import { assertPortFree, containerNameFor, ideDataDirFor, traceUpgradeAllowed } from './session.js';
 
 const listeners: http.Server[] = [];
 
@@ -71,5 +72,17 @@ describe('traceUpgradeAllowed', () => {
   });
   it('tolerates extra query params and ignores them', () => {
     expect(traceUpgradeAllowed(`/trace?x=1&token=${TOKEN}&y=2`, TOKEN)).toBe(true);
+  });
+});
+
+// --- multi-session WU-A: identity derivation --------------------------------
+describe('per-session identity derivation (WU-A)', () => {
+  it('legacy mode keeps the historic values exactly', () => {
+    expect(containerNameFor('sess-123', false)).toBe('ip-session');
+    expect(ideDataDirFor('/r', null)).toBe(path.join('/r', '.ide-data'));
+  });
+  it('multi mode namespaces both by session id', () => {
+    expect(containerNameFor('sess-123-ab', true)).toBe('ip-session-sess-123-ab');
+    expect(ideDataDirFor('/r', 'sess-123-ab')).toBe(path.join('/r', '.ide-data', 'sess-123-ab'));
   });
 });

@@ -45,6 +45,13 @@ const THEME =
 const [cmd, target] = process.argv.slice(2);
 const userId = process.env.IP_USER_ID ?? 'u1';
 
+/** Validated port env read: unset/empty/garbage falls back — Number('') is 0,
+ *  which listen() would treat as "any port" and quietly break the contract. */
+function portEnv(v: string | undefined, fallback: number): number {
+  const n = Number(v?.trim());
+  return Number.isInteger(n) && n > 0 && n < 65536 ? n : fallback;
+}
+
 async function generateInto(
   targetDir: string,
   targetNote?: string,
@@ -602,8 +609,9 @@ if (cmd === 'generate') {
     targetId: targetMatch?.[1],
     appUrl: process.env.IP_APP_URL,
     auth: sessionAuth,
-    port: 3200,
-    idePort: 3100,
+    multiSession: process.env.IP_MULTI_SESSION === '1',
+    port: portEnv(process.env.IP_SESSION_PORT, 3200),
+    idePort: portEnv(process.env.IP_IDE_PORT, 3100),
     autorunTests: process.env.IP_AUTORUN_TESTS !== '0',
     prepareNext: process.env.IP_PREPARE_NEXT !== '0',
     interviewer: process.env.IP_INTERVIEWER === '0' ? null : undefined,
