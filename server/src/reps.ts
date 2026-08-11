@@ -32,7 +32,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { RoundSpec } from '@interview-prep/shared';
 import type { Queue, QueueItem } from './queue.js';
-import { reconcileWithDisk } from './queue.js';
+import { localDate, reconcileWithDisk } from './queue.js';
 import {
   generationProgress,
   readGeneratingMarker,
@@ -235,6 +235,32 @@ export function retryVerdict(
   // live detached build for a moment — spawning again would put two agents
   // in one directory.
   if (state.markerAlive) return 'still-running';
+  return 'ok';
+}
+
+/**
+ * Beta admission gate (WU6) — pure verdict, caps injected from PublicConfig.
+ * Daily boundary is the LOCAL calendar day (queue.ts's localDate convention):
+ * a candidate practicing at 11pm shouldn't find the next morning's budget
+ * already spent. Pending = anything not yet consumed or written off
+ * (generating | ready | failed) — the cap that bounds disk, since every
+ * ready node rep is a ~60MB problem dir until retention slims it.
+ */
+export function admissionVerdict(
+  reps: Pick<Rep, 'user_id' | 'status' | 'created'>[],
+  userId: string,
+  legacyOwnerId: string,
+  nowMs: number,
+  caps: { maxRepsPerUserDay: number; maxPendingPerUser: number },
+): 'ok' | 'daily-cap' | 'pending-cap' {
+  const mine = reps.filter((r) => repOwnedBy(r, userId, legacyOwnerId));
+  const today = localDate(nowMs);
+  const createdToday = mine.filter((r) => localDate(Date.parse(r.created)) === today).length;
+  if (createdToday >= caps.maxRepsPerUserDay) return 'daily-cap';
+  const pending = mine.filter(
+    (r) => r.status === 'generating' || r.status === 'ready' || r.status === 'failed',
+  ).length;
+  if (pending >= caps.maxPendingPerUser) return 'pending-cap';
   return 'ok';
 }
 

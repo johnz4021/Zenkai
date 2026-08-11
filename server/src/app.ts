@@ -33,6 +33,7 @@ import { authConfigFromPublic, makeAuth } from './auth.js';
 import type { PublicConfig } from './public-config.js';
 import {
   acquireRepLock,
+  admissionVerdict,
   createRepRecord,
   repOwnedBy,
   repsVisibleTo,
@@ -254,6 +255,24 @@ function openBuildLog(dir: string): number {
  *  .failed marker into the item dir so reconcile derives `failed` and the
  *  timeline can offer retry — a silent stuck "generating" row was the
  *  design review's exact never-silent rule. */
+/** Builds generating RIGHT NOW across reps and every target queue —
+ *  disk-derived (markers via reconcile), never from memory, so an app
+ *  restart can't forget a detached opus run when enforcing the cap. */
+function countLiveBuilds(): number {
+  let n = 0;
+  try {
+    const reps = reconcileWithDisk(repoRoot, loadReps(repoRoot)) as ReturnType<typeof loadReps>;
+    n += reps.items.filter((i) => i.status === 'generating').length;
+  } catch { /* unreadable reps file: count what we can */ }
+  for (const t of listTargets(repoRoot)) {
+    try {
+      const q = loadQueue(repoRoot, t.id);
+      if (q) n += reconcileWithDisk(repoRoot, q).items.filter((i) => i.status === 'generating').length;
+    } catch { /* skip a broken queue, never block the gate on it */ }
+  }
+  return n;
+}
+
 function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
   const args = ['generate-for', target.id, item.spec_id, '--into', dir];
   if (item.planned_title) args.push('--title', item.planned_title);
@@ -1264,6 +1283,21 @@ export function runApp(cfg: AppConfig): http.Server {
         } catch (e) {
           return json(400, { error: String(e instanceof Error ? e.message : e) });
         }
+        // Beta caps (WU6). Per-user admission first (cheap, pure), then the
+        // global build slot — each opus build is real money and the beta
+        // runs them one at a time.
+        const admission = admissionVerdict(
+          loadReps(repoRoot).items, user!.id, cfg.userId, Date.now(), cfg.pub.caps,
+        );
+        if (admission === 'daily-cap') {
+          return json(429, { error: "that's your practice budget for today — the beta caps rounds per day; come back tomorrow" });
+        }
+        if (admission === 'pending-cap') {
+          return json(429, { error: 'you have unplayed rounds waiting — run or retry one of those before building another' });
+        }
+        if (countLiveBuilds() >= cfg.pub.caps.maxConcurrentBuilds) {
+          return json(409, { error: "someone else's round is generating — builds run one at a time in the beta; try again in ~5 minutes" });
+        }
         try {
           acquireRepLock(repoRoot, b.rep_id);
         } catch (e) {
@@ -1301,7 +1335,14 @@ export function runApp(cfg: AppConfig): http.Server {
         });
         if (verdict === 'not-ready') return json(400, { error: 'rep is not ready' });
         if (verdict === 'already-used') return json(409, { error: 'that rep already ran — its card is under history' });
-        if (verdict === 'session-live') return json(409, { error: 'a session is already running — finish or end it first' });
+        if (verdict === 'session-live') {
+          const owner = await probeSessionOwner(cfg.sessionPort);
+          return json(409, {
+            error: owner === null || owner === user!.id || user!.admin
+              ? 'a session is already running — finish or end it first'
+              : 'someone is mid-round — sessions run one at a time in the beta; check back in ~45 minutes',
+          });
+        }
         if (probe.reachable && probe.ended) {
           // Reap a graded session's lingering card server (the /api/launch
           // pattern, verbatim) so port 3200 frees up for the new session.
@@ -1635,6 +1676,9 @@ export function runApp(cfg: AppConfig): http.Server {
         if (q.items.some((i) => i.status === 'generating')) {
           return json(409, { error: 'a problem is already generating — one at a time' });
         }
+        if (countLiveBuilds() >= cfg.pub.caps.maxConcurrentBuilds) {
+          return json(409, { error: "someone else's round is generating — builds run one at a time in the beta; try again in ~5 minutes" });
+        }
         const dir = path.isAbsolute(item.problem_dir) ? item.problem_dir : path.join(repoRoot, item.problem_dir);
         rmSync(dir, { recursive: true, force: true });
         delete item.stale;
@@ -1655,6 +1699,9 @@ export function runApp(cfg: AppConfig): http.Server {
         }
         if (q.items.some((i) => i.status === 'generating')) {
           return json(409, { error: 'a problem is already generating — one at a time' });
+        }
+        if (countLiveBuilds() >= cfg.pub.caps.maxConcurrentBuilds) {
+          return json(409, { error: "someone else's round is generating — builds run one at a time in the beta; try again in ~5 minutes" });
         }
         const dir = path.join(targetDir(repoRoot, t.id), 'problems', item.id);
         item.status = 'generating';
@@ -1706,7 +1753,12 @@ export function runApp(cfg: AppConfig): http.Server {
         }
         const probe = await probeSession(cfg.sessionPort);
         if (probe.reachable && !probe.ended) {
-          return json(409, { error: 'a session is already running — finish or end it first' });
+          const owner = await probeSessionOwner(cfg.sessionPort);
+          return json(409, {
+            error: owner === null || owner === user!.id || user!.admin
+              ? 'a session is already running — finish or end it first'
+              : 'someone is mid-round — sessions run one at a time in the beta; check back in ~45 minutes',
+          });
         }
         if (probe.reachable && probe.ended) {
           // A graded session's server lingers to serve its card; reap it so

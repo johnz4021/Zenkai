@@ -16,6 +16,7 @@ import {
   MAX_REP_DESCRIPTION,
   REPS_TARGET_ID,
   acquireRepLock,
+  admissionVerdict,
   assertRepId,
   createRepRecord,
   derivePhase,
@@ -324,5 +325,49 @@ describe('rep ownership (WU5)', () => {
     expect(rep.user_id).toBe('uuid-me');
     const anon = createRepRecord({ id: 'rep-y', spec: DEFAULT_DEBUGGING_SPEC, description: 'd', now: 1700000000000 });
     expect(anon.user_id).toBeUndefined();
+  });
+});
+
+describe('admissionVerdict (WU6 beta caps)', () => {
+  // Noon local time keeps the local-day boundary cases unambiguous.
+  const NOON = new Date(2026, 7, 11, 12, 0, 0).getTime();
+  const at = (ms: number) => new Date(ms).toISOString();
+  const caps = { maxRepsPerUserDay: 3, maxPendingPerUser: 4 };
+  const mine = (status: string, createdMs: number) =>
+    ({ user_id: 'me', status, created: at(createdMs) }) as never;
+
+  it('unlimited caps admit everything (local dev)', () => {
+    const reps = Array.from({ length: 50 }, () => mine('ready', NOON));
+    expect(admissionVerdict(reps, 'me', 'u1', NOON, { maxRepsPerUserDay: Infinity, maxPendingPerUser: Infinity })).toBe('ok');
+  });
+
+  it('daily cap counts only MY reps created THIS local day', () => {
+    const reps = [
+      mine('done', NOON - 1000),
+      mine('done', NOON - 2000),
+      mine('done', NOON - 3000),
+      // yesterday's and someone else's don't count
+      mine('done', NOON - 24 * 3600_000),
+      { user_id: 'them', status: 'done', created: at(NOON) } as never,
+    ];
+    expect(admissionVerdict(reps, 'me', 'u1', NOON, caps)).toBe('daily-cap');
+    expect(admissionVerdict(reps.slice(1), 'me', 'u1', NOON, caps)).toBe('ok');
+  });
+
+  it('pending cap counts generating/ready/failed, not done/skipped', () => {
+    const old = NOON - 3 * 24 * 3600_000; // long ago: daily cap can't fire
+    const reps = [
+      mine('generating', old), mine('ready', old), mine('failed', old), mine('ready', old),
+      mine('done', old), mine('skipped', old),
+    ];
+    expect(admissionVerdict(reps, 'me', 'u1', NOON, caps)).toBe('pending-cap');
+    expect(admissionVerdict(reps.slice(1), 'me', 'u1', NOON, caps)).toBe('ok');
+  });
+
+  it('legacy reps (no user_id) count against the local user', () => {
+    const old = NOON - 3 * 24 * 3600_000;
+    const legacyPending = Array.from({ length: 4 }, () => ({ status: 'ready', created: at(old) }) as never);
+    expect(admissionVerdict(legacyPending, 'u1', 'u1', NOON, caps)).toBe('pending-cap');
+    expect(admissionVerdict(legacyPending, 'me', 'u1', NOON, caps)).toBe('ok');
   });
 });
