@@ -912,6 +912,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         {
           card,
           view,
+          // WU5: the card's owner. The app's /api/feedback scopes on this;
+          // legacy files without it read as the founder's.
+          user_id: cfg.userId,
           // Voice health belongs in the record you open when a session felt
           // wrong: "the mic seemed off" must be checkable after the fact.
           // speech_starts vs transcripts is the gate-quality ratio — if it
@@ -955,9 +958,18 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     {
       const openPath =
         url === '/session' || url.startsWith('/client/') || url.startsWith('/vendor/monaco/');
-      if (!openPath && !(await auth.resolve(req))) {
-        res.writeHead(401, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ error: 'sign in required' }));
+      if (!openPath) {
+        const viewer = await auth.resolve(req);
+        if (!viewer) {
+          res.writeHead(401, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'sign in required' }));
+        }
+        // WU5: a live round is the CANDIDATE's room. Another invited user
+        // reaching this origin must not see their workspace or chat.
+        if (!viewer.admin && !viewer.internal && viewer.id !== cfg.userId) {
+          res.writeHead(403, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'someone else is mid-round on this server' }));
+        }
       }
     }
     if (url === '/session') {
@@ -1001,6 +1013,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       return res.end(
         JSON.stringify({
           session_id: cfg.sessionId,
+          // WU5: whose round this is — the app's session-kill ownership
+          // check and the launch 409 copy both read it.
+          user_id: cfg.userId,
           // A graded/abandoned session answering 200 is NOT a live session.
           // The app reads this to decide whether Start is available (QA
           // ISSUE-001: without it, one finished round soft-locked every
@@ -1404,7 +1419,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     // Everything else — /voice, /events, and the openvscode workbench WS
     // through the proxy — carries the browser's auth cookie.
     void auth.resolve(req).then((user) => {
-      if (!user) {
+      // Same viewer-ownership rule as the HTTP gate: the room belongs to
+      // the candidate whose round this is.
+      if (!user || (!user.admin && !user.internal && user.id !== cfg.userId)) {
         socket.destroy();
         return;
       }

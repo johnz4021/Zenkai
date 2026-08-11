@@ -29,6 +29,10 @@ import { deriveMemoryTags, validateRoundSpec } from '@interview-prep/shared';
 export interface Target {
   id: string;
   label: string;
+  /** Beta (WU5): who owns this plan. Absent = pre-beta = the local user
+   *  ('u1') — the founder's. Planning is a core beta feature, so targets are
+   *  SCOPED per user, never hidden behind an admin wall. */
+  user_id?: string;
   /** ISO date of the interview, when known — the queue paces against it. */
   interview_date?: string;
   /** What the candidate said about the round(s), verbatim. */

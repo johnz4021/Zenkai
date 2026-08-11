@@ -34,6 +34,8 @@ import type { PublicConfig } from './public-config.js';
 import {
   acquireRepLock,
   createRepRecord,
+  repOwnedBy,
+  repsVisibleTo,
   gateRepInput,
   launchVerdict,
   loadReps,
@@ -74,6 +76,9 @@ function readBody(req: http.IncomingMessage): Promise<string> {
  *  stable across app restarts (derived, not random) so a session spawned by
  *  a previous app process still honors it. */
 let internalHeaders: Record<string, string> = {};
+/** The pre-beta/local owner id (cfg.userId), for the module-level spawn
+ *  helpers that run outside runApp's closure. Set once in runApp. */
+let legacyUserId = 'u1';
 
 function probeSession(port: number): Promise<{ reachable: boolean; ended: boolean }> {
   return new Promise((resolve) => {
@@ -101,6 +106,29 @@ function probeSession(port: number): Promise<{ reachable: boolean; ended: boolea
 async function sessionLive(port: number): Promise<boolean> {
   const p = await probeSession(port);
   return p.reachable && !p.ended;
+}
+
+/** The live session's owner (session /api/status user_id), or null when no
+ *  session answers / the field is absent (pre-beta session process). */
+function probeSessionOwner(port: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    const r = http.get({ host: '127.0.0.1', port, path: '/api/status', timeout: 1_000, headers: internalHeaders }, (res) => {
+      let body = '';
+      res.on('data', (d) => (body += d));
+      res.on('end', () => {
+        try {
+          resolve(((JSON.parse(body) as { user_id?: string }).user_id) ?? null);
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+    r.on('error', () => resolve(null));
+    r.on('timeout', () => {
+      r.destroy();
+      resolve(null);
+    });
+  });
 }
 
 /** POST to the session server; ok=false on any failure. */
@@ -236,7 +264,8 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
     cwd: repoRoot,
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: { ...process.env },
+    // The generator's targeting note reads the OWNER's gap graph.
+    env: { ...process.env, IP_USER_ID: target.user_id ?? legacyUserId },
   });
   child.unref();
   // Disk-derived liveness (ISSUE-003): the marker carries {pid, started_at}
@@ -266,7 +295,8 @@ function spawnRepBuild(rep: Rep): void {
     cwd: repoRoot,
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: { ...process.env },
+    // The rep creator's gap graph steers the blueprint's emphasis.
+    env: { ...process.env, IP_USER_ID: rep.user_id ?? legacyUserId },
   });
   child.unref();
   // Marker at REQUEST time with the child's pid — drafting happens inside
@@ -948,6 +978,7 @@ export function runApp(cfg: AppConfig): http.Server {
   // admin, so the gate below never fires — pre-beta behavior, byte-identical.
   const auth = makeAuth(authConfigFromPublic(cfg.pub.supabase, cfg.pub.adminEmails, cfg.userId));
   internalHeaders = auth.internalToken ? { 'x-ip-internal': auth.internalToken } : {};
+  legacyUserId = cfg.userId;
 
   const server = http.createServer(async (req, res) => {
     const url = req.url ?? '/';
@@ -988,6 +1019,12 @@ export function runApp(cfg: AppConfig): http.Server {
       if (url.startsWith('/api/') && !user) {
         return json(401, { error: 'sign in required' });
       }
+      // WU5 ownership rules. Absent user_id = pre-beta record = the local
+      // user's (the founder). Admins see and touch everything.
+      const ownsTarget = (t: Target | null | undefined): boolean =>
+        Boolean(t && (user!.admin || (t.user_id ?? cfg.userId) === user!.id));
+      const ownsRep = (r: { user_id?: string }): boolean =>
+        user!.admin || repOwnedBy(r, user!.id, cfg.userId);
       if (url.startsWith('/api/feedback') && req.method === 'GET') {
         // A finished round's judged card, read from the file finalize (and
         // rejudge --record) writes. The planning page is where feedback
@@ -998,8 +1035,13 @@ export function runApp(cfg: AppConfig): http.Server {
         try {
           const fb = JSON.parse(
             readFileSync(path.join(repoRoot, 'feedback', `${sid}.json`), 'utf8'),
-          ) as { card?: unknown };
+          ) as { card?: unknown; user_id?: string };
           if (!fb.card) return json(404, { error: 'no card for this session' });
+          // WU5: cards are the owner's. Legacy files (no user_id) are the
+          // founder's — same absent-means-local rule as reps and targets.
+          if (!user!.admin && (fb.user_id ?? cfg.userId) !== user!.id) {
+            return json(404, { error: 'no feedback recorded for this session' });
+          }
           return json(200, { card: fb.card });
         } catch {
           return json(404, { error: 'no feedback recorded for this session' });
@@ -1012,15 +1054,16 @@ export function runApp(cfg: AppConfig): http.Server {
         // line. The raw key ("clarify") explained nothing on the old page.
         const focus = (() => {
           try {
-            const view = buildGraphView(loadStore(path.join(repoRoot, 'gaps'), cfg.userId));
+            const view = buildGraphView(loadStore(path.join(repoRoot, 'gaps'), user!.id));
             return view.focus ? { key: view.focus, description: gapDescription(view.focus) } : null;
           } catch {
             return null;
           }
         })();
         const targets = listTargets(repoRoot)
+          .filter((t) => user!.admin || (t.user_id ?? cfg.userId) === user!.id)
           .map((t) => {
-            const queue = refreshQueue(t, cfg.userId, now);
+            const queue = refreshQueue(t, t.user_id ?? cfg.userId, now);
             const withTitles = queue
               ? {
                   ...queue,
@@ -1074,7 +1117,7 @@ export function runApp(cfg: AppConfig): http.Server {
         if (JSON.stringify(repsFresh) !== JSON.stringify(repsStored)) saveReps(repoRoot, repsFresh);
         return json(200, {
           targets,
-          reps: repStateView(repoRoot, repsFresh),
+          reps: repsVisibleTo(repStateView(repoRoot, repsFresh), user!, cfg.userId),
           focus,
           today: new Date(now).toISOString(),
           session_live: live,
@@ -1103,6 +1146,7 @@ export function runApp(cfg: AppConfig): http.Server {
         const t: Target = {
           id: `${slugify(b.label)}-${Date.now().toString(36)}`,
           label: b.label.trim(),
+          user_id: user!.id,
           ...(date ? { interview_date: date } : {}),
           description: b.description?.trim() ?? '',
           ...(b.context?.trim() ? { context: b.context.trim() } : {}),
@@ -1132,6 +1176,7 @@ export function runApp(cfg: AppConfig): http.Server {
           answers?: { question: string; answer: string }[];
         };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         if (!t) return json(404, { error: 'no such target' });
         if (!t.description) return json(400, { error: 'describe the round first' });
         const { pickClarifier } = await import('./clarify.js');
@@ -1225,6 +1270,7 @@ export function runApp(cfg: AppConfig): http.Server {
           return json(409, { error: String(e instanceof Error ? e.message : e) });
         }
         const rep = createRepRecord({
+          userId: user!.id,
           id: b.rep_id,
           spec: b.spec as RoundSpec,
           description: input.description,
@@ -1246,6 +1292,7 @@ export function runApp(cfg: AppConfig): http.Server {
         const views = repStateView(repoRoot, loadReps(repoRoot));
         const rep = views.find((r) => r.id === b.rep_id);
         if (!rep) return json(404, { error: 'no such rep' });
+        if (!ownsRep(rep)) return json(403, { error: 'not your rep' });
         const dir = repProblemDir(repoRoot, rep.id);
         const probe = await probeSession(cfg.sessionPort);
         const verdict = launchVerdict(rep, {
@@ -1268,7 +1315,8 @@ export function runApp(cfg: AppConfig): http.Server {
         logLaunch(b.origin, sessionId);
         spawnDetached(['session', dir], {
           IP_SESSION_ID: sessionId,
-          IP_USER_ID: cfg.userId,
+          // The person at the keyboard is whose gap graph gets written.
+          IP_USER_ID: user!.id,
           IP_PREPARE_NEXT: '0',
           IP_APP_URL: cfg.pub.appPublicUrl,
           ...(internalHeaders['x-ip-internal']
@@ -1286,6 +1334,7 @@ export function runApp(cfg: AppConfig): http.Server {
         const views = repStateView(repoRoot, loadReps(repoRoot));
         const rep = views.find((r) => r.id === b.rep_id);
         if (!rep) return json(404, { error: 'no such rep' });
+        if (!ownsRep(rep)) return json(403, { error: 'not your rep' });
         const dir = repProblemDir(repoRoot, rep.id);
         const gm = readGeneratingMarker(dir);
         const verdict = retryVerdict(rep, { markerAlive: Boolean(gm && pidAlive(gm.pid)) });
@@ -1303,6 +1352,7 @@ export function runApp(cfg: AppConfig): http.Server {
         // only AFTER the model+gate succeed, so a 502 retry is idempotent.
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; message?: string };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         if (!t) return json(404, { error: 'no such target' });
         if (!process.env.ANTHROPIC_API_KEY) {
           // The conversational planner needs typed content blocks + server
@@ -1335,6 +1385,7 @@ export function runApp(cfg: AppConfig): http.Server {
         // off instead of rotting as "finish setting up".
         const tid = new URL(url, 'http://x').searchParams.get('target') ?? '';
         const t = tid ? loadTarget(repoRoot, tid) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         if (!t) return json(404, { error: 'no such target' });
         const { loadConversation, renderConversation, latestProposal } = await import('./planner.js');
         const turns = loadConversation(repoRoot, tid);
@@ -1351,6 +1402,7 @@ export function runApp(cfg: AppConfig): http.Server {
         // assessments live outside the target dir and are untouched.
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         if (!t) return json(404, { error: 'no such target' });
         rmSync(targetDir(repoRoot, t.id), { recursive: true, force: true });
         return json(200, { ok: true });
@@ -1365,6 +1417,7 @@ export function runApp(cfg: AppConfig): http.Server {
           pace_per_week?: number;
         };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         const incoming = b.specs ?? (b.spec ? [b.spec] : []);
         if (!t || incoming.length === 0) return json(400, { error: 'target_id and spec(s) required' });
         // The confirm gate re-proves the vocabulary server-side — the client
@@ -1434,6 +1487,7 @@ export function runApp(cfg: AppConfig): http.Server {
         // diff (D5); /api/adapt/apply is the only writer.
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; material?: string };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         if (!t) return json(404, { error: 'no such target' });
         const material = (b.material ?? '').trim();
         if (!material) return json(400, { error: 'paste what you learned — an email, problem titles, a message' });
@@ -1515,6 +1569,7 @@ export function runApp(cfg: AppConfig): http.Server {
           return json(400, { error: 'target_id and a complete diff required' });
         }
         const t = loadTarget(repoRoot, b.target_id);
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         const q = t ? loadQueue(repoRoot, t.id) : null;
         if (!t || !q) return json(404, { error: 'no such target or plan' });
         for (const spec of diff.new_specs) {
@@ -1564,6 +1619,7 @@ export function runApp(cfg: AppConfig): http.Server {
         // can't flip the item back to ready before generation runs.
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         const q = t ? loadQueue(repoRoot, t.id) : null;
         const item = q?.items.find((i) => i.id === b.item_id);
         if (!t || !q || !item?.problem_dir || item.status !== 'ready' || !item.stale) {
@@ -1591,6 +1647,7 @@ export function runApp(cfg: AppConfig): http.Server {
       if (url === '/api/generate' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         const q = t ? loadQueue(repoRoot, t.id) : null;
         const item = q?.items.find((i) => i.id === b.item_id);
         if (!t || !q || !item || item.status !== 'pending') {
@@ -1610,6 +1667,7 @@ export function runApp(cfg: AppConfig): http.Server {
       if (url === '/api/retry' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         const q = t ? loadQueue(repoRoot, t.id) : null;
         const item = q?.items.find((i) => i.id === b.item_id);
         if (!t || !q || !item?.problem_dir || item.status !== 'failed') {
@@ -1666,7 +1724,8 @@ export function runApp(cfg: AppConfig): http.Server {
         // drawing from in queue mode.
         spawnDetached(['session', item.problem_dir], {
           IP_SESSION_ID: sessionId,
-          IP_USER_ID: cfg.userId,
+          // The person at the keyboard is whose gap graph gets written.
+          IP_USER_ID: user!.id,
           IP_PREPARE_NEXT: '0',
           IP_APP_URL: cfg.pub.appPublicUrl,
           ...(internalHeaders['x-ip-internal']
@@ -1682,6 +1741,12 @@ export function runApp(cfg: AppConfig): http.Server {
         // The masthead's "end session" (QA D1): abandon = discard, never
         // grade. The session server tears down its container and exits;
         // the trace stays on disk for a CLI rejudge.
+        // WU5: only the session's owner (or an admin) may kill it — the
+        // session reports its user_id on /api/status.
+        const owner = await probeSessionOwner(cfg.sessionPort);
+        if (!user!.admin && owner !== null && owner !== user!.id) {
+          return json(403, { error: "someone else is mid-round — that session isn't yours to end" });
+        }
         const r = await postSession(cfg.sessionPort, '/api/abandon');
         if (!r.ok) return json(502, { error: 'no session responded — it may already be gone' });
         return json(200, { ok: true });

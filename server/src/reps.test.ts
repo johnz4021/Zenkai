@@ -22,6 +22,8 @@ import {
   gateRepInput,
   launchVerdict,
   loadReps,
+  repOwnedBy,
+  repsVisibleTo,
   repBlueprintPath,
   repProblemDir,
   repStateView,
@@ -292,5 +294,35 @@ describe('sweepReps — the reps half of the orphan sweep', () => {
     const log = sweepReps(root, repsFile(r), () => false, new Set([dir]));
     expect(log).toEqual([]);
     expect(existsSync(path.join(dir, '.failed'))).toBe(false);
+  });
+});
+
+// --- beta WU5: ownership ---------------------------------------------------
+describe('rep ownership (WU5)', () => {
+  const legacy: { id: string; user_id?: string } = { id: 'rep-a' }; // pre-beta
+  const mine = { id: 'rep-b', user_id: 'uuid-me' };
+  const theirs = { id: 'rep-c', user_id: 'uuid-them' };
+
+  it('absent user_id belongs to the legacy/local user', () => {
+    expect(repOwnedBy(legacy, 'u1', 'u1')).toBe(true);
+    expect(repOwnedBy(legacy, 'uuid-me', 'u1')).toBe(false);
+    expect(repOwnedBy(mine, 'uuid-me', 'u1')).toBe(true);
+    expect(repOwnedBy(mine, 'u1', 'u1')).toBe(false);
+  });
+
+  it('visibility: owners see their own, admins see everything', () => {
+    const all = [legacy, mine, theirs];
+    expect(repsVisibleTo(all, { id: 'uuid-me', admin: false }, 'u1')).toEqual([mine]);
+    expect(repsVisibleTo(all, { id: 'u1', admin: false }, 'u1')).toEqual([legacy]);
+    expect(repsVisibleTo(all, { id: 'uuid-me', admin: true }, 'u1')).toEqual(all);
+  });
+
+  it('createRepRecord stamps the creator', () => {
+    const rep = createRepRecord({
+      id: 'rep-x', spec: DEFAULT_DEBUGGING_SPEC, description: 'd', now: 1700000000000, userId: 'uuid-me',
+    });
+    expect(rep.user_id).toBe('uuid-me');
+    const anon = createRepRecord({ id: 'rep-y', spec: DEFAULT_DEBUGGING_SPEC, description: 'd', now: 1700000000000 });
+    expect(anon.user_id).toBeUndefined();
   });
 });

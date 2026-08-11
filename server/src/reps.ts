@@ -57,6 +57,24 @@ export interface Rep extends QueueItem {
   description: string;
   context?: string;
   created: string;
+  /** Beta (WU5): who created this rep. Absent = pre-beta = the local user
+   *  ('u1') — the founder's. Descriptions hold pasted recruiter emails, so
+   *  visibility is scoped to the owner (admins see all). */
+  user_id?: string;
+}
+
+/** Ownership rule shared by every rep route: absent user_id = legacy = the
+ *  local user's. Pure so the verdict matrix is unit-testable. */
+export function repOwnedBy(rep: Pick<Rep, 'user_id'>, userId: string, legacyOwnerId: string): boolean {
+  return (rep.user_id ?? legacyOwnerId) === userId;
+}
+
+export function repsVisibleTo<T extends Pick<Rep, 'user_id'>>(
+  reps: T[],
+  user: { id: string; admin: boolean },
+  legacyOwnerId: string,
+): T[] {
+  return user.admin ? reps : reps.filter((r) => repOwnedBy(r, user.id, legacyOwnerId));
 }
 
 export interface RepsFile extends Queue {
@@ -141,6 +159,7 @@ export function createRepRecord(input: {
   description: string;
   context?: string;
   now?: number;
+  userId?: string;
 }): Rep {
   return {
     id: input.id,
@@ -156,6 +175,7 @@ export function createRepRecord(input: {
     description: input.description,
     ...(input.context ? { context: input.context } : {}),
     created: new Date(input.now ?? Date.now()).toISOString(),
+    ...(input.userId ? { user_id: input.userId } : {}),
   };
 }
 
