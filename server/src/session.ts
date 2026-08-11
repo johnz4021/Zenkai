@@ -27,7 +27,7 @@ import { isFailingRun, resolveRoundSpec, resolveSurface } from '@interview-prep/
 import { makeAuth } from './auth.js';
 import { childEnv } from './child-env.js';
 import { judgeSession } from './judge.js';
-import { buildAssessmentCard } from './feedback.js';
+import { buildAssessmentCard, mergeConfirm } from './feedback.js';
 import { buildGraphView, buildTargetNote, loadStore, recordAssessment, saveStore } from './gap-graph.js';
 import { clientScript, sessionPage } from './chrome.js';
 import { injectWorkbenchDefaults } from './workbench-inject.js';
@@ -1146,7 +1146,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       } catch {
         /* first confirmation */
       }
-      if (body.dimension) confirms[body.dimension] = Boolean(body.agree);
+      if (body.dimension) confirms = mergeConfirm(confirms, body.dimension, Boolean(body.agree));
       mkdirSync(path.join(cfg.repoRoot, 'assessments'), { recursive: true });
       writeFileSync(file, JSON.stringify(confirms, null, 2));
       res.writeHead(200, { 'content-type': 'application/json' });

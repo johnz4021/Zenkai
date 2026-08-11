@@ -87,10 +87,13 @@ describe('home app page', () => {
     expect(js).toContain("'/api/feedback?session='");
     expect(js).toContain('fbtoggle');
     expect(js).toContain('function renderCardHtml');
-    // Read-only on purpose: no confirm buttons (the endpoint died with the
-    // session), and the bug shows only when solved (unspoiled re-runs).
+    // The bug still shows only when solved (unspoiled re-runs).
     expect(js).toContain('card.bug && card.solved');
-    expect(js).not.toContain("'/api/card-feedback'");
+    // REVERSED (WU-C, multi-session build): the history card now OWNS the
+    // "did this match?" control — the session-side copy dies with its tab
+    // and with the 30-min ended-session reap. Confirms POST to the app.
+    expect(js).toContain("'/api/card-feedback'");
+    expect(js).toContain('fbconfirm');
     expect(html).toContain('.fbcard');
   });
 
@@ -567,5 +570,19 @@ describe('beta copy (WU9)', () => {
   });
   it('the history card carries the memory roadmap note', () => {
     expect(js).toContain('Deeper memory is in development');
+  });
+});
+
+describe('app-side card confirms (WU-C)', () => {
+  const appSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'app.ts'), 'utf8');
+  it('the endpoint validates sid + dimension and scopes by owner', () => {
+    expect(appSource).toContain("url === '/api/card-feedback' && req.method === 'POST'");
+    expect(appSource).toContain('isDimensionKey(b.dimension)');
+    // Legacy feedback files (no user_id) stay the founder's.
+    expect(appSource).toContain("(fbOwner ?? cfg.userId) !== user!.id");
+    expect(appSource).toContain('mergeConfirm(confirms, b.dimension');
+  });
+  it('GET /api/feedback hydrates confirm state', () => {
+    expect(appSource).toContain('card: fb.card, confirms');
   });
 });

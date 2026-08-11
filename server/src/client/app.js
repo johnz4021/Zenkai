@@ -1575,9 +1575,12 @@ function renderHistory(state) {
         try {
           const r = await fetch('/api/feedback?session=' + encodeURIComponent(sid));
           const d = await r.json();
-          feedbackCache[sid] = d.card || { state: 'unassessed', reason: d.error || 'No feedback recorded for this session.' };
+          feedbackCache[sid] = {
+            card: d.card || { state: 'unassessed', reason: d.error || 'No feedback recorded for this session.' },
+            confirms: d.confirms || {},
+          };
         } catch {
-          feedbackCache[sid] = { state: 'unassessed', reason: 'Could not load feedback.' };
+          feedbackCache[sid] = { card: { state: 'unassessed', reason: 'Could not load feedback.' }, confirms: {} };
         }
       }
       rerender();
@@ -1636,9 +1639,12 @@ function wireTimeline(container) {
         try {
           const r = await fetch('/api/feedback?session=' + encodeURIComponent(sid));
           const d = await r.json();
-          feedbackCache[sid] = d.card || { state: 'unassessed', reason: d.error || 'No feedback recorded for this session.' };
+          feedbackCache[sid] = {
+            card: d.card || { state: 'unassessed', reason: d.error || 'No feedback recorded for this session.' },
+            confirms: d.confirms || {},
+          };
         } catch {
-          feedbackCache[sid] = { state: 'unassessed', reason: 'Could not load feedback.' };
+          feedbackCache[sid] = { card: { state: 'unassessed', reason: 'Could not load feedback.' }, confirms: {} };
         }
       }
       rerender();
@@ -1656,6 +1662,28 @@ function wireTimeline(container) {
 const openFeedback = new Set();
 const feedbackCache = {};
 
+// One delegated listener for every history/timeline card confirm — panels
+// re-render on each poll, so per-render wiring would leak or miss.
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.fbconfirm .cf');
+  if (!btn) return;
+  const wrap = btn.closest('.fbconfirm');
+  const sid = wrap.dataset.s;
+  const agree = btn.dataset.agree === '1';
+  try {
+    const r = await fetch('/api/card-feedback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: sid, dimension: wrap.dataset.dim, agree }),
+    });
+    if (!r.ok) { wrap.textContent = 'could not record that — try reopening the card'; return; }
+    if (feedbackCache[sid]) feedbackCache[sid].confirms[wrap.dataset.dim] = agree;
+    wrap.textContent = 'did this match? noted — ' + (agree ? 'confirmed' : 'disputed');
+  } catch {
+    wrap.textContent = 'could not record that — try reopening the card';
+  }
+});
+
 function feedbackToggle(i) {
   if (!i.session_id) return '';
   return ' <a href="#" class="fbtoggle" data-s="' + esc(i.session_id) + '">' +
@@ -1664,16 +1692,17 @@ function feedbackToggle(i) {
 
 function feedbackPanel(i) {
   if (!i.session_id || !openFeedback.has(i.session_id)) return '';
-  const card = feedbackCache[i.session_id];
-  if (!card) return '<div class="fbcard"><p class="meta">loading…</p></div>';
-  return '<div class="fbcard">' + renderCardHtml(card) + '</div>';
+  const entry = feedbackCache[i.session_id];
+  if (!entry) return '<div class="fbcard"><p class="meta">loading…</p></div>';
+  return '<div class="fbcard">' + renderCardHtml(entry.card, entry.confirms, i.session_id) + '</div>';
 }
 
-/** Read-only render of an assessment card — same content the session page
- *  shows at grading time, minus the interactive bits that need the (long
- *  dead) session server: no "did this match?" buttons, and the bug is shown
- *  only when solved (an unsolved problem stays re-runnable unspoiled). */
-function renderCardHtml(card) {
+/** Render of an assessment card — same content the session page shows at
+ *  grading time. WU-C reversal: the "did this match?" control now lives HERE
+ *  (POSTing to the app), because the session server's copy dies with its tab
+ *  and, under multi-session, with the ended-session reap. The bug is still
+ *  shown only when solved (an unsolved problem stays re-runnable unspoiled). */
+function renderCardHtml(card, confirms, sid) {
   let html = '';
   if (card.state === 'unassessed') {
     return '<p class="desc"><b>Session not assessed.</b> ' + esc(card.reason || '') + '</p>';
@@ -1692,6 +1721,13 @@ function renderCardHtml(card) {
       html += '<p class="cite"><span class="clk">' + esc(q.clock) + '</span>  ' + esc(q.text) + '</p>';
     }
     if (r.unreceipted) html += '<p class="cite">No verifiable citation survived for this claim — weigh it accordingly.</p>';
+    if (sid && r.verdict !== 'unassessable') {
+      const answered = confirms && Object.prototype.hasOwnProperty.call(confirms, r.dimension);
+      html += answered
+        ? '<p class="cite">did this match? noted — ' + (confirms[r.dimension] ? 'confirmed' : 'disputed') + '</p>'
+        : '<p class="cite fbconfirm" data-s="' + esc(sid) + '" data-dim="' + esc(r.dimension) + '">did this match? ' +
+          '<button class="cf" data-agree="1">yes</button> <button class="cf" data-agree="0">no</button></p>';
+    }
     html += '</div>';
   }
   if (card.bug && card.solved) {

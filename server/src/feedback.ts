@@ -24,6 +24,20 @@ import { isCandidateEvent, type Assessment, type JudgeResult } from './judge.js'
 import { eventAtOffset } from './timeline.js';
 import { PATTERN_MIN_SESSIONS, gapDescription, type GraphView } from './gap-graph.js';
 
+/**
+ * Confirm-file semantics shared by BOTH servers (WU-C): the session card and
+ * the app history card write the same assessments/<sid>.confirm.json, and
+ * promote-fixture depends on this exact Record<string, boolean> shape —
+ * never widen it.
+ */
+export function mergeConfirm(
+  existing: Record<string, boolean>,
+  dimension: string,
+  agree: boolean,
+): Record<string, boolean> {
+  return { ...existing, [dimension]: agree };
+}
+
 export interface Quote {
   clock: string; // +M:SS offset
   text: string;  // verbatim from the trace, never from the judge

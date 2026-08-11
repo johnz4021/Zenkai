@@ -20,10 +20,11 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateRoundSpec, type GeneratedProblem, type RoundSpec } from '@interview-prep/shared';
+import { isDimensionKey, validateRoundSpec, type GeneratedProblem, type RoundSpec } from '@interview-prep/shared';
 import { ATTACHMENT_MEDIA_TYPES, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, listTargets, loadTarget, pickSpecInferrer, saveTarget, slugify, targetDir, type SpecDraft, type Target } from './intake.js';
 import { bucketIntoDays, loadQueue, nextUp, proposeQueue, reconcileWithDisk, repace, saveQueue, type Queue, type QueueItem } from './queue.js';
 import { buildGraphView, gapDescription, loadStore } from './gap-graph.js';
+import { mergeConfirm } from './feedback.js';
 import { applyAdaptation, pickAdapter, planAdaptation, reconcileAdaptation, retiredSpecIds, type AdaptDiff } from './adapt.js';
 import { appendLearnings, gateBlueprint, loadBlueprint, writeBlueprintWithBackup } from './blueprint.js';
 import { clearGeneratingMarker, generationProgress, pidAlive, readGeneratingMarker, sweepVerdict, writeGeneratingMarker } from './generation-state.js';
@@ -1103,10 +1104,53 @@ export function runApp(cfg: AppConfig): http.Server {
           if (!user!.admin && (fb.user_id ?? cfg.userId) !== user!.id) {
             return json(404, { error: 'no feedback recorded for this session' });
           }
-          return json(200, { card: fb.card });
+          // WU-C: hydrate confirm state so the history card can render
+          // noted/unanswered rows — the response is a snapshot, and a
+          // confirm written later must show up on the next open.
+          let confirms: Record<string, boolean> = {};
+          try {
+            confirms = JSON.parse(
+              readFileSync(path.join(repoRoot, 'assessments', `${sid}.confirm.json`), 'utf8'),
+            ) as Record<string, boolean>;
+          } catch { /* none yet */ }
+          return json(200, { card: fb.card, confirms });
         } catch {
           return json(404, { error: 'no feedback recorded for this session' });
         }
+      }
+      if (url === '/api/card-feedback' && req.method === 'POST') {
+        // WU-C: the durable home of "did this match?". The session-card
+        // control dies with its tab (and, in multi-session, with the 30-min
+        // ended-session reap) — the history card is where confirms actually
+        // get given. Feeds promote-fixture; same file, same shape.
+        const b = JSON.parse((await readBody(req)) || '{}') as {
+          session?: string; dimension?: string; agree?: boolean;
+        };
+        const sid = b.session ?? '';
+        if (!/^sess-[\w-]+$/.test(sid)) return json(400, { error: 'bad session id' });
+        if (typeof b.dimension !== 'string' || !isDimensionKey(b.dimension)) {
+          return json(400, { error: 'bad dimension' });
+        }
+        let fbOwner: string | undefined;
+        try {
+          fbOwner = (JSON.parse(
+            readFileSync(path.join(repoRoot, 'feedback', `${sid}.json`), 'utf8'),
+          ) as { user_id?: string }).user_id;
+        } catch {
+          return json(404, { error: 'no feedback recorded for this session' });
+        }
+        if (!user!.admin && (fbOwner ?? cfg.userId) !== user!.id) {
+          return json(404, { error: 'no feedback recorded for this session' });
+        }
+        const file = path.join(repoRoot, 'assessments', `${sid}.confirm.json`);
+        let confirms: Record<string, boolean> = {};
+        try {
+          confirms = JSON.parse(readFileSync(file, 'utf8')) as Record<string, boolean>;
+        } catch { /* first confirmation */ }
+        confirms = mergeConfirm(confirms, b.dimension, Boolean(b.agree));
+        mkdirSync(path.join(repoRoot, 'assessments'), { recursive: true });
+        writeFileSync(file, JSON.stringify(confirms, null, 2));
+        return json(200, { ok: true });
       }
       if (url === '/api/state') {
         const now = Date.now();
