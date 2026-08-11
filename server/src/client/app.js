@@ -1700,6 +1700,9 @@ function renderCardHtml(card) {
   if (card.focus) {
     html += '<div class="fbfocus"><p class="k">next session focus</p><p>' + esc(card.focus.description) + '</p></div>';
   }
+  // Beta (WU9): same memory roadmap note as the live session card — the
+  // history tab is where cards get re-read, so the retention line rides here too.
+  html += '<p class="cite">Zenkai is learning your patterns across rounds — this card already aims your next problem. Deeper memory is in development: why a gap happens, not just where it showed.</p>';
   return html;
 }
 

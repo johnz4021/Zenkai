@@ -553,3 +553,19 @@ describe('beta auth — client wiring (WU4)', () => {
     expect(html).toContain('.loginbox');
   });
 });
+
+describe('beta copy (WU9)', () => {
+  const html = appPage();
+  const js = clientScript('app.js') ?? '';
+  it('masthead carries the beta tag; the LANDING carries no in-development copy', () => {
+    expect(html).toContain('class="betatag"');
+    // The landing must stay clean: "in development" before a round is a
+    // reason not to start, and the beta measures session-1 demand.
+    expect(js.indexOf('renderPractice')).toBeGreaterThan(-1);
+    const practiceFn = js.slice(js.indexOf('function renderPractice'), js.indexOf('function renderRepWait'));
+    expect(practiceFn).not.toContain('in development');
+  });
+  it('the history card carries the memory roadmap note', () => {
+    expect(js).toContain('Deeper memory is in development');
+  });
+});

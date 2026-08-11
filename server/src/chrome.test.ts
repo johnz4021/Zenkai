@@ -275,3 +275,13 @@ describe('beta auth — session-origin token handoff (WU4)', () => {
     expect(page).toContain("document.cookie = 'ip_jwt='");
   });
 });
+
+describe('beta copy on the session card (WU9)', () => {
+  it('the memory note rides below the patterns line in the card renderer', () => {
+    const js = clientScript('session.js') ?? '';
+    const patterns = js.indexOf('before patterns emerge');
+    const note = js.indexOf('Deeper memory is in development');
+    expect(patterns).toBeGreaterThan(-1);
+    expect(note).toBeGreaterThan(patterns); // below, never replacing
+  });
+});

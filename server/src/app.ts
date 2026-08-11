@@ -911,6 +911,11 @@ export function appPage(): string {
   .runway li.interview .dot { border-color: var(--steel); background: var(--steel); transform: rotate(45deg); }
   .runway li.interview .body { font-weight: 500; letter-spacing: .02em; }
 
+  /* Beta tag (WU9): micro-label voice, steel not identity — global
+     expectation-setting that buys forgiveness for rough edges without
+     pointing at any specific missing feature. */
+  .betatag { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .18em; color: var(--steel-text); border: 1px solid var(--steel); border-radius: 4px; padding: 1px 6px; margin-left: 10px; align-self: center; }
+
   /* ---- beta login (WU4) — shown only when auth is on and no token ---- */
   #login { display: flex; justify-content: center; padding-top: 12vh; }
   .loginbox { max-width: 420px; width: 100%; display: flex; flex-direction: column; gap: 14px; }
@@ -947,6 +952,7 @@ export function appPage(): string {
         <path class="seam" d="M36.15 13.5 L11.85 34.5" stroke-width="1.3" />
       </svg>
       <span class="word">Zenkai</span>
+      <span class="betatag">beta</span>
     </a>
     <span class="navright">
       <a href="#/t/" id="nav-live" aria-live="polite"><span class="pulse"></span>session live</a>
