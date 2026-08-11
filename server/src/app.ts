@@ -35,6 +35,7 @@ import { childEnv } from './child-env.js';
 import { makeDb, repRow, sessionRow, targetRow, type SessionRow } from './db.js';
 import { applyReaping, gatherRepDiskFacts, planReaping } from './retention.js';
 import { makeSessionRouter } from './session-router.js';
+import { applySessionSweep, listSessionContainers, planSessionSweep } from './session-sweep.js';
 import {
   allocateSlot,
   launchVerdict2,
@@ -2060,6 +2061,31 @@ export function runApp(cfg: AppConfig): http.Server {
   // until a restart, and the reaper needs a heartbeat. 10 min, unref'd.
   const sweep = () => {
     sweepOrphanedGenerations();
+    if (cfg.pub.multiSession) {
+      // Session lifecycle (WU-G): reconcile, reap ended card servers after
+      // their 30-min window, clean up after crashed sessions and orphaned
+      // containers. Async probes feed a pure plan; failures never throw.
+      void (async () => {
+        try {
+          const reg = loadRegistry(repoRoot);
+          const probes = new Map<string, import('./session-registry.js').ProbeResult>();
+          await Promise.all(reg.entries.map(async (e) => {
+            const pr = await probeSession(e.port);
+            probes.set(e.sid, { reachable: pr.reachable, ended: pr.ended, session_id: pr.session_id });
+          }));
+          applySessionSweep(
+            planSessionSweep(reg.entries, probes, pidAlive, listSessionContainers(), Date.now()),
+            {
+              root: repoRoot,
+              save: (entries) => saveRegistry(repoRoot, { entries }),
+              postShutdown: (port) => postSession(port, '/api/shutdown'),
+            },
+          );
+        } catch (e) {
+          console.warn(`[sweep] session sweep failed: ${String(e).slice(0, 160)}`);
+        }
+      })();
+    }
     if (cfg.pub.retention.days !== null || cfg.pub.retention.reapNodeModules) {
       try {
         applyReaping(
