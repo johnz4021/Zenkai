@@ -34,6 +34,7 @@ import { authConfigFromPublic, makeAuth } from './auth.js';
 import { childEnv } from './child-env.js';
 import { makeDb, repRow, sessionRow, targetRow, type SessionRow } from './db.js';
 import { applyReaping, gatherRepDiskFacts, planReaping } from './retention.js';
+import { makeSessionRouter } from './session-router.js';
 import {
   allocateSlot,
   launchVerdict2,
@@ -2082,5 +2083,20 @@ export function runApp(cfg: AppConfig): http.Server {
   };
   if (cfg.pub.appBindHost) server.listen(cfg.port, cfg.pub.appBindHost, announce);
   else server.listen(cfg.port, announce);
+
+  // Multi mode: the app owns the public session port as a ROUTER — spawned
+  // sessions live on dynamic ports behind it. Legacy mode leaves the port
+  // alone (a directly-run `cli.ts session` binds it, exactly as always).
+  if (cfg.pub.multiSession) {
+    const router = makeSessionRouter({
+      resolveEntry: (sid) => loadRegistry(repoRoot).entries.find((e) => e.sid === sid) ?? null,
+      liveEntries: () => loadRegistry(repoRoot).entries.filter((e) => e.ended_at === undefined),
+      authEnabled: auth.enabled,
+      publicIsHttps: cfg.pub.sessionPublicUrl.startsWith('https:'),
+    });
+    router.listen(cfg.sessionPort, () => {
+      console.log(`[app] session router on :${cfg.sessionPort} (multi-session)`);
+    });
+  }
   return server;
 }
