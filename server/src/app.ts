@@ -16,7 +16,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +31,7 @@ import { pickTopicNamer } from './plan-topics.js';
 import { clientScript } from './chrome.js';
 import { authConfigFromPublic, makeAuth } from './auth.js';
 import { childEnv } from './child-env.js';
+import { makeDb, repRow, sessionRow, targetRow, type SessionRow } from './db.js';
 import type { PublicConfig } from './public-config.js';
 import {
   acquireRepLock,
@@ -1001,6 +1002,38 @@ export function runApp(cfg: AppConfig): http.Server {
   internalHeaders = auth.internalToken ? { 'x-ip-internal': auth.internalToken } : {};
   legacyUserId = cfg.userId;
 
+  // WU7: the Postgres mirror — records only, disk stays truth. Sessions are
+  // swept from feedback/ by mtime watermark (starts at 0 = one-time backfill
+  // of pre-beta history; upserts make re-mirroring harmless).
+  const db = makeDb(cfg.pub.supabase);
+  const mirroredUsers = new Set<string>();
+  let feedbackWatermark = 0;
+  const sweepSessionsToDb = (): void => {
+    if (!db.enabled) return;
+    try {
+      const dir = path.join(repoRoot, 'feedback');
+      if (!existsSync(dir)) return;
+      const rows: SessionRow[] = [];
+      let maxSeen = feedbackWatermark;
+      for (const f of readdirSync(dir)) {
+        const m = /^(sess-[\w-]+)\.json$/.exec(f);
+        if (!m) continue;
+        const mtime = statSync(path.join(dir, f)).mtimeMs;
+        if (mtime <= feedbackWatermark) continue;
+        maxSeen = Math.max(maxSeen, mtime);
+        try {
+          const fb = JSON.parse(readFileSync(path.join(dir, f), 'utf8')) as { user_id?: string; card?: { solved?: boolean } };
+          let assessment: unknown = null;
+          const aFile = path.join(repoRoot, 'assessments', `${m[1]}.json`);
+          if (existsSync(aFile)) assessment = JSON.parse(readFileSync(aFile, 'utf8'));
+          rows.push(sessionRow(m[1]!, fb, assessment, cfg.userId, mtime));
+        } catch { /* half-written or legacy-shaped file: next sweep retries nothing — it's below the new watermark, and that's fine for a record */ }
+      }
+      feedbackWatermark = maxSeen;
+      db.mirrorSessions(rows);
+    } catch { /* mirror is best-effort by design */ }
+  };
+
   const server = http.createServer(async (req, res) => {
     const url = req.url ?? '/';
     const json = (code: number, body: unknown) => {
@@ -1135,7 +1168,15 @@ export function runApp(cfg: AppConfig): http.Server {
         // save-if-changed discipline as refreshQueue.
         const repsStored = loadReps(repoRoot);
         const repsFresh = reconcileWithDisk(repoRoot, repsStored) as typeof repsStored;
-        if (JSON.stringify(repsFresh) !== JSON.stringify(repsStored)) saveReps(repoRoot, repsFresh);
+        if (JSON.stringify(repsFresh) !== JSON.stringify(repsStored)) {
+          saveReps(repoRoot, repsFresh);
+          db.mirrorReps(repsFresh.items.map((r) => repRow(r, cfg.userId, now)));
+        }
+        if (user!.email && !mirroredUsers.has(user!.id)) {
+          mirroredUsers.add(user!.id);
+          db.upsertUsers([{ id: user!.id, email: user!.email, is_admin: user!.admin }]);
+        }
+        sweepSessionsToDb();
         return json(200, {
           targets,
           reps: repsVisibleTo(repStateView(repoRoot, repsFresh), user!, cfg.userId),
@@ -1185,6 +1226,7 @@ export function runApp(cfg: AppConfig): http.Server {
           });
         }
         saveTarget(repoRoot, t);
+        db.mirrorTargets([targetRow(t, cfg.userId)]);
         return json(200, { id: t.id });
       }
       if (url === '/api/clarify' && req.method === 'POST') {
@@ -1316,6 +1358,7 @@ export function runApp(cfg: AppConfig): http.Server {
         file.items.push(rep);
         if (!file.created) file.created = rep.created;
         saveReps(repoRoot, file);
+        db.mirrorReps([repRow(rep, cfg.userId, Date.now())]);
         console.log(`[app] rep ${rep.id} requested (${rep.spec.label})`);
         spawnRepBuild(rep);
         return json(200, { ok: true, rep_id: rep.id });
