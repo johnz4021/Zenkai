@@ -2120,9 +2120,27 @@ export function runApp(cfg: AppConfig): http.Server {
       authEnabled: auth.enabled,
       publicIsHttps: cfg.pub.sessionPublicUrl.startsWith('https:'),
     });
-    router.listen(cfg.sessionPort, () => {
-      console.log(`[app] session router on :${cfg.sessionPort} (multi-session)`);
-    });
+    // Cutover hazard (found in the local smoke): a LEGACY session's ended
+    // card server can still be squatting this port the first time multi
+    // mode boots. Reap it and retry once; and a router bind failure must
+    // degrade (launches keep working on direct ports), never crash the app.
+    const bindRouter = async (attempt: number): Promise<void> => {
+      router.once('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EADDRINUSE' && attempt === 0) {
+          console.warn(`[app] :${cfg.sessionPort} busy — reaping a lingering legacy session server`);
+          void postSession(cfg.sessionPort, '/api/shutdown').then(() => {
+            setTimeout(() => void bindRouter(1), 1_500);
+          });
+        } else {
+          console.error(`[app] session router could not bind :${cfg.sessionPort} — ${String(err)}. ` +
+            'Multi-session links will not route until this is freed and the app restarts.');
+        }
+      });
+      router.listen(cfg.sessionPort, () => {
+        console.log(`[app] session router on :${cfg.sessionPort} (multi-session)`);
+      });
+    };
+    void bindRouter(0);
   }
   return server;
 }
