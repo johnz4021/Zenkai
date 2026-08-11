@@ -35,3 +35,5 @@ reps.json
 
 # launch-origin metric (the composer-landing falsifier)
 launches.jsonl
+sessions-live.json
+.ide-data/

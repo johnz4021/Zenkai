@@ -1,7 +1,13 @@
 # Beta runbook — zenkai.run
 
-The no-code half of the beta (plan WU11). Everything code-side shipped on the
-`beta` branch; this is what the founder does once, plus the per-day ops.
+The no-code half of the beta. Everything code-side shipped on the `beta`
+branch; this is what the founder does once, plus the per-day ops.
+
+> **Rev 2 (2026-08-11): the beta hosts on a VPS, not the founder's laptop**
+> (decision logged; concurrent sessions shipped as TODOS #22). Sections 1
+> (Supabase) and 6 (success gate) are unchanged. Sections 2/3/5 below are
+> superseded by "VPS cutover" at the end — the tunnel now runs ON the VPS,
+> `caffeinate` is dead, and multi-session env vars are part of the config.
 
 ## 1. Supabase project (~15 min)
 
@@ -135,3 +141,60 @@ curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer garbage' http
 - ≥3 invite redemptions (any launch) · ≥1 completed round · ≥1 unprompted
   follow-up ("when's the next one / can I do another").
 - Upvotes and "this is sick" count as **zero**.
+
+## 7. VPS cutover (supersedes 2, 3 and 5 — rev 2)
+
+Box: **Hetzner CPX31** (4 vCPU / 8GB / 160GB, ~$16/mo, Ashburn or Hillsboro).
+8GB fits the app + 2-3 live session containers (~1GB each) + a generation run.
+
+```bash
+# on your machine
+scp -r ops root@<box-ip>:
+ssh root@<box-ip> 'bash ops/provision.sh'     # idempotent; prints remaining steps
+# it installs: docker, lsof (assertPortFree DIES without it on Ubuntu minimal),
+# node20, claude CLI, cloudflared, the zenkai user, systemd units, and sets
+# ufw: OpenSSH + `allow in on docker0` — WITHOUT the docker0 rule the
+# container's trace WebSocket is silently dropped and every IDE round
+# records nothing while looking perfectly healthy.
+
+# .env: your laptop's beta .env PLUS the multi-session block
+#   IP_MULTI_SESSION=1
+#   IP_MAX_CONCURRENT_SESSIONS=2      # 3 fits if you watch docker stats
+#   IP_MAX_SESSIONS_PER_USER=1        # admins bypass (you can test 2 rooms)
+scp .env zenkai@<box-ip>:interview_prep/.env
+
+# cloudflared: create the tunnel ON the VPS (or copy your existing creds)
+ssh root@<box-ip>
+cloudflared tunnel login && cloudflared tunnel create zenkai-beta
+cloudflared tunnel route dns zenkai-beta zenkai.run
+cloudflared tunnel route dns zenkai-beta session.zenkai.run
+mkdir -p /etc/cloudflared && cat > /etc/cloudflared/config.yml <<CFG
+tunnel: <TUNNEL-UUID>
+credentials-file: /root/.cloudflared/<TUNNEL-UUID>.json
+ingress:
+  - hostname: zenkai.run
+    service: http://localhost:3300
+  - hostname: session.zenkai.run
+    service: http://localhost:3200
+  - service: http_status:404
+CFG
+systemctl start zenkai-app cloudflared
+```
+
+**Multi-session smoke (before any invite):**
+1. Two browser profiles, two invited accounts → launch a round each →
+   `docker ps` shows `ip-session-sess-…` ×2; both rooms independently live
+   through session.zenkai.run (each URL carries its own `?sid=`).
+2. **Trace smoke, the #1 latent breaker:** during an IDE round,
+   `wc -l traces/<sid>.jsonl` grows as you edit. If it doesn't → `ufw status`
+   and re-add `allow in on docker0`.
+3. Third launch → "all 2 interview rooms are busy". Kill one → slot frees.
+4. A graded round's card: reachable for 30 min at its session URL, forever
+   under history (confirms now POST to the app, so "did this match?" works
+   from history indefinitely).
+5. `docker stats` with 2 rooms + 1 generation: headroom on 8GB.
+
+**Serving days on the VPS:** nothing. systemd restarts crashes; the sweep
+reaps orphans every 10 min; `journalctl -u zenkai-app -f` when curious.
+Deploy a fix: `ssh zenkai@<box> 'cd interview_prep && git pull && sudo systemctl restart zenkai-app'`
+(live sessions survive — they're detached processes on their own ports).

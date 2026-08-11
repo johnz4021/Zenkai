@@ -201,6 +201,12 @@ function ensureRuntimeImage(runtime: 'node' | 'python'): string {
   return image;
 }
 
+/** Ops hook (WU-H): provision.sh pre-builds the python image so two
+ *  simultaneous cold python launches on the VPS never race the build. */
+export function prebuildPythonImage(): void {
+  ensureRuntimeImage('python');
+}
+
 /**
  * Materialize the IDE user-data dir with our seeded settings.
  *

@@ -1,0 +1,19 @@
+[Unit]
+Description=Zenkai beta app (home app + session router)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+User=zenkai
+WorkingDirectory=/home/zenkai/interview_prep
+# cli.ts loads .env itself; systemd only needs the entry point.
+ExecStart=/usr/bin/npx tsx server/src/cli.ts app
+Restart=always
+RestartSec=3
+# Sessions are DETACHED children by design (they survive app restarts);
+# without this, systemd would kill every live interview on a unit restart.
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

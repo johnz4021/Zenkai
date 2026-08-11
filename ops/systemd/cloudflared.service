@@ -1,0 +1,12 @@
+[Unit]
+Description=Cloudflare tunnel (zenkai.run + session.zenkai.run)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/cloudflared --config /etc/cloudflared/config.yml tunnel run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
