@@ -6,8 +6,10 @@ branch; this is what the founder does once, plus the per-day ops.
 > **Rev 2 (2026-08-11): the beta hosts on a VPS, not the founder's laptop**
 > (decision logged; concurrent sessions shipped as TODOS #22). Sections 1
 > (Supabase) and 6 (success gate) are unchanged. Sections 2/3/5 below are
-> superseded by "VPS cutover" at the end — the tunnel now runs ON the VPS,
-> `caffeinate` is dead, and multi-session env vars are part of the config.
+> superseded by "VPS cutover" at the end — **Caddy replaces the Cloudflare
+> tunnel** (Cloudflare's fixed 100s proxy timeout sits in front of the
+> planner's inline web-search calls; Caddy's is configurable), `caffeinate`
+> is dead, and multi-session env vars are part of the config.
 
 ## 1. Supabase project (~15 min)
 
@@ -110,9 +112,10 @@ ingress:
   - service: http_status:404
 ```
 
-Run it: `cloudflared tunnel run zenkai-beta` (later: `cloudflared service install`).
-WebSockets work through the tunnel with no extra config. HTTPS comes free —
-which `getUserMedia` (the mic) requires off-localhost.
+**Superseded in rev 2 — see §7.** The VPS terminates TLS itself with Caddy
+(`ops/Caddyfile`): same free HTTPS that `getUserMedia` requires, native
+WebSocket proxying, and timeouts you control. Keep this section only if you
+ever go back to serving from a laptop.
 
 ## 3. `.env` additions
 
@@ -180,10 +183,11 @@ Box: **Hetzner CPX31** (4 vCPU / 8GB / 160GB, ~$16/mo, Ashburn or Hillsboro).
 scp -r ops root@<box-ip>:
 ssh root@<box-ip> 'bash ops/provision.sh'     # idempotent; prints remaining steps
 # it installs: docker, lsof (assertPortFree DIES without it on Ubuntu minimal),
-# node20, claude CLI, cloudflared, the zenkai user, systemd units, and sets
-# ufw: OpenSSH + `allow in on docker0` — WITHOUT the docker0 rule the
-# container's trace WebSocket is silently dropped and every IDE round
-# records nothing while looking perfectly healthy.
+# node20, claude CLI, Caddy, the zenkai user, systemd units, and sets ufw:
+# OpenSSH + 80/443 (Caddy) + `allow in on docker0`. WITHOUT the docker0 rule
+# the container's trace WebSocket is silently dropped and every IDE round
+# records nothing while looking perfectly healthy. The app (3300) and session
+# ports (3200, 3401+) are NEVER opened — Caddy reaches them over loopback.
 
 # .env: your laptop's beta .env PLUS the multi-session block
 #   IP_MULTI_SESSION=1
@@ -191,22 +195,16 @@ ssh root@<box-ip> 'bash ops/provision.sh'     # idempotent; prints remaining ste
 #   IP_MAX_SESSIONS_PER_USER=1        # admins bypass (you can test 2 rooms)
 scp .env zenkai@<box-ip>:interview_prep/.env
 
-# cloudflared: create the tunnel ON the VPS (or copy your existing creds)
-ssh root@<box-ip>
-cloudflared tunnel login && cloudflared tunnel create zenkai-beta
-cloudflared tunnel route dns zenkai-beta zenkai.run
-cloudflared tunnel route dns zenkai-beta session.zenkai.run
-mkdir -p /etc/cloudflared && cat > /etc/cloudflared/config.yml <<CFG
-tunnel: <TUNNEL-UUID>
-credentials-file: /root/.cloudflared/<TUNNEL-UUID>.json
-ingress:
-  - hostname: zenkai.run
-    service: http://localhost:3300
-  - hostname: session.zenkai.run
-    service: http://localhost:3200
-  - service: http_status:404
-CFG
-systemctl start zenkai-app cloudflared
+# DNS: A records for BOTH hostnames -> this box's IPv4, wherever your
+# domain's DNS lives (no migration needed). If DNS happens to be on
+# Cloudflare, set both to "DNS only" (grey cloud) — the proxied path has a
+# fixed 100s timeout and /api/plan/turn awaits a web-search model call.
+#   zenkai.run          A  <box-ip>
+#   session.zenkai.run  A  <box-ip>
+
+ssh root@<box-ip> 'sed -i "s/zhang4021@gmail.com/<your-email>/" /etc/caddy/Caddyfile'
+ssh root@<box-ip> 'systemctl start zenkai-app caddy'
+ssh root@<box-ip> 'journalctl -u caddy -n 30 --no-pager'   # "certificate obtained successfully"
 ```
 
 **Multi-session smoke (before any invite):**
@@ -222,7 +220,8 @@ systemctl start zenkai-app cloudflared
    from history indefinitely).
 5. `docker stats` with 2 rooms + 1 generation: headroom on 8GB.
 
-**Serving days on the VPS:** nothing. systemd restarts crashes; the sweep
-reaps orphans every 10 min; `journalctl -u zenkai-app -f` when curious.
+**Serving days on the VPS:** nothing. systemd restarts crashes; Caddy renews
+certs on its own; the sweep reaps orphans every 10 min;
+`journalctl -u zenkai-app -f` when curious.
 Deploy a fix: `ssh zenkai@<box> 'cd interview_prep && git pull && sudo systemctl restart zenkai-app'`
 (live sessions survive — they're detached processes on their own ports).

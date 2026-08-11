@@ -2,7 +2,7 @@
 # Zenkai beta VPS provision — Ubuntu 24.04, Hetzner CPX31 class (4 vCPU/8GB).
 # Idempotent: safe to re-run. Run as root on a fresh box:
 #   scp -r ops root@<box>: && ssh root@<box> 'bash ops/provision.sh'
-# Then: copy .env, cloudflared credentials, and `systemctl start zenkai-app cloudflared`.
+# Then: point DNS at this box, copy .env, `systemctl start zenkai-app caddy`.
 set -euo pipefail
 
 ZENKAI_USER="zenkai"
@@ -27,11 +27,19 @@ fi
 echo "== claude cli (generation runs claude -p on ANTHROPIC_API_KEY) =="
 command -v claude >/dev/null || npm install -g @anthropic-ai/claude-code
 
-echo "== cloudflared =="
-if ! command -v cloudflared >/dev/null; then
-  curl -fsSL -o /tmp/cloudflared.deb \
-    https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-  dpkg -i /tmp/cloudflared.deb
+echo "== caddy (TLS + reverse proxy) =="
+# Caddy, not a Cloudflare tunnel: Cloudflare's proxy read timeout is a fixed
+# 100s below Enterprise, and /api/plan/turn awaits a model call WITH web
+# search inline — a long planner turn would 524 mid-conversation. Caddy lets
+# us set the timeout (see ops/Caddyfile) and drops a daemon from the stack.
+if ! command -v caddy >/dev/null; then
+  apt-get install -yq debian-keyring debian-archive-keyring apt-transport-https
+  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+    | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+    | tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
+  apt-get update -q
+  apt-get install -yq caddy
 fi
 
 echo "== service user =="
@@ -43,8 +51,11 @@ echo "== firewall =="
 # from INSIDE docker via host.docker.internal (= the docker0 gateway).
 # That traffic traverses the host INPUT chain; a bare "allow ssh only"
 # silently drops it and every edit/test-run is lost while the session
-# looks fine. Tunnel traffic itself is OUTBOUND, so nothing else opens.
+# looks fine. 80/443 are for Caddy; the app (3300) and session ports
+# (3200, 3401+) are NEVER opened — Caddy reaches them over loopback.
 ufw allow OpenSSH
+ufw allow 80/tcp
+ufw allow 443/tcp
 ufw allow in on docker0
 ufw --force enable
 
@@ -72,20 +83,25 @@ sudo -u "${ZENKAI_USER}" bash -c "cd '${REPO_DIR}' && npx tsx -e \"
 
 echo "== systemd units =="
 cp ops/systemd/zenkai-app.service /etc/systemd/system/
-cp ops/systemd/cloudflared.service /etc/systemd/system/
+install -d /etc/caddy
+cp ops/Caddyfile /etc/caddy/Caddyfile
 systemctl daemon-reload
-systemctl enable zenkai-app cloudflared
+systemctl enable zenkai-app caddy
 
 cat <<'DONE'
 
 == provision complete — remaining manual steps ==
-1. Copy your .env to /home/zenkai/interview_prep/.env  (see docs/beta-runbook.md;
+1. DNS: point A records for zenkai.run AND session.zenkai.run at this box's
+   IPv4 (wherever the domain's DNS lives — no migration needed). If DNS is
+   on Cloudflare, set both records to "DNS only" (grey cloud) so the 100s
+   proxy timeout stays out of the path.
+2. Edit the email at the top of /etc/caddy/Caddyfile (cert expiry notices).
+3. Copy your .env to /home/zenkai/interview_prep/.env  (see docs/beta-runbook.md;
    for the VPS add: IP_MULTI_SESSION=1, IP_MAX_CONCURRENT_SESSIONS=2)
-2. cloudflared: copy ~/.cloudflared/<TUNNEL>.json + config.yml to
-   /etc/cloudflared/ (ingress: zenkai.run->localhost:3300,
-   session.zenkai.run->localhost:3200)
-3. systemctl start zenkai-app cloudflared
-4. Verify per docs/beta-runbook.md — ESPECIALLY the trace-WS smoke
+4. systemctl start zenkai-app caddy
+   (Caddy issues certs on first request — allow ~30s, then check
+    `journalctl -u caddy -n 30` for "certificate obtained successfully".)
+5. Verify per docs/beta-runbook.md — ESPECIALLY the trace-WS smoke
    (traces/<sid>.jsonl must grow during an IDE round; if it doesn't, the
    firewall is eating docker0 traffic).
 DONE
