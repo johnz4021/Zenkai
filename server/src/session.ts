@@ -25,6 +25,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
 import { isFailingRun, resolveRoundSpec, resolveSurface } from '@interview-prep/shared';
 import { makeAuth } from './auth.js';
+import { childEnv } from './child-env.js';
 import { judgeSession } from './judge.js';
 import { buildAssessmentCard } from './feedback.js';
 import { buildGraphView, buildTargetNote, loadStore, recordAssessment, saveStore } from './gap-graph.js';
@@ -939,7 +940,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           cwd: cfg.repoRoot,
           detached: true,
           stdio: 'ignore',
-          env: { ...process.env, IP_TARGET_NOTE: note ?? '', IP_USER_ID: cfg.userId },
+          env: childEnv('generator', process.env, { IP_TARGET_NOTE: note ?? '', IP_USER_ID: cfg.userId }),
         },
       );
       child.unref();

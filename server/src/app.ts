@@ -30,6 +30,7 @@ import { clearGeneratingMarker, generationProgress, pidAlive, readGeneratingMark
 import { pickTopicNamer } from './plan-topics.js';
 import { clientScript } from './chrome.js';
 import { authConfigFromPublic, makeAuth } from './auth.js';
+import { childEnv } from './child-env.js';
 import type { PublicConfig } from './public-config.js';
 import {
   acquireRepLock,
@@ -237,7 +238,8 @@ function spawnDetached(args: string[], env: Record<string, string> = {}): void {
     cwd: repoRoot,
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, ...env },
+    // WU8: sessions need both API keys; the DB service key reaches no child.
+    env: childEnv('session', process.env, env),
   });
   child.unref();
 }
@@ -284,7 +286,7 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
     detached: true,
     stdio: ['ignore', logFd, logFd],
     // The generator's targeting note reads the OWNER's gap graph.
-    env: { ...process.env, IP_USER_ID: target.user_id ?? legacyUserId },
+    env: childEnv('generator', process.env, { IP_USER_ID: target.user_id ?? legacyUserId }),
   });
   child.unref();
   // Disk-derived liveness (ISSUE-003): the marker carries {pid, started_at}
@@ -315,7 +317,7 @@ function spawnRepBuild(rep: Rep): void {
     detached: true,
     stdio: ['ignore', logFd, logFd],
     // The rep creator's gap graph steers the blueprint's emphasis.
-    env: { ...process.env, IP_USER_ID: rep.user_id ?? legacyUserId },
+    env: childEnv('generator', process.env, { IP_USER_ID: rep.user_id ?? legacyUserId }),
   });
   child.unref();
   // Marker at REQUEST time with the child's pid — drafting happens inside

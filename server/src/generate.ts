@@ -12,6 +12,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { childEnv } from './child-env.js';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { RoundSpec } from '@interview-prep/shared';
@@ -146,7 +147,9 @@ export async function generateProblem(opts: GenerateOptions): Promise<GenerateRe
   return new Promise<GenerateResult>((resolve) => {
     const child = spawn('claude', args, {
       cwd: path.resolve(opts.targetDir),
-      env: process.env,
+      // WU8: the agent needs the Anthropic key; it never needs voice or DB
+      // credentials, and its brief now carries stranger-authored prose.
+      env: childEnv('generator', process.env),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

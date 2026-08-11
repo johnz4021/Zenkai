@@ -14,6 +14,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { childEnv } from './child-env.js';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { GeneratedProblem } from '@interview-prep/shared';
@@ -233,6 +234,9 @@ function runSuite(
       cwd: repoDir,
       encoding: 'utf8',
       timeout: 180_000,
+      // WU8: generated (potentially stranger-steered) code runs with a bare
+      // env — no keys, no config, nothing to exfiltrate.
+      env: childEnv('sandbox', process.env),
     });
     const text = `${run.stderr ?? ''}\n${run.stdout ?? ''}`;
     const parsed = parseUnittestOutput(text);
@@ -246,6 +250,7 @@ function runSuite(
       cwd: repoDir,
       encoding: 'utf8',
       timeout: 180_000,
+      env: childEnv('sandbox', process.env),
     });
     if (install.status !== 0) {
       return { error: `npm install failed: ${install.stderr?.slice(0, 400)}` };
@@ -255,7 +260,7 @@ function runSuite(
   spawnSync(
     'npx',
     ['vitest', 'run', '--reporter=json', `--outputFile=${outFile}`],
-    { cwd: repoDir, encoding: 'utf8', timeout: 180_000 },
+    { cwd: repoDir, encoding: 'utf8', timeout: 180_000, env: childEnv('sandbox', process.env) },
   );
   if (!existsSync(outFile)) return { error: 'vitest produced no JSON report' };
   return parseVitestJson(readFileSync(outFile, 'utf8'));
