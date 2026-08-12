@@ -505,6 +505,14 @@ export function appPage(): string {
     --rail: 93px; /* x of the timeline spine: date col 74 + gap 14 + dot half */
   }
   * { box-sizing: border-box; }
+  /* The hidden attribute is only a UA display:none, so ANY display rule of our
+     own outranks it and the "hidden" element keeps its box. #practice carries
+     display:flex to center its hero, which meant a hidden #practice still held
+     411px above the login screen on the live box. Every route toggle in the
+     client sets .hidden, so one specificity slip anywhere silently strands
+     content on screen — this makes the attribute mean what it says.
+     (No backticks in this block: the stylesheet is a TS template literal.) */
+  [hidden] { display: none !important; }
   html { background: var(--bg); }
   body {
     margin: 0 auto; max-width: 760px; padding: 40px 20px 64px;

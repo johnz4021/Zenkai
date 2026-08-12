@@ -42,6 +42,13 @@ describe('home app page', () => {
     expect(js).toContain("if (boot) boot.remove();");
   });
 
+  it('the hidden attribute actually hides — CSS display must not outrank it', () => {
+    // `hidden` is only a UA display:none. #practice sets display:flex to
+    // center its hero, so a hidden #practice still held 411px above the login
+    // screen on the live box. Any route toggle could hit the same slip.
+    expect(html).toContain('[hidden] { display: none !important; }');
+  });
+
   it('navigation is routes, not visibility toggles', () => {
     expect(html).toContain('href="#/" id="nav-home"');
     expect(html).toContain('href="#/plans" id="nav-plans"');
