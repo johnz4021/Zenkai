@@ -209,11 +209,9 @@ ssh root@<box-ip> 'bash ops/provision.sh'     # idempotent; prints remaining ste
 # records nothing while looking perfectly healthy. The app (3300) and session
 # ports (3200, 3401+) are NEVER opened — Caddy reaches them over loopback.
 
-# .env: your laptop's beta .env PLUS the multi-session block
-#   IP_MULTI_SESSION=1
-#   IP_MAX_CONCURRENT_SESSIONS=2      # 3 fits if you watch docker stats
-#   IP_MAX_SESSIONS_PER_USER=1        # admins bypass (you can test 2 rooms)
-scp .env zenkai@<box-ip>:Zenkai/.env
+# .env — fill ops/env.launch.template and ship that (it carries the LAUNCH
+# sizing: 4 concurrent rooms, 2 concurrent builds, and the spend note).
+scp ops/env.launch.template zenkai@<box-ip>:Zenkai/.env
 
 # DNS: A records for BOTH hostnames -> this box's IPv4, wherever your
 # domain's DNS lives (no migration needed). If DNS happens to be on
