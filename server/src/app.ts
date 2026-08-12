@@ -321,7 +321,11 @@ function countLiveBuilds(): number {
 
 function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
   const args = ['generate-for', target.id, item.spec_id, '--into', dir];
-  if (item.planned_title) args.push('--title', item.planned_title);
+  // Sourced items skip --title: the LC title must not become the manifest
+  // title in skinned mode (the title-commitment line would defeat the skin);
+  // the generator names its own skin instead.
+  if (item.source?.kind === 'leetcode') args.push('--source', `lc:${item.source.slug}`);
+  else if (item.planned_title) args.push('--title', item.planned_title);
   liveGenerations.add(dir);
   mkdirSync(dir, { recursive: true });
   const logFd = openBuildLog(dir);

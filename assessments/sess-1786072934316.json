@@ -1,11 +1,11 @@
 {
   "session_id": "sess-1786072934316",
   "status": "assessed",
-  "judged_at": 1786075063001,
+  "judged_at": 1786558567896,
   "model": "claude-sonnet-5 (api)",
   "prompt_hash": "7111192943bf",
   "schema_version": 1,
-  "renderer_version": 1,
+  "renderer_version": 2,
   "expectations_used": {
     "clarify": "Pins down what the partition guard is actually meant to cover — asks whether it protects only the partition's entry map, LRU order and byte accounting or is also meant to single-flight concurrent reads of the same key, and whether two threads hydrating different shards of one dataset are supposed to overlap — instead of assuming `docs/hydrator.md` settles it.",
     "approach": "States a mechanism before editing — e.g. that `_hydrate_one` takes the per-dataset partition guard and still holds it while `_load_with_retry` calls the loader, so three shards of `orbital_passes` serialize behind one lock and never reach the barrier together — rather than 'a threading problem' or 'something in the pool'.",
@@ -15,12 +15,12 @@
     "reflect": "Explains why the bug hid: the cross-dataset overlap test passes because each dataset has its own guard, so nothing in the suite except one same-dataset case ever contends, and the visible symptom is a barrier timeout in a fixture rather than an error in the hydrator — and names what would surface it earlier, such as asserting on observed overlap per dataset or on loader concurrency."
   },
   "solved": true,
-  "summary": "The candidate eventually landed on a fix that turned the suite green and matched the actual root cause (the partition guard held across the retried load serializing same-dataset shard reads), but the path there was almost entirely interviewer-driven through repeated nudges, with long unfocused stretches of print-statement debugging, syntax questions misdirected at the interviewer, and visible frustration. Self-directed hypothesis formation, narration, and root-cause explanation were all weak, with verification being the only dimension meeting a baseline bar.",
+  "summary": "The candidate struggled for most of the 35-minute session with basic navigation and repeated requests for syntax confirmation, relying heavily on interviewer nudges (including an explicit NUDGE about per-dataset concurrency) to eventually locate and narrow the critical section holding the partition guard across the retried load. The fix ultimately passed all 15 tests and dropped runtime to milliseconds, but the candidate's own explanation of the root cause was initially wrong and only partially corrected under direct questioning.",
   "dimensions": [
     {
       "dimension": "clarify",
       "verdict": "weak",
-      "analysis": "The candidate never asked a targeted question resolving what the partition guard was meant to cover, nor what the barrier-based test was actually asserting about concurrency until the interviewer forced the point repeatedly starting around the 800s mark. Instead of clarifying the mechanism up front, they spent long stretches asking the interviewer to validate Python syntax (dict comprehensions, future-as-key) rather than resolving the actual ambiguity about what the test expected.",
+      "analysis": "The candidate never asked a resolving question about what the partition guard is supposed to cover or whether same-dataset shards should overlap; instead they spent long stretches asking the interviewer to confirm basic Python syntax (dict comprehensions, future-as-key validity) rather than resolving the actual ambiguity in the hydrator's concurrency contract.",
       "evidence": [
         538,
         710,
@@ -31,32 +31,33 @@
     {
       "dimension": "approach",
       "verdict": "weak",
-      "analysis": "No mechanism was proposed before editing; the candidate largely floundered with print-statement debugging without a stated hypothesis, and only converged on 'we weren't locking' after heavy interviewer nudging past the 900s and 1400s marks. Even the eventual framing was vague ('there was a lot of concurrency there I guess') rather than naming holding the guard across the retried load as the mechanism before editing.",
+      "analysis": "No mechanism was stated before editing; the candidate added print statements speculatively without a hypothesis, and only after the interviewer explicitly pointed at the barrier and the per-dataset in-flight question did anything resembling a location ('probably Max Workers') surface, which is still not a mechanism.",
       "evidence": [
-        637,
+        463,
         1016,
-        1803,
-        1911
+        1031
       ]
     },
     {
       "dimension": "communicate",
       "verdict": "weak",
-      "analysis": "Long stretches of unfilled pauses, trailing sentences, and repeated syntax questions dominate the transcript; the interviewer had to repeatedly stop and re-focus the candidate rather than the candidate narrating a coherent investigative thread. Multiple silent/transcription-gap periods coincide with edits, and even where speech is present it rarely states what is being ruled in or out.",
+      "analysis": "Long stretches were filled with hesitant fragments and syntax questions rather than a running account of suspects being ruled in or out; the interviewer had to repeatedly ask 'what does that tell you' to extract any reasoning, and much of the narration was reactive rather than a self-directed hunt log.",
       "evidence": [
         463,
-        721,
-        1261,
+        1052,
         1394
+      ],
+      "stripped_evidence": [
+        721
       ]
     },
     {
       "dimension": "implement",
       "verdict": "weak",
-      "analysis": "Implementation consisted of scattered print-statement additions and edits with no clear connection to a stated theory, many edited/saved cycles without narrated purpose, and the eventual correct-looking fix around 1868s arrived only after extensive nudged narrowing rather than a scoped, deliberate change.",
+      "analysis": "The bulk of implementation activity was scattershot print-statement insertion and removal across many edit bursts with no clear connection to a stated theory, and the actual fix only appeared very late (around 1803-1868) after heavy interviewer scaffolding, making it hard to call this a coherent execution of a plan.",
       "evidence": [
         638,
-        1465,
+        1459,
         1803,
         1868
       ]
@@ -64,10 +65,10 @@
     {
       "dimension": "verify",
       "verdict": "adequate",
-      "analysis": "The candidate did re-run the test suite after the final edit and confirmed all tests passed, and the interviewer additionally pointed out the runtime drop from two seconds to milliseconds, which the candidate did not proactively check but did not contradict either. There was no additional edge-case check (e.g., partition state after a failed shard) initiated by the candidate.",
+      "analysis": "The candidate did re-run the test suite after the final edit and confirmed all tests passed, and the interviewer highlighted the runtime drop from two seconds to milliseconds, which the candidate acknowledged, though they did not independently notice the timing change or probe edge cases themselves.",
       "evidence": [
-        1868,
-        1869
+        1869,
+        1876
       ],
       "stripped_evidence": [
         1886
@@ -76,7 +77,7 @@
     {
       "dimension": "reflect",
       "verdict": "weak",
-      "analysis": "When asked to explain the mechanism, the candidate could only vaguely gesture at 'not locking' and later, after correction, described holding the lock across retry but could not explain why only one test caught it, admitting outright they had no clue when pressed on this at the end.",
+      "analysis": "When pressed to explain the fix, the candidate initially mischaracterized it as 'we weren't locking' when a lock clearly existed, and only refined this to 'holding the lock across the retried load' after direct correction; when asked why only one test caught this, they admitted having no idea and could not reason about per-dataset guard scoping even with a follow-up nudge.",
       "evidence": [
         1903,
         2092

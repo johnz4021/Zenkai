@@ -106,11 +106,17 @@ export interface GenerateOptions {
   spec?: RoundSpec;
   /** Optional emphasis derived from the gap graph. */
   targetNote?: string;
+  /** Dataset-sourced rounds: the SOURCED PROBLEM section (lc-convert's
+   *  sourceRequirements). Absent = empty substitution, invented round. */
+  sourceBlock?: string;
   /** Prompt template path. */
   templatePath: string;
   model?: string;
   /** Hard wall-clock cap on the agent run. */
   timeoutMs?: number;
+  /** Agent turn cap. Sourced builds skip invention and test authoring, so
+   *  they run tighter (sonnet/40/5min) than invented rounds (opus/80/8min). */
+  maxTurns?: number;
 }
 
 export interface GenerateResult {
@@ -127,6 +133,7 @@ export async function generateProblem(opts: GenerateOptions): Promise<GenerateRe
   const spec = opts.spec ?? DEFAULT_DEBUGGING_SPEC;
   const prompt = template
     .replace(/\{\{ROUND_BRIEF\}\}/g, opts.brief)
+    .replace(/\{\{SOURCE_BLOCK\}\}/g, opts.sourceBlock ?? '')
     .replace(/\{\{CHECK_REQUIREMENTS\}\}/g, checkRequirements(spec.check))
     .replace(/\{\{ROUND_SPEC_JSON\}\}/g, JSON.stringify(spec))
     .replace(/\{\{TARGET_NOTE\}\}/g, opts.targetNote ?? '');
@@ -139,7 +146,7 @@ export async function generateProblem(opts: GenerateOptions): Promise<GenerateRe
     // The target dir is dedicated and disposable; the agent must be able to
     // write files and run npm without interactive permission prompts.
     '--permission-mode', 'bypassPermissions',
-    '--max-turns', '80',
+    '--max-turns', String(opts.maxTurns ?? 80),
   ];
   if (opts.model) args.push('--model', opts.model);
 

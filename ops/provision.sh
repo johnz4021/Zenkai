@@ -89,6 +89,10 @@ sudo -u "${ZENKAI_USER}" git pull --ff-only || true
 sudo -u "${ZENKAI_USER}" npm install
 sudo -u "${ZENKAI_USER}" node extension/build.mjs
 
+echo "== leetcode dataset (idempotent; pinned in server/src/lc-source.ts) =="
+sudo -u "${ZENKAI_USER}" npx tsx server/src/cli.ts lc fetch \
+  || echo "  (lc fetch failed — LC-sourced rounds degrade to fresh generation until it succeeds)"
+
 echo "== docker images (pre-pull so first launches skip the cold build) =="
 docker pull gitpod/openvscode-server:latest
 # The python round image is defined INLINE in session.ts (ensureRuntimeImage

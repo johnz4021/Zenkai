@@ -59,6 +59,10 @@
     }
     return Promise.all([...inflightSaves]);
   };
+  // Submit path (session.js endSession) must flush too: on a one_shot round
+  // the Run button doesn't exist, so without this hook nothing ever flushed
+  // and the last <800ms of typing was graded away by the submit run.
+  window.ipPanesFlush = flushSaves;
 
   const renderTabs = (files) => {
     const tabs = $('tabs');
@@ -155,7 +159,9 @@
         if (out.error) {
           $('runstate').textContent = out.error === 'busy' ? 'a run is already in progress' : 'run refused: ' + out.error;
         } else {
-          $('runstate').textContent = out.exit_code === 0 ? 'passed' : 'failed';
+          const counts = typeof out.passed === 'number' && typeof out.total === 'number'
+            ? ' ' + out.passed + '/' + out.total : '';
+          $('runstate').textContent = (out.exit_code === 0 ? 'passed' : 'failed') + counts;
           // Presentation hook only: lets the stylesheet color the verdict.
           $('runstate').className = out.exit_code === 0 ? 'pass' : 'fail';
           $('runout').textContent = out.tail || out.summary || '';

@@ -89,6 +89,42 @@ export function summarizeTail(tail: string): string {
   return lines.slice(-2).join(' — ');
 }
 
+/**
+ * Pass/fail counts from a run's output tail. Parses the SUMMARY lines only
+ * — the tail is capped at 4000 chars, which can truncate per-test lines but
+ * never the trailing summary. Recognizes:
+ *   unittest:  "Ran 16 tests in 0.01s" + "OK" | "FAILED (failures=3, errors=2)"
+ *   vitest:    "Tests  3 failed | 5 passed (8)" | "Tests  8 passed (8)"
+ * Null when neither pattern is present — callers omit counts rather than
+ * guess, and the timeline falls back to the binary PASSED/FAILED line.
+ * Why: on one-shot rounds the graded run is the ONLY signal; without counts
+ * the judge cannot tell 15/16 from 0/16 (renderer v3).
+ */
+export function parseRunCounts(tail: string): { total: number; passed: number; failed: number } | null {
+  const ran = tail.match(/^Ran (\d+) tests? in /m);
+  if (ran) {
+    const total = Number(ran[1]);
+    if (/^OK\b/m.test(tail)) return { total, passed: total, failed: 0 };
+    const verdict = tail.match(/^FAILED \(([^)]*)\)/m);
+    if (!verdict) return null; // truncated or still running — do not guess
+    let failed = 0;
+    for (const m of verdict[1]!.matchAll(/(?:failures|errors)=(\d+)/g)) failed += Number(m[1]);
+    if (failed === 0) return null; // "FAILED (skipped=…)" shapes prove nothing
+    return { total, passed: Math.max(0, total - failed), failed };
+  }
+  const vt = tail.match(/^\s*Tests\s+(?:(\d+) failed \| )?(\d+) passed \((\d+)\)/m);
+  if (vt) {
+    const failed = Number(vt[1] ?? 0);
+    const passed = Number(vt[2]);
+    return { total: Number(vt[3]), passed, failed };
+  }
+  const vtAllFail = tail.match(/^\s*Tests\s+(\d+) failed \((\d+)\)/m);
+  if (vtAllFail) {
+    return { total: Number(vtAllFail[2]), passed: Number(vtAllFail[2]) - Number(vtAllFail[1]), failed: Number(vtAllFail[1]) };
+  }
+  return null;
+}
+
 export type RunRejection = 'no_runs' | 'one_shot' | 'ended' | 'busy';
 
 /**

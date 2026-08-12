@@ -116,6 +116,22 @@ export interface GeneratedProblem {
   /** Scripted mutation schedule — deterministic, never LLM-timed. */
   mutations: { offset_ms: number; new_spec: string }[];
   rubric: Rubric;
+  /**
+   * Dataset-sourced rounds: where this problem came from. Patched in
+   * mechanically by the build pipeline from the vendored dataset record
+   * (never trusted from the generator), so the topic ledger records truth.
+   * `mode: 'skinned'` means the statement/naming were rewritten and the
+   * reference must not appear in candidate-visible files; `'verbatim'`
+   * means the real statement ships (admin-gated policy).
+   */
+  source?: {
+    kind: 'leetcode';
+    slug: string;
+    title: string;
+    difficulty: 'easy' | 'medium' | 'hard';
+    tags: string[];
+    mode: 'skinned' | 'verbatim';
+  };
 }
 
 /**

@@ -228,3 +228,21 @@ describe('real traces render sanely (no ground-truth claim — render check only
     }
   });
 });
+
+describe('test_run pass counts (renderer v3)', () => {
+  it('renders X/Y when the payload carries counts, per via verb', () => {
+    const events: TraceEvent[] = [
+      ev('session_start', 0),
+      ev('test_run', 10, { exit_code: 1, via: 'panes', passed: 5, total: 8 }),
+      ev('test_run', 20, { exit_code: 1, via: 'submit', passed: 14, total: 16 }),
+    ];
+    const out = renderTimeline(events);
+    expect(out).toContain('ran tests — 5/8 tests passed');
+    expect(out).toContain('submitted — 14/16 tests passed');
+  });
+
+  it('falls back to the binary line for old traces without counts', () => {
+    const out = renderTimeline([ev('session_start', 0), ev('test_run', 5, { exit_code: 1 })]);
+    expect(out).toContain('ran tests — tests FAILED');
+  });
+});

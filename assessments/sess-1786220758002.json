@@ -1,11 +1,11 @@
 {
   "session_id": "sess-1786220758002",
   "status": "assessed",
-  "judged_at": 1786222327038,
+  "judged_at": 1786558642309,
   "model": "claude-sonnet-5 (api)",
   "prompt_hash": "7111192943bf",
   "schema_version": 1,
-  "renderer_version": 1,
+  "renderer_version": 2,
   "expectations_used": {
     "clarify": "Asks the interviewer spec-level questions the doc does not settle — e.g. whether a `retryable` frame's record may be re-sent alongside records that already came back `ok`, whether `cid`s are reused across attempts, or whether the in-repo `AttributeTransport` answering in submission order is a guarantee or an artifact of the stand-in — rather than treating `docs/batch-protocol.md` as complete or guessing silently.",
     "approach": "States the mechanism before editing — that on a partial retry the resent payload is a strict subset of the chunk while the response loop still indexes into the full chunk, so frame k is applied to the wrong `_Outbound` — and proposes correlating by `frame['cid']`; not merely 'something in the retry loop' or 'the indexing looks off'.",
@@ -15,61 +15,66 @@
     "reflect": "Explains why the defect stayed invisible until a partial retry — when every record in a chunk is retried the outstanding list equals the chunk and positions coincidentally line up — and names the observable double symptom it produced: one record served another's attributes while the retried record settled as 'no response frame'."
   },
   "solved": true,
-  "summary": "The candidate eventually fixed the correct planted bug (positional chunk[position] lookup versus the shrinking outstanding list in _dispatch_chunk), and after the fix all tests passed. However, the path there was long, heavily interviewer-guided through repeated direct nudges, with little self-directed hypothesis formation, spec-level questioning, or narrated reasoning until pressed.</summary>\n</invoke>",
+  "summary": "The candidate spent most of the 26-minute session reading code and tests with minimal self-directed narration, requiring the interviewer to repeatedly prompt and re-prompt to keep the investigation moving toward _dispatch_chunk's response loop. They eventually landed on the correct fix (indexing into outstanding instead of chunk) and verified it with a green test run, and under further interviewer pressure could explain why the fix worked with a concrete trace, but almost none of the process (clarifying questions, stated hypothesis, running commentary) was self-initiated.</summary>\n</invoke>",
   "dimensions": [
     {
       "dimension": "clarify",
       "verdict": "weak",
-      "analysis": "The candidate asked a procedural question about whether they were allowed to read the test file, but never asked the interviewer any spec-level question about the batch protocol, cid semantics, or the transport's ordering guarantees before or during their investigation. Ambiguities around retry correlation were only surfaced when the interviewer forced the issue late in the session with direct questions about ordering guarantees.",
+      "analysis": "The candidate never asked the interviewer any spec-level question about batch-protocol.md ambiguities (cid reuse across attempts, whether ok records can be mixed with retries, transport response ordering guarantees). They asked once whether they were allowed to read the test file, which the interviewer answered trivially, but this is not resolving genuine ambiguity about the bug mechanism -- it is a permissions question. All later 'clarify' moments were the interviewer pulling information out of them via repeated prompts rather than the candidate proactively surfacing ambiguity.",
       "evidence": [
         96
+      ],
+      "stripped_evidence": [
+        112
       ]
     },
     {
       "dimension": "approach",
       "verdict": "weak",
-      "analysis": "The candidate never stated a mechanism before editing; they read the enrich function and dispatch_chunk line by line largely narrating structure rather than forming a hypothesis, and repeatedly asked the interviewer to confirm vague guesses like 'something wrong with the loop' or 'maybe reset payload' rather than naming the cid-vs-position defect. The actual fix (outstanding[position] instead of chunk[position]) was arrived at through interviewer-guided tracing rather than a stated hypothesis committed to beforehand.",
+      "analysis": "The candidate never stated a mechanism before editing; they arrived at a location (the response loop in _dispatch_chunk, noticing outstanding never resets payload) through a long series of interviewer nudges rather than naming the actual defect (frame correlation by position vs cid) before touching the code. Even their pre-edit statement was 'maybe what we need to do is also reset payload here', which is a vague, partially wrong guess rather than a specific mechanism, and the actual fix (indexing outstanding instead of chunk) appears to have been arrived at without a clearly stated hypothesis moment.",
       "evidence": [
-        752,
-        1190,
-        1214
+        1214,
+        1344
       ]
     },
     {
       "dimension": "communicate",
       "verdict": "weak",
-      "analysis": "Long stretches of the session are transcription-unavailable, but even where narration exists it is largely low-content repetition of code structure ('for loop', 'outstanding', 'retry.append') rather than reasoning about why, and several stretches show the candidate visibly stuck and asking to be walked through things rather than narrating their own hypothesis-forming.",
-      "evidence": [
-        752,
-        916,
-        1120,
-        1129
-      ]
+      "analysis": "Long stretches of reading and code review passed with minimal or fragmented narration, and multiple times the interviewer had to explicitly ask the candidate to narrate out loud or repeat the same question because the candidate had gone quiet or off-topic (including nonsensical filler like off-topic phrases). The transcript alone would not let an interviewer follow the reasoning path to the fix -- the interviewer had to actively drag it out via at least five separate re-prompts.",
+      "evidence": [],
+      "stripped_evidence": [
+        634,
+        784,
+        926,
+        1107,
+        1146
+      ],
+      "evidence_stripped": true
     },
     {
       "dimension": "implement",
       "verdict": "adequate",
-      "analysis": "The actual code edit was small, scoped, and landed correctly — switching the indexing target from chunk to outstanding fixed the exact planted bug and did not disturb batching, concurrency, or backoff logic. However the path to it was heavily interviewer-nudged rather than self-directed, so credit is tempered.",
+      "analysis": "The actual code change made (switching chunk[position] to outstanding[position]) is a minimal, targeted edit that matches the real root cause and left the rest of the retry loop, backoff, and batching untouched. However the edit was reached without a clearly narrated prior plan, so while the change itself is competent and scoped correctly, it reads as landing on the right line by trial rather than by design.",
       "evidence": [
         1344,
         1345,
-        1348
+        1346
       ]
     },
     {
       "dimension": "verify",
       "verdict": "adequate",
-      "analysis": "After editing, the candidate ran the test suite and observed all tests passing, and when pressed by the interviewer accurately restated what the failure had been and why the fix worked, showing they had connected the green run to the mechanism rather than treating it as a black box.",
+      "analysis": "The candidate ran the test suite immediately after the edit and confirmed a fail-then-pass transition, and when pressed by the interviewer they walked back through the fix specifically tracing r1/r2/r3/r4 through the outstanding list to confirm the ordering held after the fix rather than just accepting the green run. This post-hoc trace under interviewer pressure is a real verification act, though it was prompted rather than volunteered.",
       "evidence": [
         1345,
         1348,
-        1367
+        1496
       ]
     },
     {
       "dimension": "reflect",
       "verdict": "adequate",
-      "analysis": "When pushed hard by the interviewer, the candidate ultimately reconstructed the mechanism accurately in their own words: outstanding shrinks after a retryable response, but chunk[position] is indexed against the original full batch, so the retried response gets stapled onto the wrong record's original position. This is a reasonably faithful articulation of the true defect, though it took three rounds of interviewer prompting to reach, so it is not self-directed reflection.",
+      "analysis": "When pushed hard by the interviewer, the candidate correctly explained that responses were being matched positionally into chunk instead of the shrinking outstanding list, and walked through a concrete R1/R2/R3/R4 example showing why the original code corrupted R1 while leaving R3 unresolved -- this is a genuine, mechanism-level explanation of the root cause. However this reflection was entirely interviewer-extracted via three consecutive follow-up questions rather than self-initiated, and the deeper 'why it stayed invisible until a partial retry' framing was never articulated.",
       "evidence": [
         1367,
         1489,

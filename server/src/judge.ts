@@ -327,7 +327,7 @@ const ASSESSMENT_TOOL = {
   input_schema: {
     type: 'object' as const,
     properties: {
-      solved: { type: 'boolean', description: 'Did the candidate fix the planted bug?' },
+      solved: { type: 'boolean', description: 'Did the candidate solve the round — bug rounds: fixed the planted bug; build rounds: the final graded run passed.' },
       summary: { type: 'string', description: "2-3 sentences: the session's shape in plain language." },
       dimensions: {
         type: 'array',
@@ -404,6 +404,34 @@ export interface JudgeSessionOptions {
   now?: () => number;
 }
 
+/**
+ * The {{BUG}} slot's content — the round's ground truth, per shape. Pure;
+ * exported for tests. A debugging round's truth is the planted bug; a build
+ * round's truth is the final graded run, WITH counts when the emitter
+ * parsed them (renderer v3) — before this, build rounds got a bare "(no
+ * planted bug)" sentinel and the judge was asked whether a nonexistent bug
+ * was fixed.
+ */
+export function groundTruth(
+  problem: Pick<GeneratedProblem, 'planted_bug'>,
+  events: TraceEvent[],
+): string {
+  if (problem.planted_bug) {
+    return (
+      `File: ${problem.planted_bug.file} (line ${problem.planted_bug.line})\n` +
+      `${problem.planted_bug.description}\n` +
+      `It breaks exactly one test: "${problem.planted_bug.failing_test}".`
+    );
+  }
+  const runs = events.filter((e) => e.type === 'test_run');
+  const last = [...runs].reverse().find((e) => (e.payload as { via?: string })?.via === 'submit') ?? runs.at(-1);
+  if (!last) return '(no planted bug — build round) No test run occurred; the work was never graded.';
+  const p = (last.payload ?? {}) as { exit_code?: unknown; passed?: unknown; total?: unknown; via?: unknown };
+  const counts = typeof p.passed === 'number' && typeof p.total === 'number' ? ` ${p.passed}/${p.total} tests passed;` : '';
+  const verb = p.via === 'submit' ? 'Final graded run (at submit)' : 'Last test run';
+  return `(no planted bug — build round) ${verb}:${counts} exit code ${String(p.exit_code)}${p.exit_code === 0 ? ' (suite green)' : ' (suite NOT green)'}.`;
+}
+
 export async function judgeSession(opts: JudgeSessionOptions): Promise<JudgeResult> {
   const now = opts.now ?? Date.now;
   const template = readFileSync(opts.templatePath, 'utf8');
@@ -412,11 +440,7 @@ export async function judgeSession(opts: JudgeSessionOptions): Promise<JudgeResu
     : pickJudgeModel();
 
   const expectations = resolveExpectations(opts.problem.round_type, opts.problem.rubric?.dimensions);
-  const bug = opts.problem.planted_bug
-    ? `File: ${opts.problem.planted_bug.file} (line ${opts.problem.planted_bug.line})\n` +
-      `${opts.problem.planted_bug.description}\n` +
-      `It breaks exactly one test: "${opts.problem.planted_bug.failing_test}".`
-    : '(no planted bug for this round type)';
+  const bug = groundTruth(opts.problem, opts.events);
 
   const prompt = buildJudgePrompt(template, {
     timeline: renderTimeline(opts.events),

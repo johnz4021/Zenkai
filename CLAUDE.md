@@ -36,9 +36,12 @@ cli.ts blueprint <target-id> <spec-id>       # (re)draft a round blueprint — i
 cli.ts generate-for <target-id> [spec-id]    # generate a problem from a confirmed spec
 cli.ts prepare | generate [dir]              # untargeted / gap-targeted pool generation
 cli.ts validate <dir> | cli.ts pool          # mechanical problem check / list unused problems
-cli.ts rejudge <session-id> [--record]       # re-judge a stored trace; --record writes the gap graph
+cli.ts rejudge <session-id> [--record]       # re-judge a stored trace; --record writes gap + topic graphs
 cli.ts eval-judge [--quick|--simulate|--resume]  # the judge gauntlet (REAL model calls)
 cli.ts promote-fixture <session-id>          # confirmed session → golden regression fixture
+cli.ts lc fetch | list | show <slug>         # vendored LeetCode dataset (pinned in lc-source.ts)
+cli.ts lc verify <slug> [--generate] | --all-eligible  # prove conversion against the oracle (no model);
+                                             #   --generate adds a real sourced build; the full sweep writes blocklist.json
 ```
 
 Generation takes ~5 minutes per problem (an agentic `claude -p` run). Sessions need
@@ -84,7 +87,8 @@ probe), `.validated`, `.failed`, `.used` (names the session that consumed the pr
 The app can be killed and restarted at any time; the worst case is a stale page.
 Data dirs (all gitignored except `fixtures/` and `assessments/`): `targets/`,
 `problems/`, `traces/` (append-only JSONL per session), `gaps/`, `assessments/`,
-`feedback/`.
+`feedback/`, `topics/` (per-user LC topic ledgers), `datasets/` (the vendored
+LeetCode corpus — fetched, never committed).
 
 **The two-artifact rule.** A `RoundSpec` (`shared/src/round-spec.ts`) is the closed
 *ruler* — capabilities the session runtime enforces, the validator dispatches on, and
@@ -95,8 +99,21 @@ express something the blueprint can say in prose; the one enforceable size knob 
 
 **Single sources of truth in `shared/`:** `dimensions.ts` (the six judge dimensions —
 the judge prompt, gap graph, feedback card, and gauntlet all import from here),
-`round-spec.ts`, `rubric.ts`, `trace.ts`, `test-command.ts`. Duplicating any of these
-silently makes the eval gauntlet measure nothing.
+`round-spec.ts`, `rubric.ts`, `trace.ts`, `test-command.ts`, `topics.ts` (the LC
+topic-tag vocabulary — the topic ledger counts over it and `lc fetch` asserts the
+dataset maps onto it with zero drops). Duplicating any of these silently makes the
+eval gauntlet measure nothing.
+
+**LC-sourced rounds.** A queue item or rep may carry `source: {kind:'leetcode',
+slug}` — the build then converts a real problem from the vendored dataset instead of
+inventing one: deterministic code emits the grading suite from pre-verified I/O
+(`lc-convert.ts`; the generator NEVER authors tests on these builds, and cli.ts
+re-emits them post-generation), the generator only skins the surface (statement,
+naming) with the real statement fenced as private context. `mode: skinned` is the
+default; `verbatim` is policy-gated. The manifest's `source` field is patched from
+the dataset record and is what the topic ledger (`topic-graph.ts`, `topics/<uid>.json`)
+records on. Read `server/src/lc-source.ts` / `lc-convert.ts` headers before touching
+any of it.
 
 **The pipeline**, end to end:
 

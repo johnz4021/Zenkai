@@ -191,6 +191,12 @@ async function endSession() {
   // Release the mic FIRST — the session record closes with /api/end, and a
   // live mic past that point streams audio nobody will ever score.
   if (window.ipVoice) window.ipVoice.stop();
+  // Flush the panes editor's debounced saves BEFORE grading: on a one_shot
+  // round the Run button never existed, so this is the only flush — without
+  // it the last <800ms of typing is graded away by the submit run.
+  if (window.ipPanesFlush) {
+    try { await window.ipPanesFlush(); } catch { /* grade what's on disk */ }
+  }
   stopSessionLoops();
   const res = await fetch('/api/end', { method: 'POST' });
   if (res.status === 409) { btn.textContent = 'Session ended'; return; }

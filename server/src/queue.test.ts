@@ -122,6 +122,16 @@ describe('reconcileWithDisk — restart-safe by construction', () => {
     writeFileSync(path.join(root, 'assessments', 'sess-abc.json'), '{}');
     expect(reconcileWithDisk(root, q).items[0]!.status).toBe('done');
   });
+
+  it('a source binding survives the JSON round-trip untouched', () => {
+    const root = scratch();
+    const q = proposeQueue(target({ interview_date: '2026-08-15' }), NOW);
+    q.items[0]!.source = {
+      kind: 'leetcode', slug: 'two-sum', title: 'Two Sum',
+      difficulty: 'easy', picked_by: 'user',
+    };
+    expect(reconcileWithDisk(root, q).items[0]!.source).toEqual(q.items[0]!.source);
+  });
 });
 
 describe('store + nextUp', () => {

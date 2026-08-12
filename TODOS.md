@@ -483,7 +483,13 @@ season completing.
 
 ## 21. Curated LC-slug allowlist — mechanical gate for model-emitted problem titles
 
-**What:** Bundle a static list of ~500 famous LeetCode problem slugs (Blind 75,
+**SUPERSEDED (2026-08-12) by the vendored LeetCodeDataset** (`server/src/lc-source.ts`):
+`datasets/leetcode/index.json` is a 2,869-slug allowlist WITH metadata (id, title,
+difficulty, tags, eligibility) — strictly stronger than the ~500-slug static list this
+item proposed. If the external-practice bridge ever ships, its `gateExternal` should
+resolve against that index (see `loadLcIndex`), not a second curated file.
+
+**What (original):** Bundle a static list of ~500 famous LeetCode problem slugs (Blind 75,
 NeetCode 150, top-liked). In `gateExternal`, model-emitted titles/links ship only when
 the slug matches the list; misses fall to the topic+count fallback shape. Replaces
 model self-attestation with a genuinely mechanical gate.
@@ -941,3 +947,46 @@ observed-stable ids.
 
 **Depends on:** beta traffic. **Effort:** human ~3 hours / CC ~20 min. **Priority:** P3.
 **Found by:** /qa on `beta`, 2026-08-12 (ISSUE-005).
+
+---
+
+## 40. LC-sourced rounds — phase-2/3 deferrals, each with its trigger
+
+**What shipped (2026-08-12):** the dataset layer (`lc-source.ts`, pinned +
+blocklisted), deterministic test conversion (`lc-convert.ts`), `{{SOURCE_BLOCK}}`
+skinned/verbatim generation, `QueueItem.source`/`Rep.source` → `--source lc:<slug>`,
+`lc verify` (mechanical oracle proof + `--generate` sampling), submit-run pass counts
+through timeline (renderer v3) + judge ground truth, the flushSaves-on-submit fix,
+and the record-only topic ledger (`topic-graph.ts`).
+
+**Deliberately deferred, with the trigger that un-defers each:**
+- **Topic-driven problem selection** (the ranked picker + intake extraction of
+  "LC 146"/"mostly graphs", bind-at-generate) — user decision 2026-08-12: build the
+  conceptual graph, hold the steering. Trigger: enough beta ledger rows that ranking
+  beats hand-picking (~10 LC sessions/user), and the user asking for it.
+- **Tree/linked-list problems** (~180 slugs) — the converter's `build_tree`/`build_list`
+  harness half exists as a design; scaffolds must carry standard `TreeNode`/`ListNode`.
+  Trigger: eligible coverage feels thin in tree-heavy targets.
+- **Verbatim mode past the CLI** (`IP_LC_VERBATIM` policy in public-config,
+  `verbatimAllowed` gate, statement rendering wider than the 480px pane, a real md
+  renderer). Trigger: verbatim graduating past the founder's own practice.
+- **`checkSourceLeak`** (slug/title/entry-point/10-word-shingle scan over
+  candidate-visible files, additive in validate.ts behind `manifest.source`).
+  Trigger: first observed lazy skin from `lc verify --generate` sampling.
+- **Hidden-test split** (visible samples + grading suite). Trigger: evidence that
+  reading expected outputs in `tests/cases.json` distorts one-shot scores.
+- **pip/sortedcontainers image bump** (`ip-ide-python:2`). Trigger: same as trees —
+  coverage pressure (currently ~90 slugs excluded as non-stdlib).
+- **Mechanical `solved` override on one-shot rounds** (exit code beats the judge).
+  Trigger: the gauntlet showing solved-errors on build rounds.
+- **`cli.ts topics rebuild`** (ledger reconstruction from assessments + manifests —
+  the store is non-precious by design; this makes it provably so). Trigger: first
+  corrupt-store warning in a beta log.
+- **Two known oracle-failure classes the blocklist absorbs** (~5% of eligible in the
+  2026-08-12 sample sweep): any-order answers where the canonical's output order
+  differs from the recorded order (a sort-on-mismatch comparator would false-accept
+  problems where order MATTERS — do not add it casually), and canonicals that
+  genuinely exceed the 10s per-case alarm on the largest inputs. Trigger for
+  rescuing either class: the blocklist visibly starving a tag the user needs.
+
+**Found by:** the LC integration build (plan `glittery-stirring-harbor`, 2026-08-12).

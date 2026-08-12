@@ -33,7 +33,13 @@ import type { SensorPayload, TraceEvent } from '@interview-prep/shared';
 // "spoke" lines, cited "long stretches transcription-unavailable" in real
 // verdicts, and could never see genuine silence. Assessments are stamped with
 // this number, which is what keeps rejudge history comparable.
-export const RENDERER_VERSION = 2;
+//
+// v3: test_run lines carry pass counts when the event payload has them
+// ("submitted — 14/16 tests passed"). Before this, every run rendered as
+// binary PASSED/FAILED, so on a one-shot OA round 15/16 passing was
+// indistinguishable from 0/16 — the judge graded a near-solve and a
+// no-show identically. Old traces without counts keep the binary line.
+export const RENDERER_VERSION = 3;
 
 /** Rough ceiling before low-signal compression kicks in (~chars/4). */
 export const TOKEN_CEILING = 12_000;
@@ -119,9 +125,13 @@ function eventLine(e: TraceEvent, t0: number): Line | null {
       return { ts: e.ts, text: `${at}  candidate clicked End Session` };
     case 'test_run': {
       const code = p.exit_code;
+      const verb = p.via === 'submit' ? 'submitted' : 'ran tests';
+      if (typeof p.passed === 'number' && typeof p.total === 'number' && p.total > 0) {
+        return { ts: e.ts, text: `${at}  ${verb} — ${p.passed}/${p.total} tests passed` };
+      }
       const verdictText =
         code === 0 ? 'tests PASSED' : code == null ? 'test run did not complete' : 'tests FAILED';
-      return { ts: e.ts, text: `${at}  ran tests — ${verdictText}` };
+      return { ts: e.ts, text: `${at}  ${verb} — ${verdictText}` };
     }
     case 'edit':
       return {

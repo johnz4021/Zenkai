@@ -52,19 +52,82 @@ function portEnv(v: string | undefined, fallback: number): number {
   return Number.isInteger(n) && n > 0 && n < 65536 ? n : fallback;
 }
 
+/** Dataset-sourced build context, resolved by resolveSourceBinding(). */
+interface SourcedBuild {
+  problem: import('./lc-source.js').LcProblem;
+  mode: import('./lc-convert.js').SourceMode;
+  cases: import('./lc-convert.js').SelectedCase[];
+}
+
+/**
+ * "--source lc:<slug>" (or a rep/queue binding) → the full sourced-build
+ * context, or a hard exit. An explicitly bound slug that cannot resolve
+ * must FAIL the build, never silently substitute an invented problem —
+ * the binding is a commitment the user can see.
+ */
+async function resolveSourceBinding(
+  sourceRef: string,
+  modeFlag: string | undefined,
+  spec?: import('@interview-prep/shared').RoundSpec,
+): Promise<SourcedBuild> {
+  const lc = await import('./lc-source.js');
+  const cv = await import('./lc-convert.js');
+  const mode = modeFlag ?? 'skinned';
+  if (mode !== 'skinned' && mode !== 'verbatim') {
+    console.error(`--source-mode out of vocabulary: ${mode} (skinned|verbatim)`);
+    process.exit(64);
+  }
+  const ready = lc.lcReady(repoRoot);
+  if (!ready.ok) {
+    console.error(`[source] ${ready.reason}`);
+    process.exit(2);
+  }
+  const slug = sourceRef.replace(/^lc:/, '');
+  const problem = lc.loadLcProblem(repoRoot, slug);
+  if (!problem) {
+    console.error(`[source] no problem "${slug}" in the dataset — check the slug (cli.ts lc list)`);
+    process.exit(2);
+  }
+  if (!lc.eligibleForSourcing(lc.indexEntryOf(problem))) {
+    console.error(
+      `[source] "${slug}" is not sourceable in v1 (structures: ${problem.structures.join('+')}, ` +
+      `stdlib_only: ${problem.stdlib_only}, cases: ${problem.cases.length})`,
+    );
+    process.exit(2);
+  }
+  if (lc.isBlocklisted(repoRoot, slug)) {
+    console.error(`[source] "${slug}" failed mechanical verification (datasets/leetcode/blocklist.json) — pick another problem`);
+    process.exit(2);
+  }
+  return { problem, mode, cases: cv.selectCases(problem.cases, spec?.check.min_tests) };
+}
+
 async function generateInto(
   targetDir: string,
   targetNote?: string,
   brief: string = THEME,
   spec?: import('@interview-prep/shared').RoundSpec,
+  sourced?: SourcedBuild,
 ): Promise<number> {
+  let sourceBlock: string | undefined;
+  if (sourced) {
+    const cv = await import('./lc-convert.js');
+    // The grading contract goes on disk BEFORE the agent runs — the agent
+    // reads it, never authors it.
+    const emitted = cv.writeSourcedTests(targetDir, sourced.problem, sourced.mode, sourced.cases);
+    sourceBlock = cv.sourceRequirements(sourced.problem, sourced.mode, sourced.cases);
+    console.log(`[source] ${sourced.problem.slug} (${sourced.mode}): ${emitted.count} cases (${emitted.large} large) emitted`);
+  }
   const result = await generateProblem({
     targetDir,
     brief,
     spec,
     targetNote,
+    sourceBlock,
     templatePath,
-    model: 'opus',
+    // Sourced builds are a transform, not invention — they run tighter.
+    model: sourced ? 'sonnet' : 'opus',
+    ...(sourced ? { timeoutMs: 5 * 60_000, maxTurns: 40 } : {}),
   });
   console.log(
     JSON.stringify(
@@ -79,8 +142,36 @@ async function generateInto(
   const { clearGeneratingMarker, removePythonArtifacts } = await import('./generation-state.js');
   if (!result.ok) {
     clearGeneratingMarker(targetDir);
+    // The claude -p json payload carries the real failure (subtype,
+    // is_error, num_turns) — stderr alone diagnosed nothing when a sourced
+    // build died silently on 2026-08-12.
+    console.error('--- result payload (head) ---\n' + result.stdout.slice(0, 1500));
     console.error('--- stderr ---\n' + result.stderr.slice(0, 2000));
     return 1;
+  }
+  if (sourced) {
+    // Tamper-proof re-emit: whatever the agent did to the grading contract,
+    // the validated artifact carries the deterministic one. And the manifest
+    // source stamp is patched from the DATASET record, never trusted from
+    // the generator — the topic ledger records truth.
+    const cv = await import('./lc-convert.js');
+    const { writeFileSync: wf, readFileSync: rf } = await import('node:fs');
+    cv.writeSourcedTests(targetDir, sourced.problem, sourced.mode, sourced.cases);
+    try {
+      const manifestPath = path.join(targetDir, 'problem.json');
+      const manifest = JSON.parse(rf(manifestPath, 'utf8')) as Record<string, unknown>;
+      manifest.source = {
+        kind: 'leetcode',
+        slug: sourced.problem.slug,
+        title: sourced.problem.title,
+        difficulty: sourced.problem.difficulty,
+        tags: sourced.problem.tags,
+        mode: sourced.mode,
+      };
+      wf(manifestPath, JSON.stringify(manifest, null, 2));
+    } catch {
+      // Missing/unparseable manifest — the validator reports it properly below.
+    }
   }
   // Sweep twice: the generator's own suite runs left bytecode, and the
   // validator's run below re-creates it — only the second sweep decides
@@ -249,11 +340,16 @@ if (cmd === 'generate') {
     ? path.resolve(flags.into)
     : path.join(tDir(repoRoot, t.id), 'problems', `${spec.id}-${Date.now().toString(36)}`);
   console.log(`[generate-for] ${t.id} / ${spec.id} → ${dir}`);
+  // Dataset-sourced item: the queue binding arrives as --source lc:<slug>
+  // (spawnGeneration pushes it exactly like --title).
+  const sourced = flags.source
+    ? await resolveSourceBinding(flags.source, flags['source-mode'], spec)
+    : undefined;
   // Gap-graph emphasis travels into queue-driven generation the same way
   // prepare's does — via the target note.
   const store = loadStore(path.join(repoRoot, 'gaps'), userId);
   const note = buildTargetNote(buildGraphView(store), store);
-  process.exit(await generateInto(dir, note, brief, spec));
+  process.exit(await generateInto(dir, note, brief, spec, sourced));
 } else if (cmd === 'blueprint') {
   // Draft the round blueprint for one spec. Idempotent: an existing file is
   // the terminal state, which is what makes accept-spec's unconditional
@@ -361,11 +457,16 @@ if (cmd === 'generate') {
     description: rep.description,
     context: rep.context,
   });
+  // A rep's source binding lives on the rep record itself (reps.json),
+  // not a flag — rep-build re-reads it like it re-reads everything else.
+  const sourced = rep.source?.kind === 'leetcode'
+    ? await resolveSourceBinding(rep.source.slug, process.env.IP_LC_MODE, rep.spec)
+    : undefined;
   // Gap-graph emphasis travels in exactly like generate-for's.
   const store = loadStore(path.join(repoRoot, 'gaps'), userId);
   const note = buildTargetNote(buildGraphView(store), store);
   console.log(`[rep-build] ${rep.id} → ${problemDir}`);
-  process.exit(await generateInto(problemDir, note, brief, rep.spec));
+  process.exit(await generateInto(problemDir, note, brief, rep.spec, sourced));
 } else if (cmd === 'app') {
   const { runApp } = await import('./app.js');
   const { resolvePublicConfig } = await import('./public-config.js');
@@ -512,6 +613,18 @@ if (cmd === 'generate') {
     store = recordAssessment(store, result, spec.label, spec.memory_tags);
     saveStore(path.join(repoRoot, 'gaps'), store);
     console.error('[rejudge] recorded into the gap graph');
+    // Topic ledger: rejudge REPLACES the session's row (upsert by
+    // session_id) — corrective, never inflationary, unlike #34.
+    try {
+      const tg = await import('./topic-graph.js');
+      const attempt = tg.attemptFromSession({ assessment: result, problem, spec, events, origin: 'rejudge' });
+      if (attempt) {
+        tg.recordTopicAttempt(repoRoot, userId, attempt);
+        console.error('[rejudge] topic ledger updated');
+      }
+    } catch (e) {
+      console.warn(`[rejudge] topic record skipped: ${String(e)}`);
+    }
   }
   const card = buildAssessmentCard(
     result,
@@ -618,6 +731,169 @@ if (cmd === 'generate') {
     intentCheck: process.env.IP_INTERVIEWER === '0' ? null : undefined,
     voice: process.env.IP_VOICE !== '0',
   });
+} else if (cmd === 'lc') {
+  // Vendored LeetCode dataset ops. fetch is idempotent and pinned — see
+  // LC_DATASET_PINS in lc-source.ts for the integrity story.
+  const lc = await import('./lc-source.js');
+  const sub = target;
+  const { positional, flags } = parseFlags(process.argv.slice(4));
+  if (sub === 'fetch') {
+    try {
+      console.log(await lc.fetchLcDataset(repoRoot, {
+        ...(flags.from ? { fromDir: path.resolve(flags.from) } : {}),
+        ...(flags.force === 'true' ? { force: true } : {}),
+      }));
+    } catch (e) {
+      console.error(`[lc fetch] ${String(e)}`);
+      process.exit(1);
+    }
+  } else if (sub === 'list') {
+    const ready = lc.lcReady(repoRoot);
+    if (!ready.ok) {
+      console.error(ready.reason);
+      process.exit(2);
+    }
+    let entries = lc.loadLcIndex(repoRoot);
+    if (flags.eligible === 'true') entries = entries.filter(lc.eligibleForSourcing);
+    if (flags.tag) entries = entries.filter((e) => e.tags.includes(flags.tag as never));
+    if (flags.difficulty) entries = entries.filter((e) => e.difficulty === flags.difficulty);
+    console.log(JSON.stringify({
+      total: entries.length,
+      problems: entries.slice(0, flags.all === 'true' ? entries.length : 50)
+        .map((e) => ({ slug: e.slug, id: e.id, difficulty: e.difficulty, tags: e.tags, cases: e.n_cases })),
+    }, null, 2));
+  } else if (sub === 'show') {
+    const slug = positional[0];
+    const p = slug ? lc.loadLcProblem(repoRoot, slug) : null;
+    if (!p) {
+      console.error(slug ? `no problem "${slug}" in the dataset` : 'usage: cli.ts lc show <slug>');
+      process.exit(2);
+    }
+    const { cases, solution, statement, ...meta } = p;
+    console.log(JSON.stringify({ ...meta, n_cases: cases.length, statement_chars: statement.length }, null, 2));
+    console.log('\n--- statement ---\n' + statement.slice(0, 1200));
+  } else if (sub === 'verify') {
+    // The keystone: prove the whole conversion against the oracle with NO
+    // model call — raising stub must fail every emitted case, canonical
+    // solution must pass every one, both parsed by the validator's own
+    // parser. --generate adds the model-dependent leg (full sourced
+    // generation + validateProblem), per the repo rule that model-calling
+    // checks are CLI commands, never unit tests.
+    const cv = await import('./lc-convert.js');
+    const { spawnSync } = await import('node:child_process');
+    const { mkdtempSync, rmSync: rmrf, writeFileSync: wf } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { parseUnittestOutput } = await import('./validate.js');
+    const { childEnv } = await import('./child-env.js');
+    const ready = lc.lcReady(repoRoot);
+    if (!ready.ok) {
+      console.error(ready.reason);
+      process.exit(2);
+    }
+    const mode = (flags.mode ?? 'skinned') as import('./lc-convert.js').SourceMode;
+    if (mode !== 'skinned' && mode !== 'verbatim') {
+      console.error(`--mode out of vocabulary: ${String(flags.mode)} (skinned|verbatim)`);
+      process.exit(64);
+    }
+
+    const runPy = (dir: string) => {
+      const run = spawnSync('python3', ['-m', 'unittest', 'discover', '-v'], {
+        cwd: dir, encoding: 'utf8', timeout: 180_000, env: childEnv('sandbox', process.env),
+      });
+      return parseUnittestOutput(`${run.stderr ?? ''}\n${run.stdout ?? ''}`);
+    };
+    const verifySlug = (slug: string): { ok: boolean; reason?: string } => {
+      const p = lc.loadLcProblem(repoRoot, slug);
+      if (!p) return { ok: false, reason: 'not in dataset' };
+      if (!lc.eligibleForSourcing(lc.indexEntryOf(p))) {
+        return { ok: false, reason: `ineligible (structures: ${p.structures.join('+')}, stdlib_only: ${p.stdlib_only}, cases: ${p.cases.length})` };
+      }
+      const cases = cv.selectCases(p.cases);
+      const dir = mkdtempSync(path.join(tmpdir(), 'lc-verify-'));
+      try {
+        cv.writeSourcedTests(dir, p, mode, cases);
+        wf(path.join(dir, 'solution.py'), cv.renderRaisingStub(p, mode));
+        const red = runPy(dir);
+        if (red.total !== cases.length) return { ok: false, reason: `stub run ran ${red.total} of ${cases.length} (suite did not load?)` };
+        if (red.failed.length !== red.total) return { ok: false, reason: `${red.total - red.failed.length} case(s) passed on the raising stub` };
+        wf(path.join(dir, 'solution.py'), cv.renderOracleSolution(p, mode));
+        const green = runPy(dir);
+        if (green.total !== cases.length) return { ok: false, reason: `oracle run ran ${green.total} of ${cases.length}` };
+        if (green.failed.length) return { ok: false, reason: `oracle failed ${green.failed.length}/${green.total} (first: ${green.failed[0]})` };
+        return { ok: true };
+      } finally {
+        rmrf(dir, { recursive: true, force: true });
+      }
+    };
+
+    if (flags['all-eligible'] === 'true') {
+      const eligible = lc.loadLcIndex(repoRoot).filter(lc.eligibleForSourcing);
+      const sample = flags.sample ? Math.max(1, Number(flags.sample)) : null;
+      const step = sample ? Math.max(1, Math.floor(eligible.length / sample)) : 1;
+      const picked = eligible.filter((_, i) => i % step === 0);
+      const failures: { slug: string; reason: string }[] = [];
+      let done = 0;
+      for (const e of picked) {
+        const v = verifySlug(e.slug);
+        if (!v.ok) failures.push({ slug: e.slug, reason: v.reason! });
+        done += 1;
+        if (done % 50 === 0) console.error(`[lc verify] ${done}/${picked.length} (${failures.length} failing)`);
+      }
+      const report = {
+        mode, checked: picked.length, ok: picked.length - failures.length, failures,
+        dataset_revision: ready.version.revision, verified_at: new Date().toISOString(),
+      };
+      wf(path.join(lc.lcRoot(repoRoot), `verify-report-${mode}.json`), JSON.stringify(report, null, 2));
+      // A FULL sweep's failures become the binding blocklist: eligible by
+      // metadata but unproven against the oracle = never reaches a build.
+      // Sampled sweeps don't write it (a partial list would read as total).
+      if (!sample) {
+        wf(
+          path.join(lc.lcRoot(repoRoot), 'blocklist.json'),
+          JSON.stringify({ mode, dataset_revision: ready.version.revision, slugs: failures.map((f) => f.slug).sort() }, null, 2),
+        );
+        console.error(`[lc verify] blocklist.json written (${failures.length} slugs)`);
+      }
+      console.log(JSON.stringify({ ...report, failures: failures.slice(0, 30) }, null, 2));
+      process.exit(failures.length === 0 ? 0 : 3);
+    }
+
+    const slug = positional[0];
+    if (!slug) {
+      console.error('usage: cli.ts lc verify <slug> [--mode skinned|verbatim] [--generate] | lc verify --all-eligible [--sample N]');
+      process.exit(64);
+    }
+    const mech = verifySlug(slug);
+    console.log(JSON.stringify({ slug, mode, mechanical: mech }, null, 2));
+    if (!mech.ok) process.exit(3);
+
+    if (flags.generate === 'true') {
+      // Model-dependent leg: a real sourced generation under the canonical
+      // OA spec, validated like any queue build. Lands in problems/ but is
+      // pre-marked .used so the session pool can never pick it up.
+      const { deriveMemoryTags } = await import('@interview-prep/shared');
+      const caps = {
+        interviewer: false, can_run_tests: true, time_limit_ms: 3_600_000,
+        starts_from: 'blank' as const, submit: 'one_shot' as const, surface: 'panes' as const,
+      };
+      const spec = {
+        id: 'lc-verify-oa', label: 'LeetCode OA (verify)', capabilities: caps,
+        check: { kind: 'all_failing' as const, max_source_files: 1 },
+        memory_tags: deriveMemoryTags(caps),
+      };
+      const brief = readFileSync(path.join(repoRoot, 'prompts', 'blueprints', 'oa-hackerrank-classic.md'), 'utf8');
+      const dir = path.join(problemsRoot, `lc-verify-${slug}-${Date.now().toString(36)}`);
+      const sourced = await resolveSourceBinding(`lc:${slug}`, mode, spec);
+      console.log(`[lc verify] generating into ${dir} ...`);
+      const code = await generateInto(dir, undefined, brief, spec, sourced);
+      wf(path.join(dir, '.used'), `lc-verify\n${new Date().toISOString()}\n`);
+      console.log(code === 0 ? `[lc verify] generation validated — inspect ${dir}` : `[lc verify] generation FAILED (exit ${code}) — see output above`);
+      process.exit(code);
+    }
+  } else {
+    console.error('usage: cli.ts lc <fetch [--from <dir>] [--force] | list [--eligible] [--tag <t>] [--difficulty <d>] [--all] | show <slug> | verify <slug>|--all-eligible>');
+    process.exit(64);
+  }
 } else {
   console.error(
     'usage:\n' +
@@ -630,6 +906,7 @@ if (cmd === 'generate') {
       '  cli.ts generate-for <target-id> [spec-id]   generate from a confirmed spec\n' +
       '  cli.ts blueprint <target-id> <spec-id>   draft the round blueprint (idempotent)\n' +
       '  cli.ts rep-build <rep-id>   build a practice rep (draft blueprint + generate)\n' +
+      '  cli.ts lc <fetch|list|show> ...   vendored LeetCode dataset ops\n' +
       '  cli.ts app               run the home app (:3300) - targets, queues, launch',
   );
   process.exit(64);

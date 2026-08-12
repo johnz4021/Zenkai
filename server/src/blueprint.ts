@@ -136,7 +136,7 @@ export function extractSection(markdown: string, heading: string): string | null
  *  under prompts/blueprints/ — a test existence-checks every branch. */
 export function pickSkeletonFile(spec: RoundSpec): string {
   const words = `${spec.label} ${spec.emphasis ?? ''}`.toLowerCase();
-  if (/hackerrank|codesignal|\boa\b|online assessment/.test(words)) return 'oa-hackerrank-classic.md';
+  if (/hackerrank|codesignal|leetcode|leet code|\blc\b|codility|\boa\b|online assessment/.test(words)) return 'oa-hackerrank-classic.md';
   if (/lld|low.level|class design|implement.*(class|api)/.test(words)) return 'lld-build.md';
   if (/learning|unfamiliar|collab/.test(words)) return 'learning-round.md';
   if (/debug/.test(words)) return 'debugging-round.md';

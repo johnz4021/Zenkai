@@ -1,7 +1,65 @@
 {
   "session_id": "sess-1785731479608",
-  "status": "unassessed",
-  "judged_at": 1785731550367,
-  "reason": "judge output invalid (not retried — schema mismatch repeats): Error: missing/invalid solved",
-  "raw_output": "{\"dimensions\":\"[{\\\"dimension\\\":\\\"clarify\\\",\\\"verdict\\\":\\\"unassessable\\\",\\\"analysis\\\":\\\"The session ended almost immediately after starting; the candidate asked for a hint rather than asking any question that resolves genuine ambiguity about the registry contract or ordering guarantees. There was no real engagement with the material before the session ended, so there is nothing substantive to assess.\\\",\\\"evidence\\\":[23]},{\\\"dimension\\\":\\\"approach\\\",\\\"verdict\\\":\\\"weak\\\",\\\"analysis\\\":\\\"The candidate opened dashboard.py briefly but never stated any hypothesis or mechanism for the failure. Instead of forming a plan, they asked the interviewer for a hint immediately, which is the opposite of naming a theory before acting.\\\",\\\"evidence\\\":[14,23]},{\\\"dimension\\\":\\\"communicate\\\",\\\"verdict\\\":\\\"weak\\\",\\\"analysis\\\":\\\"The only narration was an opening remark about doing a debugging exercise, with no commentary on the failing test output, the assertion, or any file content. When asked directly by the interviewer to walk through the assertion versus actual result, the candidate did not respond with any substantive reasoning before ending the session.\\\",\\\"evidence\\\":[0,32]},{\\\"dimension\\\":\\\"implement\\\",\\\"verdict\\\":\\\"unassessable\\\",\\\"analysis\\\":\\\"No code changes were made at any point in the session; the candidate never reached the implementation stage.\\\",\\\"evidence\\\":[48]},{\\\"dimension\\\":\\\"verify\\\",\\\"verdict\\\":\\\"unassessable\\\",\\\"analysis\\\":\\\"No fix was attempted, so there was nothing to verify. The initial test run at the start was just the baseline failing run, not a verification step.\\\",\\\"evidence\\\":[5]},{\\\"dimension\\\":\\\"reflect\\\",\\\"verdict\\\":\\\"unassessable\\\",\\\"analysis\\\":\\\"The session ended without any resolution, explanation, or even an attempt to diagnose the bug, so there is nothing to reflect on.\\\",\\\"evidence\\\":[48]}],\\\"solved\\\":false,\\\"summary\\\":\\\"The candidate opened the dashboard file, ran the failing test once, and then asked for a hint instead of investigating the failure output or forming a hypothesis. The interviewer declined to give hints and asked them to walk through the assertion, but the candidate ended the session shortly after without making any progress or code changes.\\\"}\\n\"}"
+  "status": "assessed",
+  "judged_at": 1786558536547,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "7111192943bf",
+  "schema_version": 1,
+  "renderer_version": 2,
+  "expectations_used": {
+    "clarify": "Asks what the registry actually guarantees about `BatchResponse.records` — whether records come back in request order, whether `missing_ids` and `records` partition the request, whether batch dispatch order matters — rather than assuming the docs in `docs/registry-api.md` are complete on ordering.",
+    "approach": "States a mechanism before editing — e.g. that `_pair` walks `response.records` positionally against `resolved_ids` while `FleetRegistryApi` emits records in its own store order, so a watchlist listed out of store order gets records shifted onto neighbouring ids — rather than 'something in the client' or 'a threading race in the executor'.",
+    "communicate": "Narrates the hunt continuously and at the level of reasoning, not recitation: says which file they opened and why, what the failing assertion (`41 != 95`) implies about where 41 came from, which hypotheses (thread race in `as_completed`, cache poisoning, batching off-by-one) they are ruling out and on what evidence — so someone listening could retrace the path without interrupting to ask.",
+    "implement": "Keys results off `record.device_id` (or a dict built from the response) inside `_pair` so pairing no longer depends on ordering, keeps `NOT_FOUND` handling for `missing_ids` intact, and leaves the batching, retry, cache and executor code untouched.",
+    "verify": "Re-runs `python3 -m unittest discover -v`, confirms `test_each_row_carries_the_snapshot_of_its_own_device` now passes and all 15 tests are green, and checks the fix against a case the suite does not cover — e.g. an out-of-order watchlist that also contains an unregistered id, or ids split across several batches.",
+    "reflect": "Explains why the bug hid: every other test happens to request ids in the registry's own store order, and the concurrency in `fetch` makes it look like a thread race when the ordering assumption is actually in the single-threaded `_pair` — and names what would catch it earlier, such as asserting on `record.device_id`."
+  },
+  "solved": false,
+  "summary": "The candidate opened the dashboard file, ran the test suite once to see the failure, then asked the interviewer for a hint almost immediately and was declined; the session ended less than a minute in with no hypothesis, no code changes, and no real engagement with the bug.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "unassessable",
+      "analysis": "The session ended almost immediately after opening one file; the candidate never got far enough to surface or resolve any ambiguity about the registry contract, ordering guarantees, or test semantics. There was no real engagement with the material before the session was cut short.",
+      "evidence": []
+    },
+    {
+      "dimension": "approach",
+      "verdict": "weak",
+      "analysis": "Rather than forming any hypothesis, the candidate directly asked the interviewer for a hint almost immediately after opening a single file, which was declined. No mechanism, location, or even a vague direction was ever stated before the session ended.",
+      "evidence": [
+        23
+      ],
+      "stripped_evidence": [
+        29
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "weak",
+      "analysis": "The only substantive speech was a meta-comment about doing the debugging assignment and an aside acknowledging it was intense; no narration of what was being read in dashboard.py or why, and no reasoning was shared about the failing test output despite the interviewer explicitly asking them to walk through the assertion.",
+      "evidence": [
+        0,
+        32
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "unassessable",
+      "analysis": "No code changes were made at any point in the session; the candidate only ran the test suite once and opened one file before ending the session.",
+      "evidence": []
+    },
+    {
+      "dimension": "verify",
+      "verdict": "unassessable",
+      "analysis": "There was no implementation to verify — the candidate ran the tests once at the start to observe the failure, but never produced a fix to check against it.",
+      "evidence": []
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "unassessable",
+      "analysis": "The session ended without any resolution or fix, and nobody asked the candidate to explain a root cause, so there is nothing to assess for reflection.",
+      "evidence": []
+    }
+  ]
 }

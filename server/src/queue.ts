@@ -50,6 +50,18 @@ export interface QueueItem {
    *  Advisory — the item stays launchable; the timeline offers a rebuild
    *  and the candidate decides. Cleared by /api/rebuild. */
   stale?: boolean;
+  /** Dataset-sourced items: which real problem this build converts.
+   *  `picked_by: 'user'` = the candidate named it (a commitment, like
+   *  planned_title); `'auto'` is reserved for the deferred picker. Survives
+   *  reconcileWithDisk's JSON round-trip like every other field. */
+  source?: {
+    kind: 'leetcode';
+    slug: string;
+    title: string;
+    difficulty: 'easy' | 'medium' | 'hard';
+    picked_by: 'user' | 'auto';
+    reasons?: string[];
+  };
 }
 
 export interface Queue {

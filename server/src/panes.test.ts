@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { RoundCapabilities } from '@interview-prep/shared';
-import { isModelPath, listWorkspaceFiles, runGuard, safeWorkspacePath, summarizeTail } from './panes.js';
+import { isModelPath, listWorkspaceFiles, parseRunCounts, runGuard, safeWorkspacePath, summarizeTail } from './panes.js';
 
 describe('safeWorkspacePath — the traversal gate', () => {
   const root = '/srv/problems/p-1';
@@ -98,5 +98,29 @@ describe('runGuard — one_shot stays one_shot', () => {
     expect(runGuard(caps({ can_run_tests: false, submit: 'one_shot' }), false, false)).toBe('no_runs');
     expect(runGuard(caps(), true, false)).toBe('ended');
     expect(runGuard(caps(), false, true)).toBe('busy');
+  });
+});
+
+describe('parseRunCounts — summary lines only, never a guess', () => {
+  it('unittest: OK and FAILED(failures, errors) shapes', () => {
+    expect(parseRunCounts('test_case_00 ... ok\nRan 16 tests in 0.01s\n\nOK\n'))
+      .toEqual({ total: 16, passed: 16, failed: 0 });
+    expect(parseRunCounts('Ran 16 tests in 0.02s\n\nFAILED (failures=3, errors=2)\n'))
+      .toEqual({ total: 16, passed: 11, failed: 5 });
+    expect(parseRunCounts('Ran 1 test in 0.00s\n\nFAILED (errors=1)\n'))
+      .toEqual({ total: 1, passed: 0, failed: 1 });
+  });
+
+  it('vitest: mixed, all-pass, and all-fail summary lines', () => {
+    expect(parseRunCounts(' Tests  3 failed | 5 passed (8)\n')).toEqual({ total: 8, passed: 5, failed: 3 });
+    expect(parseRunCounts(' Tests  23 passed (23)\n')).toEqual({ total: 23, passed: 23, failed: 0 });
+    expect(parseRunCounts(' Tests  23 failed (23)\n')).toEqual({ total: 23, passed: 0, failed: 23 });
+  });
+
+  it('null on truncated or alien output — the timeline falls back to binary', () => {
+    expect(parseRunCounts('')).toBeNull();
+    expect(parseRunCounts('Segmentation fault')).toBeNull();
+    expect(parseRunCounts('Ran 16 tests in 0.01s\n')).toBeNull(); // verdict line truncated away
+    expect(parseRunCounts('Ran 4 tests in 0.01s\nFAILED (skipped=4)\n')).toBeNull();
   });
 });

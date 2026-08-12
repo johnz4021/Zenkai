@@ -29,13 +29,14 @@ import { childEnv } from './child-env.js';
 import { judgeSession } from './judge.js';
 import { buildAssessmentCard, mergeConfirm } from './feedback.js';
 import { buildGraphView, buildTargetNote, loadStore, recordAssessment, saveStore } from './gap-graph.js';
+import { attemptFromSession, recordTopicAttempt } from './topic-graph.js';
 import { clientScript, sessionPage } from './chrome.js';
 import { injectWorkbenchDefaults } from './workbench-inject.js';
 import { describeStuck, detectStuck, type StuckState } from './stuck.js';
 import { describeAdrift, describeWarm, detectAdrift, regionContainsAnswer } from './adrift.js';
 import { assessAgenda, renderAgenda } from './agenda.js';
 import { CLOSING_TOPIC, WRAP_UP_QUESTIONS, detectWrapSignal, renderWrapState, selectWrapTopic } from './wrapup.js';
-import { isModelPath, listWorkspaceFiles, runGuard, safeWorkspacePath, summarizeTail } from './panes.js';
+import { isModelPath, listWorkspaceFiles, parseRunCounts, runGuard, safeWorkspacePath, summarizeTail } from './panes.js';
 import { isCorrectionFollowUp, isExplicitAsk } from './addressing.js';
 import { decideAck } from './ack.js';
 import { renderWorkspaceView, selectRecentlyEdited, snapshotWorkspace } from './workspace-view.js';
@@ -905,6 +906,10 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         duration_ms: Date.now() - t0,
         summary: summarizeTail(tail),
         output_tail: tail,
+        // Pass counts when the summary lines parse — the graded run is the
+        // ONLY signal on a one-shot round, and without counts the judge
+        // cannot tell 15/16 from 0/16 (timeline renderer v3).
+        ...(parseRunCounts(tail) ?? {}),
       });
     }
 
@@ -932,6 +937,18 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       const spec = resolveRoundSpec(problem);
       gapStore = recordAssessment(gapStore, result, spec.label, spec.memory_tags);
       saveStore(gapsDir, gapStore);
+      // Second graph: an LC-sourced round deposits a topic-ledger row
+      // (attemptFromSession returns null for everything else). Same
+      // assessed-only gate; never fatal — finalize must not crash on
+      // memory bookkeeping.
+      try {
+        const attempt = attemptFromSession({
+          assessment: result, problem, spec, events, origin: 'session',
+        });
+        if (attempt) recordTopicAttempt(cfg.repoRoot, cfg.userId, attempt);
+      } catch (e) {
+        console.warn(`[session] topic record skipped: ${String(e)}`);
+      }
     }
 
     const view = buildGraphView(gapStore, cfg.sessionId);
@@ -1292,6 +1309,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         clearTimeout(killer);
         paneRunning = false;
         const summary = summarizeTail(tail);
+        const counts = parseRunCounts(tail);
         // Teardown race: if the session ended mid-run, docker rm killed the
         // exec — a post-session_end test_run would corrupt the trace's story.
         if (!ended) {
@@ -1301,10 +1319,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
             duration_ms: Date.now() - t0,
             summary,
             output_tail: tail,
+            ...(counts ?? {}),
           });
         }
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ exit_code: code, summary, tail }));
+        res.end(JSON.stringify({ exit_code: code, summary, tail, ...(counts ?? {}) }));
       });
       child.on('error', (e) => {
         clearTimeout(killer);

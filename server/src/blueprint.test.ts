@@ -61,6 +61,14 @@ describe('pickSkeletonFile', () => {
     expect(pickSkeletonFile(spec({ label: 'Debugging screen' }))).toBe('debugging-round.md');
   });
 
+  it('"leetcode-style" labels route to the OA skeleton (they used to match nothing)', () => {
+    expect(pickSkeletonFile(spec({ label: 'LeetCode-style screen' }))).toBe('oa-hackerrank-classic.md');
+    expect(pickSkeletonFile(spec({ label: 'Timed LC round', emphasis: 'two mediums' }))).toBe('oa-hackerrank-classic.md');
+    expect(pickSkeletonFile(spec({ label: 'Codility assessment' }))).toBe('oa-hackerrank-classic.md');
+    // "lc" must be a word, not a fragment — "lld" and "welcome" stay put.
+    expect(pickSkeletonFile(spec({ label: 'Welcome collab session' }))).toBe('learning-round.md');
+  });
+
   it('falls back on capability shape and every branch names a real file', () => {
     const oneFailing = spec({ label: 'Round A' });
     expect(pickSkeletonFile(oneFailing)).toBe('debugging-round.md');
