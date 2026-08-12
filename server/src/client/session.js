@@ -35,10 +35,17 @@ async function pollStatus() {
     const s = await r.json();
     const c = s.counts || {};
     const n = (k) => c[k] || 0;
-    document.getElementById('status').textContent =
+    const el = document.getElementById('status');
+    // A one-shot round has no Run Tests button, so the debugging-round
+    // trigger ("first failing test run") can NEVER arm — the candidate
+    // would read a status describing an impossible event for the whole
+    // round. State the rule that actually governs their round instead.
+    const trigger = el.dataset.oneShot === '1'
+      ? 'suite runs once at submit'
+      : (s.trigger_armed ? 'trigger armed ✓' : 'waiting for first failing test run');
+    el.textContent =
       'observing: ' + n('edit') + ' edits · ' + n('file_save') + ' saves · ' +
-      n('test_run') + ' test runs · ' +
-      (s.trigger_armed ? 'trigger armed ✓' : 'waiting for first failing test run');
+      n('test_run') + ' test runs · ' + trigger;
   } catch {}
 }
 const statusTimer = setInterval(pollStatus, 3000);
