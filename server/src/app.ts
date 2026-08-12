@@ -654,6 +654,9 @@ export function appPage(): string {
   }
   #rep-rail { grid-column: 1; grid-row: 1; }
   #rep-open { grid-column: 2; grid-row: 1; }
+  /* Brief + decline + Start span both columns: the brief is prose to read
+     before an irreversible build, and the rail is 220px. */
+  #rep-commit { grid-column: 1 / -1; grid-row: 2; margin-top: 8px; border-top: 1px solid var(--rule); padding-top: 14px; }
   @media (max-width: 760px) {
     /* Narrow: no breakout (it would overflow the shell), rail above questions. */
     #rep-confirm { display: flex; flex-direction: column; margin-inline: 0; }

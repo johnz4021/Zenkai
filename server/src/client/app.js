@@ -1005,15 +1005,21 @@ function renderPractice() {
         '</div>';
     }
     html += '<div class="metaline" style="margin-top:10px">' + esc(specShapeLine(d.spec.capabilities)) + '</div>';
+    html += '</div>'; // #rep-rail
+
+    // The commit block spans BOTH columns. The brief is a paragraph meant to
+    // be read right before an irreversible build; in the 220px rail it
+    // rendered as a twelve-line sliver (QA 2026-08-12, ISSUE-004). Full width
+    // here also puts Start below everything it is committing, which is what
+    // the approved mockup showed. Still in flow — the sticky slot stays free.
+    html += '<div id="rep-commit">';
     if (rep.brief) html += '<div id="rep-brief">' + esc(rep.brief) + '</div>';
     if (d.unsupported) {
       // Decision 2B: the decline is visible and the choice is the user's.
       html += '<div id="rep-unsupported">can’t run this honestly: ' + esc(d.unsupported) + '</div>';
     }
-    // Start sits IN FLOW at the end of the rail column (rule 4: the sticky
-    // slot stays free — QA ISSUE-003, twice-burned).
     html += '<div class="rep-actions"><button type="button" class="primary" id="rep-start"' + dis + '>' + startLabel + '</button></div>';
-    html += '</div>'; // #rep-rail
+    html += '</div>'; // #rep-commit
     html += '</div>'; // #rep-confirm
   }
   if (rep.phase === 'clarifying') {

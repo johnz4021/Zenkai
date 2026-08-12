@@ -454,6 +454,11 @@ describe('practice door — client surface', () => {
 
   it('the brief, the honest decline, and the multi-draft disclosure render (3A/2B/T14)', () => {
     expect(js).toContain('id="rep-brief"');
+    // Brief + decline + Start span BOTH columns: the brief is prose read
+    // right before an irreversible build, and the rail is 220px (ISSUE-004).
+    expect(js).toContain('id="rep-commit"');
+    expect(js).toMatch(/id="rep-commit"[\s\S]*rep-brief[\s\S]*rep-start/);
+    expect(html).toMatch(/#rep-commit \{[^}]*grid-column: 1 \/ -1/);
     // 2B: unsupported never blocks — the button relabels and the choice is
     // the user's; the server counts occurrences.
     expect(js).toContain('Build the closest version →');
