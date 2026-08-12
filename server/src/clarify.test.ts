@@ -140,6 +140,13 @@ describe('clarifyFailureMessage — failure copy names the fix, not the plumbing
     [new Error('clarify: no JSON in output'), "didn't return a usable answer"],
     [new Error('spawn claude ENOENT'), 'no ANTHROPIC_API_KEY'],
     [new Error('clarify: timed out'), 'timed out — try again'],
+    // API transport classes (QA 2026-08-12 ISSUE-001): the raw SDK error is a
+    // JSON envelope the candidate can do nothing with.
+    [new Error('401 {"type":"error","error":{"type":"authentication_error","message":"API key is invalid."}}'), 'rejected our key'],
+    [new Error('429 {"type":"error","error":{"type":"rate_limit_error"}}'), 'rate-limited'],
+    [new Error('529 {"type":"error","error":{"type":"overloaded_error"}}'), 'rate-limited'],
+    [new Error('500 {"type":"error","error":{"type":"api_error"}}'), 'having trouble'],
+    [new Error('fetch failed'), 'having trouble'],
   ])('%s → actionable copy', (err, want) => {
     expect(clarifyFailureMessage(err)).toContain(want);
   });
@@ -148,5 +155,19 @@ describe('clarifyFailureMessage — failure copy names the fix, not the plumbing
     const out = clarifyFailureMessage(new Error('x'.repeat(500)));
     expect(out.length).toBeLessThanOrEqual(200);
     expect(out).not.toContain('at ');
+  });
+
+  it('never renders a JSON envelope as copy, whatever the class', () => {
+    // The regression that shipped: a 401 body reached the practice door
+    // verbatim, braces and all. No failure copy may contain raw JSON.
+    for (const raw of [
+      '401 {"type":"error","error":{"type":"authentication_error","message":"API key is invalid."},"request_id":null}',
+      '400 {"type":"error","error":{"type":"invalid_request_error","message":"messages: at least one message is required"}}',
+      '{"weird":"unclassified envelope"}',
+    ]) {
+      const out = clarifyFailureMessage(new Error(raw));
+      expect(out, raw).not.toMatch(/[{}]/);
+      expect(out, raw).not.toContain('"');
+    }
   });
 });

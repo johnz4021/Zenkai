@@ -282,5 +282,25 @@ export function clarifyFailureMessage(e: unknown): string {
   if (msg.includes('timed out')) {
     return 'inference timed out — try again';
   }
+  // API transport failures. Without these the raw SDK error — a JSON envelope
+  // carrying `authentication_error` / `rate_limit_error` — reached the
+  // candidate verbatim through the slice() below, which is exactly the
+  // plumbing-as-copy leak this function exists to stop (QA 2026-08-12,
+  // ISSUE-001; DESIGN.md rule 10). The candidate can act on none of it, so
+  // each class gets the operator-facing fact in candidate-facing words.
+  if (/authentication_error|401|API key/i.test(msg)) {
+    return "the model API rejected our key — that's on us, not you; try again in a bit";
+  }
+  if (/rate_limit|429|overloaded|529/i.test(msg)) {
+    return 'the model is rate-limited right now — try again in a minute';
+  }
+  if (/\b5\d\d\b|internal_server_error|api_error|ECONNREFUSED|ENOTFOUND|fetch failed/i.test(msg)) {
+    return 'the model service is having trouble — try again in a minute';
+  }
+  // Anything still carrying a JSON envelope is plumbing by definition; never
+  // let a brace-shaped payload render as copy.
+  if (msg.includes('{') && msg.includes('"')) {
+    return "inference failed for a reason we didn't anticipate — try again, and tell us if it sticks";
+  }
   return msg.slice(0, 200);
 }
