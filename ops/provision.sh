@@ -128,8 +128,10 @@ cat <<'DONE'
    on Cloudflare, set both records to "DNS only" (grey cloud) so the 100s
    proxy timeout stays out of the path.
 2. Edit the email at the top of /etc/caddy/Caddyfile (cert expiry notices).
-3. Copy your .env to /home/zenkai/interview_prep/.env  (see docs/beta-runbook.md;
-   for the VPS add: IP_MULTI_SESSION=1, IP_MAX_CONCURRENT_SESSIONS=2)
+3. Copy your .env to /home/zenkai/Zenkai/.env — start from
+   ops/env.launch.template, which carries the VPS-only settings
+   (IP_MULTI_SESSION, the room/build caps, retention) already sized for
+   this box. Keep it mode 600 and owned by zenkai.
 4. systemctl start zenkai-app caddy
    (Caddy issues certs on first request — allow ~30s, then check
     `journalctl -u caddy -n 30` for "certificate obtained successfully".)

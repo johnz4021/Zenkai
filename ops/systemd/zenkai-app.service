@@ -6,7 +6,7 @@ Requires=docker.service
 
 [Service]
 User=zenkai
-WorkingDirectory=/home/zenkai/interview_prep
+WorkingDirectory=/home/zenkai/Zenkai
 # cli.ts loads .env itself; systemd only needs the entry point.
 ExecStart=/usr/bin/npx tsx server/src/cli.ts app
 Restart=always
