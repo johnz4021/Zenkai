@@ -52,12 +52,24 @@ function sessionHref(u) {
 
 function renderLogin(msg) {
   loggedOut = true;
-  for (const s of document.querySelectorAll('main > section')) s.hidden = true;
+  // The shell's sections live in #page — there is no <main> in appPage(), and
+  // querying one returned null, so appendChild threw and killed initAuth: the
+  // boot skeleton sat there forever and NO login box ever rendered. It stayed
+  // invisible in local dev because auth is off without IP_SUPABASE_*, so
+  // initAuth returns early and this function never runs. Found on the live box
+  // (2026-08-12), the first time the logged-out path was ever exercised.
+  const page = el('page');
+  if (!page) return; // nothing sane to render into; leave the page as-is
+  for (const s of page.querySelectorAll(':scope > section')) s.hidden = true;
+  // render() is what normally removes the boot skeleton, and it never runs on
+  // this path — without this the placeholder bars sit above the login box.
+  const boot = el('boot');
+  if (boot) boot.remove();
   let box = el('login');
   if (!box) {
     box = document.createElement('section');
     box.id = 'login';
-    document.querySelector('main').appendChild(box);
+    page.appendChild(box);
   }
   box.hidden = false;
   box.innerHTML =

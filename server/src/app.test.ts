@@ -29,6 +29,19 @@ describe('home app page', () => {
     expect(html).toContain('id="timeline"');
   });
 
+  it('the login screen mounts into a container the page actually has', () => {
+    // renderLogin queried <main>, which appPage() has never emitted: the
+    // appendChild threw, initAuth died, and the logged-out visitor got a boot
+    // skeleton forever. Local dev could not catch it — auth is off without
+    // IP_SUPABASE_*, so renderLogin never ran until the live box had it on.
+    expect(html).toContain('id="page"');
+    expect(js).toContain("function renderLogin(");
+    expect(js).not.toContain("querySelector('main')");
+    expect(js).not.toContain("'main > section'");
+    // The skeleton is removed by render(), which never runs on this path.
+    expect(js).toContain("if (boot) boot.remove();");
+  });
+
   it('navigation is routes, not visibility toggles', () => {
     expect(html).toContain('href="#/" id="nav-home"');
     expect(html).toContain('href="#/plans" id="nav-plans"');
