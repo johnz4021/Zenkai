@@ -285,3 +285,55 @@ describe('beta copy on the session card (WU9)', () => {
     expect(note).toBeGreaterThan(patterns); // below, never replacing
   });
 });
+
+describe('one-shot status copy (QA ISSUE-001)', () => {
+  // Regression: ISSUE-001 — the header promised "waiting for first failing
+  // test run" on rounds where no test run can occur (no Run button at all),
+  // for the round's full duration.
+  // Found by /qa on 2026-08-12
+  // Report: .gstack/qa-reports/qa-report-localhost-2026-08-12.md
+  it('marks one_shot rounds so the client can drop the impossible trigger copy', () => {
+    const oneShot = sessionPage('s', { surface: 'panes', one_shot: true, statement: 'x' });
+    expect(oneShot).toContain('data-one-shot="1"');
+    // An iterate round keeps the trigger semantics — the attribute is the
+    // ONLY thing separating them, so it must be absent there.
+    const iterate = sessionPage('s', { surface: 'panes', one_shot: false, statement: 'x' });
+    expect(iterate).not.toContain('data-one-shot');
+  });
+
+  it('the client branches the trigger phrase on that attribute', () => {
+    const js = clientScript() ?? '';
+    expect(js).toContain('suite runs once at submit');
+    expect(js).toContain('oneShot');
+    // The debugging-round phrase must survive for rounds that can arm it.
+    expect(js).toContain('waiting for first failing test run');
+  });
+});
+
+describe('panes flush completeness (QA ISSUE-002)', () => {
+  const panes = clientScript('panes.js') ?? '';
+
+  // Regression: ISSUE-002 — pending EDIT events were not flushed on submit,
+  // so the last edits landed after session_end and were invisible to the
+  // judge's trace snapshot ("made unseen edits").
+  // Found by /qa on 2026-08-12
+  // Report: .gstack/qa-reports/qa-report-localhost-2026-08-12.md
+  it('flushes pending edit events, not just pending saves', () => {
+    expect(panes).toContain('flushEdits');
+    // flushSaves is the submit/run entry point; it must invoke the edit
+    // flush, or the fix is unreachable from the only paths that call it.
+    expect(panes).toMatch(/const flushSaves = \(\) => \{\s*\n\s*flushEdits\(\);/);
+  });
+
+  it('awaits the edit posts instead of firing them into the void', () => {
+    // A fire-and-forget post still races /api/end. postEvent must return its
+    // promise and the flush must track it.
+    expect(panes).toMatch(/const postEvent = \([^)]*\) =>\s*\n?\s*fetch/);
+    expect(panes).toContain("postEvent('edit', { path, changes: n }).finally");
+    expect(panes).toContain('Promise.all([...inflight])');
+  });
+
+  it('is still a parseable classic script after the change', () => {
+    expect(() => new Function(panes)).not.toThrow();
+  });
+});
