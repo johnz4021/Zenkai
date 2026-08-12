@@ -193,7 +193,7 @@ ssh root@<box-ip> 'bash ops/provision.sh'     # idempotent; prints remaining ste
 #   IP_MULTI_SESSION=1
 #   IP_MAX_CONCURRENT_SESSIONS=2      # 3 fits if you watch docker stats
 #   IP_MAX_SESSIONS_PER_USER=1        # admins bypass (you can test 2 rooms)
-scp .env zenkai@<box-ip>:interview_prep/.env
+scp .env zenkai@<box-ip>:Zenkai/.env
 
 # DNS: A records for BOTH hostnames -> this box's IPv4, wherever your
 # domain's DNS lives (no migration needed). If DNS happens to be on
@@ -223,5 +223,5 @@ ssh root@<box-ip> 'journalctl -u caddy -n 30 --no-pager'   # "certificate obtain
 **Serving days on the VPS:** nothing. systemd restarts crashes; Caddy renews
 certs on its own; the sweep reaps orphans every 10 min;
 `journalctl -u zenkai-app -f` when curious.
-Deploy a fix: `ssh zenkai@<box> 'cd interview_prep && git pull && sudo systemctl restart zenkai-app'`
+Deploy a fix: `ssh zenkai@<box> 'cd Zenkai && git pull && sudo systemctl restart zenkai-app'`
 (live sessions survive — they're detached processes on their own ports).

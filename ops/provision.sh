@@ -6,9 +6,21 @@
 set -euo pipefail
 
 ZENKAI_USER="zenkai"
-REPO_URL="${ZENKAI_REPO_URL:-git@github.com:johnz4021/interview_prep.git}"
-REPO_DIR="/home/${ZENKAI_USER}/interview_prep"
+REPO_URL="${ZENKAI_REPO_URL:-git@github.com:johnz4021/Zenkai.git}"
+REPO_DIR="/home/${ZENKAI_USER}/Zenkai"
 NODE_MAJOR=20
+
+echo "== deploy key (add this to GitHub BEFORE the clone step) =="
+# Printed first on purpose: the repo is private, so the clone below needs a
+# read-only deploy key. Add it at
+#   github.com/johnz4021/Zenkai → Settings → Deploy keys → Add
+# while the package install runs, then re-run this script if the clone fails.
+id "${ZENKAI_USER}" >/dev/null 2>&1 || useradd -m -s /bin/bash "${ZENKAI_USER}"
+sudo -u "${ZENKAI_USER}" bash -c 'test -f ~/.ssh/id_ed25519 || ssh-keygen -t ed25519 -N "" -q -f ~/.ssh/id_ed25519'
+sudo -u "${ZENKAI_USER}" bash -c 'ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null; sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts'
+echo "---8<--- deploy key ---8<---"
+sudo -u "${ZENKAI_USER}" cat /home/"${ZENKAI_USER}"/.ssh/id_ed25519.pub
+echo "---8<-------------------8<---"
 
 echo "== packages =="
 export DEBIAN_FRONTEND=noninteractive
@@ -43,8 +55,7 @@ if ! command -v caddy >/dev/null; then
 fi
 
 echo "== service user =="
-id "${ZENKAI_USER}" >/dev/null 2>&1 || useradd -m -s /bin/bash "${ZENKAI_USER}"
-usermod -aG docker "${ZENKAI_USER}"
+usermod -aG docker "${ZENKAI_USER}"   # user itself was created above with its key
 
 echo "== firewall =="
 # THE critical rule: the trace-emitter extension dials the session server
@@ -62,8 +73,9 @@ ufw --force enable
 echo "== repo =="
 if [ ! -d "${REPO_DIR}/.git" ]; then
   sudo -u "${ZENKAI_USER}" git clone --branch beta "${REPO_URL}" "${REPO_DIR}" \
-    || { echo "clone failed — add this box's deploy key to the repo first:"; \
-         sudo -u "${ZENKAI_USER}" bash -c 'test -f ~/.ssh/id_ed25519.pub || ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519; cat ~/.ssh/id_ed25519.pub'; exit 1; }
+    || { echo "CLONE FAILED — add the deploy key printed at the top of this run to"; \
+         echo "github.com/johnz4021/Zenkai → Settings → Deploy keys, then re-run this script."; \
+         echo "Also confirm the 'beta' branch has been PUSHED (git push -u origin beta)."; exit 1; }
 fi
 cd "${REPO_DIR}"
 sudo -u "${ZENKAI_USER}" git pull --ff-only || true
