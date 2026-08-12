@@ -905,3 +905,39 @@ prose, it may not be needed at all.
 **Depends on:** decision 4A shipping, plus beta traffic. Note `answer_type` is already an
 extensible string, so adding a third value later is not a migration.
 **Effort:** human ~4 hours / CC ~25 min. **Priority:** P3.
+
+---
+
+## 39. Gap ids drift between re-inferences, producing overlapping questions
+
+**What:** The practice-door clarifier is told gap ids must be STABLE across
+re-inference. In practice the model sometimes renames a gap and emits a second,
+overlapping one: a live run produced both `bug-domain` ("what kind of codebase or bug
+should this be") and `bug-class` ("what kind of bug are you hunting") in the same
+round-2 list.
+
+**Why it matters:** the user reads two nearly-identical questions and cannot tell which
+one they already answered. It also makes the diff spurious — `diffGaps` sees a new id,
+flashes a rail row, and the live region announces "bug class still open" for what reads
+as an existing question. Nothing breaks and no answer is lost; it just makes the screen
+look like it is not listening, which is the exact complaint the whole gap redesign
+exists to fix.
+
+**Where the obvious fix does NOT work:** "at most one open gap per skeleton section" is
+mechanical and testable, and it was my first instinct — but the two gaps sat in
+*different* sections (Repo shape vs Topic guidance), so the rule would not have fired.
+The root cause is a round-1 question that conflated two things, not a section collision.
+
+**Pros of fixing:** the confirm screen stops repeating itself; the flash and the
+announcement become trustworthy signals.
+**Cons:** the only honest lever is prompt tuning ("each gap asks about exactly ONE
+thing", firmer id-stability language), and tuning a prompt without a corpus of real
+pastes is guesswork that can easily make gap coverage worse.
+
+**Named trigger:** once there are ~20 real practice-door sessions, dump the gap lists
+per re-inference round and count how often an id changes or an overlapping gap appears.
+Tune the prompt against that corpus, and add a `clarify.test.ts` fixture pinning the
+observed-stable ids.
+
+**Depends on:** beta traffic. **Effort:** human ~3 hours / CC ~20 min. **Priority:** P3.
+**Found by:** /qa on `beta`, 2026-08-12 (ISSUE-005).
