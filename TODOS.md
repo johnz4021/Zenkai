@@ -821,3 +821,87 @@ against the `gaps/archive/` reset points (the store was intentionally re-baselin
 three times, so some discontinuity is expected and not a bug).
 
 **Effort:** human ~1 hour / CC ~10 min. **Priority:** P3.
+
+---
+
+## 36. The two-phase confirm gate: correct the blueprint, not the intent
+
+**What:** Split `rep-build` so the blueprint draft (~30s) finishes BEFORE the candidate
+commits, show them the real brief, and let them correct it before the ~5-minute opus
+generation runs.
+
+**Why it matters:** The blueprint is the artifact that actually decides whether a round
+is any good, and today it is written 30 seconds AFTER Start inside a detached child the
+candidate never sees. The 2026-08-12 design review shipped the cheap version instead
+(decision 3A: the clarifier emits a 3-4 sentence plain-words brief above Start, no second
+phase). That brief describes what the clarifier INTENDS, not what the drafter WROTE — so
+a drafter that wanders off the brief is still invisible until the round exists.
+
+**Pros:** the highest-fidelity clarification available; a correction costs 30s to redo
+instead of 5 minutes, which is the right economics for the expensive step.
+
+**Cons:** `rep-build` becomes two commands with a restart-durable pause between them, and
+the `.generating` marker stops covering one continuous pid — `sweepVerdict` and
+`sweepOrphanedGenerations` both assume it does. Needs a new "awaiting confirmation" phase
+that survives an app restart. Adds 30s between Start and commitment on the surface whose
+entire license to exist is speed.
+
+**Named trigger:** build this when the plain-words brief demonstrably fails to catch a
+wrong round — i.e. a session where the candidate read the brief, started, and the
+generated round still did not match their interview.
+
+**Depends on:** decision 3A shipping first, and enough real sessions to observe the
+failure. **Effort:** human ~2 days / CC ~1.5 hours. **Priority:** P3 until the trigger fires.
+
+---
+
+## 37. Practice door: round selector when one paste describes several rounds
+
+**What:** A round selector at the top of the confirm screen's settled-facts rail, with
+gaps and facts recomputed per selected round.
+
+**Why it matters:** `gateClarify` already returns up to 4 drafts (one per distinct round —
+an OA and an onsite are two). The practice door hardcodes `rep.chosen = 0` and silently
+discards the rest. Silently dropping a round the candidate described reads as the product
+not listening, which is the exact complaint that started the 2026-08-12 review. That
+review shipped a one-line disclosure now ("your material describes 2 rounds — building
+the OA") and deferred the selector.
+
+**Pros:** every round the candidate described becomes reachable, each with its own facts
+and its own gaps. **Cons:** a rail labelled "Confirmed from your paste" has a single
+identity, so switching rounds has to swap the spec, the settled facts, and the gap list
+together; it is real machinery, not a render tweak.
+
+**Context:** the season-plan gate already solves the multi-draft case (`app.js:475-504`
+splits usable/declined and lets you include/exclude each). Read that first — the practice
+door may be able to reuse its selection model rather than invent one.
+
+**Depends on:** the gap model from the 2026-08-12 review landing first.
+**Effort:** human ~1 day / CC ~45 min. **Priority:** P2.
+
+---
+
+## 38. A third `answer_type` for bounded-but-not-enum gaps
+
+**What:** A control kind between "closed enum" (pills only) and "open" (pills as
+shortcuts plus a free-text input): pills plus an explicit `other…` escape, with no
+always-visible text box.
+
+**Why it matters:** decision 4A of the 2026-08-12 review splits gaps into closed and open,
+and the client renders controls deterministically from that flag. But "how senior should
+the bar be?" is neither — there is no fixed set, yet a free-text box invites answers like
+"idk pretty hard" that the blueprint drafter cannot use. Difficulty and seniority are
+exactly the axes candidates most want to tune, and today they land in the weaker control.
+
+**Pros:** honest affordance for the bounded case, and it keeps vague prose out of the
+drafter's input. **Cons:** a third case in the taxonomy, the gate, and the renderer;
+designing it before observing real usage risks designing for a case that does not occur.
+
+**Named trigger:** revisit once there is a corpus of real pastes showing what the
+clarifier actually asks for difficulty and seniority. If those questions come back as
+closed enums the model invented, this is urgent; if they come back as genuinely open
+prose, it may not be needed at all.
+
+**Depends on:** decision 4A shipping, plus beta traffic. Note `answer_type` is already an
+extensible string, so adding a third value later is not a migration.
+**Effort:** human ~4 hours / CC ~25 min. **Priority:** P3.

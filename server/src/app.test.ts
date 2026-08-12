@@ -413,20 +413,52 @@ describe('practice door — client surface', () => {
     expect(js).not.toContain('!state.targets.length');
   });
 
-  it('the readback is a menu ONLY where the vocabulary is closed (design D4)', () => {
-    // one select for check.kind; language/size/difficulty are inputs
-    expect(js).toContain("id=\"rep-kind\"");
-    for (const id of ['rep-lang', 'rep-size', 'rep-diff']) expect(js).toContain('id="' + id + '"');
-    // a kind flip re-infers rather than editing the spec client-side
-    expect(js).toContain('Which round shape should this practice be?');
+  it('the confirm screen is gap-derived: model authors questions, client renders controls (4A)', () => {
+    // Two columns; questions FIRST in the DOM (tab order follows the task),
+    // rail placed left by the grid.
+    expect(js).toContain('id="rep-confirm"');
+    expect(js).toMatch(/id="rep-open"[\s\S]*id="rep-rail"/);
+    expect(html).toContain('#rep-confirm { display: grid; grid-template-columns: 220px');
+    // Everything keys on the gap's stable id, never an array index (T12).
+    // (The planner's ask-card keeps its own data-q — this pins the DOOR.)
+    expect(js).toContain('data-gap=');
+    expect(js).toMatch(/class="qopt" data-gap=/);
+    expect(js).toMatch(/answerGap\(g\.id, g\.options\[Number\(b\.dataset\.o\)\]\.label\)/);
+    // Options are shortcuts, never a gate (rule 3): open gaps keep a real
+    // text path beside the pills; the input renders only when !closed.
+    expect(js).toContain('class="gapinput"');
+    expect(js).toMatch(/g\.closed \? '' :/);
+    // Shape answers re-infer, flavor answers settle locally (C2) — one path.
+    expect(js).toMatch(/function answerGap[\s\S]*affects === 'shape'[\s\S]*practiceClarify\(rep\.answers, \{ snapshot \}\)/);
+    // The spec ships verbatim; flavor gaps ride generically as context lines
+    // (T3 — the hardcoded {language, difficulty} assembly is dead).
+    expect(js).not.toContain('rep.overrides');
+    expect(js).toMatch(/affects === 'flavor' && g\.value/);
   });
 
-  it('every shape control has a real label and 44px height (design 3A)', () => {
-    for (const id of ['rep-kind', 'rep-lang', 'rep-size', 'rep-diff', 'rep-paste', 'rep-change']) {
-      expect(js).toContain('for="' + id + '"');
-    }
-    expect(html).toMatch(/\.rep-shape select \{[^}]*min-height: 44px/);
-    expect(html).toMatch(/\.rep-shape input \{[^}]*min-height: 44px/);
+  it('every gap control has a real label and 44px height (design 3A / decision 1A)', () => {
+    expect(js).toContain('for="gap-');
+    expect(js).toContain('for="gapfree-');
+    for (const id of ['rep-paste', 'rep-change']) expect(js).toContain('for="' + id + '"');
+    expect(html).toMatch(/\.gapedit \{[^}]*min-height: 44px/s);
+    expect(html).toMatch(/\.gapinput \{[^}]*min-height: 44px/s);
+  });
+
+  it('the brief, the honest decline, and the multi-draft disclosure render (3A/2B/T14)', () => {
+    expect(js).toContain('id="rep-brief"');
+    // 2B: unsupported never blocks — the button relabels and the choice is
+    // the user's; the server counts occurrences.
+    expect(js).toContain('Build the closest version →');
+    expect(js).toContain('can’t run this honestly');
+    const appSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'app.ts'), 'utf8');
+    expect(appSource).toContain('[practice] unsupported');
+    // T14: a multi-round paste is disclosed, never silently truncated.
+    expect(js).toContain('rounds — building');
+    // 3A: no remaining-question counter — gaps are re-derived per turn and a
+    // counter that grows is worse than none.
+    expect(js).not.toMatch(/more after this/);
+    // The degraded fallback names itself instead of impersonating confidence.
+    expect(js).toContain('couldn’t get a full read');
   });
 
   it('the practice screen keeps the one-sticky rule by having NO sticky', () => {
@@ -459,6 +491,46 @@ describe('practice door — client surface', () => {
     expect(js).toContain('function launchCommon');
     expect(js).toMatch(/launchCommon\('\/api\/launch'/);
     expect(js).toMatch(/launchCommon\('\/api\/practice\/launch'/);
+  });
+});
+
+describe('practice door — re-infer interaction (decision 6A + T10, 2026-08-12)', () => {
+  const html = appPage();
+  const js = clientScript('app.js') ?? '';
+
+  it('a shape answer keeps the confirm screen rendered through the round trip', () => {
+    // busy, not a phase change: the poll guard keys on phase, and the
+    // clarifying full-screen state is for the FIRST inference only.
+    expect(js).toMatch(/if \(firstRun\) rep\.phase = 'clarifying'; else rep\.busy = true;/);
+    expect(js).toContain('re-checking the shape…');
+    // optimistic settle reverts on error — the snapshot restores pre-answer gaps
+    expect(js).toMatch(/if \(snapshot\) \{ rep\.gaps = snapshot;/);
+  });
+
+  it('one diff drives both the flash and the announcement (decision 6A)', () => {
+    expect(js).toContain('function diffGaps');
+    expect(js).toMatch(/diffGaps\(oldGaps, rep\.gaps\)/);
+    expect(js).toMatch(/\.gaterow\[data-gap=/);
+    // focus follows the task: next OPEN question after a re-infer
+    expect(js).toMatch(/rep\.pendingFocus/);
+  });
+
+  it('the live region is a dedicated sibling, never the rebuilt container', () => {
+    // renderPractice replaces #practice-flow's innerHTML on every shape
+    // answer — a container live region would re-read the whole panel.
+    expect(html).toContain('<div id="practice-flow"></div>');
+    expect(html).toMatch(/<div id="rep-live" aria-live="polite"/);
+    expect(js).toContain('function announce');
+    // the wait-state transitions moved onto announce() in the same change
+    expect(js).toContain("announce('Your round is ready')");
+  });
+
+  it('the co-authored session survives a refresh (T10)', () => {
+    expect(js).toContain("'zenkai-rep-v1'");
+    expect(js).toContain('function hydrateRep');
+    expect(js).toContain('function saveRep');
+    // in-flight states don't survive: clamp, never resume a dead fetch
+    expect(js).toMatch(/rep\.phase = s\.phase === 'started' \? 'started'/);
   });
 });
 

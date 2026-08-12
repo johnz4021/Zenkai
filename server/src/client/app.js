@@ -796,35 +796,91 @@ el('e-file').addEventListener('change', () => {
 
 const rep = {
   phase: 'input',        // input | clarifying | confirm | started
+  busy: false,           // a re-infer is in flight; confirm STAYS rendered
   repId: null,           // client-generated at confirm so a double-click
                          // carries the SAME id into the server's mkdir lock
   description: '',
   drafts: [], questions: [], answers: [], chosen: 0,
-  overrides: { language: '', size: '', difficulty: '' },
+  // The gap model (design review 2026-08-12): ONE list, two views — the
+  // rail renders settled gaps, the question column renders open ones.
+  gaps: [], brief: '', degraded: false,
+  flashIds: [],          // gap ids to .flash after the next render, then cleared
+  pendingFocus: null,    // gap id whose first control gets focus post-render
   linkOpen: false,       // the link input appears on request, not by default
   error: '',
 };
 
+const REP_STORE_KEY = 'zenkai-rep-v1';
+
+/** The wait phases used to ride the container's aria-live; that region is
+ *  gone (decision 6A), so transitions announce themselves — once each. */
+let lastWaitAnnounced = null;
+
 function resetRep() {
-  rep.phase = 'input'; rep.repId = null; rep.description = '';
+  rep.phase = 'input'; rep.busy = false; rep.repId = null; rep.description = '';
   rep.drafts = []; rep.questions = []; rep.answers = []; rep.chosen = 0;
-  rep.overrides = { language: '', size: '', difficulty: '' };
+  rep.gaps = []; rep.brief = ''; rep.degraded = false;
+  rep.flashIds = []; rep.pendingFocus = null;
   rep.linkOpen = false;
   rep.error = '';
+  lastWaitAnnounced = null;
+  try { sessionStorage.removeItem(REP_STORE_KEY); } catch { /* storage denied */ }
 }
 
-// The closed vocabulary, human-labeled. These four ARE all the round kinds
-// the validator can prove — an honest menu (anything else is prose).
-const REP_KINDS = [
-  ['one_failing_test', 'Debugging'],
-  ['all_failing', 'Build to a test suite'],
-  ['all_passing', 'Extend / refactor (keep green)'],
-  ['diff_present', 'Code review'],
-];
+/** A refresh used to cost one textarea; with the gap screen it would cost a
+ *  co-authoring session — the loss scales with how good the screen is (T10).
+ *  Versioned key + discard-on-mismatch: schema drift falls back to blank. */
+function saveRep() {
+  try {
+    sessionStorage.setItem(REP_STORE_KEY, JSON.stringify({
+      phase: rep.phase, repId: rep.repId, description: rep.description,
+      drafts: rep.drafts, chosen: rep.chosen, gaps: rep.gaps,
+      brief: rep.brief, degraded: rep.degraded, answers: rep.answers,
+    }));
+  } catch { /* storage full or denied — the feature degrades to pre-T10 */ }
+}
 
-function repKindLabel(kind) {
-  const hit = REP_KINDS.find((k) => k[0] === kind);
-  return hit ? hit[1] : kind;
+function hydrateRep() {
+  try {
+    const raw = sessionStorage.getItem(REP_STORE_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (!Array.isArray(s.gaps) || !Array.isArray(s.drafts)) return;
+    rep.repId = s.repId || null;
+    rep.description = typeof s.description === 'string' ? s.description : '';
+    rep.drafts = s.drafts; rep.chosen = Number.isInteger(s.chosen) ? s.chosen : 0;
+    rep.gaps = s.gaps; rep.brief = s.brief || ''; rep.degraded = Boolean(s.degraded);
+    rep.answers = Array.isArray(s.answers) ? s.answers : [];
+    rep.questions = rep.gaps.filter((g) => g.status === 'open');
+    // In-flight states don't survive a reload; clamp to what the data holds.
+    rep.phase = s.phase === 'started' ? 'started'
+      : rep.drafts.length ? 'confirm' : 'input';
+  } catch { /* torn or stale snapshot — start blank */ }
+}
+hydrateRep();
+
+/** The door's one live region (decision 6A): only DELTAS are announced —
+ *  the container aria-live re-read the whole panel on every rebuild. */
+function announce(text) {
+  const live = el('rep-live');
+  if (live) live.textContent = text;
+}
+
+/** Old vs new gap lists by STABLE id → what changed. Feeds the visible
+ *  .gaterow.flash AND the aria-live sentence — one diff, two outputs. */
+function diffGaps(oldGaps, newGaps) {
+  const before = new Map(oldGaps.map((g) => [g.id, g]));
+  const changed = [];
+  const sentences = [];
+  for (const g of newGaps) {
+    const prev = before.get(g.id);
+    if (prev && prev.status === g.status && prev.value === g.value) continue;
+    changed.push(g.id);
+    if (g.status === 'settled') sentences.push(g.label + ' set to ' + g.value);
+    else if (prev && prev.status === 'settled') sentences.push(g.label + ' reopened');
+    else sentences.push(g.label + ' still open');
+  }
+  return { changed, sentence: sentences.join(' · ') };
 }
 
 function renderPractice() {
@@ -875,66 +931,131 @@ function renderPractice() {
     '</div></div>';
 
   if (rep.phase === 'confirm' && rep.drafts.length) {
+    // The gap-derived confirm screen (design review 2026-08-12): ONE list,
+    // two views. The rail is the READBACK — model guesses sort first because
+    // the screen's job is catching the fact the model was confident and
+    // wrong about; questions are gaps it already knows it has.
     const d = rep.drafts[rep.chosen];
-    const kind = d.spec.check.kind;
-    html += '<div class="micro" style="margin-top:22px">Inferred shape</div>' +
-      '<div class="rep-shape">' +
-      '<label for="rep-kind">round type</label>' +
-      '<select id="rep-kind">' + REP_KINDS.map((k) =>
-        '<option value="' + k[0] + '"' + (k[0] === kind ? ' selected' : '') + '>' + k[1] + '</option>').join('') + '</select>' +
-      '<span class="shape-seg"><span class="shape-word">in</span>' +
-      '<label for="rep-lang">language</label>' +
-      '<input id="rep-lang" value="' + esc(rep.overrides.language) + '" placeholder="any language" style="width:13ch"></span>' +
-      '<span class="shape-seg"><span class="shape-word">· about</span>' +
-      '<label for="rep-size">size in files</label>' +
-      '<input id="rep-size" inputmode="numeric" value="' + esc(rep.overrides.size) + '" placeholder="' +
-        esc(String(d.spec.check.max_source_files || '')) + '" style="width:5ch">' +
-      '<span class="shape-word">files</span></span>' +
-      '<span class="shape-seg"><span class="shape-word">·</span>' +
-      '<label for="rep-diff">difficulty</label>' +
-      '<input id="rep-diff" value="' + esc(rep.overrides.difficulty) + '" placeholder="medium" style="width:9ch">' +
-      '<span class="shape-word">difficulty</span></span>' +
-      '</div>' +
-      '<div class="metaline">' + esc(specShapeLine(d.spec.capabilities)) + '</div>';
-    if (rep.questions.length) {
-      // The clarifier genuinely couldn't guess — its questions render inline,
-      // options as pills (the ask-card pattern); an answer re-infers.
-      for (let qi = 0; qi < rep.questions.length; qi++) {
-        const q = rep.questions[qi];
-        html += '<div class="askrow" style="margin-top:14px"><div class="askq">' + esc(q.question) + '</div><div class="askopts">' +
-          q.options.map((o, oi) =>
-            '<button type="button" class="qopt" data-q="' + qi + '" data-o="' + oi + '">' + esc(o.label) +
-            (q.recommended === o.label ? ' <span class="rec">suggested</span>' : '') + '</button>').join('') +
-          '</div></div>';
-      }
+    const settled = rep.gaps.filter((g) => g.status === 'settled');
+    const open = rep.gaps.filter((g) => g.status === 'open');
+    const tierOrder = { inferred: 0, answered: 1, stated: 2 };
+    settled.sort((a, b) => (tierOrder[a.evidence] ?? 1) - (tierOrder[b.evidence] ?? 1));
+    const tierWord = { inferred: 'guessed', answered: 'you said', stated: 'stated' };
+    const startLabel = d.unsupported ? 'Build the closest version →' : 'Start →';
+
+    // DOM order: questions FIRST (they are the task — tab order per pass 6);
+    // the grid places the rail visually left, and narrow widths stack the
+    // rail above via order:-1.
+    const dis = rep.busy ? ' disabled' : '';
+    html += '<div id="rep-confirm">';
+    html += '<div id="rep-open"><div class="micro">Needed before I build</div>';
+    if (rep.busy) {
+      // A shape answer re-infers (~8s). The screen never blanks: pills
+      // disable, this line names the wait, the rail stays put.
+      html += '<div class="metaline" style="margin-top:8px">re-checking the shape…</div>';
     }
-    html += '<div id="rep-note">not right? change it above, or say so below — plain words work</div>' +
+    if (open.length === 0 && !rep.busy) {
+      // The column degrades, never empties (the zero-gap COMMON case).
+      html += '<div class="metaline" style="margin-top:10px">nothing — the shape is settled. Anything you want different?</div>';
+    }
+    for (const g of open) {
+      html += '<div class="askrow" data-gap="' + esc(g.id) + '" style="margin-top:14px"><div class="askq">' + esc(g.question) + '</div>' +
+        '<div class="optdetail">' + esc(g.why) + '</div>' +
+        '<div class="askopts">' +
+        g.options.map((o, oi) =>
+          '<button type="button" class="qopt" data-gap="' + esc(g.id) + '" data-o="' + oi + '"' + dis + '>' + esc(o.label) +
+          (o.detail ? ' <span class="rec">' + esc(o.detail) + '</span>' : '') + '</button>').join('') +
+        '</div>' +
+        // Options are SHORTCUTS, never a gate (rule 3): every open value
+        // keeps a real text path beside the pills.
+        (g.closed ? '' :
+          '<div class="gapinput-row">' +
+          '<label for="gapfree-' + esc(g.id) + '" class="rep-srlabel" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">' + esc(g.label) + '</label>' +
+          '<input id="gapfree-' + esc(g.id) + '" class="gapinput" data-gap="' + esc(g.id) + '" placeholder="or type your own…"' + dis + '>' +
+          '</div>') +
+        '</div>';
+    }
+    html += '<div id="rep-note">not right? change it on the left, or say so below — plain words work</div>' +
       '<div class="row" style="display:flex;gap:8px;margin-top:6px">' +
       '<label for="rep-change" class="rep-srlabel" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">what should be different</label>' +
       '<input id="rep-change" placeholder="e.g. actually it’s Rust, and harder" style="flex:1;background:var(--panel);color:var(--text-1);border:1px solid var(--line);border-radius:6px;padding:10px 12px;font:inherit;min-height:44px">' +
       '<button type="button" id="rep-rechecks" class="mini" style="min-height:44px">apply</button></div>';
+    html += '</div>'; // #rep-open
+
+    html += '<div id="rep-rail"><div class="micro">Confirmed from your paste</div>';
+    if (rep.degraded) {
+      html += '<div class="metaline" style="margin-top:6px">I couldn’t get a full read on this — check these facts before starting</div>';
+    }
+    if (rep.drafts.length > 1) {
+      // T14: never a silent discard — the selector is TODO #37.
+      html += '<div class="metaline" style="margin-top:6px">your material describes ' + rep.drafts.length +
+        ' rounds — building “' + esc(d.spec.label) + '”</div>';
+    }
+    for (const g of settled) {
+      html += '<div class="gaterow" data-gap="' + esc(g.id) + '">' +
+        '<label class="micro" for="gap-' + esc(g.id) + '">' + esc(g.label) +
+        ' <span class="tier">' + (tierWord[g.evidence] || 'guessed') + '</span></label>' +
+        (g.closed && g.options.length
+          ? '<select id="gap-' + esc(g.id) + '" class="gapedit" data-gap="' + esc(g.id) + '"' + dis + '>' +
+            g.options.map((o) => '<option' + (o.label === g.value ? ' selected' : '') + '>' + esc(o.label) + '</option>').join('') +
+            (g.options.some((o) => o.label === g.value) ? '' : '<option selected>' + esc(g.value) + '</option>') +
+            '</select>'
+          : '<input id="gap-' + esc(g.id) + '" class="gapedit" data-gap="' + esc(g.id) + '" value="' + esc(g.value) + '"' + dis + '>') +
+        '<div class="gapwhy">' + esc(g.why) + '</div>' +
+        '</div>';
+    }
+    html += '<div class="metaline" style="margin-top:10px">' + esc(specShapeLine(d.spec.capabilities)) + '</div>';
+    if (rep.brief) html += '<div id="rep-brief">' + esc(rep.brief) + '</div>';
+    if (d.unsupported) {
+      // Decision 2B: the decline is visible and the choice is the user's.
+      html += '<div id="rep-unsupported">can’t run this honestly: ' + esc(d.unsupported) + '</div>';
+    }
+    // Start sits IN FLOW at the end of the rail column (rule 4: the sticky
+    // slot stays free — QA ISSUE-003, twice-burned).
+    html += '<div class="rep-actions"><button type="button" class="primary" id="rep-start"' + dis + '>' + startLabel + '</button></div>';
+    html += '</div>'; // #rep-rail
+    html += '</div>'; // #rep-confirm
   }
   if (rep.phase === 'clarifying') {
     html += '<div class="metaline" style="margin-top:18px">reading your notes…</div>' +
       '<div class="progress"><div class="fill"></div></div>';
   }
   if (rep.error) html += '<div class="err" style="margin-top:12px">' + esc(rep.error) + '</div>';
-  html += '<div class="rep-actions">' +
-    (rep.phase === 'confirm'
-      ? '<button type="button" class="primary" id="rep-start">Start →</button>'
-      : '') +
-    '</div></div>';
+  html += '</div>';
   host.innerHTML = html;
   const pasteEl = el('rep-paste');
   if (pasteEl) pasteEl.value = keep;
   if (el('rep-link')) el('rep-link').value = keepLink;
   wirePractice();
+  // Post-render (decision 6A): the flash marks what the last answer changed
+  // in the rail; focus follows the task to the next open question. Both are
+  // one-shot — consumed here, never re-applied by the next render.
+  if (rep.phase === 'confirm') {
+    for (const gid of rep.flashIds) {
+      const row = host.querySelector('.gaterow[data-gap="' + CSS.escape(gid) + '"]');
+      if (row) row.classList.add('flash');
+    }
+    rep.flashIds = [];
+    if (rep.pendingFocus && !rep.busy) {
+      const row = host.querySelector('.askrow[data-gap="' + CSS.escape(rep.pendingFocus) + '"]');
+      const ctl = row && row.querySelector('button, input, select');
+      if (ctl) ctl.focus();
+      rep.pendingFocus = null;
+    }
+  }
 }
 
 /** The wait state (design 4A): honest elapsed from the .generating marker,
  *  the shape named in plain words, and explicit permission to leave. */
 function renderRepWait() {
   const mine = (lastReps || []).find((x) => x.id === rep.repId);
+  const status = !mine ? 'starting' : mine.status === 'ready' ? 'ready' : mine.status === 'failed' ? 'failed' : 'building';
+  if (status !== lastWaitAnnounced) {
+    lastWaitAnnounced = status;
+    if (status === 'ready') announce('Your round is ready');
+    else if (status === 'failed') announce('The build failed — you can retry');
+    else if (status === 'building') announce('Building your round — about five minutes');
+  }
   if (!mine) {
     return '<div class="micro">Building your round</div><div class="metaline">starting…</div>';
   }
@@ -995,22 +1116,34 @@ function wirePractice() {
   if (paste) paste.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) practiceClarify();
   });
+  // Answers key on the gap's STABLE id (T12) — never an array index, which
+  // re-inference is free to reorder. answerGap routes by cost: shape
+  // re-infers (coherence lives in the server's draftToSpec gate), flavor
+  // settles locally with no round trip (C2).
   for (const b of f.querySelectorAll('.qopt')) {
     b.addEventListener('click', () => {
-      const q = rep.questions[Number(b.dataset.q)];
-      const o = q.options[Number(b.dataset.o)];
-      practiceClarify(rep.answers.concat([{ question: q.question, answer: o.label }]));
+      const g = rep.gaps.find((x) => x.id === b.dataset.gap);
+      if (g) answerGap(g.id, g.options[Number(b.dataset.o)].label);
     });
   }
-  const kind = el('rep-kind');
-  if (kind) kind.addEventListener('change', () => {
-    // A check.kind flip has coherence consequences (can_run_tests,
-    // starts_from…) that live in the server's draftToSpec gate — re-infer
-    // with the choice as an answer instead of editing the spec by hand.
-    practiceClarify(rep.answers.concat([
-      { question: 'Which round shape should this practice be?', answer: repKindLabel(kind.value) },
-    ]));
-  });
+  for (const input of f.querySelectorAll('.gapinput')) {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); answerGap(input.dataset.gap, input.value); }
+    });
+  }
+  for (const ctl of f.querySelectorAll('.gapedit')) {
+    // Rail rows are the editable readback (decision 1A) — committing a
+    // change routes through the same answer path as the question column.
+    const commit = () => {
+      const g = rep.gaps.find((x) => x.id === ctl.dataset.gap);
+      if (!g || !ctl.value.trim() || ctl.value.trim() === g.value) return;
+      answerGap(g.id, ctl.value);
+    };
+    ctl.addEventListener('change', commit);
+    ctl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    });
+  }
   const recheck = el('rep-rechecks');
   if (recheck) recheck.addEventListener('click', () => {
     const change = el('rep-change');
@@ -1022,15 +1155,45 @@ function wirePractice() {
   if (change) change.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); el('rep-rechecks').click(); }
   });
-  for (const [lang, key] of [['rep-lang', 'language'], ['rep-size', 'size'], ['rep-diff', 'difficulty']]) {
-    const input = el(lang);
-    if (input) input.addEventListener('input', () => { rep.overrides[key] = input.value; });
-  }
   const start = el('rep-start');
   if (start) start.addEventListener('click', () => practiceStart(start));
 }
 
-async function practiceClarify(answers) {
+function upsertRepAnswer(id, question, answer) {
+  const i = rep.answers.findIndex((a) => a.id === id);
+  const entry = { id, question, answer };
+  if (i >= 0) rep.answers[i] = entry; else rep.answers.push(entry);
+}
+
+/** One answer path for pills, free-text, and rail edits. Shape re-infers;
+ *  flavor settles locally and rides along on the next re-infer's ANSWERS
+ *  (the server's gate re-settles it), so nothing is ever lost. */
+function answerGap(id, answer) {
+  const g = rep.gaps.find((x) => x.id === id);
+  const a = (answer || '').trim();
+  if (!g || !a || rep.busy) return;
+  upsertRepAnswer(g.id, g.question, a);
+  if (g.affects === 'shape') {
+    // Optimistic settle: the answer moves into the rail immediately; the
+    // snapshot restores it if the re-infer fails. Server gaps win on merge —
+    // a model that re-opens this gap does so VISIBLY (diff → flash), never
+    // silently.
+    const snapshot = JSON.parse(JSON.stringify(rep.gaps));
+    g.status = 'settled'; g.value = a; g.evidence = 'answered';
+    rep.questions = rep.gaps.filter((x) => x.status === 'open');
+    practiceClarify(rep.answers, { snapshot });
+    return;
+  }
+  g.status = 'settled'; g.value = a; g.evidence = 'answered';
+  rep.questions = rep.gaps.filter((x) => x.status === 'open');
+  announce(g.label + ' set to ' + a);
+  const nextOpen = rep.gaps.find((x) => x.status === 'open');
+  rep.pendingFocus = nextOpen ? nextOpen.id : null;
+  saveRep();
+  renderPractice();
+}
+
+async function practiceClarify(answers, opts) {
   const paste = el('rep-paste');
   if (paste && rep.phase === 'input') rep.description = paste.value;
   if (paste && rep.phase === 'confirm') rep.description = paste.value + (rep.description.includes('\n\nCorrection: ') ? rep.description.slice(rep.description.indexOf('\n\nCorrection: ')) : '');
@@ -1042,7 +1205,12 @@ async function practiceClarify(answers) {
     rep.description = (attachments.find((a) => a.content) || {}).content || 'see the attached material';
   }
   if (!rep.description.trim()) { rep.error = 'describe the round in a sentence or two first'; renderPractice(); return; }
-  rep.phase = 'clarifying'; rep.error = ''; rep.answers = answers || [];
+  // First inference replaces the screen; a RE-inference keeps the confirm
+  // screen rendered (busy) so the ~8s round trip is never a blank page.
+  const firstRun = rep.phase !== 'confirm';
+  const snapshot = opts && opts.snapshot;
+  rep.error = ''; rep.answers = answers || [];
+  if (firstRun) rep.phase = 'clarifying'; else rep.busy = true;
   renderPractice();
   const r = await fetch('/api/practice/clarify', {
     method: 'POST', headers: { 'content-type': 'application/json' },
@@ -1054,12 +1222,35 @@ async function practiceClarify(answers) {
     }),
   });
   const s = await r.json();
-  if (s.error) { rep.phase = rep.drafts.length ? 'confirm' : 'input'; rep.error = s.error; renderPractice(); return; }
-  rep.drafts = s.drafts || []; rep.questions = s.questions || []; rep.chosen = 0;
+  if (s.error) {
+    // A failed re-infer restores the pre-answer gaps: the optimistic settle
+    // must not survive a round trip that never happened.
+    if (snapshot) { rep.gaps = snapshot; rep.questions = rep.gaps.filter((g) => g.status === 'open'); }
+    rep.busy = false;
+    rep.phase = rep.drafts.length ? 'confirm' : 'input';
+    rep.error = s.error;
+    renderPractice();
+    return;
+  }
+  const oldGaps = rep.gaps;
+  rep.drafts = s.drafts || []; rep.chosen = 0;
+  rep.gaps = s.gaps || []; rep.brief = s.brief || ''; rep.degraded = Boolean(s.degraded);
+  // Open gaps ARE the questions — same render, answers keyed by gap id.
+  rep.questions = rep.gaps.filter((g) => g.status === 'open');
+  // One diff, two outputs (decision 6A): changed rows flash, and the live
+  // region hears only the delta, never the whole panel.
+  if (!firstRun) {
+    const delta = diffGaps(oldGaps, rep.gaps);
+    rep.flashIds = delta.changed;
+    if (delta.sentence) announce(delta.sentence);
+  }
+  const nextOpen = rep.gaps.find((g) => g.status === 'open');
+  rep.pendingFocus = nextOpen ? nextOpen.id : null;
   // The rep id is minted at confirm-render, ONCE — Start can be mashed and
   // every click carries this same id into the server's mkdir lock.
   rep.repId = rep.repId || 'rep-' + Date.now().toString(36);
-  rep.phase = 'confirm';
+  rep.phase = 'confirm'; rep.busy = false;
+  saveRep();
   renderPractice();
 }
 
@@ -1067,20 +1258,22 @@ async function practiceStart(btn) {
   const d = rep.drafts[rep.chosen];
   if (!d) return;
   btn.disabled = true; btn.textContent = 'Starting…';
-  const spec = JSON.parse(JSON.stringify(d.spec));
-  const size = parseInt(rep.overrides.size, 10);
-  if (Number.isInteger(size) && size >= 1) spec.check.max_source_files = size;
-  // Language/difficulty are open blueprint prose, not spec vocabulary —
-  // they ride into the drafter as context lines (design D4).
-  const prose = [
-    rep.overrides.language ? 'Language: ' + rep.overrides.language : '',
-    rep.overrides.difficulty ? 'Difficulty: ' + rep.overrides.difficulty : '',
-  ].filter(Boolean).join('\n');
+  // The spec ships VERBATIM: every shape answer already landed in it through
+  // the server's re-inference, and the client never patches a spec again
+  // (T3, 2026-08-12 review — the hardcoded {language, difficulty} assembly
+  // silently ate every other answer). Flavor gaps ride as context lines,
+  // GENERICALLY: one line per settled flavor gap with a value — including
+  // standing model guesses the user left in place. The rail is honest:
+  // what you see is what rides.
+  const prose = rep.gaps
+    .filter((g) => g.status === 'settled' && g.affects === 'flavor' && g.value)
+    .map((g) => g.label + ': ' + g.value)
+    .join('\n');
   const r = await fetch('/api/practice', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       rep_id: rep.repId,
-      spec,
+      spec: d.spec,
       description: rep.description,
       context: [buildContext(), prose].filter(Boolean).join('\n\n') || undefined,
     }),
@@ -1090,6 +1283,7 @@ async function practiceStart(btn) {
     btn.disabled = false; btn.textContent = 'Start →'; rep.error = s.error; renderPractice(); return;
   }
   rep.phase = 'started';
+  saveRep();
   renderPractice();
   refresh(true);
 }

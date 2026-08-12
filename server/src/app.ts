@@ -633,23 +633,39 @@ export function appPage(): string {
   .composer-foot .quiet-affordances a { color: var(--text-2); text-decoration: none; }
   .composer-foot .quiet-affordances a:hover { color: var(--text-1); }
   /* The readback: ONE chevron select for the closed vocabulary; open prose
-     values are real inputs styled flat — affordance matches constraint (D4).
-     Segments (.shape-seg) wrap as units so a narrow viewport never orphans
-     a bare input from the words that label it (QA ISSUE-002). */
-  .rep-shape { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 6px; margin: 14px 0 4px; }
-  .rep-shape .shape-seg { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-  .rep-shape select {
-    background: var(--raised); color: var(--text-1); border: 1px solid var(--line);
-    border-radius: 6px; padding: 10px 12px; font: inherit; min-height: 44px;
+     values were real inputs styled flat — affordance matches constraint (D4).
+     Superseded 2026-08-12 by the gap-derived confirm screen: #rep-confirm is
+     a two-column grid AT 760px (decision 5A — the rail is ~220px and the
+     question column ~500px, the planner chat's own 62ch measure). DOM order
+     puts the question column FIRST (tab order follows the task, pass 6);
+     the grid places the rail visually left, and narrow widths stack the
+     rail ABOVE via order (the readback reads before the questions). */
+  #rep-confirm { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 4px 28px; margin-top: 22px; align-items: start; }
+  #rep-rail { grid-column: 1; grid-row: 1; }
+  #rep-open { grid-column: 2; grid-row: 1; }
+  @media (max-width: 760px) {
+    #rep-confirm { display: flex; flex-direction: column; }
+    #rep-rail { order: -1; }
   }
-  .rep-shape .shape-word { color: var(--text-2); }
-  .rep-shape input {
-    background: transparent; color: var(--text-1); border: 0;
-    border-bottom: 1px solid var(--line); border-radius: 0; padding: 10px 2px;
-    font: inherit; min-height: 44px; width: 9ch;
+  /* Rail rows are the editable readback (decision 1A): 44px controls with
+     real labels; .gaterow/.tier reuse the planner's chips and flash. */
+  #rep-rail .gaterow { padding: 10px 2px; }
+  #rep-rail .gaterow label { display: block; }
+  .gapedit {
+    display: block; width: 100%; min-height: 44px; margin-top: 4px;
+    background: var(--panel); color: var(--text-1); border: 1px solid var(--line);
+    border-radius: 6px; padding: 8px 10px; font: inherit;
   }
-  .rep-shape input:focus { border-bottom-color: var(--text-1); }
-  .rep-shape label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .gapwhy { color: var(--text-3); font-size: 12px; margin-top: 4px; }
+  .gapinput-row { display: flex; margin-top: 8px; }
+  .gapinput {
+    flex: 1; min-height: 44px; background: var(--panel); color: var(--text-1);
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit;
+  }
+  #rep-brief { color: var(--text-2); font-size: 14px; line-height: 1.6; margin-top: 18px; }
+  /* The honest decline (decision 2B): visible, never blocking. --weak is a
+     verdict color and this IS a verdict about the round's fidelity. */
+  #rep-unsupported { color: var(--text-2); font-size: 13px; margin-top: 10px; border-left: 2px solid var(--weak); padding-left: 10px; }
   #rep-note { color: var(--text-3); font-size: 12px; margin: 6px 0 14px; }
   /* .metaline is runway/reprow-scoped elsewhere; the practice surface needs
      its own copy or helper lines shout in body white (QA ISSUE-001). */
@@ -1087,7 +1103,13 @@ export function appPage(): string {
          you gathered, confirm the inferred shape, one rep — no target, no
          queue, no pace. Rendered whole by the client, same contract as
          entry-flow. -->
-    <div id="practice-flow" aria-live="polite"></div>
+    <!-- The live region is a dedicated sr-only sibling, NOT the container:
+         renderPractice replaces the container's whole innerHTML, and with
+         the gap screen that now happens on every shape answer — a container
+         live region would re-read the entire panel each time (decision 6A,
+         2026-08-12). announce() writes only the delta. -->
+    <div id="practice-flow"></div>
+    <div id="rep-live" aria-live="polite" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)"></div>
     <!-- The one status line beneath the composer — a SIBLING of the flow so
          renderPractice's innerHTML wipes never touch it, repainted on every
          poll from render() (outside the typing-protection guard). No
@@ -1494,39 +1516,83 @@ export function runApp(cfg: AppConfig): http.Server {
         }
       }
       if (url === '/api/practice/clarify' && req.method === 'POST') {
-        // The practice door's inference: same clarifier as intake, but the
-        // material arrives INLINE — a rep has no target to read from. Same
-        // fallback ladder as /api/clarify; failures reach the candidate as
-        // actionable copy, never gate internals (clarifyFailureMessage).
+        // The practice door's inference: the gap-deriving clarifier (design
+        // review 2026-08-12) — material arrives INLINE, a rep has no target
+        // to read from. Same fallback ladder shape as /api/clarify; failures
+        // reach the candidate as actionable copy, never gate internals.
+        // DEGRADATION INVARIANT: every 200 carries >=1 draft and a gaps
+        // array, so the client renders ONE confirm screen on every path.
         const b = JSON.parse((await readBody(req)) || '{}') as {
           description?: string;
           context?: string;
-          answers?: { question: string; answer: string }[];
+          answers?: { id?: string; question?: string; answer?: string }[];
           attachments?: { name?: string; media_type?: string; data?: string }[];
         };
-        const { clarifyFailureMessage, pickClarifier } = await import('./clarify.js');
+        const { clarifyFailureMessage } = await import('./clarify.js');
+        const { deriveRuntimeGaps, pickPracticeClarifier } = await import('./practice-clarify.js');
         let input: { description: string; context: string };
         try {
           input = gateRepInput(b);
         } catch (e) {
           return json(400, { error: String(e instanceof Error ? e.message : e) });
         }
+        // Caps are checked HERE, not only at Start (T11, 2026-08-12 review):
+        // "come back tomorrow" must land before the candidate co-authors a
+        // round, not after. Same copy as /api/practice.
+        const admission = admissionVerdict(
+          loadReps(repoRoot).items, user!.id, cfg.userId, Date.now(), cfg.pub.caps,
+        );
+        if (admission === 'daily-cap') {
+          return json(429, { error: "that's your practice budget for today — the beta caps rounds per day; come back tomorrow" });
+        }
+        if (admission === 'pending-cap') {
+          return json(429, { error: 'you have unplayed rounds waiting — run or retry one of those before building another' });
+        }
+        if (admission === 'global-cap') {
+          return json(429, { error: "Zenkai hit its build budget for today — everyone's rounds run on the same meter. Come back tomorrow." });
+        }
         const att = decodeAttachments(b.attachments ?? []);
         if ('error' in att) return json(400, { error: att.error });
+        const answers = (b.answers ?? [])
+          .filter((a) => a.id?.trim() && a.answer?.trim())
+          .map((a) => ({ id: a.id!.trim(), question: a.question?.trim() || a.id!.trim(), answer: a.answer!.trim() }));
+        // Declines are decision 2B: never block, always visible, ALWAYS
+        // counted — this warn is the only frequency data 2B's "revisit with
+        // data" clause has.
+        const warnUnsupported = (drafts: { spec: { label: string }; unsupported?: string }[]) => {
+          for (const d of drafts) {
+            if (d.unsupported) console.warn(`[practice] unsupported round "${d.spec.label}": ${d.unsupported}`);
+          }
+        };
         try {
-          const result = await pickClarifier(path.join(repoRoot, 'prompts', 'clarify-intake.md'))({
+          const result = await pickPracticeClarifier(path.join(repoRoot, 'prompts', 'practice-clarify.md'))({
             description: input.description,
             context: input.context,
-            answers: b.answers,
+            answers,
             attachments: attachmentBlocksFromDecoded(att.decoded),
           });
+          warnUnsupported(result.drafts);
           return json(200, result);
         } catch (e) {
           console.warn(`[app] practice clarify failed, falling back to infer: ${String(e).slice(0, 200)}`);
           try {
             const infer = pickSpecInferrer(path.join(repoRoot, 'prompts', 'infer-round-spec.md'));
             const draft = await infer(input.description, input.context);
-            return json(200, { questions: [], drafts: [draft] });
+            warnUnsupported([draft]);
+            // The blind read: single-spec inference reports no evidence, so
+            // time is a gap unless the draft carries a limit. `degraded`
+            // tells the client to say "check the facts" instead of nothing.
+            const ms = draft.spec.capabilities.time_limit_ms;
+            return json(200, {
+              drafts: [draft],
+              gaps: deriveRuntimeGaps({
+                timeEvidence: ms === null ? 'unknown' : 'stated_timed',
+                timeLimitMs: ms,
+                answeredIds: new Set(answers.map((a) => a.id)),
+              }),
+              brief: '',
+              degraded: true,
+            });
           } catch (e2) {
             return json(502, { error: clarifyFailureMessage(e2) });
           }
