@@ -92,13 +92,26 @@ sudo -u "${ZENKAI_USER}" node extension/build.mjs
 echo "== docker images (pre-pull so first launches skip the cold build) =="
 docker pull gitpod/openvscode-server:latest
 # The python round image is defined INLINE in session.ts (ensureRuntimeImage
-# builds it from stdin on first python round, guarded by image inspect).
+# builds it from stdin on first python round, guarded by an image inspect).
 # Pre-build it here so two simultaneous cold python launches never race the
-# build: extract the same dockerfile via node.
-sudo -u "${ZENKAI_USER}" bash -c "cd '${REPO_DIR}' && npx tsx -e \"
-  import { prebuildPythonImage } from './server/src/session.js';
-  prebuildPythonImage();
-\"" || echo "  (python image prebuild skipped — it will build on first python round)"
+# build. The tag is read from session.ts so a rename there is picked up; the
+# three RUN lines are duplicated below because `tsx -e` cannot resolve a
+# relative import (no base path for './server/...'), which is how the first
+# attempt at this silently no-op'd. session.ts stays the source of truth —
+# if these drift, the worst case is one redundant build on first python round.
+PY_TAG=$(sed -n "s/.*python: '\([^']*\)'.*/\1/p" server/src/session.ts | head -1)
+PY_TAG=${PY_TAG:-ip-ide-python:1}
+echo "  python round image: ${PY_TAG}"
+PY_CTX=$(mktemp -d)
+cat > "${PY_CTX}/Dockerfile" <<'PYDOCKER'
+FROM gitpod/openvscode-server:latest
+USER root
+RUN apt-get update -qq && apt-get install -y -qq python3 && rm -rf /var/lib/apt/lists/*
+USER openvscode-server
+PYDOCKER
+docker build -t "${PY_TAG}" "${PY_CTX}" \
+  || echo "  (python image prebuild failed — it will build on first python round)"
+rm -rf "${PY_CTX}"
 
 echo "== systemd units =="
 cp ops/systemd/zenkai-app.service /etc/systemd/system/
