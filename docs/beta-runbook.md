@@ -56,24 +56,34 @@ alter table sessions enable row level security;
    server verifies via public JWKS automatically. If the dashboard shows a
    legacy HS256 "JWT secret" instead, also set `IP_SUPABASE_JWT_SECRET`.
 
-   **Trap — a project on asymmetric signing kills the legacy `eyJ…` keys.**
-   Once the project publishes an ES256 JWKS, the old JWT-shaped `anon` and
-   `service_role` keys stop being accepted and you need the new
-   `sb_publishable_…` / `sb_secret_…` pair from Settings → API Keys. The
-   failure is confusing because the keys still *look* valid: they decode to
-   the right `ref` and `role` and are years from expiry, but **every**
-   endpoint — `/rest/v1/`, `/auth/v1/settings`, even `/auth/v1/health` —
-   answers `401 {"message":"Invalid API key"}`. Confirm with:
+   **Trap — never probe these keys with `grep | cut`.** `.env.example` puts an
+   explanatory `# comment` at the end of the two key lines, and the repo's
+   `.env` inherits them. `process.loadEnvFile` strips a trailing comment, so
+   the app gets a clean key and works; a shell one-liner like
+   `grep '^IP_SUPABASE_ANON_KEY=' .env | cut -d= -f2-` does **not**, and hands
+   curl the key plus ~50 trailing characters. Supabase answers that with
+   `401 {"message":"Invalid API key"}` on **every** endpoint — including
+   `/auth/v1/health`, which needs no key at all — so it reads exactly like
+   revoked credentials. This cost an hour during the launch pre-flight and
+   produced a confident, wrong diagnosis of "the project migrated to
+   asymmetric signing and retired the legacy keys."
+
+   Probe through the same loader the app uses, never through the shell:
 
    ```bash
-   curl -s "$URL/auth/v1/.well-known/jwks.json" | jq '.keys[].alg'   # ES256 = migrated
-   curl -s -o /dev/null -w '%{http_code}\n' "$URL/rest/v1/" -H "apikey: $ANON"
+   ssh zenkai-box "node -e \"process.loadEnvFile('/home/zenkai/Zenkai/.env');
+     const U=process.env.IP_SUPABASE_URL, S=process.env.IP_SUPABASE_SERVICE_KEY;
+     for (const t of ['users','reps','targets','sessions'])
+       fetch(\\\`\\\${U}/rest/v1/\\\${t}?select=*&limit=1\\\`,
+         {headers:{apikey:S, authorization:\\\`Bearer \\\${S}\\\`}})
+         .then(r =\> console.log(t, r.status));\""
    ```
 
-   ES256 plus a 401 means swap the keys. No code change is needed: both keys
-   are opaque strings everywhere they are used (`db.ts` sends them as
-   `apikey`/`Bearer`, `app.ts` hands the anon key to the browser), and the
-   `auth.ts` JWKS path is already the one asymmetric projects want.
+   Those four are the *only* tables the mirror touches (`db.ts` upserts
+   `users`/`reps`/`targets`/`sessions`); a 404 on anything else means you
+   invented a table name, not that the schema is incomplete. Separately, an
+   ES256 JWKS on the project is normal and needs no action — `auth.ts` prefers
+   that path already, and it says nothing about whether the API keys are live.
 7. Invite management: see 1b — Google's **test users list IS the allowlist**.
    To revoke someone, remove them there (and delete the row in Supabase
    Auth → Users to clear the session).
