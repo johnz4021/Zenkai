@@ -640,11 +640,23 @@ export function appPage(): string {
      puts the question column FIRST (tab order follows the task, pass 6);
      the grid places the rail visually left, and narrow widths stack the
      rail ABOVE via order (the readback reads before the questions). */
-  #rep-confirm { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 4px 28px; margin-top: 22px; align-items: start; }
+  /* The grid BREAKS OUT of #practice-wrap's 62ch composer measure to the full
+     760px shell. Left inside 62ch the question column resolved to 249px, not
+     the ~500px decision 5A sized it for, and every question wrapped into a
+     tall narrow block (QA 2026-08-12, ISSUE-002). The composer keeps 62ch —
+     that calm center is the approved landing (2026-08-10); only the confirm
+     step needs two columns. Symmetric negative inline margins, so the grid
+     stays centered on the same axis as the composer. */
+  #rep-confirm {
+    display: grid; grid-template-columns: 220px minmax(0, 1fr);
+    gap: 4px 28px; margin-top: 22px; align-items: start;
+    margin-inline: calc((720px - 100%) / -2);
+  }
   #rep-rail { grid-column: 1; grid-row: 1; }
   #rep-open { grid-column: 2; grid-row: 1; }
   @media (max-width: 760px) {
-    #rep-confirm { display: flex; flex-direction: column; }
+    /* Narrow: no breakout (it would overflow the shell), rail above questions. */
+    #rep-confirm { display: flex; flex-direction: column; margin-inline: 0; }
     #rep-rail { order: -1; }
   }
   /* Rail rows are the editable readback (decision 1A): 44px controls with

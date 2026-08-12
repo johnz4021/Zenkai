@@ -418,7 +418,12 @@ describe('practice door — client surface', () => {
     // rail placed left by the grid.
     expect(js).toContain('id="rep-confirm"');
     expect(js).toMatch(/id="rep-open"[\s\S]*id="rep-rail"/);
-    expect(html).toContain('#rep-confirm { display: grid; grid-template-columns: 220px');
+    expect(html).toMatch(/#rep-confirm \{[^}]*grid-template-columns: 220px minmax\(0, 1fr\)/s);
+    // The grid breaks OUT of #practice-wrap's 62ch composer measure to the
+    // 760px shell; inside 62ch the question column was 249px, half what
+    // decision 5A sized it for (QA ISSUE-002). Narrow zeroes the breakout.
+    expect(html).toMatch(/#rep-confirm \{[^}]*margin-inline: calc\(\(720px - 100%\) \/ -2\)/s);
+    expect(html).toMatch(/@media \(max-width: 760px\) \{[\s\S]*?#rep-confirm \{[^}]*margin-inline: 0/);
     // Everything keys on the gap's stable id, never an array index (T12).
     // (The planner's ask-card keeps its own data-q — this pins the DOOR.)
     expect(js).toContain('data-gap=');
