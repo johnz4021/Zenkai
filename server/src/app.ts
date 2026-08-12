@@ -978,7 +978,7 @@ export function appPage(): string {
      single column on the same 1099px breakpoint. ---- */
   #login { padding-top: 60px; }
   .loginpane { display: grid; grid-template-columns: 1fr 380px; gap: 72px; align-items: start; }
-  .loginsay h1 { font-size: 34px; line-height: 1.2; margin: 0; font-weight: 600; letter-spacing: -.01em; max-width: 16ch; }
+  .loginsay h1 { font-size: 34px; line-height: 1.2; margin: 0; font-weight: 600; letter-spacing: -.01em; max-width: 21ch; }
   .loginsay .desc { color: var(--text-2); font-size: 15px; margin: 12px 0 0; max-width: 52ch; }
   .loginbox { display: flex; flex-direction: column; gap: 16px; }
   /* Mode tabs are mono micro-labels on a hairline. Never a filled pill: fill
@@ -1018,10 +1018,13 @@ export function appPage(): string {
     border-top: 1px solid var(--line-soft); margin: 34px 0 0; padding-top: 16px;
     display: flex; flex-direction: column; gap: 9px; max-width: 52ch;
   }
-  .expect > div { display: flex; gap: 14px; align-items: baseline; }
+  /* Grid, not flex with a min-width: THE INTERVIEWER is wider than any min
+     that suits the other two, so a flex row pushed its value out of the
+     column and the three descriptions no longer shared a left edge. */
+  .expect > div { display: grid; grid-template-columns: 136px 1fr; gap: 14px; align-items: baseline; }
   .expect dt {
     font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: .18em;
-    text-transform: uppercase; color: var(--text-3); min-width: 116px;
+    text-transform: uppercase; color: var(--text-3);
   }
   .expect dd { margin: 0; color: var(--text-2); font-size: 13px; }
   @media (max-width: 1099px) {
