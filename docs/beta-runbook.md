@@ -55,6 +55,25 @@ alter table sessions enable row level security;
    key, service role key. **New projects sign JWTs asymmetrically** and the
    server verifies via public JWKS automatically. If the dashboard shows a
    legacy HS256 "JWT secret" instead, also set `IP_SUPABASE_JWT_SECRET`.
+
+   **Trap — a project on asymmetric signing kills the legacy `eyJ…` keys.**
+   Once the project publishes an ES256 JWKS, the old JWT-shaped `anon` and
+   `service_role` keys stop being accepted and you need the new
+   `sb_publishable_…` / `sb_secret_…` pair from Settings → API Keys. The
+   failure is confusing because the keys still *look* valid: they decode to
+   the right `ref` and `role` and are years from expiry, but **every**
+   endpoint — `/rest/v1/`, `/auth/v1/settings`, even `/auth/v1/health` —
+   answers `401 {"message":"Invalid API key"}`. Confirm with:
+
+   ```bash
+   curl -s "$URL/auth/v1/.well-known/jwks.json" | jq '.keys[].alg'   # ES256 = migrated
+   curl -s -o /dev/null -w '%{http_code}\n' "$URL/rest/v1/" -H "apikey: $ANON"
+   ```
+
+   ES256 plus a 401 means swap the keys. No code change is needed: both keys
+   are opaque strings everywhere they are used (`db.ts` sends them as
+   `apikey`/`Bearer`, `app.ts` hands the anon key to the browser), and the
+   `auth.ts` JWKS path is already the one asymmetric projects want.
 7. Invite management: see 1b — Google's **test users list IS the allowlist**.
    To revoke someone, remove them there (and delete the row in Supabase
    Auth → Users to clear the session).
