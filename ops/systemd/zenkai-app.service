@@ -8,11 +8,21 @@ Requires=docker.service
 User=zenkai
 WorkingDirectory=/home/zenkai/Zenkai
 # cli.ts loads .env itself; systemd only needs the entry point.
-ExecStart=/usr/bin/npx tsx server/src/cli.ts app
+#
+# node --import, NOT `npx tsx`. npx and the tsx bin are wrappers that spawn the
+# real server as a CHILD, so systemd's MainPID was the wrapper — and with
+# KillMode=process below it killed only that, orphaning the actual node server.
+# The orphan kept port 3300, the replacement could not bind, and the unit still
+# reported active: every `systemctl restart` since provisioning was a silent
+# no-op serving hours-old code. Found 2026-08-12 when a deployed CSS fix never
+# appeared. This form makes node itself the MainPID, so the signal lands on it.
+ExecStart=/usr/bin/node --import tsx server/src/cli.ts app
 Restart=always
 RestartSec=3
 # Sessions are DETACHED children by design (they survive app restarts);
 # without this, systemd would kill every live interview on a unit restart.
+# Safe only because ExecStart above is the server itself — with a wrapper,
+# this is what spared the wrong process.
 KillMode=process
 
 [Install]

@@ -1155,7 +1155,11 @@ export function runApp(cfg: AppConfig): http.Server {
     };
     try {
       if (url === '/') {
-        res.writeHead(200, { 'content-type': 'text/html' });
+        // no-store for the same reason /client/ has it: no build step and no
+        // content hash, and this page inlines the WHOLE stylesheet and section
+        // markup. A cached copy outlives a deploy exactly like a stale app.js
+        // does — and pairs it with fresh JS, which is worse than either alone.
+        res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
         return res.end(appPage());
       }
       if (url.startsWith('/client/')) {
