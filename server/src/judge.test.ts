@@ -155,6 +155,33 @@ describe('verifyCitations (attribution is the likely failure)', () => {
     expect(out[0]!.evidence_stripped).toBe(true);
   });
 
+  it('a phantom empty cannot satisfy a citation — the judge never saw it', () => {
+    // Renderer v2 drops gate-noise empties from the judge's timeline. A
+    // citation that only resolves to one is therefore a citation of nothing
+    // the judge read, and must strip rather than count a noise burst as the
+    // receipt for a verdict.
+    const events = [
+      ev('session_start', 0),
+      ev('sensor', 1, { sensor: 'stt', state: 'up', reason: 'connected' }, 'chrome'),
+      ev('utterance', 30, { text: '', via: 'voice', untranscribed: true }, 'chrome'),
+      ev('utterance', 80, { text: 'the sweep frees the wrong count' }, 'chrome'),
+    ];
+    const out = verifyCitations(dims([30]), events);
+    expect(out[0]!.evidence).toEqual([]);
+    expect(out[0]!.evidence_stripped).toBe(true);
+  });
+
+  it('a genuinely lost segment (STT down) still satisfies a citation', () => {
+    const events = [
+      ev('session_start', 0),
+      ev('sensor', 40, { sensor: 'stt', state: 'down', reason: 'socket' }, 'chrome'),
+      ev('utterance', 45, { text: '', via: 'voice', untranscribed: true }, 'chrome'),
+      ev('sensor', 60, { sensor: 'stt', state: 'up', reason: 'reconnected' }, 'chrome'),
+    ];
+    const out = verifyCitations(dims([45]), events);
+    expect(out[0]!.evidence).toEqual([45]);
+  });
+
   it('unassessable needs no evidence by definition', () => {
     const out = verifyCitations(
       [{ dimension: 'reflect', verdict: 'unassessable', analysis: 'nothing to see', evidence: [999] }],

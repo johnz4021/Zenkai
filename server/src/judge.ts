@@ -33,7 +33,7 @@ import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import type { DimensionKey, GeneratedProblem, TraceEvent, Verdict } from '@interview-prep/shared';
 import { DIMENSIONS, DIMENSION_DEFS, isDimensionKey, isVerdict, resolveExpectations } from '@interview-prep/shared';
-import { RENDERER_VERSION, eventAtOffset, renderTimeline } from './timeline.js';
+import { RENDERER_VERSION, eventAtOffset, isPhantomUtterance, renderTimeline, sensorDownIntervals } from './timeline.js';
 
 export const SCHEMA_VERSION = 1;
 
@@ -237,6 +237,12 @@ export function verifyCitations(
   dims: { dimension: DimensionKey; verdict: Verdict; analysis: string; evidence: number[] }[],
   events: TraceEvent[],
 ): DimensionAssessment[] {
+  // Phantom empties are excluded from resolution for the same reason sensor
+  // events are: the judge never saw them (renderTimeline drops them), so one
+  // sitting 0.1s nearer than the cited real utterance must not absorb — or
+  // strip — the citation.
+  const sttDown = sensorDownIntervals(events, 'stt');
+  const citable = (e: TraceEvent) => isCandidateEvent(e) && !isPhantomUtterance(e, sttDown);
   return dims.map((d) => {
     if (d.verdict === 'unassessable') {
       return { ...d, evidence: [] };
@@ -247,7 +253,7 @@ export function verifyCitations(
       // Resolve against candidate events ONLY: a bookkeeping event landing
       // nearer must not disqualify an honest citation, and an interviewer
       // line must never satisfy one.
-      const ev = eventAtOffset(events, offset, 2_000, isCandidateEvent);
+      const ev = eventAtOffset(events, offset, 2_000, citable);
       if (ev) kept.push(offset);
       else stripped.push(offset);
     }

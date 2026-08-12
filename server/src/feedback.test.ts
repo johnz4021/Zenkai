@@ -13,7 +13,11 @@ const ev = (type: TraceEvent['type'], dtSec: number, payload: unknown = {}, sour
 const EVENTS = [
   ev('session_start', 0),
   ev('utterance', 50, { text: 'the sweep releases the full count' }, 'chrome'),
+  // Inside a genuine STT outage — renderer v2 only honors an empty-text
+  // utterance as lost speech when transcription was actually down.
+  ev('sensor', 65, { sensor: 'stt', state: 'down', reason: 'socket' }, 'chrome'),
   ev('utterance', 70, { text: '', via: 'voice', untranscribed: true }, 'chrome'),
+  ev('sensor', 75, { sensor: 'stt', state: 'up', reason: 'reconnected' }, 'chrome'),
   ev('edit', 90, { path: '/p/src/sweep.ts' }),
 ];
 
@@ -45,6 +49,29 @@ describe('buildAssessmentCard', () => {
     const card = buildAssessmentCard(assessed, view, EVENTS);
     const comm = card.rows!.find((r) => r.dimension === 'communicate')!;
     expect(comm.quotes[0]!.text).toBe('[spoke — transcription unavailable]');
+  });
+
+  it('a gate-noise phantom cannot photobomb the receipt for real words', () => {
+    // The receipt-side half of the phantom fix: the judge cites the real
+    // utterance it saw, but a noise empty 0.2s nearer would win nearest-match
+    // resolution and render "[spoke — transcription unavailable]" as the
+    // quote for words that were actually said — a fabricated receipt on a
+    // card whose whole design is receipts.
+    const events = [
+      ev('session_start', 0),
+      ev('sensor', 1, { sensor: 'stt', state: 'up', reason: 'connected' }, 'chrome'),
+      ev('utterance', 50.2, { text: '', via: 'voice', untranscribed: true }, 'chrome'),
+      ev('utterance', 50.8, { text: 'I think the retry maps by position', via: 'voice' }, 'chrome'),
+    ];
+    const a: Assessment = {
+      ...assessed,
+      dimensions: [
+        { dimension: 'communicate', verdict: 'adequate', analysis: 'narrated the mechanism', evidence: [50] },
+      ],
+    };
+    const card = buildAssessmentCard(a, view, events);
+    const comm = card.rows!.find((r) => r.dimension === 'communicate')!;
+    expect(comm.quotes[0]!.text).toBe('"I think the retry maps by position"');
   });
 
   it('flags unreceipted rows so a stripped verdict never passes as evidenced', () => {
