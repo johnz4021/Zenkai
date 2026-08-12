@@ -175,8 +175,18 @@ curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer garbage' http
 
 ## 7. VPS cutover (supersedes 2, 3 and 5 — rev 2)
 
-Box: **Hetzner CPX31** (4 vCPU / 8GB / 160GB, ~$16/mo, Ashburn or Hillsboro).
-8GB fits the app + 2-3 live session containers (~1GB each) + a generation run.
+Box: **Hetzner CX32** — 4 vCPU / 8GB / 80GB, ~€6.80/mo, Ashburn or Hillsboro.
+
+Measured, not guessed: an idle openvscode container is ~29MB and the three
+images total ~1.5GB on disk. Active rooms (extension host + language servers
++ test runs) and an `npm install` during a generation are what actually
+consume RAM, so 8GB carries 2-3 rooms plus a build comfortably. Disk math:
+~3GB Ubuntu + ~1.5GB images + ~1GB deps + the ~5GB retention ceiling ≈ 11GB
+of 80GB. CX22 (2 vCPU / 4GB) is the tempting cheaper pick and the wrong one —
+two live rooms plus a build is exactly where it runs out. CPX31 costs ~2.5×
+for the same cores and RAM; its extra NVMe buys nothing here since generation
+waits on the API, not the CPU. If you outgrow it: CPU/RAM upgrades are
+reversible, a DISK resize is permanent.
 
 ```bash
 # on your machine
