@@ -42,6 +42,24 @@ describe('home app page', () => {
     expect(js).toContain("if (boot) boot.remove();");
   });
 
+  it('the auth screen has real labels and two honest modes', () => {
+    // DESIGN.md rule 5 (real labels, always) records placeholder-as-label as a
+    // violation that already shipped once; the login email field was the
+    // second time. Both fields now carry a visible <label for>.
+    expect(js).toContain('<label for="login-email">Email</label>');
+    expect(js).toContain('<label for="login-code">6-digit code</label>');
+    // Sign in / Sign up is a real difference, not two labels on one path:
+    // create_user follows the tab, so signing in with an unknown address says
+    // so instead of silently minting a second empty account.
+    expect(js).toContain("create_user: signUp");
+    expect(js).toContain('no account with that email yet — switch to Sign up');
+    // Signup is open (decision 2026-08-12) — the screen must not claim to be
+    // invite-gated when nothing enforces an invite.
+    expect(js).not.toContain('small invited beta');
+    // Signed-out masthead links route into surfaces that 401.
+    expect(js).toContain("nav .navright");
+  });
+
   it('the hidden attribute actually hides — CSS display must not outrank it', () => {
     // `hidden` is only a UA display:none. #practice sets display:flex to
     // center its hero, so a hidden #practice still held 411px above the login

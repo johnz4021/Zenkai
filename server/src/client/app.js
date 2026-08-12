@@ -31,6 +31,10 @@ function el(id) { return document.getElementById(id); }
 // on session links), and clear it on 401. Auth off = this is all inert.
 let authCfg = null; // {enabled, supabase_url?, anon_key?}
 let loggedOut = false;
+// Which auth tab is showing. Module-level so a re-render (mode swap, or an
+// error path re-rendering the screen) does not bounce the user back to Sign in
+// and lose the mode they picked.
+let loginMode = 'in'; // 'in' | 'up'
 
 function jwt() { try { return window.localStorage.getItem('ip_jwt') || ''; } catch { return ''; } }
 function setJwt(t) {
@@ -71,20 +75,62 @@ function renderLogin(msg) {
     box.id = 'login';
     page.appendChild(box);
   }
+  // The signed-out masthead keeps the mark only: practice/plans/history all
+  // route into surfaces that 401 until there is a token, so linking them is a
+  // broken affordance on the one screen that has to earn trust.
+  const navright = document.querySelector('nav .navright');
+  if (navright) navright.hidden = true;
+  document.body.classList.add('wide');
   box.hidden = false;
+  const signUp = loginMode === 'up';
   box.innerHTML =
-    '<div class="loginbox">' +
+    '<div class="loginpane">' +
+    '<div class="loginsay">' +
     '<h1>Practice the interview you actually have.</h1>' +
-    '<p class="desc">Zenkai is in a small invited beta. Sign in to start a round.</p>' +
+    '<p class="desc">You describe the round you are facing. Zenkai generates a real repo with a real bug, ' +
+    'sits an interviewer beside you who listens while you work, then grades the trace and aims the next ' +
+    'one at what you missed.</p>' +
+    '<dl class="expect">' +
+    '<div><dt>The round</dt><dd>A real editor in your browser. About 45 minutes.</dd></div>' +
+    '<div><dt>The interviewer</dt><dd>Speaks and listens. Asks why, not just what.</dd></div>' +
+    '<div><dt>After</dt><dd>A graded card quoting what you actually said and did.</dd></div>' +
+    '</dl></div>' +
+    '<div class="loginbox">' +
+    '<div class="modes" role="tablist">' +
+    '<button class="mode" id="mode-in" type="button" role="tab" aria-selected="' + (signUp ? 'false' : 'true') + '">Sign in</button>' +
+    '<button class="mode" id="mode-up" type="button" role="tab" aria-selected="' + (signUp ? 'true' : 'false') + '">Sign up</button>' +
+    '</div>' +
+    '<p class="loginfine">' + (signUp
+      ? 'Free while in beta. Your first round can start right after.'
+      : 'Welcome back. Your plans and graded rounds are where you left them.') + '</p>' +
     '<button id="login-google" class="primary" type="button">Continue with Google</button>' +
     '<div class="loginsep">or</div>' +
+    '<div><label for="login-email">Email</label>' +
     '<div class="loginrow"><input id="login-email" type="email" placeholder="you@school.edu" autocomplete="email">' +
-    '<button id="login-otp" type="button">Email me a code</button></div>' +
-    '<div class="loginrow" id="login-code-row" hidden><input id="login-code" inputmode="numeric" placeholder="6-digit code">' +
-    '<button id="login-verify" type="button">Sign in</button></div>' +
-    '<p class="cite" id="login-msg">' + esc(msg || '') + '</p>' +
-    '</div>';
-  const say = (m, bad) => { const n = el('login-msg'); n.textContent = m; n.classList.toggle('bad', Boolean(bad)); };
+    '<button id="login-otp" type="button">Send code</button></div></div>' +
+    '<div id="login-code-row" hidden><label for="login-code">6-digit code</label>' +
+    '<div class="loginrow"><input id="login-code" inputmode="numeric" autocomplete="one-time-code" placeholder="000000">' +
+    '<button id="login-verify" class="primary" type="button">' + (signUp ? 'Create account' : 'Sign in') + '</button></div></div>' +
+    '<p id="login-msg">' + esc(msg || '') + '</p>' +
+    '<p class="loginfine">Free while in beta. Everyone shares one daily build budget, so rounds can run out before the day does.</p>' +
+    '</div></div>';
+  const say = (m, tone) => {
+    const n = el('login-msg');
+    n.textContent = m;
+    n.classList.toggle('bad', tone === 'bad');
+    n.classList.toggle('good', tone === 'good');
+  };
+  // Carry the typed address across the swap. Someone who types their email,
+  // then realises they need the other tab, should not have to type it twice.
+  const swap = (mode) => {
+    if (loginMode === mode) return;
+    const typed = el('login-email').value;
+    loginMode = mode;
+    renderLogin();
+    el('login-email').value = typed;
+  };
+  el('mode-in').addEventListener('click', () => swap('in'));
+  el('mode-up').addEventListener('click', () => swap('up'));
   el('login-google').addEventListener('click', () => {
     window.location.href = authCfg.supabase_url + '/auth/v1/authorize?provider=google&redirect_to=' +
       encodeURIComponent(window.location.origin + '/');
@@ -96,21 +142,38 @@ function renderLogin(msg) {
   });
   el('login-otp').addEventListener('click', async () => {
     const email = el('login-email').value.trim();
-    if (!email) { say('enter your email first', true); return; }
-    say('sending…');
-    const r = await gotrue('otp', { email, create_user: true });
-    if (r.ok) { el('login-code-row').hidden = false; say('code sent — check your email'); }
-    else say('could not send a code (' + r.status + ') — was this email invited?', true);
+    if (!email) { say('enter your email first', 'bad'); return; }
+    const btn = el('login-otp');
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+    say('working');
+    // create_user is what makes the two tabs mean something. Sign in refuses
+    // to mint an account, so a typo'd address says so instead of silently
+    // creating a second empty one the user will never find again.
+    const r = await gotrue('otp', { email, create_user: signUp });
+    btn.disabled = false;
+    btn.textContent = 'Send code';
+    if (r.ok) {
+      el('login-code-row').hidden = false;
+      el('login-code').focus();
+      say('code sent to ' + email, 'good');
+      return;
+    }
+    if (!signUp) { say('no account with that email yet — switch to Sign up', 'bad'); return; }
+    say('could not send a code (' + r.status + ') — check the address and try again', 'bad');
   });
   el('login-verify').addEventListener('click', async () => {
     const email = el('login-email').value.trim();
     const code = el('login-code').value.trim();
-    if (!code) { say('enter the code from the email', true); return; }
-    say('verifying…');
+    if (!code) { say('enter the code from the email', 'bad'); return; }
+    const btn = el('login-verify');
+    btn.disabled = true;
+    say('verifying');
     const r = await gotrue('verify', { type: 'email', email, token: code });
-    if (!r.ok) { say('that code did not verify — request a fresh one', true); return; }
+    btn.disabled = false;
+    if (!r.ok) { say('that code did not verify — request a fresh one', 'bad'); return; }
     const body = await r.json();
-    if (!body.access_token) { say('no token in the reply — try again', true); return; }
+    if (!body.access_token) { say('no token in the reply — try again', 'bad'); return; }
     setJwt(body.access_token);
     window.location.reload();
   });

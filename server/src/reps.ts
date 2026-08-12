@@ -245,14 +245,22 @@ export function retryVerdict(
  * already spent. Pending = anything not yet consumed or written off
  * (generating | ready | failed) — the cap that bounds disk, since every
  * ready node rep is a ~60MB problem dir until retention slims it.
+ *
+ * `maxBuildsPerDay` is the GLOBAL ceiling, counted across every user, and it
+ * is the one cap that actually bounds spend. The per-user caps above assume a
+ * gated identity; signup is deliberately open (decision 2026-08-12), so a new
+ * email is free and every per-user limit is one signup away from being reset.
+ * Only a global count is not, which is why this check exists and why it is
+ * checked LAST: a user who has spent their own budget should be told that,
+ * not that the whole product is full.
  */
 export function admissionVerdict(
   reps: Pick<Rep, 'user_id' | 'status' | 'created'>[],
   userId: string,
   legacyOwnerId: string,
   nowMs: number,
-  caps: { maxRepsPerUserDay: number; maxPendingPerUser: number },
-): 'ok' | 'daily-cap' | 'pending-cap' {
+  caps: { maxRepsPerUserDay: number; maxPendingPerUser: number; maxBuildsPerDay?: number },
+): 'ok' | 'daily-cap' | 'pending-cap' | 'global-cap' {
   const mine = reps.filter((r) => repOwnedBy(r, userId, legacyOwnerId));
   const today = localDate(nowMs);
   const createdToday = mine.filter((r) => localDate(Date.parse(r.created)) === today).length;
@@ -261,6 +269,11 @@ export function admissionVerdict(
     (r) => r.status === 'generating' || r.status === 'ready' || r.status === 'failed',
   ).length;
   if (pending >= caps.maxPendingPerUser) return 'pending-cap';
+  // Absent = Infinity, so local dev and any caller that has not been taught
+  // this cap behaves exactly as before.
+  const globalCap = caps.maxBuildsPerDay ?? Infinity;
+  const builtToday = reps.filter((r) => localDate(Date.parse(r.created)) === today).length;
+  if (builtToday >= globalCap) return 'global-cap';
   return 'ok';
 }
 

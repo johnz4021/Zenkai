@@ -968,13 +968,66 @@ export function appPage(): string {
   .betatag { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .18em; color: var(--steel-text); border: 1px solid var(--steel); border-radius: 4px; padding: 1px 6px; margin-left: 10px; align-self: center; }
 
   /* ---- beta login (WU4) — shown only when auth is on and no token ---- */
-  #login { display: flex; justify-content: center; padding-top: 12vh; }
-  .loginbox { max-width: 420px; width: 100%; display: flex; flex-direction: column; gap: 14px; }
-  .loginbox h1 { font-size: 26px; line-height: 1.25; margin: 0; font-weight: 600; }
-  .loginsep { color: var(--text-3); font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .18em; text-align: center; }
+  /* ---- signed-out auth: two-pane brief (design review 2026-08-12, direction B).
+     The old screen was a headline and two buttons floating in a 760px column:
+     an invited stranger could not tell what they were signing into, and the
+     email field used its placeholder as its label, the exact hard-rule
+     violation DESIGN.md rule 5 records as having already shipped once.
+     The left pane now does the explaining so the right can stay bare. Rides
+     body.wide (the planner's existing 1180px precedent) and collapses to the
+     single column on the same 1099px breakpoint. ---- */
+  #login { padding-top: 60px; }
+  .loginpane { display: grid; grid-template-columns: 1fr 380px; gap: 72px; align-items: start; }
+  .loginsay h1 { font-size: 34px; line-height: 1.2; margin: 0; font-weight: 600; letter-spacing: -.01em; max-width: 16ch; }
+  .loginsay .desc { color: var(--text-2); font-size: 15px; margin: 12px 0 0; max-width: 52ch; }
+  .loginbox { display: flex; flex-direction: column; gap: 16px; }
+  /* Mode tabs are mono micro-labels on a hairline. Never a filled pill: fill
+     means primary action in this system, and the action here is the white
+     button below. */
+  .modes { display: flex; gap: 26px; border-bottom: 1px solid var(--line-soft); }
+  .mode {
+    background: none; border: 0; border-bottom: 1px solid transparent; border-radius: 0;
+    padding: 0 0 10px; margin-bottom: -1px; min-height: 0;
+    font-family: var(--mono); font-size: 11px; font-weight: 500;
+    letter-spacing: .18em; text-transform: uppercase; color: var(--text-3);
+  }
+  .mode:hover { border-color: transparent; color: var(--text-2); }
+  .mode[aria-selected="true"] { color: var(--text-1); border-bottom-color: var(--text-1); }
+  .loginbox label {
+    margin: 0 0 7px; font-family: var(--mono); font-size: 11px; font-weight: 500;
+    letter-spacing: .18em; text-transform: uppercase; color: var(--text-3);
+  }
+  .loginbox .primary { width: 100%; min-height: 44px; }
+  .loginsep {
+    display: flex; align-items: center; gap: 12px; color: var(--text-3);
+    font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .18em;
+  }
+  .loginsep::before, .loginsep::after { content: ""; flex: 1; height: 1px; background: var(--line-soft); }
   .loginrow { display: flex; gap: 8px; }
-  .loginrow input { flex: 1; }
+  .loginrow input { flex: 1; min-height: 44px; }
+  .loginrow button { min-height: 44px; white-space: nowrap; }
+  #login-msg {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--text-3); margin: 0;
+  }
   #login-msg.bad { color: var(--weak-text); }
+  #login-msg.good { color: var(--steel-text); }
+  .loginfine { color: var(--text-3); font-size: 12px; line-height: 1.6; margin: 0; }
+  /* What a round actually costs you, before you commit to 45 minutes. */
+  .expect {
+    border-top: 1px solid var(--line-soft); margin: 34px 0 0; padding-top: 16px;
+    display: flex; flex-direction: column; gap: 9px; max-width: 52ch;
+  }
+  .expect > div { display: flex; gap: 14px; align-items: baseline; }
+  .expect dt {
+    font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: .18em;
+    text-transform: uppercase; color: var(--text-3); min-width: 116px;
+  }
+  .expect dd { margin: 0; color: var(--text-2); font-size: 13px; }
+  @media (max-width: 1099px) {
+    .loginpane { grid-template-columns: 1fr; gap: 40px; max-width: 460px; }
+    .loginsay h1 { font-size: 28px; }
+  }
 
   /* ---- desktop only (design decision D7: stated, not broken) ---- */
   #narrow { display: none; }
@@ -1510,6 +1563,11 @@ export function runApp(cfg: AppConfig): http.Server {
         }
         if (admission === 'pending-cap') {
           return json(429, { error: 'you have unplayed rounds waiting — run or retry one of those before building another' });
+        }
+        if (admission === 'global-cap') {
+          // The only cap that bounds spend while signup is open: per-user
+          // limits reset for the price of a new email address.
+          return json(429, { error: "Zenkai hit its build budget for today — everyone's rounds run on the same meter. Come back tomorrow." });
         }
         if (countLiveBuilds() >= cfg.pub.caps.maxConcurrentBuilds) {
           return json(409, { error: "someone else's round is generating — builds run one at a time in the beta; try again in ~5 minutes" });

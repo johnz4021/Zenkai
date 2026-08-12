@@ -43,6 +43,13 @@ export interface PublicConfig {
     maxConcurrentBuilds: number;
     maxRepsPerUserDay: number;
     maxPendingPerUser: number;
+    /**
+     * Global builds per day, across ALL users. The per-user caps above only
+     * bound a gated identity; signup is open by decision (2026-08-12), so a
+     * fresh email resets them for free. This is the only cap that bounds the
+     * model bill. Unset = Infinity = today's behavior.
+     */
+    maxBuildsPerDay: number;
   };
   /** Multi-session (TODOS #22). false = legacy single-session, byte-identical. */
   multiSession: boolean;
@@ -100,6 +107,7 @@ export function resolvePublicConfig(env: Record<string, string | undefined>): Pu
       maxConcurrentBuilds: intOr(env.IP_MAX_CONCURRENT_BUILDS, Infinity),
       maxRepsPerUserDay: intOr(env.IP_MAX_REPS_PER_USER_DAY, Infinity),
       maxPendingPerUser: intOr(env.IP_MAX_PENDING_REPS_PER_USER, Infinity),
+      maxBuildsPerDay: intOr(env.IP_MAX_BUILDS_PER_DAY, Infinity),
     },
     retention: {
       days: env.IP_RETENTION_DAYS ? intOr(env.IP_RETENTION_DAYS, 0) || null : null,

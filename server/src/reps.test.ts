@@ -370,4 +370,37 @@ describe('admissionVerdict (WU6 beta caps)', () => {
     expect(admissionVerdict(legacyPending, 'u1', 'u1', NOON, caps)).toBe('pending-cap');
     expect(admissionVerdict(legacyPending, 'me', 'u1', NOON, caps)).toBe('ok');
   });
+
+  // Signup is open by decision (2026-08-12), so a new email resets every
+  // per-user cap for free. The global ceiling is the only one that bounds the
+  // model bill, and these pin the property the per-user caps cannot have.
+  describe('global daily build cap', () => {
+    const them = (n: string, createdMs: number) =>
+      ({ user_id: n, status: 'done', created: at(createdMs) }) as never;
+
+    it('counts EVERY user, so fresh signups cannot mint more budget', () => {
+      const g = { maxRepsPerUserDay: 3, maxPendingPerUser: 4, maxBuildsPerDay: 5 };
+      // Five different people, one build each: nobody is near a per-user cap.
+      const reps = ['a', 'b', 'c', 'd', 'e'].map((n) => them(n, NOON));
+      expect(admissionVerdict(reps, 'brand-new', 'u1', NOON, g)).toBe('global-cap');
+      expect(admissionVerdict(reps.slice(1), 'brand-new', 'u1', NOON, g)).toBe('ok');
+    });
+
+    it('resets on the local day boundary, like the per-user cap', () => {
+      const g = { maxRepsPerUserDay: 3, maxPendingPerUser: 4, maxBuildsPerDay: 2 };
+      const yesterday = ['a', 'b', 'c'].map((n) => them(n, NOON - 24 * 3600_000));
+      expect(admissionVerdict(yesterday, 'me', 'u1', NOON, g)).toBe('ok');
+    });
+
+    it('a user over their OWN cap hears that, not that the product is full', () => {
+      // Both caps are blown; the personal one is the honest message.
+      const g = { maxRepsPerUserDay: 1, maxPendingPerUser: 9, maxBuildsPerDay: 1 };
+      expect(admissionVerdict([mine('done', NOON)], 'me', 'u1', NOON, g)).toBe('daily-cap');
+    });
+
+    it('absent cap is Infinity — local dev and old callers are unchanged', () => {
+      const reps = Array.from({ length: 99 }, (_, i) => them(`u${i}`, NOON));
+      expect(admissionVerdict(reps, 'me', 'u1', NOON, caps)).toBe('ok');
+    });
+  });
 });
