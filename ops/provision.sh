@@ -3,7 +3,7 @@
 # US locations are AMD-only (CPX/CCX); the Intel CX line is EU-only.
 # Idempotent: safe to re-run. Run as root on a fresh box:
 #   scp -r ops root@<box>: && ssh root@<box> 'bash ops/provision.sh'
-# Then: point DNS at this box, copy .env, `systemctl start zenkai-app caddy`.
+# Then: point DNS at this box, copy .env (ops/push-env.sh), start zenkai-app.
 set -euo pipefail
 
 ZENKAI_USER="zenkai"
@@ -119,6 +119,13 @@ install -d /etc/caddy
 cp ops/Caddyfile /etc/caddy/Caddyfile
 systemctl daemon-reload
 systemctl enable zenkai-app caddy
+# Caddy's .deb STARTS the service at install time with the stock Caddyfile, so
+# the copy above lands under a caddy that is already running — and `systemctl
+# start caddy` in the closing steps is then a no-op against an active unit.
+# The box sat on the default config serving :80 with no TLS at all, and the
+# only hint was one "listening only on the HTTP port" warning in the journal.
+# Restart unconditionally so the config we just installed is the live one.
+systemctl restart caddy
 
 cat <<'DONE'
 
@@ -132,7 +139,7 @@ cat <<'DONE'
    ops/env.launch.template, which carries the VPS-only settings
    (IP_MULTI_SESSION, the room/build caps, retention) already sized for
    this box. Keep it mode 600 and owned by zenkai.
-4. systemctl start zenkai-app caddy
+4. systemctl start zenkai-app   (caddy is already restarted by this script)
    (Caddy issues certs on first request — allow ~30s, then check
     `journalctl -u caddy -n 30` for "certificate obtained successfully".)
 5. Verify per docs/beta-runbook.md — ESPECIALLY the trace-WS smoke
