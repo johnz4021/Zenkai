@@ -192,8 +192,11 @@ reversible, a DISK resize is permanent.
 # on your machine
 scp -r ops root@<box-ip>:
 ssh root@<box-ip> 'bash ops/provision.sh'     # idempotent; prints remaining steps
+# Image: Ubuntu 24.04 LTS (26.04 works — NodeSource is codename-independent —
+# but 24.04 is two years hardened and supported to 2029, well past this beta).
 # it installs: docker, lsof (assertPortFree DIES without it on Ubuntu minimal),
-# node20, claude CLI, Caddy, the zenkai user, systemd units, and sets ufw:
+# node22 (Node 20 hit EOL 2026-04-30; this box is public), claude CLI, Caddy,
+# the zenkai user, systemd units, and sets ufw:
 # OpenSSH + 80/443 (Caddy) + `allow in on docker0`. WITHOUT the docker0 rule
 # the container's trace WebSocket is silently dropped and every IDE round
 # records nothing while looking perfectly healthy. The app (3300) and session

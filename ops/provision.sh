@@ -8,7 +8,7 @@ set -euo pipefail
 ZENKAI_USER="zenkai"
 REPO_URL="${ZENKAI_REPO_URL:-git@github.com:johnz4021/Zenkai.git}"
 REPO_DIR="/home/${ZENKAI_USER}/Zenkai"
-NODE_MAJOR=20
+NODE_MAJOR=22
 
 echo "== deploy key (add this to GitHub BEFORE the clone step) =="
 # Printed first on purpose: the repo is private, so the clone below needs a
@@ -31,7 +31,13 @@ apt-get update -q
 apt-get install -yq docker.io lsof git curl jq ufw
 
 echo "== node ${NODE_MAJOR} =="
-if ! command -v node >/dev/null || [ "$(node -v | cut -c2-3)" -lt "${NODE_MAJOR}" ]; then
+# Node 20 reached EOL on 2026-04-30 — no security patches. This box faces the
+# public internet, so it runs a supported line. 22 is Maintenance LTS through
+# April 2027 (comfortably past this beta) and is one major from the 20 the
+# code was written against; 24 is Active LTS if you want the longer runway.
+# NodeSource ships a codename-independent "nodistro" suite, so this works on
+# 24.04 and 26.04 alike.
+if ! command -v node >/dev/null || [ "$(node -v | cut -c2- | cut -d. -f1)" -lt "${NODE_MAJOR}" ]; then
   curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -
   apt-get install -yq nodejs
 fi
