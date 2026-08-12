@@ -175,18 +175,25 @@ curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer garbage' http
 
 ## 7. VPS cutover (supersedes 2, 3 and 5 — rev 2)
 
-Box: **Hetzner CX32** — 4 vCPU / 8GB / 80GB, ~€6.80/mo, Ashburn or Hillsboro.
+Box: **Hetzner CPX31, Ashburn (US East)** — 4 vCPU AMD / 8GB / 160GB NVMe.
+Price moved during 2026; read the live figure in the console (roughly $18-25/mo,
+plus a small IPv4 fee). US boxes carry 1-8TB traffic vs the EU's 20-60TB —
+irrelevant at this scale.
 
-Measured, not guessed: an idle openvscode container is ~29MB and the three
-images total ~1.5GB on disk. Active rooms (extension host + language servers
-+ test runs) and an `npm install` during a generation are what actually
-consume RAM, so 8GB carries 2-3 rooms plus a build comfortably. Disk math:
-~3GB Ubuntu + ~1.5GB images + ~1GB deps + the ~5GB retention ceiling ≈ 11GB
-of 80GB. CX22 (2 vCPU / 4GB) is the tempting cheaper pick and the wrong one —
-two live rooms plus a build is exactly where it runs out. CPX31 costs ~2.5×
-for the same cores and RAM; its extra NVMe buys nothing here since generation
-waits on the API, not the CPU. If you outgrow it: CPU/RAM upgrades are
-reversible, a DISK resize is permanent.
+**The CX line is NOT an option here.** Hetzner's US locations offer only the
+AMD products (CPX shared, CCX dedicated) — CX is Intel and EU-only. A German
+CX32 is ~€6.80/mo for the same cores and RAM, but adds 90-160ms to every
+keystroke in the browser-hosted IDE and a beat of dead air to every voice
+turn. Latency IS the product in a live interview simulator; pay the ~$10.
+
+Sizing, measured rather than guessed: an idle openvscode container is ~29MB
+and the three images total ~1.5GB on disk. RAM goes to active rooms
+(extension host + language servers + test runs) and `npm install` spikes
+during generation, so 8GB carries 2-3 rooms plus a build. Disk: ~3GB Ubuntu +
+~1.5GB images + ~1GB deps + the ~5GB retention ceiling ≈ 11GB of 160GB.
+CPX21 (3 vCPU / 4GB) is the tempting economy and the wrong one — two live
+rooms plus a build is exactly where 4GB runs out. If you outgrow CPX31:
+CPU/RAM upgrades are reversible, a DISK resize is permanent.
 
 ```bash
 # on your machine

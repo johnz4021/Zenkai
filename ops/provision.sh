@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Zenkai beta VPS provision — Ubuntu 24.04, Hetzner CX32 class (4 vCPU/8GB).
+# Zenkai beta VPS provision — Ubuntu 24.04, Hetzner CPX31 (Ashburn, 4 vCPU/8GB).
+# US locations are AMD-only (CPX/CCX); the Intel CX line is EU-only.
 # Idempotent: safe to re-run. Run as root on a fresh box:
 #   scp -r ops root@<box>: && ssh root@<box> 'bash ops/provision.sh'
 # Then: point DNS at this box, copy .env, `systemctl start zenkai-app caddy`.
