@@ -447,6 +447,9 @@ describe('practice door — client surface', () => {
     for (const id of ['rep-paste', 'rep-change']) expect(js).toContain('for="' + id + '"');
     expect(html).toMatch(/\.gapedit \{[^}]*min-height: 44px/s);
     expect(html).toMatch(/\.gapinput \{[^}]*min-height: 44px/s);
+    // No affordance where there is no action: the rail's .tier is a
+    // read-only span, unlike the planner's clickable .tier button (ISSUE-003).
+    expect(html).toMatch(/#rep-rail \.tier \{ cursor: default/);
   });
 
   it('the brief, the honest decline, and the multi-draft disclosure render (3A/2B/T14)', () => {

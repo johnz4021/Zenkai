@@ -663,6 +663,12 @@ export function appPage(): string {
      real labels; .gaterow/.tier reuse the planner's chips and flash. */
   #rep-rail .gaterow { padding: 10px 2px; }
   #rep-rail .gaterow label { display: block; }
+  /* The planner's .tier is a BUTTON that cycles evidence, so it carries
+     cursor: pointer. On the rail it is a read-only span stating provenance —
+     inheriting the pointer made it look clickable and do nothing (QA
+     2026-08-12, ISSUE-003). Affordance matches constraint (DESIGN.md rule 3)
+     cuts both ways: no affordance where there is no action. */
+  #rep-rail .tier { cursor: default; }
   .gapedit {
     display: block; width: 100%; min-height: 44px; margin-top: 4px;
     background: var(--panel); color: var(--text-1); border: 1px solid var(--line);
