@@ -108,11 +108,13 @@ describe('gatePracticeClarify', () => {
     const out = gatePracticeClarify(body({
       gaps: [
         gap({ affects: 'shape' }),                                      // context → flavor
-        gap({ id: 'round-kind', label: 'round type', question: 'Debug or build?', target: 'spec.check.kind', affects: 'flavor', closed: true, answer_type: 'enum', options: [{ label: 'Debugging' }, { label: 'Build to a suite' }] }),
+        // (was id 'round-kind' — now correctly eaten by the round-task alias
+        // net; a spec-path gap with a non-aliased id keeps the behavior pin)
+        gap({ id: 'grading-style', label: 'grading style', question: 'Graded once or iterate?', target: 'spec.capabilities.submit', affects: 'flavor', closed: true, answer_type: 'enum', options: [{ label: 'Graded once' }, { label: 'Iterate freely' }] }),
       ],
     }));
     expect(out.gaps.find((g) => g.id === 'part-scope')!.affects).toBe('flavor');
-    expect(out.gaps.find((g) => g.id === 'round-kind')!.affects).toBe('shape');
+    expect(out.gaps.find((g) => g.id === 'grading-style')!.affects).toBe('shape');
   });
 
   it('per-gap leniency: a bad gap is dropped, its siblings survive', () => {
@@ -324,6 +326,42 @@ describe('the task hypothesis — the classification that routes generation', ()
     const out = gatePracticeClarify(body({ gaps: [gap({ id: 'round-task' })] }));
     expect(out.gaps.filter((g) => g.id === 'round-task')).toHaveLength(1); // the code-owned one
     warn.mockRestore();
+  });
+
+  it("model gaps aliasing the round-task row are dropped — 'task-type' shipped twice in one day", () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = gatePracticeClarify(body({
+      gaps: [
+        gap({ id: 'task-type', label: 'task type', question: 'Problems, debugging, or build?' }),
+        gap({ id: 'round-type', label: 'round type', question: 'Which round type?' }),
+        gap({ id: 'task', label: 'task', question: 'What task?' }),
+        gap(),  // legitimate sibling survives
+      ],
+    }));
+    const ids = out.gaps.map((g) => g.id);
+    expect(ids).not.toContain('task-type');
+    expect(ids).not.toContain('round-type');
+    expect(ids).not.toContain('task');
+    expect(ids).toContain('part-scope');
+    expect(out.gaps.filter((g) => g.id === 'round-task')).toHaveLength(1);
+    warn.mockRestore();
+  });
+
+  it('a coerced task never wears the stated chip — that would be false provenance', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Model claims stated review_diff on an all_failing draft → coerced.
+    const out = gatePracticeClarify(body({ rounds: [round({ task: 'review_diff', task_evidence: 'stated' })] }));
+    expect(out.drafts[0]!.task).toBe('algorithmic_set');
+    expect(out.gaps.find((g) => g.id === 'round-task')!.evidence).toBe('inferred');
+    warn.mockRestore();
+  });
+
+  it('practical_build legally pairs with all_passing — staged builds on a working base are real', () => {
+    const out = gatePracticeClarify(body({
+      rounds: [round({ task: 'practical_build', task_evidence: 'stated', check_kind: 'all_passing', starts_from: 'repo' })],
+    }));
+    expect(out.drafts[0]!.task).toBe('practical_build');
+    expect(out.gaps.find((g) => g.id === 'round-task')!.evidence).toBe('stated');
   });
 
   it('parseTaskAnswer accepts labels and raw enum values, case-insensitively', () => {

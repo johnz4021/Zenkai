@@ -103,7 +103,12 @@ export const TASK_LABELS: Record<RoundTask, string> = {
 const TASK_CHECK_KINDS: Record<RoundTask, ReadonlyArray<RoundSpec['check']['kind']>> = {
   algorithmic_set: ['all_failing'],
   debug: ['one_failing_test'],
-  practical_build: ['all_failing'],
+  // all_passing is legal here: a staged build whose part 1 ships working and
+  // later waves extend it IS a practical build the model correctly named —
+  // a live run said practical_build ("requirements escalate", its words) with
+  // all_passing and the old single-pair table silently overrode the
+  // classification to extend_keep_green (QA 2026-08-13).
+  practical_build: ['all_failing', 'all_passing'],
   comprehend: ['one_failing_test', 'all_passing', 'all_failing'],
   extend_keep_green: ['all_passing'],
   review_diff: ['diff_present'],
@@ -441,6 +446,13 @@ function gateGap(raw: unknown): PracticeGap {
   if ((RUNTIME_GAP_IDS as readonly string[]).includes(id) || target === 'spec.capabilities.time_limit_ms') {
     throw new Error(`gap "${id}" collides with a code-owned runtime gap`);
   }
+  // Alias net for the code-owned round-task row: the prompt says never author
+  // a round-type gap, but models drift into synonyms — live runs emitted
+  // `task-type` twice in one day, duplicating (and once contradicting) the
+  // code-owned row on the same rail (QA 2026-08-13).
+  if (/^(task|round)[-_]?(type|kind)?$/.test(id) || /^round[-_]?task$/.test(id)) {
+    throw new Error(`gap "${id}" duplicates the code-owned round-task row`);
+  }
   const section = text(g.section);
   if (!GAP_SECTIONS.includes(section)) throw new Error(`gap "${id}" names unknown section "${section}"`);
   const status = g.status === 'settled' ? 'settled' : g.status === 'open' ? 'open' : null;
@@ -521,7 +533,14 @@ export function gatePracticeClarify(
       // valid and coherent with the draft's own check kind, else derived
       // from capability facts. Never a reason to sink a draft.
       const { task, coerced } = coerceTask((r as Record<string, unknown>).task, draft.spec);
-      if (coerced) console.warn(`[practice-clarify] task coerced to "${task}" for draft "${draft.spec.id}"`);
+      if (coerced) {
+        console.warn(`[practice-clarify] task coerced to "${task}" for draft "${draft.spec.id}"`);
+        // A coerced task is a DERIVATION, not the model's statement — the
+        // stated chip on a value the model never said is false provenance
+        // (the rail claimed STATED: "Extend without breaking" on a build
+        // round, QA 2026-08-13). Downgrade at the source of truth.
+        (r as Record<string, unknown>).task_evidence = 'inferred';
+      }
       draft.task = task;
       drafts.push(draft);
       rawByDraft.push(r as Record<string, unknown>);
