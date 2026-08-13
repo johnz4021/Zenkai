@@ -141,13 +141,19 @@ async function generateInto(
   // a stale .generating next to a finished problem forever).
   const { clearGeneratingMarker, removePythonArtifacts } = await import('./generation-state.js');
   if (!result.ok) {
-    clearGeneratingMarker(targetDir);
     // The claude -p json payload carries the real failure (subtype,
     // is_error, num_turns) — stderr alone diagnosed nothing when a sourced
     // build died silently on 2026-08-12.
     console.error('--- result payload (head) ---\n' + result.stdout.slice(0, 1500));
     console.error('--- stderr ---\n' + result.stderr.slice(0, 2000));
-    return 1;
+    // NOT fatal on its own. A timeout SIGTERM lands wherever the agent
+    // happened to be, which is often AFTER the round is finished and the
+    // suite has run — rep-msql2oxf was killed at 480.7s holding three
+    // parts, three passing suites and a manifest that validated cleanly,
+    // and the non-zero exit threw all of it away ($1.64). The artifact
+    // decides whether a build succeeded, never the exit code; fall through
+    // to the validator and let it rule.
+    console.error('[generate] run did not exit cleanly — validating the artifact anyway');
   }
   if (sourced) {
     // Tamper-proof re-emit: whatever the agent did to the grading contract,
@@ -186,8 +192,11 @@ async function generateInto(
     // recover item status without trusting its own memory.
     const { writeFileSync: wf } = await import('node:fs');
     wf(path.join(targetDir, '.validated'), new Date().toISOString());
+    if (!result.ok) console.log('[generate] the killed run had already finished — kept');
   }
-  return report.ok ? 0 : 2;
+  // 2 = ran clean but the artifact is not a valid round; 1 = died AND left
+  // nothing usable. Both are non-zero, so the app still marks .failed.
+  return report.ok ? 0 : result.ok ? 2 : 1;
 }
 
 /** Flag parsing for the target subcommands: --k v pairs after positionals. */

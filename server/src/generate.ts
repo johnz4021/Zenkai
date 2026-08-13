@@ -165,9 +165,15 @@ export async function generateProblem(opts: GenerateOptions): Promise<GenerateRe
     child.stdout.on('data', (d) => (stdout += d));
     child.stderr.on('data', (d) => (stderr += d));
 
+    // 8 minutes was calibrated for a single-module debugging round (~5 min,
+    // per CLAUDE.md). A multi-part OA is roughly triple the work — three
+    // implementation files plus three suites — and two of them died at
+    // EXACTLY 480s with SIGTERM, one of them holding a complete, validating
+    // problem (2026-08-12). Sourced LC builds keep their own tighter 5-min
+    // budget from cli.ts: those are a transform, not invention.
     const timeout = setTimeout(() => {
       child.kill('SIGTERM');
-    }, opts.timeoutMs ?? 8 * 60_000);
+    }, opts.timeoutMs ?? 15 * 60_000);
 
     child.on('close', (code) => {
       clearTimeout(timeout);
