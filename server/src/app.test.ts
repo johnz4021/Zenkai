@@ -520,6 +520,16 @@ describe('practice door — re-infer interaction (decision 6A + T10, 2026-08-12)
     expect(js).toMatch(/if \(snapshot\) \{ rep\.gaps = snapshot;/);
   });
 
+  it('the task hypothesis rides to the build: POSTed, validated, stored, routed', () => {
+    // Client sends the confirmed hypothesis; server re-proves enum membership
+    // (recipe-side task is never trusted raw); rep-build routes the skeleton.
+    expect(js).toContain('task: d.task || undefined');
+    const appSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'app.ts'), 'utf8');
+    expect(appSource).toMatch(/ROUND_TASKS as readonly string\[\]\)\.includes\(b\.task\)/);
+    const cliSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'cli.ts'), 'utf8');
+    expect(cliSource).toMatch(/pickSkeletonFile\(\s*rep\.spec,/);
+  });
+
   it('an answered gap is the CANDIDATE\'s data — it survives the model dropping it', () => {
     // Live 2026-08-12: answering seniority + part-scope, then re-inferring,
     // removed BOTH from the server response — so the rail lost them and

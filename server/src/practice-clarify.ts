@@ -44,10 +44,10 @@
 
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { deriveMemoryTags, validateRoundSpec } from '@interview-prep/shared';
+import { deriveMemoryTags, validateRoundSpec, type RoundSpec } from '@interview-prep/shared';
 import { draftToSpec, type DraftToolOutput, type SpecDraft } from './intake.js';
 import { ROUND_FIELDS, coerceArray } from './clarify.js';
-import { REQUIRED_HEADINGS } from './blueprint.js';
+import { REQUIRED_HEADINGS, ROUND_TASKS, deriveTaskFromSpec, type RoundTask } from './blueprint.js';
 
 /** The section vocabulary — REQUIRED_HEADINGS plus the optional engagement
  *  section, '## ' stripped. Derived so blueprint.ts and this module cannot
@@ -79,10 +79,46 @@ export const SPOILER_SECTION = 'Topic guidance';
  *  unrecognizable round. A live run returned zero open gaps on exactly that
  *  paste and the candidate had to volunteer "python" through the correction
  *  box (2026-08-12). */
-export const RUNTIME_GAP_IDS = ['time-limit', 'language'] as const;
+export const RUNTIME_GAP_IDS = ['time-limit', 'language', 'round-task'] as const;
 
 export type TimeEvidence = 'stated_timed' | 'stated_untimed' | 'unknown';
 export type LanguageEvidence = 'stated' | 'unknown';
+export type TaskEvidence = 'stated' | 'inferred';
+
+/** Human labels for the task enum — the rail's honest closed menu (six
+ *  values IS a genuine enum, so pills-only is the right affordance). The
+ *  principled successor of the old REP_KINDS check.kind select, one axis up. */
+export const TASK_LABELS: Record<RoundTask, string> = {
+  algorithmic_set: 'Algorithmic problem set',
+  debug: 'Debugging',
+  practical_build: 'Build a small system',
+  comprehend: 'Unfamiliar codebase',
+  extend_keep_green: 'Extend without breaking',
+  review_diff: 'Review a change',
+};
+
+/** Which check kinds a task can honestly pair with. Deliberately permissive
+ *  (plan risk #2): only impossible combos are out. A mismatch never sinks a
+ *  draft — coerceTask falls back to the capability derivation. */
+const TASK_CHECK_KINDS: Record<RoundTask, ReadonlyArray<RoundSpec['check']['kind']>> = {
+  algorithmic_set: ['all_failing'],
+  debug: ['one_failing_test'],
+  practical_build: ['all_failing'],
+  comprehend: ['one_failing_test', 'all_passing', 'all_failing'],
+  extend_keep_green: ['all_passing'],
+  review_diff: ['diff_present'],
+};
+
+/** The task hypothesis, trusted only when valid AND coherent with the
+ *  check kind the draft itself carries; otherwise derived from capability
+ *  facts. Never fatal — the same never-sink philosophy as affects/target. */
+export function coerceTask(raw: unknown, spec: RoundSpec): { task: RoundTask; coerced: boolean } {
+  const t = text(raw) as RoundTask;
+  if ((ROUND_TASKS as readonly string[]).includes(t) && TASK_CHECK_KINDS[t].includes(spec.check.kind)) {
+    return { task: t, coerced: false };
+  }
+  return { task: deriveTaskFromSpec(spec), coerced: true };
+}
 
 export interface PracticeGap {
   id: string;
@@ -190,8 +226,20 @@ const PRACTICE_TOOL = {
                 'When language_evidence is unknown: 2-4 languages worth offering, drawn from the material where possible (the stack a JD names, what a sibling round used). Empty when you have nothing to go on.',
               items: { type: 'string' },
             },
+            task: {
+              type: 'string',
+              enum: [...ROUND_TASKS],
+              description:
+                'What the candidate is asked to DO: algorithmic_set (short independent statement-driven problems), debug (find and fix in working-looking code), practical_build (build a small system against staged/evolving requirements — includes decomp/LLD rounds even when delivered as an OA), comprehend (make sense of an unfamiliar codebase, then change it), extend_keep_green (add to a working system without breaking its suite), review_diff (review a proposed change). Platform names are DELIVERY, never task: a HackerRank round can be any of these.',
+            },
+            task_evidence: {
+              type: 'string',
+              enum: ['stated', 'inferred'],
+              description:
+                "stated: the material pins the kind of work (they described what they did or will do); inferred: your best read. When unsure, 'inferred' — the candidate corrects it on the confirm screen.",
+            },
           },
-          required: ['id', 'label', 'interviewer', 'can_run_tests', 'time_limit_minutes', 'starts_from', 'submit', 'check_kind', 'rationale', 'unsupported', 'time_evidence', 'language', 'language_evidence'],
+          required: ['id', 'label', 'interviewer', 'can_run_tests', 'time_limit_minutes', 'starts_from', 'submit', 'check_kind', 'rationale', 'unsupported', 'time_evidence', 'language', 'language_evidence', 'task', 'task_evidence'],
         },
       },
       gaps: {
@@ -262,6 +310,40 @@ function languageGap(options: string[]): PracticeGap {
   };
 }
 
+/** The task hypothesis as a rail row. ALWAYS settled — a draft cannot exist
+ *  without implying some task — so the question is never open; correction is
+ *  re-picking from a genuinely closed menu. `inferred` wears the GUESSED chip
+ *  and sorts to the top of the rail: a wrong hypothesis is exactly the
+ *  confident-and-wrong fact the rail exists to catch (decision 1A), and this
+ *  wrong hypothesis is the one that misgenerated a live round (2026-08-12). */
+function roundTaskGap(task: RoundTask, evidence: PracticeGap['evidence']): PracticeGap {
+  return {
+    id: 'round-task',
+    label: 'round type',
+    question: 'What kind of work is this round?',
+    why: 'Selects the generation recipe — a build round and a problem set are different rounds.',
+    status: 'settled',
+    value: TASK_LABELS[task],
+    evidence,
+    closed: true,
+    answer_type: 'enum',
+    options: (Object.values(TASK_LABELS)).map((label) => ({ label })),
+    affects: 'shape',
+    target: 'task',
+    section: 'What this round is',
+  };
+}
+
+/** The code-owned side of an answered round-task: human label (or raw enum)
+ *  back to the task. Unparseable → null, keep the model's hypothesis. */
+export function parseTaskAnswer(answer: string): RoundTask | null {
+  const a = answer.trim().toLowerCase();
+  for (const t of ROUND_TASKS) {
+    if (t === a || TASK_LABELS[t].toLowerCase() === a) return t;
+  }
+  return null;
+}
+
 /** Deterministic runtime-gap derivation. Pure; unit-tested as a truth table. */
 export function deriveRuntimeGaps(input: {
   timeEvidence: TimeEvidence;
@@ -269,6 +351,8 @@ export function deriveRuntimeGaps(input: {
   languageEvidence: LanguageEvidence;
   language: string;
   languageOptions: string[];
+  task: RoundTask;
+  taskEvidence: TaskEvidence;
   answeredIds: ReadonlySet<string>;
   answers?: { id: string; answer: string }[];
 }): PracticeGap[] {
@@ -289,6 +373,12 @@ export function deriveRuntimeGaps(input: {
   else if (input.languageEvidence === 'stated' && input.language.trim()) {
     out.push({ ...base, status: 'settled', value: input.language.trim(), evidence: 'stated' });
   } else out.push(base);
+
+  const taskAnswered = (input.answers ?? []).find((a) => a.id === 'round-task');
+  out.push(roundTaskGap(
+    input.task,
+    taskAnswered && parseTaskAnswer(taskAnswered.answer) ? 'answered' : input.taskEvidence,
+  ));
 
   return out;
 }
@@ -426,7 +516,14 @@ export function gatePracticeClarify(
   const droppedDrafts: string[] = [];
   for (const r of rounds) {
     try {
-      drafts.push(draftToSpec(r as DraftToolOutput));
+      const draft = draftToSpec(r as DraftToolOutput);
+      // The task hypothesis rides ON the draft (recipe-side): trusted when
+      // valid and coherent with the draft's own check kind, else derived
+      // from capability facts. Never a reason to sink a draft.
+      const { task, coerced } = coerceTask((r as Record<string, unknown>).task, draft.spec);
+      if (coerced) console.warn(`[practice-clarify] task coerced to "${task}" for draft "${draft.spec.id}"`);
+      draft.task = task;
+      drafts.push(draft);
       rawByDraft.push(r as Record<string, unknown>);
     } catch (e) {
       droppedDrafts.push(String(e).slice(0, 120));
@@ -486,6 +583,15 @@ export function gatePracticeClarify(
     console.warn(`[practice-clarify] dropped ${droppedGaps.length} gap(s): ${droppedGaps.join(' | ')}`);
   }
 
+  // An answered round-task is applied by CODE (the applyTimeAnswer contract):
+  // the candidate's pick overrides the model's hypothesis, on every draft,
+  // and the model cannot un-correct it on a later turn.
+  const taskAnswer = (answers ?? []).find((a) => a.id === 'round-task');
+  const pickedTask = taskAnswer ? parseTaskAnswer(taskAnswer.answer) : null;
+  if (pickedTask) {
+    for (const d of drafts) d.task = pickedTask;
+  }
+
   const first = rawByDraft[0]!;
   gaps.push(
     ...deriveRuntimeGaps({
@@ -496,6 +602,8 @@ export function gatePracticeClarify(
       languageOptions: coerceArray(first.language_options ?? [])
         .map((o) => text(o))
         .filter(Boolean),
+      task: drafts[0]!.task as RoundTask,
+      taskEvidence: text(first.task_evidence) === 'stated' ? 'stated' : 'inferred',
       answeredIds,
       answers,
     }),
@@ -556,7 +664,7 @@ export function claudePPracticeClarifier(templatePath: string, model = 'sonnet')
         : '';
       const prompt =
         buildPrompt(templatePath, input) + attachNote +
-        '\n\nReply with ONLY a JSON object: {"rounds": [{id, label, interviewer, can_run_tests, time_limit_minutes, time_evidence, language, language_evidence, language_options, starts_from, submit, check_kind, emphasis, rationale, unsupported}], "gaps": [{id, label, question, why, status, value, evidence, closed, answer_type, options: [{label, detail}], affects, target, section}], "brief": "..."}';
+        '\n\nReply with ONLY a JSON object: {"rounds": [{id, label, interviewer, can_run_tests, time_limit_minutes, time_evidence, language, language_evidence, language_options, task, task_evidence, starts_from, submit, check_kind, emphasis, rationale, unsupported}], "gaps": [{id, label, question, why, status, value, evidence, closed, answer_type, options: [{label, detail}], affects, target, section}], "brief": "..."}';
       const child = spawn('claude', ['-p', prompt, '--output-format', 'text', '--model', model], {
         stdio: ['ignore', 'pipe', 'pipe'],
       });

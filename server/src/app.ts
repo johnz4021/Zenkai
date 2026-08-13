@@ -1567,6 +1567,7 @@ export function runApp(cfg: AppConfig): http.Server {
         };
         const { clarifyFailureMessage } = await import('./clarify.js');
         const { deriveRuntimeGaps, pickPracticeClarifier } = await import('./practice-clarify.js');
+        const { deriveTaskFromSpec } = await import('./blueprint.js');
         let input: { description: string; context: string };
         try {
           input = gateRepInput(b);
@@ -1631,6 +1632,10 @@ export function runApp(cfg: AppConfig): http.Server {
                 languageEvidence: 'unknown',
                 language: '',
                 languageOptions: [],
+                // The blind read has no hypothesis; capability facts stand in
+                // and the rail says GUESSED, which is the honest chip here.
+                task: deriveTaskFromSpec(draft.spec),
+                taskEvidence: 'inferred',
                 answeredIds: new Set(answers.map((a) => a.id)),
                 answers,
               }),
@@ -1648,7 +1653,7 @@ export function runApp(cfg: AppConfig): http.Server {
         // and the mkdir lock is what makes a double-click spawn exactly one
         // detached agent (both clicks carry the same client-generated id).
         const b = JSON.parse((await readBody(req)) || '{}') as {
-          rep_id?: string; spec?: unknown; description?: string; context?: string;
+          rep_id?: string; spec?: unknown; description?: string; context?: string; task?: string;
         };
         if (typeof b.rep_id !== 'string' || !REP_ID_RE.test(b.rep_id)) {
           return json(400, { error: 'bad rep id' });
@@ -1690,12 +1695,19 @@ export function runApp(cfg: AppConfig): http.Server {
         } catch (e) {
           return json(409, { error: String(e instanceof Error ? e.message : e) });
         }
+        // The task hypothesis rides only when it names a real task — an
+        // absent/garbled value falls back to capability derivation in
+        // rep-build, never an error (recipe-side, not vocabulary).
+        const { ROUND_TASKS } = await import('./blueprint.js');
+        const task = typeof b.task === 'string' && (ROUND_TASKS as readonly string[]).includes(b.task)
+          ? b.task : undefined;
         const rep = createRepRecord({
           userId: user!.id,
           id: b.rep_id,
           spec: b.spec as RoundSpec,
           description: input.description,
           ...(input.context ? { context: input.context } : {}),
+          ...(task ? { task } : {}),
         });
         const file = loadReps(repoRoot);
         file.items.push(rep);

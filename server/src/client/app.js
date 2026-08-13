@@ -1429,6 +1429,9 @@ async function practiceStart(btn) {
     body: JSON.stringify({
       rep_id: rep.repId,
       spec: d.spec,
+      // The task hypothesis (round-task on the rail) routes the generation
+      // skeleton server-side; the server re-validates against its enum.
+      task: d.task || undefined,
       description: rep.description,
       context: [buildContext(), prose].filter(Boolean).join('\n\n') || undefined,
     }),

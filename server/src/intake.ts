@@ -134,6 +134,11 @@ export interface SpecDraft {
   spec: RoundSpec;
   /** Why the model chose this shape — shown at confirm time. */
   rationale: string;
+  /** The task hypothesis (blueprint.ts ROUND_TASKS) — recipe-side routing
+   *  for skeleton choice, set by the practice clarifier's gate. Typed as
+   *  string here to keep intake free of a blueprint import; the practice
+   *  gate guarantees enum membership. */
+  task?: string;
   /** Non-empty when the round asks for something the environment lacks
    *  (e.g. a system-design canvas). Declining honestly beats a bad session. */
   unsupported?: string;

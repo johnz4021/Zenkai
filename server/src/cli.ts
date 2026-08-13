@@ -437,7 +437,12 @@ if (cmd === 'generate') {
   if (!existsSync(bpFile)) {
     try {
       const skeleton = readFileSync(
-        path.join(repoRoot, 'prompts', 'blueprints', bp.pickSkeletonFile(rep.spec)),
+        // The stored hypothesis (confirmed on the rail) routes the skeleton;
+        // pre-taxonomy reps have none and fall back to capability facts.
+        path.join(repoRoot, 'prompts', 'blueprints', bp.pickSkeletonFile(
+          rep.spec,
+          (bp.ROUND_TASKS as readonly string[]).includes(rep.task ?? '') ? rep.task as import('./blueprint.js').RoundTask : undefined,
+        )),
         'utf8',
       );
       const markdown = bp.gateBlueprint(

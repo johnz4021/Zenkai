@@ -39,6 +39,21 @@ A round is described by:
   from the material wherever possible (the stack a JD names, what a sibling round used).
   These become the tappable shortcuts, so material-derived beats generic every time.
   Empty only when you genuinely have nothing to go on.
+- `task` / `task_evidence` — WHAT THE CANDIDATE IS ASKED TO DO, the most consequential
+  classification you make: it selects the generation recipe. One of:
+    `algorithmic_set` — several short, independent, statement-driven problems
+    `debug` — find and fix a defect in working-looking code
+    `practical_build` — build a small system against staged/evolving requirements
+      (decomp and LLD rounds are THIS, even when delivered on HackerRank as an "OA" —
+      escalating parts of one system means practical_build, not algorithmic_set)
+    `comprehend` — make sense of an unfamiliar codebase, then change it
+    `extend_keep_green` — add to a working system without breaking its green suite
+    `review_diff` — review a proposed change and judge it
+  Platform names are DELIVERY, never task: HackerRank hosts all of these. Classify from
+  what the material says the candidate DOES; `stated` only when their words pin it,
+  `inferred` otherwise — the confirm screen shows your hypothesis with its provenance
+  and the candidate corrects it in one tap, so an honest `inferred` beats a confident
+  guess every time.
 - `starts_from` — `repo` (existing codebase: debugging, extend), `blank` (build from
   scaffold: most OAs, implement-these-classes), `diff` (review someone's change).
 - `submit` — `one_shot` (graded once at the end) or `iterate`.
@@ -153,10 +168,11 @@ Rules for every gap:
   difficulty, topic, seniority); a spec path like `"spec.check.kind"` or
   `"spec.check.max_source_files"` when the answer changes the round's mechanical shape.
 - `section` — which skeleton section (verbatim from the list above) this gap feeds.
-- **NEVER author a time-limit or language gap.** Both are reported through the round
-  draft (`time_evidence`, `language` / `language_evidence` / `language_options`) and the
-  product owns those two questions. They are the only fields the candidate is the sole
-  source of, so code guarantees they get asked; everything else is yours to judge.
+- **NEVER author a time-limit, language, or round-type gap.** All three are reported
+  through the round draft (`time_evidence`; `language` / `language_evidence` /
+  `language_options`; `task` / `task_evidence`) and the product owns those questions —
+  code renders them on the confirm screen with their provenance. Everything else is
+  yours to judge.
 - At most 5 OPEN gaps, fewer is better. A gap you cannot tie to the recognizability
   test is not a gap.
 

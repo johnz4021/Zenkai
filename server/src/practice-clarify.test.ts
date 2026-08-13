@@ -15,8 +15,11 @@ import {
   RUNTIME_GAP_IDS,
   SPOILER_SECTION,
   applyTimeAnswer,
+  coerceTask,
   deriveRuntimeGaps,
   gatePracticeClarify,
+  parseTaskAnswer,
+  TASK_LABELS,
 } from './practice-clarify.js';
 import { draftToSpec } from './intake.js';
 
@@ -32,6 +35,8 @@ const round = (over: Record<string, unknown> = {}) => ({
   language: '',
   language_evidence: 'unknown',
   language_options: ['Go', 'Python'],
+  task: 'algorithmic_set',
+  task_evidence: 'inferred',
   starts_from: 'blank',
   submit: 'one_shot',
   check_kind: 'all_failing',
@@ -262,6 +267,82 @@ describe('the spoiler rule — a gap describes the ROUND, never the PROBLEM', ()
   });
 });
 
+describe('the task hypothesis — the classification that routes generation', () => {
+  it('rides the draft and surfaces as a SETTLED rail gap wearing its provenance', () => {
+    const out = gatePracticeClarify(body());
+    expect(out.drafts[0]!.task).toBe('algorithmic_set');
+    const rt = out.gaps.find((g) => g.id === 'round-task')!;
+    expect(rt.status).toBe('settled');
+    expect(rt.evidence).toBe('inferred');           // GUESSED chip, top of rail
+    expect(rt.value).toBe('Algorithmic problem set');
+    expect(rt.closed).toBe(true);                    // 6 values IS a closed enum
+    expect(rt.options.map((o) => o.label)).toEqual(Object.values(TASK_LABELS));
+    expect(rt.affects).toBe('shape');
+  });
+
+  it('stated evidence passes through to the chip', () => {
+    const out = gatePracticeClarify(body({ rounds: [round({ task: 'practical_build', task_evidence: 'stated' })] }));
+    expect(out.gaps.find((g) => g.id === 'round-task')!.evidence).toBe('stated');
+  });
+
+  it('an incoherent hypothesis is coerced from capability facts, never fatal', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // review_diff cannot pair with all_failing — falls back to blank+panes → algorithmic_set
+    const out = gatePracticeClarify(body({ rounds: [round({ task: 'review_diff' })] }));
+    expect(out.drafts).toHaveLength(1);
+    expect(out.drafts[0]!.task).toBe('algorithmic_set');
+    warn.mockRestore();
+  });
+
+  it('the misgenerated round is now representable: practical_build in OA delivery', () => {
+    // "Palantir OA (HackerRank, 3 parts)" — blank + all_failing + panes. The
+    // old keyword router could only ever see the OA skeleton; the hypothesis
+    // separates the capability-identical twins.
+    const out = gatePracticeClarify(body({ rounds: [round({ task: 'practical_build' })] }));
+    expect(out.drafts[0]!.task).toBe('practical_build');
+  });
+
+  it("an answered round-task is applied by CODE to every draft — the model cannot un-correct it", () => {
+    const out = gatePracticeClarify(
+      body({ rounds: [round(), round({ id: 'second', label: 'Second round' })] }),
+      [{ id: 'round-task', answer: 'Build a small system' }],
+    );
+    for (const d of out.drafts) expect(d.task).toBe('practical_build');
+    const rt = out.gaps.find((g) => g.id === 'round-task')!;
+    expect(rt.evidence).toBe('answered');
+    expect(rt.value).toBe('Build a small system');
+  });
+
+  it('an unparseable answer keeps the hypothesis instead of guessing', () => {
+    const out = gatePracticeClarify(body(), [{ id: 'round-task', answer: 'idk something fun' }]);
+    expect(out.drafts[0]!.task).toBe('algorithmic_set');
+    expect(out.gaps.find((g) => g.id === 'round-task')!.evidence).toBe('inferred');
+  });
+
+  it('a model-authored round-task gap is dropped — code owns that row', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = gatePracticeClarify(body({ gaps: [gap({ id: 'round-task' })] }));
+    expect(out.gaps.filter((g) => g.id === 'round-task')).toHaveLength(1); // the code-owned one
+    warn.mockRestore();
+  });
+
+  it('parseTaskAnswer accepts labels and raw enum values, case-insensitively', () => {
+    expect(parseTaskAnswer('Review a change')).toBe('review_diff');
+    expect(parseTaskAnswer('review_diff')).toBe('review_diff');
+    expect(parseTaskAnswer('DEBUGGING')).toBe('debug');
+    expect(parseTaskAnswer('whatever')).toBeNull();
+  });
+
+  it('coerceTask truth table: valid+coherent kept, everything else derived', () => {
+    const mk = (kind: string, sf = 'blank') => draftToSpec(round({ check_kind: kind, starts_from: sf, time_limit_minutes: 90 }) as never).spec;
+    expect(coerceTask('practical_build', mk('all_failing'))).toEqual({ task: 'practical_build', coerced: false });
+    expect(coerceTask('comprehend', mk('all_failing'))).toEqual({ task: 'comprehend', coerced: false });
+    expect(coerceTask('debug', mk('all_failing'))).toEqual({ task: 'algorithmic_set', coerced: true });
+    expect(coerceTask('nonsense', mk('all_failing', 'repo'))).toEqual({ task: 'practical_build', coerced: true });
+    expect(coerceTask(undefined, mk('one_failing_test', 'repo'))).toEqual({ task: 'debug', coerced: true });
+  });
+});
+
 describe('the language floor (2026-08-12: a live run asked nothing and the candidate had to type it)', () => {
   it('unknown evidence opens a language gap even when the model emitted no gaps at all', () => {
     const out = gatePracticeClarify(body({ gaps: [] }));
@@ -320,6 +401,7 @@ describe('deriveRuntimeGaps — the truth table', () => {
     const [g] = deriveRuntimeGaps({
       timeEvidence, timeLimitMs, answeredIds,
       languageEvidence: 'unknown', language: '', languageOptions: [],
+      task: 'algorithmic_set', taskEvidence: 'inferred',
     });
     expect(g!.id).toBe('time-limit');
     expect(g!.status).toBe(status);
@@ -402,7 +484,7 @@ describe('practice-clarify.md — the fence stays (TODOS #19 regression pin)', (
 
   it('lists every gap section verbatim, and owns the time question', () => {
     for (const s of GAP_SECTIONS) expect(template).toContain(`- ${s}`);
-    expect(template).toContain('NEVER author a time-limit or language gap');
+    expect(template).toContain('NEVER author a time-limit, language, or round-type gap');
     // The spoiler rule and its escape hatch must both stay in the prompt.
     expect(template).toContain('hand them the exam');
     expect(template).toContain('Topical intent goes in `emphasis`, never in a gap');

@@ -56,6 +56,11 @@ export interface Rep extends QueueItem {
   spec: RoundSpec;
   description: string;
   context?: string;
+  /** The clarifier's task hypothesis (blueprint.ts ROUND_TASKS), confirmed
+   *  or corrected on the confirm rail. RECIPE-SIDE: routes skeleton choice
+   *  in rep-build and nothing else — deliberately not in RoundSpec (the
+   *  two-artifact rule). Absent = pre-taxonomy rep = capability fallback. */
+  task?: string;
   created: string;
   /** Beta (WU5): who created this rep. Absent = pre-beta = the local user
    *  ('u1') — the founder's. Descriptions hold pasted recruiter emails, so
@@ -158,6 +163,7 @@ export function createRepRecord(input: {
   spec: RoundSpec;
   description: string;
   context?: string;
+  task?: string;
   now?: number;
   userId?: string;
 }): Rep {
@@ -174,6 +180,7 @@ export function createRepRecord(input: {
     spec: input.spec,
     description: input.description,
     ...(input.context ? { context: input.context } : {}),
+    ...(input.task ? { task: input.task } : {}),
     created: new Date(input.now ?? Date.now()).toISOString(),
     ...(input.userId ? { user_id: input.userId } : {}),
   };
