@@ -79,7 +79,7 @@ export const SPOILER_SECTION = 'Topic guidance';
  *  unrecognizable round. A live run returned zero open gaps on exactly that
  *  paste and the candidate had to volunteer "python" through the correction
  *  box (2026-08-12). */
-export const RUNTIME_GAP_IDS = ['time-limit', 'language', 'round-task'] as const;
+export const RUNTIME_GAP_IDS = ['time-limit', 'language', 'round-task', 'named-problem'] as const;
 
 export type TimeEvidence = 'stated_timed' | 'stated_untimed' | 'unknown';
 export type LanguageEvidence = 'stated' | 'unknown';
@@ -243,6 +243,12 @@ const PRACTICE_TOOL = {
               description:
                 "stated: the material pins the kind of work (they described what they did or will do); inferred: your best read. When unsure, 'inferred' — the candidate corrects it on the confirm screen.",
             },
+            named_problems: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'Specific well-known problems the material NAMES outright ("two sum", "LC 146", "merge intervals") — copy the words used. ONLY explicit mentions; a topic ("graphs", "DP") is NOT a named problem, and you never infer one. Empty when nothing is named.',
+            },
           },
           required: ['id', 'label', 'interviewer', 'can_run_tests', 'time_limit_minutes', 'starts_from', 'submit', 'check_kind', 'rationale', 'unsupported', 'time_evidence', 'language', 'language_evidence', 'task', 'task_evidence'],
         },
@@ -335,6 +341,40 @@ function roundTaskGap(task: RoundTask, evidence: PracticeGap['evidence']): Pract
     options: (Object.values(TASK_LABELS)).map((label) => ({ label })),
     affects: 'shape',
     target: 'task',
+    section: 'What this round is',
+  };
+}
+
+/** The real-set binding as a rail row. Settled always (the pick/name is a
+ *  fact, not a question); text input open so the candidate can name a
+ *  different problem or type "invent" to opt out. Display policy differs by
+ *  provenance: a USER-named problem shows its real title (they typed it);
+ *  an AUTO pick stays hidden — showing the title would hand them the exam
+ *  the skinning exists to keep fresh. Code-owned: gateGap rejects model
+ *  gaps with this id (RUNTIME_GAP_IDS) and with target 'source'. */
+export function namedProblemGap(
+  entry: { title: string; difficulty: string },
+  pickedBy: 'user' | 'auto',
+): PracticeGap {
+  return {
+    id: 'named-problem',
+    label: 'problem',
+    question: 'Which real problem should this round build from?',
+    why:
+      pickedBy === 'user'
+        ? 'You named it — the build reskins the real problem, so the surface will still be new.'
+        : 'Picked from the real problem set and reskinned. Name one to replace the pick, or type "invent" for a made-up problem.',
+    status: 'settled',
+    value:
+      pickedBy === 'user'
+        ? `${entry.title} · ${entry.difficulty} — from the real set`
+        : 'picked from the real set — hidden until the round',
+    evidence: pickedBy === 'user' ? 'stated' : 'inferred',
+    closed: false,
+    answer_type: 'text',
+    options: [{ label: 'invent instead' }],
+    affects: 'shape',
+    target: 'source',
     section: 'What this round is',
   };
 }
@@ -542,6 +582,14 @@ export function gatePracticeClarify(
         (r as Record<string, unknown>).task_evidence = 'inferred';
       }
       draft.task = task;
+      // Named problems ride raw (strings the material used) — RESOLUTION
+      // against the dataset index is I/O and happens at the route, never
+      // here. The model notices a name; it never decides which entry it is.
+      const named = coerceArray((r as Record<string, unknown>).named_problems ?? [])
+        .map((v) => text(v))
+        .filter(Boolean)
+        .slice(0, 4);
+      if (named.length) draft.named_problems = named;
       drafts.push(draft);
       rawByDraft.push(r as Record<string, unknown>);
     } catch (e) {

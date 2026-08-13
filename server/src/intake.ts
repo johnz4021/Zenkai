@@ -139,6 +139,13 @@ export interface SpecDraft {
    *  string here to keep intake free of a blueprint import; the practice
    *  gate guarantees enum membership. */
   task?: string;
+  /** Raw problem references the material NAMED ("two sum", "LC 146") —
+   *  the clarifier notices them, the ROUTE resolves them against the
+   *  dataset index (lc-refs.ts). Never model-resolved. */
+  named_problems?: string[];
+  /** Set by the route after mechanical resolution/auto-pick — the binding
+   *  the confirm screen displays and the start call commits. */
+  source?: { slug: string; title: string; difficulty: 'easy' | 'medium' | 'hard'; picked_by: 'user' | 'auto' };
   /** Non-empty when the round asks for something the environment lacks
    *  (e.g. a system-design canvas). Declining honestly beats a bad session. */
   unsupported?: string;

@@ -100,7 +100,15 @@ const PROPOSE_TOOL = {
         description: 'One entry PER DISTINCT ROUND. At least 1 once any coherent shape exists.',
         items: {
           type: 'object',
-          properties: ROUND_FIELDS,
+          properties: {
+            ...ROUND_FIELDS,
+            named_problems: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'Specific well-known problems the candidate NAMED for this round ("they asked me two sum", "LC 146"). Copy their words, one entry per problem. ONLY explicit mentions — a topic is not a named problem, and you never infer one. Empty when nothing was named.',
+            },
+          },
           required: ['id', 'label', 'interviewer', 'can_run_tests', 'time_limit_minutes', 'starts_from', 'submit', 'check_kind', 'rationale', 'unsupported'],
         },
       },
@@ -211,7 +219,15 @@ export function gateProposal(raw: unknown): PlannerProposal {
   const dropped: string[] = [];
   for (const r of rounds) {
     try {
-      drafts.push(draftToSpec(r as DraftToolOutput));
+      const draft = draftToSpec(r as DraftToolOutput);
+      // Named problems ride raw — the accept route resolves them against
+      // the dataset index; the model never decides which entry a name is.
+      const named = coerceArray((r as Record<string, unknown>).named_problems ?? [])
+        .map((v) => text(v))
+        .filter(Boolean)
+        .slice(0, 4);
+      if (named.length) draft.named_problems = named;
+      drafts.push(draft);
     } catch (e) {
       dropped.push(String(e).slice(0, 120));
     }

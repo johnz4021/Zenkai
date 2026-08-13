@@ -427,6 +427,29 @@ function sweepOrphanedGenerations(isAlive: (pid: number) => boolean = pidAlive):
  *  planned title promises it, the spec's first sentence is the legacy
  *  fallback. Never the "label — round N" string (the twelve-identical-rows
  *  bug the redesign exists to kill). */
+/** Post-namer net (2026-08-13): a title that names a real problem both
+ *  spoils the round pre-launch and drags that problem's difficulty into the
+ *  build commitment against the blueprint's ("Two sum — hash table lookup"
+ *  vs "LeetCode-medium", sess-1786643587196). Offenders become undefined —
+ *  that item alone goes quiet — the rest land. Dataset absent = no check. */
+async function stripSpoilerTitles(titles: string[]): Promise<(string | undefined)[]> {
+  try {
+    const lc = await import('./lc-source.js');
+    if (!lc.lcReady(repoRoot).ok) return titles;
+    const { titleSpoilsProblem } = await import('./lc-refs.js');
+    const index = lc.loadLcIndex(repoRoot);
+    return titles.map((title) => {
+      if (titleSpoilsProblem(title, index)) {
+        console.warn(`[app] title "${title}" names a real problem — dropped (quiet row)`);
+        return undefined;
+      }
+      return title;
+    });
+  } catch {
+    return titles;
+  }
+}
+
 function resolveTitle(item: QueueItem): string | null {
   if (item.problem_dir) {
     const dir = path.isAbsolute(item.problem_dir) ? item.problem_dir : path.join(repoRoot, item.problem_dir);
@@ -441,6 +464,15 @@ function resolveTitle(item: QueueItem): string | null {
         /* half-written manifest mid-generation */
       }
     }
+  }
+  // A bound-but-unbuilt item: display follows provenance. The candidate
+  // NAMED a user pick, so its real title is theirs to see; an auto pick
+  // stays hidden — the reskin is what keeps the round fresh, and the plan
+  // view is read the night before.
+  if (item.source) {
+    return item.source.picked_by === 'user'
+      ? `${item.source.title} · ${item.source.difficulty} · from the real set`
+      : `sourced · ${item.source.difficulty} — hidden until the round`;
   }
   return item.planned_title ?? null;
 }
@@ -1610,6 +1642,69 @@ export function runApp(cfg: AppConfig): http.Server {
             attachments: attachmentBlocksFromDecoded(att.decoded),
           });
           warnUnsupported(result.drafts);
+          // Real-set sourcing (2026-08-13, "source by default"): every
+          // algorithmic draft gets a binding — a NAMED problem resolved
+          // mechanically, else a memory-blind diverse pick. This whole
+          // step is decoration: any failure (dataset absent, pool dry)
+          // just means the draft invents, exactly the pre-sourcing path.
+          try {
+            const lc = await import('./lc-source.js');
+            if (lc.lcReady(repoRoot).ok) {
+              const { resolveProblemRef } = await import('./lc-refs.js');
+              const { pickDiverse } = await import('./lc-pick.js');
+              const { recentlyAttemptedSlugs } = await import('./topic-graph.js');
+              const { namedProblemGap } = await import('./practice-clarify.js');
+              const index = lc.loadLcIndex(repoRoot);
+              const blocked = lc.blocklistedSlugs(repoRoot);
+              // A row the candidate already ANSWERED outranks everything a
+              // re-inference produced — their edit must not be undone by
+              // the model's next turn (the answered-gaps rule, applied to
+              // sourcing). "invent" opts the whole screen out of binding.
+              const srcAnswer = answers.find((a) => a.id === 'named-problem')?.answer.trim() ?? null;
+              const srcInvent = srcAnswer !== null && /^invent/i.test(srcAnswer);
+              for (const d of result.drafts) {
+                const task = d.task ?? deriveTaskFromSpec(d.spec);
+                if (task !== 'algorithmic_set' || srcInvent) continue;
+                let entry = null;
+                let pickedBy: 'user' | 'auto' = 'user';
+                if (srcAnswer) {
+                  const hit = resolveProblemRef(srcAnswer, index);
+                  if (hit && !blocked.has(hit.slug) && lc.eligibleForSourcing(hit)) entry = hit;
+                  else continue; // their words didn't resolve — no silent substitute
+                }
+                for (const ref of entry ? [] : d.named_problems ?? []) {
+                  const hit = resolveProblemRef(ref, index);
+                  // Named = explicit intent: the recency window does NOT
+                  // apply (re-doing a problem you asked for is fine); the
+                  // blocklist and eligibility still do.
+                  if (hit && !blocked.has(hit.slug) && lc.eligibleForSourcing(hit)) {
+                    entry = hit;
+                    break;
+                  }
+                }
+                if (!entry) {
+                  pickedBy = 'auto';
+                  const exclude = new Set([
+                    ...recentlyAttemptedSlugs(repoRoot, user!.id, Date.now()),
+                    ...blocked,
+                  ]);
+                  // Seeded on user+spec: re-clarifying the same round deals
+                  // the same problem (stable confirm screen), a different
+                  // round deals a different one.
+                  entry = pickDiverse(index, {
+                    count: 1,
+                    seed: `${user!.id}:${d.spec.id}`,
+                    excludeSlugs: exclude,
+                  })[0] ?? null;
+                }
+                if (!entry) continue;
+                d.source = { slug: entry.slug, title: entry.title, difficulty: entry.difficulty, picked_by: pickedBy };
+                result.gaps.push(namedProblemGap(entry, pickedBy));
+              }
+            }
+          } catch (e) {
+            console.warn(`[practice] source decoration skipped: ${String(e).slice(0, 160)}`);
+          }
           return json(200, result);
         } catch (e) {
           console.warn(`[app] practice clarify failed, falling back to infer: ${String(e).slice(0, 200)}`);
@@ -1654,6 +1749,7 @@ export function runApp(cfg: AppConfig): http.Server {
         // detached agent (both clicks carry the same client-generated id).
         const b = JSON.parse((await readBody(req)) || '{}') as {
           rep_id?: string; spec?: unknown; description?: string; context?: string; task?: string;
+          source_ref?: string; source_auto?: boolean;
         };
         if (typeof b.rep_id !== 'string' || !REP_ID_RE.test(b.rep_id)) {
           return json(400, { error: 'bad rep id' });
@@ -1701,6 +1797,32 @@ export function runApp(cfg: AppConfig): http.Server {
         const { ROUND_TASKS } = await import('./blueprint.js');
         const task = typeof b.task === 'string' && (ROUND_TASKS as readonly string[]).includes(b.task)
           ? b.task : undefined;
+        // The source binding rides only after the SERVER re-proves it —
+        // resolve the ref, run the one ladder. "invent", an unresolvable
+        // ref, or a refused slug all mean the same thing: no binding, the
+        // build invents. Never an error: a vanished dataset must not block
+        // a round the pre-sourcing product could build.
+        let source: QueueItem['source'];
+        const ref = typeof b.source_ref === 'string' ? b.source_ref.trim() : '';
+        if (ref && ref.toLowerCase() !== 'invent' && ref.toLowerCase() !== 'invent instead') {
+          try {
+            const lc = await import('./lc-source.js');
+            const { resolveProblemRef } = await import('./lc-refs.js');
+            const ready = lc.lcReady(repoRoot);
+            const hit = ready.ok ? resolveProblemRef(ref, lc.loadLcIndex(repoRoot)) : null;
+            const verdict = hit ? lc.sourceBindingVerdict(repoRoot, hit.slug) : null;
+            if (hit && verdict?.ok) {
+              source = {
+                kind: 'leetcode', slug: hit.slug, title: hit.title, difficulty: hit.difficulty,
+                picked_by: b.source_auto === true ? 'auto' : 'user',
+              };
+            } else {
+              console.warn(`[practice] source ref not bound ("${ref.slice(0, 60)}"): ${verdict && !verdict.ok ? verdict.reason : 'unresolved'} — inventing`);
+            }
+          } catch (e) {
+            console.warn(`[practice] source binding skipped: ${String(e).slice(0, 160)}`);
+          }
+        }
         const rep = createRepRecord({
           userId: user!.id,
           id: b.rep_id,
@@ -1708,6 +1830,7 @@ export function runApp(cfg: AppConfig): http.Server {
           description: input.description,
           ...(input.context ? { context: input.context } : {}),
           ...(task ? { task } : {}),
+          ...(source ? { source } : {}),
         });
         const file = loadReps(repoRoot);
         file.items.push(rep);
@@ -1896,6 +2019,10 @@ export function runApp(cfg: AppConfig): http.Server {
           typeof b.pace_per_week === 'number' && Number.isFinite(b.pace_per_week)
             ? Math.min(7, Math.max(1, Math.round(b.pace_per_week)))
             : undefined;
+        // Named problems ride the STORED proposal, never the client body —
+        // the same server-side re-read the summary uses, so nothing the
+        // browser edited can invent a binding.
+        const namedBySpec = new Map<string, string[]>();
         try {
           const { loadConversation, latestProposal } = await import('./planner.js');
           const prop = latestProposal(loadConversation(repoRoot, t.id));
@@ -1903,15 +2030,73 @@ export function runApp(cfg: AppConfig): http.Server {
             writeFileSync(path.join(targetDir(repoRoot, t.id), 'planner-summary.md'), prop.summary + '\n');
           }
           if (pace === undefined && prop?.pace_per_week) pace = prop.pace_per_week;
+          for (const d of prop?.drafts ?? []) {
+            if (d.named_problems?.length) namedBySpec.set(d.spec.id, d.named_problems);
+          }
         } catch { /* no conversation — CLI or legacy path */ }
         if (!loadQueue(repoRoot, t.id)) {
           const queue = proposeQueue(t, Date.now(), pace);
+          // Real-set sourcing (2026-08-13, "source by default"): algorithmic
+          // specs get bindings BEFORE naming — named problems land on the
+          // spec's items in order, memory-blind diverse picks cover the
+          // rest. Any failure (dataset absent, pool dry) leaves items
+          // unbound and they invent, the pre-sourcing path — never an error.
+          try {
+            const lc = await import('./lc-source.js');
+            const { deriveTaskFromSpec } = await import('./blueprint.js');
+            if (lc.lcReady(repoRoot).ok) {
+              const { resolveProblemRef } = await import('./lc-refs.js');
+              const { pickDiverse } = await import('./lc-pick.js');
+              const { recentlyAttemptedSlugs } = await import('./topic-graph.js');
+              const index = lc.loadLcIndex(repoRoot);
+              const blocked = lc.blocklistedSlugs(repoRoot);
+              const bound = new Set<string>();
+              const owner = t.user_id ?? legacyUserId;
+              for (const spec of t.specs) {
+                if (deriveTaskFromSpec(spec) !== 'algorithmic_set') continue;
+                const mine = queue.items.filter((i) => i.spec_id === spec.id);
+                if (mine.length === 0) continue;
+                const named: { slug: string; title: string; difficulty: 'easy' | 'medium' | 'hard' }[] = [];
+                for (const ref of namedBySpec.get(spec.id) ?? []) {
+                  const hit = resolveProblemRef(ref, index);
+                  if (hit && !blocked.has(hit.slug) && !bound.has(hit.slug) && lc.eligibleForSourcing(hit)) named.push(hit);
+                }
+                mine.forEach((item, i) => {
+                  const e = named[i];
+                  if (!e) return;
+                  item.source = { kind: 'leetcode', slug: e.slug, title: e.title, difficulty: e.difficulty, picked_by: 'user' };
+                  bound.add(e.slug);
+                });
+                const remaining = mine.filter((i) => !i.source);
+                if (remaining.length) {
+                  const exclude = new Set([
+                    ...recentlyAttemptedSlugs(repoRoot, owner, Date.now()),
+                    ...blocked,
+                    ...bound,
+                  ]);
+                  const picks = pickDiverse(index, {
+                    count: remaining.length, seed: `${t.id}:${spec.id}`, excludeSlugs: exclude,
+                  });
+                  remaining.forEach((item, i) => {
+                    const e = picks[i];
+                    if (!e) return;
+                    item.source = { kind: 'leetcode', slug: e.slug, title: e.title, difficulty: e.difficulty, picked_by: 'auto' };
+                    bound.add(e.slug);
+                  });
+                }
+              }
+            }
+          } catch (e) {
+            console.warn(`[app] sourcing skipped at accept: ${String(e).slice(0, 160)}`);
+          }
           // Name every planned round now (D-impl): one call PER SPEC so a
           // multi-round queue gets titles that fit each round's shape.
           // Failure degrades to quiet rows — naming never blocks the plan.
+          // Sourced items are EXCLUDED: a bound item needs no invented
+          // title (and the LC title must never become one).
           const namer = pickTopicNamer(path.join(repoRoot, 'prompts', 'plan-topics.md'));
           for (const spec of t.specs) {
-            const mine = queue.items.filter((i) => i.spec_id === spec.id);
+            const mine = queue.items.filter((i) => i.spec_id === spec.id && !i.source);
             if (mine.length === 0) continue;
             try {
               const brief = [
@@ -1919,8 +2104,10 @@ export function runApp(cfg: AppConfig): http.Server {
                 spec.emphasis ? `Emphasis: ${spec.emphasis}.` : '',
                 t.description ? `The candidate describes it as: ${t.description}` : '',
               ].filter(Boolean).join('\n');
-              const titles = await namer(brief, mine.length);
-              mine.forEach((item, i) => (item.planned_title = titles[i]));
+              const titles = await stripSpoilerTitles(await namer(brief, mine.length));
+              mine.forEach((item, i) => {
+                if (titles[i]) item.planned_title = titles[i];
+              });
             } catch (e) {
               console.warn(`[app] topic naming failed for ${spec.id} (quiet rows): ${String(e).slice(0, 200)}`);
             }
@@ -1989,8 +2176,10 @@ export function runApp(cfg: AppConfig): http.Server {
                 spec.emphasis ? `Emphasis: ${spec.emphasis}.` : '',
                 `The candidate just learned: ${material.slice(0, 2000)}`,
               ].filter(Boolean).join('\n');
-              const titles = await namer(brief, rows.length);
-              rows.forEach((r, i) => (r.new_title = titles[i]));
+              const titles = await stripSpoilerTitles(await namer(brief, rows.length));
+              rows.forEach((r, i) => {
+                if (titles[i]) r.new_title = titles[i];
+              });
             } catch (e) {
               console.warn(`[app] adapt naming failed for ${specId} (quiet rows): ${String(e).slice(0, 200)}`);
             }
@@ -2103,6 +2292,47 @@ export function runApp(cfg: AppConfig): http.Server {
         console.log(`[app] rebuilding ${t.id}/${item.id} under spec ${item.spec_id}`);
         spawnGeneration(t, item, dir);
         return json(200, { ok: true });
+      }
+      if (url === '/api/item/source' && req.method === 'POST') {
+        // Manual real-set binding on a plan item — the after-the-fact door
+        // ("a friend just told me they got two sum"). Only items that have
+        // not BUILT yet: a ready item's problem already exists, and
+        // changing its identity is the rebuild flow's job. Empty ref
+        // unbinds (back to invention). The server resolves and re-proves;
+        // the client never picks a slug, only speaks.
+        const b = JSON.parse((await readBody(req)) || '{}') as {
+          target_id?: string; item_id?: string; ref?: string;
+        };
+        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
+        if (!t) return json(404, { error: 'no such target' });
+        const q = loadQueue(repoRoot, t.id);
+        const item = q?.items.find((i) => i.id === b.item_id);
+        if (!q || !item) return json(404, { error: 'no such item' });
+        if (item.status !== 'pending' && item.status !== 'failed') {
+          return json(409, { error: `this round is ${item.status} — rebuild it to change what it practices` });
+        }
+        const ref = typeof b.ref === 'string' ? b.ref.trim() : '';
+        if (!ref) {
+          delete item.source;
+          saveQueue(repoRoot, q);
+          return json(200, { ok: true, source: null });
+        }
+        const lc = await import('./lc-source.js');
+        const { resolveProblemRef } = await import('./lc-refs.js');
+        const ready = lc.lcReady(repoRoot);
+        if (!ready.ok) return json(400, { error: ready.reason });
+        const hit = resolveProblemRef(ref, lc.loadLcIndex(repoRoot));
+        if (!hit) return json(400, { error: `couldn't match "${ref.slice(0, 60)}" to a problem — try its exact name or LC number` });
+        const verdict = lc.sourceBindingVerdict(repoRoot, hit.slug);
+        if (!verdict.ok) return json(400, { error: verdict.reason });
+        item.source = {
+          kind: 'leetcode', slug: hit.slug, title: hit.title, difficulty: hit.difficulty, picked_by: 'user',
+        };
+        // The invented title no longer describes what will build.
+        delete item.planned_title;
+        saveQueue(repoRoot, q);
+        return json(200, { ok: true, source: { slug: hit.slug, title: hit.title, difficulty: hit.difficulty } });
       }
       if (url === '/api/generate' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };

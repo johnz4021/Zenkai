@@ -89,3 +89,14 @@ describe('lc-source normalization', () => {
     expect(eligibleForSourcing({ ...e, n_cases: 50, stdlib_only: false })).toBe(false);
   });
 });
+
+describe('sourceBindingVerdict — the one ladder (integration over the real dataset when fetched)', () => {
+  // Pure-shape checks only when the dataset is absent; the e2e sweep covers
+  // the fetched path. Here: the reason strings surface verbatim as UI copy.
+  it('names the missing dataset instead of throwing', async () => {
+    const { sourceBindingVerdict } = await import('./lc-source.js');
+    const v = sourceBindingVerdict('/nonexistent-root', 'two-sum');
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.reason).toContain('lc fetch');
+  });
+});

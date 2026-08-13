@@ -456,6 +456,18 @@ describe('round rules — one template, four kinds of round', () => {
     expect(out).toContain('You are conducting a debugging round.');
   });
 
+  it.each(['one_failing_test', 'all_failing', 'all_passing', 'diff_present'])(
+    '%s carries the surrender rule — an explicit give-up ends coaching, not with another question',
+    (kind) => {
+      // sess-1786643587196 +28:01: "I give up. Could you check my
+      // implementation?" was answered with a Socratic question, because no
+      // rule covered surrender. Universal, like ANSWERABLE.
+      const out = render(template(), { ...base, checkKind: kind });
+      expect(out).toContain('When the candidate explicitly gives up, stop coaching.');
+      expect(out).toContain('do not reveal the solution in-session');
+    },
+  );
+
   it('a build round says there is NO planted bug and never claims one', () => {
     const out = render(template(), { ...base, checkKind: 'all_failing' });
     expect(out).toContain('NO planted bug');

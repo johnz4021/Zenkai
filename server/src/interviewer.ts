@@ -22,7 +22,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
 import { isCandidateActivity } from '@interview-prep/shared';
-import { ANSWERABLE, roundRules } from './round-rules.js';
+import { ANSWERABLE, SURRENDER, roundRules } from './round-rules.js';
 
 export type InterviewerKind = 'answer' | 'pressure' | 'probe' | 'decline' | 'silent';
 
@@ -503,6 +503,7 @@ export function render(template: string, ctx: InterviewerContext): string {
     FEEDBACK_RULES: rules.feedbackRules,
     ADRIFT_RULED_OUT: rules.adriftRuledOut,
     ANSWERABLE,
+    SURRENDER,
     CODEBASE: ctx.codebase ?? '(no codebase view available for this round)',
     HOW_TO_RUN: ctx.howToRun ?? 'Not known for this round — say you are not sure if asked.',
     TARGET_NOTE: ctx.targetNote ?? '(no history yet — first sessions)',

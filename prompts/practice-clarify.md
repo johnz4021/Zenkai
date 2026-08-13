@@ -54,6 +54,12 @@ A round is described by:
   `inferred` otherwise — the confirm screen shows your hypothesis with its provenance
   and the candidate corrects it in one tap, so an honest `inferred` beats a confident
   guess every time.
+- `named_problems` — specific well-known problems the material NAMES outright
+  ("they gave me two sum", "LC 146", "basically merge intervals"). Copy the words
+  used, one entry per problem. ONLY explicit mentions: a topic ("graphs", "DP") is
+  never a named problem, and you NEVER infer one from difficulty or vibe. You notice
+  the name; code resolves what it refers to. Empty when nothing is named — which is
+  most of the time.
 - `starts_from` — `repo` (existing codebase: debugging, extend), `blank` (build from
   scaffold: most OAs, implement-these-classes), `diff` (review someone's change).
 - `submit` — `one_shot` (graded once at the end) or `iterate`.

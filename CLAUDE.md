@@ -114,8 +114,12 @@ re-emits them post-generation), the generator only skins the surface (statement,
 naming) with the real statement fenced as private context. `mode: skinned` is the
 default; `verbatim` is policy-gated. The manifest's `source` field is patched from
 the dataset record and is what the topic ledger (`topic-graph.ts`, `topics/<uid>.json`)
-records on. Read `server/src/lc-source.ts` / `lc-convert.ts` headers before touching
-any of it.
+records on. Bindings come from intake extraction (`named_problems` on both doors,
+resolved mechanically by `lc-refs.ts`), from `lc-pick.ts` auto-sourcing (the default
+for unnamed algorithmic rounds — memory-BLIND diverse picks; the topic ledger is read
+only as a 14-day seen-window dedup), or from `POST /api/item/source`. Weakness-ranked
+selection stays deferred (TODOS #40). Read `server/src/lc-source.ts` / `lc-convert.ts`
+headers before touching any of it.
 
 **The pipeline**, end to end:
 

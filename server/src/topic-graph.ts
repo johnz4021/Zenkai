@@ -236,6 +236,25 @@ export function recordTopicAttempt(repoRoot: string, userId: string, attempt: To
   saveTopicStore(dir, upsertAttempt(store, attempt));
 }
 
+/**
+ * Slugs attempted inside the spacing window — the auto-picker's dedup
+ * set. THE one sanctioned read of this ledger by selection (user product
+ * call, 2026-08-13): a window rather than a blocklist, so a problem done
+ * recently is not re-dealt but an older one may return as spaced
+ * revision. Slug + timestamp only — difficulty/tags/verdicts stay
+ * write-only to selection (the no-steering line). Missing or corrupt
+ * ledger degrades to the empty set: dedup is a nicety, never a blocker.
+ */
+export function recentlyAttemptedSlugs(repoRoot: string, userId: string, nowMs: number): Set<string> {
+  try {
+    const store = loadTopicStore(topicsDir(repoRoot), userId);
+    const cutoff = nowMs - SPACING_DAYS * 86_400_000;
+    return new Set(store.attempts.filter((a) => a.ts >= cutoff).map((a) => a.slug));
+  } catch {
+    return new Set();
+  }
+}
+
 // ── derived view (read-only; nothing steers on it in v1) ──────────────────
 
 export type TopicState = 'unseen' | 'weak' | 'developing' | 'strong' | 'stale';

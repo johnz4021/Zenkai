@@ -168,7 +168,7 @@ next generation with no further ceremony.
 
 | # | Artifact | Written by | Reaches generation? | How |
 |---|---|---|---|---|
-| 0 | **`QueueItem.source` / `Rep.source`** (LC slug binding) | user (named problem) or hand-set; auto-picking deferred | **yes — it OVERRIDES invention** | `spawnGeneration` → `--source lc:<slug>` → pre-emitted `tests/` + `sourceRequirements()` → `{{SOURCE_BLOCK}}`; on sourced items `--title` is deliberately NOT passed (the LC title would defeat the skin) |
+| 0 | **`QueueItem.source` / `Rep.source`** (LC slug binding) | intake extraction (both doors: practice clarifier `named_problems` → rail row; planner `named_problems` → accept-spec), `lc-pick.ts` auto-sourcing (DEFAULT for unnamed algorithmic rounds — memory-blind, 14-day dedup window), or `POST /api/item/source` by hand | **yes — it OVERRIDES invention** | `spawnGeneration` → `--source lc:<slug>` → pre-emitted `tests/` + `sourceRequirements()` → `{{SOURCE_BLOCK}}`; on sourced items `--title` is deliberately NOT passed, and sourced items are excluded from the topic namer. Every binding path runs `sourceBindingVerdict` + `lc-refs.ts` resolution — the model notices names, code resolves them |
 | 1 | **Blueprint** (`targets/<id>/blueprints/<spec_id>.md`) | drafter at intake; adapt edits; hand-editable | **yes — it IS the round description** | `composeRoundBrief` → `{{ROUND_BRIEF}}` |
 | 2 | `QueueItem.planned_title` | plan-topics LLM | yes | title commitment line |
 | 3 | `check.max_source_files` | inference models or hand-set | yes + **enforced** | requirements block + validator count |

@@ -382,6 +382,32 @@ export function countProblemFiles(repoRoot: string): number {
 }
 
 /**
+ * The one check ladder every binding path runs — CLI builds, intake
+ * extraction, the plan-view control. One ladder, N callers: a slug that
+ * binds anywhere must be present, eligible, and not blocklisted, and the
+ * refusal REASON is user-facing copy at every surface.
+ */
+export function sourceBindingVerdict(
+  repoRoot: string,
+  slug: string,
+): { ok: true; entry: LcIndexEntry } | { ok: false; reason: string } {
+  const ready = lcReady(repoRoot);
+  if (!ready.ok) return { ok: false, reason: ready.reason };
+  const entry = loadLcIndex(repoRoot).find((e) => e.slug === slug);
+  if (!entry) return { ok: false, reason: `no problem "${slug}" in the dataset` };
+  if (!eligibleForSourcing(entry)) {
+    return {
+      ok: false,
+      reason: `"${slug}" is not sourceable yet (structures: ${entry.structures.join('+')}, stdlib_only: ${entry.stdlib_only}, cases: ${entry.n_cases})`,
+    };
+  }
+  if (isBlocklisted(repoRoot, slug)) {
+    return { ok: false, reason: `"${slug}" failed mechanical verification against its reference solution` };
+  }
+  return { ok: true, entry };
+}
+
+/**
  * Slugs the full `lc verify --all-eligible` sweep proved un-convertible
  * (oracle disagreements, upstream data defects). Written by the sweep,
  * consulted by source binding — an eligible-by-metadata slug that failed
@@ -389,12 +415,17 @@ export function countProblemFiles(repoRoot: string): number {
  * (the sweep is an ops step, not a hard install dependency).
  */
 export function isBlocklisted(repoRoot: string, slug: string): boolean {
+  return blocklistedSlugs(repoRoot).has(slug);
+}
+
+/** The whole blocklist as a set — the auto-picker's exclusion input. */
+export function blocklistedSlugs(repoRoot: string): Set<string> {
   try {
     const list = JSON.parse(
       readFileSync(path.join(lcRoot(repoRoot), 'blocklist.json'), 'utf8'),
     ) as { slugs?: string[] };
-    return Array.isArray(list.slugs) && list.slugs.includes(slug);
+    return new Set(Array.isArray(list.slugs) ? list.slugs : []);
   } catch {
-    return false;
+    return new Set();
   }
 }

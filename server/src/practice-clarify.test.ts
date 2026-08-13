@@ -528,3 +528,52 @@ describe('practice-clarify.md — the fence stays (TODOS #19 regression pin)', (
     expect(template).toContain('Topical intent goes in `emphasis`, never in a gap');
   });
 });
+
+describe('named problems ride the gate raw (2026-08-13 sourcing)', () => {
+  it('gatePracticeClarify attaches named_problems strings, capped and cleaned', async () => {
+    const { gatePracticeClarify } = await import('./practice-clarify.js');
+    const round = {
+      id: 'oa', label: 'LC-style OA', interviewer: false, can_run_tests: true,
+      time_limit_minutes: 60, starts_from: 'blank', submit: 'one_shot',
+      check_kind: 'all_failing', rationale: 'x', unsupported: '',
+      time_evidence: 'stated_timed', language: '', language_evidence: 'unknown',
+      language_options: [], task: 'algorithmic_set', task_evidence: 'stated',
+      named_problems: ['two sum', '', '  LC 146  ', 'a', 'b', 'c'],
+    };
+    const out = gatePracticeClarify({ rounds: [round], gaps: [], brief: 'x'.repeat(60) });
+    expect(out.drafts[0]!.named_problems).toEqual(['two sum', 'LC 146', 'a', 'b']); // ≤4, trimmed, empties dropped
+  });
+
+  it('a model gap may not impersonate the code-owned named-problem row', async () => {
+    const { gateGap } = await import('./practice-clarify.js') as never as { gateGap?: unknown };
+    // gateGap is module-internal; prove the contract through the public gate:
+    const { gatePracticeClarify } = await import('./practice-clarify.js');
+    const round = {
+      id: 'oa', label: 'x', interviewer: false, can_run_tests: true,
+      time_limit_minutes: 60, starts_from: 'blank', submit: 'one_shot',
+      check_kind: 'all_failing', rationale: 'x', unsupported: '',
+      time_evidence: 'stated_timed', language: '', language_evidence: 'unknown',
+      language_options: [], task: 'algorithmic_set', task_evidence: 'stated',
+    };
+    const badGap = {
+      id: 'named-problem', label: 'problem', question: 'which problem?', why: 'w',
+      status: 'open', value: '', evidence: 'inferred', closed: false,
+      answer_type: 'text', options: [], affects: 'shape', target: 'context',
+      section: 'What this round is',
+    };
+    const out = gatePracticeClarify({ rounds: [round], gaps: [badGap], brief: 'x'.repeat(60) });
+    // The colliding gap is dropped (per-gap leniency), never rendered.
+    expect(out.gaps.some((g) => g.id === 'named-problem')).toBe(false);
+  });
+
+  it('namedProblemGap: user picks show the title, auto picks stay hidden', async () => {
+    const { namedProblemGap } = await import('./practice-clarify.js');
+    const user = namedProblemGap({ title: 'Two Sum', difficulty: 'easy' }, 'user');
+    expect(user.value).toContain('Two Sum');
+    expect(user.evidence).toBe('stated');
+    const auto = namedProblemGap({ title: 'Two Sum', difficulty: 'easy' }, 'auto');
+    expect(auto.value).not.toContain('Two Sum');
+    expect(auto.value).toContain('hidden');
+    expect(auto.options.map((o) => o.label)).toContain('invent instead');
+  });
+});

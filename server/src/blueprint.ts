@@ -245,8 +245,13 @@ export interface BriefInputs {
  * exists to kill). Without: the legacy five-part brief, byte-for-byte.
  */
 export function composeRoundBrief(inp: BriefInputs): string {
+  // The difficulty clause exists because a title can smuggle a difficulty
+  // the recipe never chose: "Two sum — hash table lookup" (an easy) under a
+  // "LeetCode-medium" blueprint made the generator split the difference
+  // into an accidental hybrid (sess-1786643587196). The title commits WHAT
+  // gets built; the round description alone calibrates HOW HARD.
   const titleLine = inp.plannedTitle
-    ? `Planned title for THIS problem (build exactly this system, and set the manifest "title" to it): ${inp.plannedTitle}`
+    ? `Planned title for THIS problem (build exactly this system, and set the manifest "title" to it): ${inp.plannedTitle} — the round description's difficulty calibration outranks any difficulty this title implies.`
     : '';
   if (inp.blueprint) {
     return [inp.blueprint.trim(), titleLine].filter(Boolean).join('\n\n');

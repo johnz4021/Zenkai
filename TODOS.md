@@ -960,10 +960,14 @@ through timeline (renderer v3) + judge ground truth, the flushSaves-on-submit fi
 and the record-only topic ledger (`topic-graph.ts`).
 
 **Deliberately deferred, with the trigger that un-defers each:**
-- **Topic-driven problem selection** (the ranked picker + intake extraction of
-  "LC 146"/"mostly graphs", bind-at-generate) — user decision 2026-08-12: build the
-  conceptual graph, hold the steering. Trigger: enough beta ledger rows that ranking
-  beats hand-picking (~10 LC sessions/user), and the user asking for it.
+- **Weakness-RANKED problem selection** (the topic-graph-driven picker) — user
+  decision 2026-08-12: build the conceptual graph, hold the steering. Trigger:
+  enough beta ledger rows that ranking beats coverage (~10 LC sessions/user), and
+  the user asking for it. SHIPPED 2026-08-13 instead: the memory-blind half —
+  intake extraction of named problems (both doors, `lc-refs.ts`), `/api/item/source`
+  manual binding, and `lc-pick.ts` diverse auto-sourcing as the DEFAULT for unnamed
+  algorithmic rounds (dedup = 14-day recency window over the ledger, slug+ts only —
+  a seen-list, not steering).
 - **Tree/linked-list problems** (~180 slugs) — the converter's `build_tree`/`build_list`
   harness half exists as a design; scaffolds must carry standard `TreeNode`/`ListNode`.
   Trigger: eligible coverage feels thin in tree-heavy targets.
@@ -993,7 +997,7 @@ and the record-only topic ledger (`topic-graph.ts`).
 
 ---
 
-## 40. Task hypothesis on the plans path (planner / adapt / target specs)
+## 42. Task hypothesis on the plans path (planner / adapt / target specs)
 
 **What:** Extend the round-task hypothesis (blueprint.ts `ROUND_TASKS`) from the
 practice door to the season-plan path: `propose_rounds` and `adapt_plan` emit

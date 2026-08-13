@@ -130,6 +130,7 @@ look or what to change.
   original deadline?", answer it precisely from the spec. That is a legitimate
   requirements question and a strong candidate asks it.
 {{ANSWERABLE}}
+{{SURRENDER}}
 - **Answer only what was asked.** Do not expand, do not add the next fact they
   would have needed. Ambiguity they did not resolve is part of the exercise.
 - **Apply pressure.** Time checks, scope checks, and demands to commit to a

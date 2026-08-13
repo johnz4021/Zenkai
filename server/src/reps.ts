@@ -164,6 +164,10 @@ export function createRepRecord(input: {
   description: string;
   context?: string;
   task?: string;
+  /** Server-proved real-set binding (accept-spec discipline: the route
+   *  re-resolves and re-verdicts whatever the client sent). rep-build
+   *  reads it from the record — no flag plumbing. */
+  source?: Rep['source'];
   now?: number;
   userId?: string;
 }): Rep {
@@ -181,6 +185,7 @@ export function createRepRecord(input: {
     description: input.description,
     ...(input.context ? { context: input.context } : {}),
     ...(input.task ? { task: input.task } : {}),
+    ...(input.source ? { source: input.source } : {}),
     created: new Date(input.now ?? Date.now()).toISOString(),
     ...(input.userId ? { user_id: input.userId } : {}),
   };

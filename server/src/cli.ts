@@ -77,26 +77,18 @@ async function resolveSourceBinding(
     console.error(`--source-mode out of vocabulary: ${mode} (skinned|verbatim)`);
     process.exit(64);
   }
-  const ready = lc.lcReady(repoRoot);
-  if (!ready.ok) {
-    console.error(`[source] ${ready.reason}`);
+  const slug = sourceRef.replace(/^lc:/, '');
+  // One ladder for every binding surface (lc-source.ts) — the CLI's only
+  // addition is the hard exit: a bound build must fail loudly, never
+  // silently substitute an invented problem.
+  const verdict = lc.sourceBindingVerdict(repoRoot, slug);
+  if (!verdict.ok) {
+    console.error(`[source] ${verdict.reason}`);
     process.exit(2);
   }
-  const slug = sourceRef.replace(/^lc:/, '');
   const problem = lc.loadLcProblem(repoRoot, slug);
   if (!problem) {
-    console.error(`[source] no problem "${slug}" in the dataset — check the slug (cli.ts lc list)`);
-    process.exit(2);
-  }
-  if (!lc.eligibleForSourcing(lc.indexEntryOf(problem))) {
-    console.error(
-      `[source] "${slug}" is not sourceable in v1 (structures: ${problem.structures.join('+')}, ` +
-      `stdlib_only: ${problem.stdlib_only}, cases: ${problem.cases.length})`,
-    );
-    process.exit(2);
-  }
-  if (lc.isBlocklisted(repoRoot, slug)) {
-    console.error(`[source] "${slug}" failed mechanical verification (datasets/leetcode/blocklist.json) — pick another problem`);
+    console.error(`[source] index lists "${slug}" but its problem file is missing — rerun lc fetch`);
     process.exit(2);
   }
   return { problem, mode, cases: cv.selectCases(problem.cases, spec?.check.min_tests) };

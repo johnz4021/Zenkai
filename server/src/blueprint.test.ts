@@ -150,9 +150,12 @@ describe('composeRoundBrief — the generation seam', () => {
 
   it('without a blueprint: the legacy five-part brief, byte-for-byte', () => {
     const out = composeRoundBrief({ ...inputs, blueprint: null });
+    // Pin updated 2026-08-13: the titleLine gained the difficulty-precedence
+    // clause (the Amazon title/blueprint collision) — a deliberate change to
+    // the compat contract, not drift.
     expect(out).toBe(
       'Round: Palantir learning round.\n\n' +
-        'Planned title for THIS problem (build exactly this system, and set the manifest "title" to it): Async task queue — refactor\n\n' +
+        'Planned title for THIS problem (build exactly this system, and set the manifest "title" to it): Async task queue — refactor — the round description\'s difficulty calibration outranks any difficulty this title implies.\n\n' +
         'Emphasis: futures and async.\n\n' +
         'The candidate describes it as: learning round, likely async\n\n' +
         'Reference material from the candidate:\nfriend said futures in python',
