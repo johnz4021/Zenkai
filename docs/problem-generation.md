@@ -213,6 +213,9 @@ decision: nothing reads it to steer future rounds yet.
 4. The drafter runs detached from accept-spec with no UI surfacing of a
    failed draft — the degrade path (legacy brief) is silent. A "(no blueprint
    yet)" indicator is a known deferrable.
-5. `checkExpectations`' vocabulary-overlap gate can in principle false-fail a
-   terse single-file problem whose manifest spec runs short — the 150-300-word
-   manifest spec requirement is the mitigation; watch early generations.
+5. ~~`checkExpectations`' vocabulary-overlap gate can in principle false-fail a
+   terse single-file problem whose manifest spec runs short.~~ **CLOSED
+   2026-08-13**: it did, on skinned LC builds, because the tokenizer split
+   `min_ms` into sub-floor fragments and identifiers are the only vocabulary a
+   story-skinned spec shares with algorithm-speaking expectations. Identifiers
+   now stay whole (`/[^a-z0-9_]+/`).
