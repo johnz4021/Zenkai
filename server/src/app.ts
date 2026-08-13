@@ -691,6 +691,18 @@ export function appPage(): string {
   /* The honest decline (decision 2B): visible, never blocking. --weak is a
      verdict color and this IS a verdict about the round's fidelity. */
   #rep-unsupported { color: var(--text-2); font-size: 13px; margin-top: 10px; border-left: 2px solid var(--weak); padding-left: 10px; }
+  /* Step 2's read-only referent for "Confirmed from your paste", and the way
+     back to step 1. A button, not a field: in step 2 the paste is frozen. */
+  #rep-back {
+    display: block; width: 100%; text-align: left; background: var(--sunk);
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px;
+    min-height: 44px; font: inherit; color: var(--text-2); cursor: pointer;
+  }
+  #rep-back:hover { border-color: var(--line); color: var(--text-1); }
+  #rep-back .micro { display: block; margin-bottom: 2px; }
+  #rep-back .rep-src {
+    display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   #rep-note { color: var(--text-3); font-size: 12px; margin: 6px 0 14px; }
   /* .metaline is runway/reprow-scoped elsewhere; the practice surface needs
      its own copy or helper lines shout in body white (QA ISSUE-001). */

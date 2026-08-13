@@ -804,6 +804,10 @@ const rep = {
   // The gap model (design review 2026-08-12): ONE list, two views — the
   // rail renders settled gaps, the question column renders open ones.
   gaps: [], brief: '', degraded: false,
+  // The paste + attachment count that PRODUCED the current gaps. Step 1's
+  // forward action compares against these: unchanged means going back to the
+  // confirm screen is free, changed means an explicit regenerate.
+  sourceText: null, sourceAttachN: 0,
   flashIds: [],          // gap ids to .flash after the next render, then cleared
   pendingFocus: null,    // gap id whose first control gets focus post-render
   linkOpen: false,       // the link input appears on request, not by default
@@ -820,6 +824,7 @@ function resetRep() {
   rep.phase = 'input'; rep.busy = false; rep.repId = null; rep.description = '';
   rep.drafts = []; rep.questions = []; rep.answers = []; rep.chosen = 0;
   rep.gaps = []; rep.brief = ''; rep.degraded = false;
+  rep.sourceText = null; rep.sourceAttachN = 0;
   rep.flashIds = []; rep.pendingFocus = null;
   rep.linkOpen = false;
   rep.error = '';
@@ -836,6 +841,7 @@ function saveRep() {
       phase: rep.phase, repId: rep.repId, description: rep.description,
       drafts: rep.drafts, chosen: rep.chosen, gaps: rep.gaps,
       brief: rep.brief, degraded: rep.degraded, answers: rep.answers,
+      sourceText: rep.sourceText, sourceAttachN: rep.sourceAttachN,
     }));
   } catch { /* storage full or denied — the feature degrades to pre-T10 */ }
 }
@@ -851,6 +857,8 @@ function hydrateRep() {
     rep.drafts = s.drafts; rep.chosen = Number.isInteger(s.chosen) ? s.chosen : 0;
     rep.gaps = s.gaps; rep.brief = s.brief || ''; rep.degraded = Boolean(s.degraded);
     rep.answers = Array.isArray(s.answers) ? s.answers : [];
+    rep.sourceText = typeof s.sourceText === 'string' ? s.sourceText : null;
+    rep.sourceAttachN = Number.isInteger(s.sourceAttachN) ? s.sourceAttachN : 0;
     rep.questions = rep.gaps.filter((g) => g.status === 'open');
     // In-flight states don't survive a reload; clamp to what the data holds.
     rep.phase = s.phase === 'started' ? 'started'
@@ -858,6 +866,14 @@ function hydrateRep() {
   } catch { /* torn or stale snapshot — start blank */ }
 }
 hydrateRep();
+
+/** Has the paste (or its attachments) changed since the gaps were built?
+ *  Drives step 1's forward action: free return vs explicit regenerate. */
+function repPasteDirty(currentText) {
+  if (rep.sourceText === null) return false;      // nothing built yet
+  return (currentText || '').trim() !== rep.sourceText.trim()
+    || attachments.length !== rep.sourceAttachN;
+}
 
 /** The door's one live region (decision 6A): only DELTAS are announced —
  *  the container aria-live re-read the whole panel on every rebuild. */
@@ -921,29 +937,57 @@ function renderPractice() {
     }
     return;
   }
-  // The hero IS the textarea's label (label-in-h1: heading semantics and the
-  // a11y association in one element — the real-labels rule, no duplication).
-  // The composer is ONE framed instrument: borderless textarea, chips, an
-  // optional link row (progressive disclosure — the always-open input read
-  // as form furniture), and a footer with quiet affordances + the action.
-  // The example copy lives in the placeholder; the hero is the real label.
-  html += '<h1 class="hero"><label for="rep-paste">What are you preparing for?</label></h1>' +
-    '<div class="composer-frame">' +
-    '<textarea id="rep-paste" placeholder="paste a recruiter email, a JD, a friend’s description…"></textarea>' + chips +
-    (rep.linkOpen
-      // The explicit link input (planner precedent, user call 2026-08-07:
-      // affordances beat discovery). Honest copy: the practice path never
-      // fetches — a link rides along with the notes as-is.
-      ? '<div class="linkrow"><input id="rep-link" placeholder="add a link (optional) — the posting, a thread; it rides along with your notes" aria-label="Add a link (optional)" />' +
-        '<button id="rep-addlink" type="button">add</button></div>'
-      : '') +
-    '<div class="composer-foot">' +
-    '<span class="quiet-affordances"><a href="#" id="rep-attach">attach a file</a> · ' +
-    '<a href="#" id="rep-linktoggle">add a link</a></span>' +
-    (rep.phase === 'input'
-      ? '<button type="button" class="primary" id="rep-infer">Generate my round →</button>'
-      : '<span></span>') +
-    '</div></div>';
+  // ONE step on screen at a time. The composer used to render underneath the
+  // confirm screen: still editable, but with its Generate button removed, so
+  // an edit fired nothing and then silently rode along on whatever re-infer
+  // happened next (proved live 2026-08-12 — text typed during confirm reached
+  // the server minutes later attached to an unrelated correction). A live
+  // input with no trigger is worse than either a dead one or an honest one.
+  if (rep.phase === 'confirm' && rep.drafts.length) {
+    // Step 2 keeps the paste as a READ-ONLY referent — "Confirmed from your
+    // paste" has to point at something you can see — and that referent IS the
+    // way back to step 1.
+    const src = (rep.sourceText || rep.description || '').replace(/\s+/g, ' ').trim();
+    html += '<button type="button" id="rep-back" aria-label="Back to your paste, to edit it">' +
+      '<span class="micro">← your paste</span>' +
+      '<span class="rep-src">' + esc(src.slice(0, 140)) + (src.length > 140 ? '…' : '') + '</span>' +
+      '</button>';
+  } else {
+    // The hero IS the textarea's label (label-in-h1: heading semantics and the
+    // a11y association in one element — the real-labels rule, no duplication).
+    // The composer is ONE framed instrument: borderless textarea, chips, an
+    // optional link row (progressive disclosure — the always-open input read
+    // as form furniture), and a footer with quiet affordances + the action.
+    // The example copy lives in the placeholder; the hero is the real label.
+    // Returning here from step 2 keeps the drafts, so the forward action is
+    // free when nothing changed and an explicit REGENERATE when it did.
+    const dirty = repPasteDirty(keep);
+    const returning = rep.drafts.length > 0;
+    html += '<h1 class="hero"><label for="rep-paste">What are you preparing for?</label></h1>' +
+      '<div class="composer-frame">' +
+      '<textarea id="rep-paste" placeholder="paste a recruiter email, a JD, a friend’s description…"></textarea>' + chips +
+      (rep.linkOpen
+        // The explicit link input (planner precedent, user call 2026-08-07:
+        // affordances beat discovery). Honest copy: the practice path never
+        // fetches — a link rides along with the notes as-is.
+        ? '<div class="linkrow"><input id="rep-link" placeholder="add a link (optional) — the posting, a thread; it rides along with your notes" aria-label="Add a link (optional)" />' +
+          '<button id="rep-addlink" type="button">add</button></div>'
+        : '') +
+      '<div class="composer-foot">' +
+      '<span class="quiet-affordances"><a href="#" id="rep-attach">attach a file</a> · ' +
+      '<a href="#" id="rep-linktoggle">add a link</a></span>' +
+      (rep.phase === 'input'
+        ? '<button type="button" class="primary" id="rep-infer">' +
+          (!returning ? 'Generate my round →' : dirty ? 'Regenerate from your edits →' : 'Back to your round →') +
+          '</button>'
+        : '<span></span>') +
+      '</div></div>';
+    // Say what the button will DO before it does it — the whole point of
+    // making this deliberate instead of asynchronous.
+    if (returning && dirty) {
+      html += '<div class="metaline">this rebuilds the confirmed facts and the questions</div>';
+    }
+  }
 
   if (rep.phase === 'confirm' && rep.drafts.length) {
     // The gap-derived confirm screen (design review 2026-08-12): ONE list,
@@ -1055,7 +1099,17 @@ function renderPractice() {
   html += '</div>';
   host.innerHTML = html;
   const pasteEl = el('rep-paste');
-  if (pasteEl) pasteEl.value = keep;
+  if (pasteEl) {
+    pasteEl.value = keep;
+    // Typing re-renders only the footer action (free-return vs regenerate),
+    // so the label always matches what the button will actually do.
+    pasteEl.addEventListener('input', () => {
+      const btn = el('rep-infer');
+      if (!btn || !rep.drafts.length) return;
+      const d = repPasteDirty(pasteEl.value);
+      btn.textContent = d ? 'Regenerate from your edits →' : 'Back to your round →';
+    });
+  }
   if (el('rep-link')) el('rep-link').value = keepLink;
   wirePractice();
   // Post-render (decision 6A): the flash marks what the last answer changed
@@ -1141,8 +1195,29 @@ function wirePractice() {
   for (const b of f.querySelectorAll('[data-ri]')) {
     b.addEventListener('click', () => { attachments.splice(Number(b.dataset.ri), 1); renderPractice(); });
   }
+  // Step 2 → step 1. The gaps SURVIVE, so coming back is free when nothing
+  // changed; only an edit costs a rebuild.
+  const back = el('rep-back');
+  if (back) back.addEventListener('click', () => {
+    rep.phase = 'input';
+    saveRep();
+    renderPractice();
+    const t = el('rep-paste');
+    if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+  });
   const infer = el('rep-infer');
-  if (infer) infer.addEventListener('click', () => practiceClarify());
+  if (infer) infer.addEventListener('click', () => {
+    // Returning with an untouched paste is navigation, not inference — never
+    // spend a model call to show the user what they already confirmed.
+    const cur = el('rep-paste');
+    if (rep.drafts.length && !repPasteDirty(cur ? cur.value : '')) {
+      rep.phase = 'confirm';
+      saveRep();
+      renderPractice();
+      return;
+    }
+    practiceClarify(rep.answers);
+  });
   const paste = el('rep-paste');
   if (paste) paste.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) practiceClarify();
@@ -1228,9 +1303,13 @@ function answerGap(id, answer) {
 }
 
 async function practiceClarify(answers, opts) {
+  // The composer only exists in step 1. In step 2 the paste is FROZEN at what
+  // produced the gaps, so corrections are the only way the description can
+  // grow — no more silent accumulation from an editable box with no button.
   const paste = el('rep-paste');
-  if (paste && rep.phase === 'input') rep.description = paste.value;
-  if (paste && rep.phase === 'confirm') rep.description = paste.value + (rep.description.includes('\n\nCorrection: ') ? rep.description.slice(rep.description.indexOf('\n\nCorrection: ')) : '');
+  const basePaste = paste ? paste.value : (rep.sourceText ?? rep.description);
+  const cut = rep.description.indexOf('\n\nCorrection: ');
+  rep.description = basePaste + (cut >= 0 ? rep.description.slice(cut) : '');
   // Link-only input works: a landing that says "paste anything" must accept
   // someone who only dropped a link or a file. Seed the description from the
   // first text-bearing attachment; binary-only gets a stock line (the server
@@ -1280,6 +1359,10 @@ async function practiceClarify(answers, opts) {
   }
   const nextOpen = rep.gaps.find((g) => g.status === 'open');
   rep.pendingFocus = nextOpen ? nextOpen.id : null;
+  // Stamp what produced these gaps, so step 1 can tell "go back" from
+  // "rebuild" without guessing.
+  rep.sourceText = basePaste;
+  rep.sourceAttachN = attachments.length;
   // The rep id is minted at confirm-render, ONCE — Start can be mashed and
   // every click carries this same id into the server's mkdir lock.
   rep.repId = rep.repId || 'rep-' + Date.now().toString(36);
