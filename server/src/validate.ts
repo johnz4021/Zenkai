@@ -121,7 +121,14 @@ export function checkManifest(problem: GeneratedProblem, repoDir: string): strin
     }
   }
   if (spec.check.kind === 'diff_present') {
-    for (const f of spec.check.files_changed ?? []) {
+    // The manifest-side half of the diff contract: the GENERATOR must declare
+    // which files changed (validateRoundSpec no longer requires this at
+    // inference time — no problem exists there to name files from), and every
+    // declared file must exist. An empty declaration means the review round
+    // has nothing to review, which is a generation failure.
+    const changed = spec.check.files_changed ?? [];
+    if (changed.length === 0) failures.push('diff_present manifest requires non-empty check.files_changed');
+    for (const f of changed) {
       if (!existsSync(path.join(repoDir, f))) failures.push(`files_changed entry does not exist: ${f}`);
     }
   }

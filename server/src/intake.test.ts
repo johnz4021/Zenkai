@@ -50,8 +50,14 @@ describe('draftToSpec', () => {
     const { spec, unsupported } = draftToSpec(behavioral);
     expect(unsupported).toMatch(/no code/);
     expect(spec.label).toBe('Datadog behavioral');
-    // The same shape WITHOUT the decline still fails loudly.
-    expect(() => draftToSpec({ ...behavioral, unsupported: '' })).toThrow(/vocabulary gate/);
+    // An undeclined incoherent shape still fails loudly. (diff_present
+    // without files_changed stopped being the example: that requirement
+    // moved to checkManifest so inference can author review rounds at all —
+    // QA 2026-08-13. can_run_tests=false against a test-based kind remains
+    // genuinely incoherent at spec time.)
+    expect(() =>
+      draftToSpec({ ...behavioral, unsupported: '', check_kind: 'all_failing', can_run_tests: false }),
+    ).toThrow(/vocabulary gate/);
   });
 
   it('converts minutes to ms, slugifies the id, derives the tags', () => {

@@ -186,8 +186,15 @@ export function validateRoundSpec(spec: unknown): string[] {
     if (typeof k.kind !== 'string' || !CHECK_KINDS.has(k.kind)) {
       failures.push(`check.kind out of vocabulary: ${String(k.kind)}`);
     }
-    if (k.kind === 'diff_present' && (!Array.isArray(k.files_changed) || k.files_changed.length === 0)) {
-      failures.push('check.kind diff_present requires non-empty files_changed');
+    // files_changed is a SHAPE check only when present. It used to be
+    // required non-empty for diff_present — but at inference time no problem
+    // exists yet, so no model-authored review-round spec could ever name its
+    // files, and every code-review round 502'd through every intake path
+    // (QA 2026-08-13). The non-empty requirement lives in checkManifest,
+    // where the generated artifact actually exists to prove it.
+    if (k.files_changed !== undefined
+      && (!Array.isArray(k.files_changed) || k.files_changed.some((f: unknown) => typeof f !== 'string' || !f))) {
+      failures.push('check.files_changed must be an array of non-empty strings when present');
     }
     if (k.min_tests !== undefined && (typeof k.min_tests !== 'number' || k.min_tests < 1)) {
       failures.push('check.min_tests must be a positive number when present');

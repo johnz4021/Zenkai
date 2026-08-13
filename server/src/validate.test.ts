@@ -323,6 +323,23 @@ describe('checkManifest spec dispatch', () => {
     expect(checkManifest(p, '/nonexistent')).toEqual([]);
   });
 
+  it('a diff_present MANIFEST requires non-empty files_changed — the generator names what changed', () => {
+    // The inference-side gate no longer requires the list (no problem exists
+    // there to name files from — QA 2026-08-13); the proof moved HERE, where
+    // the artifact exists. An empty declaration = nothing to review = a
+    // generation failure.
+    const p = minimal({
+      round_spec: {
+        id: 'rev',
+        label: 'Review',
+        capabilities: { interviewer: false, can_run_tests: false, time_limit_ms: 60_000, starts_from: 'diff', submit: 'one_shot' },
+        check: { kind: 'diff_present' },
+        memory_tags: ['review'],
+      },
+    });
+    expect(checkManifest(p, '/nonexistent').join('\n')).toMatch(/non-empty check\.files_changed/);
+  });
+
   it('a legacy manifest still requires its planted_bug', () => {
     const p = minimal({});
     expect(checkManifest(p, '/nonexistent').join()).toMatch(/planted_bug missing/);
