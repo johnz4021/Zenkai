@@ -888,6 +888,42 @@ function announce(text) {
  *  flash exists to prevent (live report 2026-08-12). Collapse instead. */
 const FLASH_MAX = 3;
 
+/** An answer is the CANDIDATE's data, not the model's. The server is
+ *  stateless per request and re-derives its whole gap list every turn, so a
+ *  gap the model renames or forgets simply vanishes — and with it the answer,
+ *  out of the rail AND out of the context practiceStart assembles at Start.
+ *  Observed live 2026-08-12: answering seniority and part-scope, then
+ *  re-inferring, dropped both from the response and the model later re-asked
+ *  seniority under a new id.
+ *
+ *  So the client owns them. Server gaps are authoritative for what is still
+ *  OPEN; anything the candidate has answered survives regardless. Renamed
+ *  re-asks are caught on the normalized label, which drifts far less than the
+ *  id (the live re-ask kept the label "seniority bar" verbatim). */
+function mergeGaps(prevGaps, serverGaps, answers) {
+  const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const answeredIds = new Set((answers || []).map((a) => a.id));
+  const mine = new Map(prevGaps.filter((g) => answeredIds.has(g.id)).map((g) => [g.id, g]));
+  const myLabels = new Set([...mine.values()].map((g) => norm(g.label)));
+
+  const out = [];
+  for (const g of serverGaps) {
+    if (mine.has(g.id)) {
+      // Prefer the server's settled version (it may carry a tidier value);
+      // fall back to ours if it came back open, which is a re-ask.
+      out.push(g.status === 'settled' ? g : mine.get(g.id));
+      mine.delete(g.id);
+      continue;
+    }
+    // A renamed re-ask of something already answered: drop it silently.
+    if (g.status === 'open' && myLabels.has(norm(g.label))) continue;
+    out.push(g);
+  }
+  // Anything answered that the server dropped entirely.
+  for (const g of mine.values()) out.push(g);
+  return out;
+}
+
 /** Old vs new gap lists by STABLE id → what changed. Feeds the visible
  *  .gaterow.flash AND the aria-live sentence — one diff, two outputs, so
  *  sighted and screen-reader users get the same delta at the same threshold. */
@@ -1347,7 +1383,9 @@ async function practiceClarify(answers, opts) {
   }
   const oldGaps = rep.gaps;
   rep.drafts = s.drafts || []; rep.chosen = 0;
-  rep.gaps = s.gaps || []; rep.brief = s.brief || ''; rep.degraded = Boolean(s.degraded);
+  // Answered gaps survive whatever the model did with its list.
+  rep.gaps = mergeGaps(oldGaps, s.gaps || [], rep.answers);
+  rep.brief = s.brief || ''; rep.degraded = Boolean(s.degraded);
   // Open gaps ARE the questions — same render, answers keyed by gap id.
   rep.questions = rep.gaps.filter((g) => g.status === 'open');
   // One diff, two outputs (decision 6A): changed rows flash, and the live

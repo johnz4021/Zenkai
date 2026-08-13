@@ -520,6 +520,20 @@ describe('practice door — re-infer interaction (decision 6A + T10, 2026-08-12)
     expect(js).toMatch(/if \(snapshot\) \{ rep\.gaps = snapshot;/);
   });
 
+  it('an answered gap is the CANDIDATE\'s data — it survives the model dropping it', () => {
+    // Live 2026-08-12: answering seniority + part-scope, then re-inferring,
+    // removed BOTH from the server response — so the rail lost them and
+    // practiceStart (which builds context from rep.gaps) silently dropped
+    // the answers from the round. The server is stateless per request; only
+    // the client can hold this.
+    expect(js).toContain('function mergeGaps');
+    expect(js).toMatch(/rep\.gaps = mergeGaps\(oldGaps, s\.gaps \|\| \[\], rep\.answers\)/);
+    // dropped-by-server answers are re-appended
+    expect(js).toMatch(/for \(const g of mine\.values\(\)\) out\.push\(g\)/);
+    // a renamed re-ask is caught on the normalized label, not the drifting id
+    expect(js).toMatch(/myLabels\.has\(norm\(g\.label\)\)/);
+  });
+
   it('the flash collapses past a threshold — a light show is not a signal', () => {
     // A correction re-runs inference over the WHOLE description, so six rows
     // can move at once; flashing all six reads as "the page redrew", which is
