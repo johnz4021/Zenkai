@@ -29,6 +29,15 @@ A round is described by:
 - `time_evidence` — how you know: `stated_timed` (the material names a limit),
   `stated_untimed` (the material says untimed / live-paced), `unknown` (the material is
   silent — NEVER guess a limit; report unknown and the product will ask).
+- `language` / `language_evidence` — the programming language, and how you know.
+  `stated` only when the material names or clearly implies it ("a Java service", a
+  Python traceback). `unknown` otherwise — and most OAs ARE unknown, because the
+  candidate picks the language at test time. NEVER guess a language; the product owns
+  that question and will ask it.
+- `language_options` — when evidence is `unknown`, 2-4 languages worth offering, drawn
+  from the material wherever possible (the stack a JD names, what a sibling round used).
+  These become the tappable shortcuts, so material-derived beats generic every time.
+  Empty only when you genuinely have nothing to go on.
 - `starts_from` — `repo` (existing codebase: debugging, extend), `blank` (build from
   scaffold: most OAs, implement-these-classes), `diff` (review someone's change).
 - `submit` — `one_shot` (graded once at the end) or `iterate`.
@@ -84,8 +93,9 @@ For each section, CLASSIFY what the material gives you — do not imagine:
   notice. Emit nothing.
 - **gap** — the drafter's generic fallback would produce a round **the candidate would
   not recognize as their interview**. Emit an OPEN gap (`status: "open"`) with a
-  question. Language qualifies (a Go shop getting a Python repo is wrong, not generic);
-  repo shape usually does not.
+  question. The bug class a debugging round hunts qualifies (a concurrency round and an
+  off-by-one round are different interviews); repo shape usually does not. Language is
+  the archetypal case but is NOT yours to emit — see the round-draft fields.
 
 Also emit SETTLED gaps (`evidence: "inferred"`) for load-bearing values you GUESSED —
 your best inference that the material does not pin. The candidate sees these first and
@@ -107,8 +117,10 @@ Rules for every gap:
   difficulty, topic, seniority); a spec path like `"spec.check.kind"` or
   `"spec.check.max_source_files"` when the answer changes the round's mechanical shape.
 - `section` — which skeleton section (verbatim from the list above) this gap feeds.
-- **NEVER author a time-limit gap.** Time is reported through `time_evidence` on the
-  round draft; the product owns that question.
+- **NEVER author a time-limit or language gap.** Both are reported through the round
+  draft (`time_evidence`, `language` / `language_evidence` / `language_options`) and the
+  product owns those two questions. They are the only fields the candidate is the sole
+  source of, so code guarantees they get asked; everything else is yours to judge.
 - At most 5 OPEN gaps, fewer is better. A gap you cannot tie to the recognizability
   test is not a gap.
 

@@ -520,6 +520,25 @@ describe('practice door — re-infer interaction (decision 6A + T10, 2026-08-12)
     expect(js).toMatch(/if \(snapshot\) \{ rep\.gaps = snapshot;/);
   });
 
+  it('the flash collapses past a threshold — a light show is not a signal', () => {
+    // A correction re-runs inference over the WHOLE description, so six rows
+    // can move at once; flashing all six reads as "the page redrew", which is
+    // the sensation the flash exists to prevent (live report 2026-08-12).
+    expect(js).toContain('const FLASH_MAX = 3');
+    expect(js).toMatch(/collapsed \? \[\] : changed/);
+    expect(js).toContain('facts updated — review the confirmed column');
+    expect(js).toMatch(/rep\.flashIds = delta\.flash/);
+  });
+
+  it('a re-infer gets the same progress bar the first inference gets', () => {
+    // The busy line renders at the TOP of the question column, but the
+    // correction box is at the BOTTOM — measured off-screen at y=-123 when
+    // triggered from there. Feedback must also live where the click happened.
+    expect(js).toMatch(/re-checking the shape…<\/div>' \+\s*'<div class="progress">/);
+    expect(js).toContain("(rep.busy ? 'applying…' : 'apply')");
+    expect(js).toMatch(/id="rep-rechecks"[^']*'\s*\+ dis \+/);
+  });
+
   it('one diff drives both the flash and the announcement (decision 6A)', () => {
     expect(js).toContain('function diffGaps');
     expect(js).toMatch(/diffGaps\(oldGaps, rep\.gaps\)/);

@@ -866,8 +866,15 @@ function announce(text) {
   if (live) live.textContent = text;
 }
 
+/** Past this many changed rows the delta stops being a delta: a correction
+ *  re-runs inference over the WHOLE description, so six rows can move at once
+ *  and flashing all six reads as "the page redrew" — the exact sensation the
+ *  flash exists to prevent (live report 2026-08-12). Collapse instead. */
+const FLASH_MAX = 3;
+
 /** Old vs new gap lists by STABLE id → what changed. Feeds the visible
- *  .gaterow.flash AND the aria-live sentence — one diff, two outputs. */
+ *  .gaterow.flash AND the aria-live sentence — one diff, two outputs, so
+ *  sighted and screen-reader users get the same delta at the same threshold. */
 function diffGaps(oldGaps, newGaps) {
   const before = new Map(oldGaps.map((g) => [g.id, g]));
   const changed = [];
@@ -880,7 +887,15 @@ function diffGaps(oldGaps, newGaps) {
     else if (prev && prev.status === 'settled') sentences.push(g.label + ' reopened');
     else sentences.push(g.label + ' still open');
   }
-  return { changed, sentence: sentences.join(' · ') };
+  const collapsed = changed.length > FLASH_MAX;
+  return {
+    changed,
+    // Flash only when the flash still means "look here".
+    flash: collapsed ? [] : changed,
+    sentence: collapsed
+      ? changed.length + ' facts updated — review the confirmed column'
+      : sentences.join(' · '),
+  };
 }
 
 function renderPractice() {
@@ -950,9 +965,14 @@ function renderPractice() {
     html += '<div id="rep-confirm">';
     html += '<div id="rep-open"><div class="micro">Needed before I build</div>';
     if (rep.busy) {
-      // A shape answer re-infers (~8s). The screen never blanks: pills
-      // disable, this line names the wait, the rail stays put.
-      html += '<div class="metaline" style="margin-top:8px">re-checking the shape…</div>';
+      // A re-infer runs 8-20s. The screen never blanks: the rail stays put,
+      // controls disable, and the wait gets the SAME progress bar the first
+      // inference gets. A 12px grey line alone was invisible — and when the
+      // re-infer was triggered from the correction box at the bottom of this
+      // column, it rendered off-screen above the fold entirely (live report
+      // 2026-08-12: "sudden generation after a wait with no indicator").
+      html += '<div class="metaline" style="margin-top:8px">re-checking the shape…</div>' +
+        '<div class="progress"><div class="fill"></div></div>';
     }
     if (open.length === 0 && !rep.busy) {
       // The column degrades, never empties (the zero-gap COMMON case).
@@ -975,11 +995,16 @@ function renderPractice() {
           '</div>') +
         '</div>';
     }
+    // The control you clicked carries its own state. The busy line above sits
+    // at the TOP of this column; the correction box is at the bottom, so on a
+    // scrolled screen that line is the one thing you cannot see. Feedback has
+    // to live where the click happened.
     html += '<div id="rep-note">not right? change it on the left, or say so below — plain words work</div>' +
       '<div class="row" style="display:flex;gap:8px;margin-top:6px">' +
       '<label for="rep-change" class="rep-srlabel" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">what should be different</label>' +
-      '<input id="rep-change" placeholder="e.g. actually it’s Rust, and harder" style="flex:1;background:var(--panel);color:var(--text-1);border:1px solid var(--line);border-radius:6px;padding:10px 12px;font:inherit;min-height:44px">' +
-      '<button type="button" id="rep-rechecks" class="mini" style="min-height:44px">apply</button></div>';
+      '<input id="rep-change" placeholder="e.g. actually it’s Rust, and harder" style="flex:1;background:var(--panel);color:var(--text-1);border:1px solid var(--line);border-radius:6px;padding:10px 12px;font:inherit;min-height:44px"' + dis + '>' +
+      '<button type="button" id="rep-rechecks" class="mini" style="min-height:44px"' + dis + '>' +
+      (rep.busy ? 'applying…' : 'apply') + '</button></div>';
     html += '</div>'; // #rep-open
 
     html += '<div id="rep-rail"><div class="micro">Confirmed from your paste</div>';
@@ -1153,9 +1178,12 @@ function wirePractice() {
   const recheck = el('rep-rechecks');
   if (recheck) recheck.addEventListener('click', () => {
     const change = el('rep-change');
-    if (!change || !change.value.trim()) return;
+    if (!change || !change.value.trim() || rep.busy) return;
     rep.description = rep.description + '\n\nCorrection: ' + change.value.trim();
-    practiceClarify(rep.answers);
+    // A correction re-runs inference over the WHOLE description, so it is the
+    // most disruptive update the screen can make — it gets the same
+    // revert-on-failure snapshot a shape answer gets.
+    practiceClarify(rep.answers, { snapshot: JSON.parse(JSON.stringify(rep.gaps)) });
   });
   const change = el('rep-change');
   if (change) change.addEventListener('keydown', (e) => {
@@ -1247,7 +1275,7 @@ async function practiceClarify(answers, opts) {
   // region hears only the delta, never the whole panel.
   if (!firstRun) {
     const delta = diffGaps(oldGaps, rep.gaps);
-    rep.flashIds = delta.changed;
+    rep.flashIds = delta.flash;
     if (delta.sentence) announce(delta.sentence);
   }
   const nextOpen = rep.gaps.find((g) => g.status === 'open');

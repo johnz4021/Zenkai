@@ -1610,10 +1610,17 @@ export function runApp(cfg: AppConfig): http.Server {
             const ms = draft.spec.capabilities.time_limit_ms;
             return json(200, {
               drafts: [draft],
+              // Single-spec inference reports no provenance at all, so BOTH
+              // floors fire: a blind read is exactly when the candidate must
+              // be asked rather than guessed at.
               gaps: deriveRuntimeGaps({
                 timeEvidence: ms === null ? 'unknown' : 'stated_timed',
                 timeLimitMs: ms,
+                languageEvidence: 'unknown',
+                language: '',
+                languageOptions: [],
                 answeredIds: new Set(answers.map((a) => a.id)),
+                answers,
               }),
               brief: '',
               degraded: true,

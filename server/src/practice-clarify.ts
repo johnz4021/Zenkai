@@ -17,10 +17,14 @@
  * Two gap sources, rendered identically:
  *   - Drafter gaps: model-classified per skeleton section, gated against
  *     GAP_SECTIONS (derived from blueprint.ts so the two cannot drift).
- *   - Runtime gaps: code-owned (RUNTIME_GAP_IDS). Time is a session capability
- *     the drafter can never invent, so `time_evidence` on the round draft
- *     reports what the material said and deriveRuntimeGaps() asks when it is
- *     silent. Provenance lives HERE, never in RoundSpec — the two-artifact rule
+ *   - Runtime gaps: code-owned (RUNTIME_GAP_IDS), currently time and language —
+ *     the only two fields the CANDIDATE is the sole source of, so the model is
+ *     not trusted to remember them. The round draft reports provenance
+ *     (`time_evidence`, `language_evidence`) and deriveRuntimeGaps() asks when
+ *     it is unknown. Language still takes its OPTIONS from the model
+ *     (`language_options`), because "Go, because the JD says Go" beats any
+ *     hardcoded list; code owns whether the question exists, not its content.
+ *     Provenance lives HERE, never in RoundSpec — the two-artifact rule
  *     forbids widening the closed vocabulary (clarify-only state).
  *
  * Same module shape as judge.ts et al: pure exported gate that throws,
@@ -45,10 +49,27 @@ export const GAP_SECTIONS: readonly string[] = [
 ];
 
 /** Gap ids the CODE owns. The gate rejects model-authored gaps that collide —
- *  a runtime capability the drafter never reads cannot be a drafter gap. */
-export const RUNTIME_GAP_IDS = ['time-limit'] as const;
+ *  a field the drafter never reads, or one the product cannot ship without,
+ *  is not the model's to remember.
+ *
+ *  These two are the ONLY fields that need a floor, and the test is three
+ *  parts: the value is silently defaultable (the type cannot tell "unknown"
+ *  from a legal value), getting it wrong is unrecoverable five minutes later,
+ *  and no sane code-level default exists. `time_limit_ms: null` is legal for
+ *  live rounds so unknown is invisible; `language` is not in RoundSpec at all
+ *  so the generator simply picks. Everything else in the vocabulary is either
+ *  required (the validator cannot miss it), coherence-gated by draftToSpec, or
+ *  genuinely derivable — `surface` resolves from `starts_from` and is right.
+ *
+ *  Language earns a floor because a HackerRank OA can NEVER pin it (the
+ *  candidate picks at test time) and a Go shop handed a Python repo has an
+ *  unrecognizable round. A live run returned zero open gaps on exactly that
+ *  paste and the candidate had to volunteer "python" through the correction
+ *  box (2026-08-12). */
+export const RUNTIME_GAP_IDS = ['time-limit', 'language'] as const;
 
 export type TimeEvidence = 'stated_timed' | 'stated_untimed' | 'unknown';
+export type LanguageEvidence = 'stated' | 'unknown';
 
 export interface PracticeGap {
   id: string;
@@ -139,8 +160,25 @@ const PRACTICE_TOOL = {
               description:
                 'stated_timed: the material names a limit; stated_untimed: the material says untimed / live-paced; unknown: the material is silent — never guess.',
             },
+            language: {
+              type: 'string',
+              description:
+                'The programming language the round runs in, ONLY when the material names or clearly implies it ("a Java service", a Python traceback). Empty string when it does not.',
+            },
+            language_evidence: {
+              type: 'string',
+              enum: ['stated', 'unknown'],
+              description:
+                'stated: the material pins the language; unknown: it does not — never guess. Most OAs are unknown (the candidate picks at test time).',
+            },
+            language_options: {
+              type: 'array',
+              description:
+                'When language_evidence is unknown: 2-4 languages worth offering, drawn from the material where possible (the stack a JD names, what a sibling round used). Empty when you have nothing to go on.',
+              items: { type: 'string' },
+            },
           },
-          required: ['id', 'label', 'interviewer', 'can_run_tests', 'time_limit_minutes', 'starts_from', 'submit', 'check_kind', 'rationale', 'unsupported', 'time_evidence'],
+          required: ['id', 'label', 'interviewer', 'can_run_tests', 'time_limit_minutes', 'starts_from', 'submit', 'check_kind', 'rationale', 'unsupported', 'time_evidence', 'language', 'language_evidence'],
         },
       },
       gaps: {
@@ -180,23 +218,66 @@ function timeLimitGap(): PracticeGap {
   };
 }
 
+/** Generic shortcuts, used only when the model offered nothing from the
+ *  material. Deliberately short: options are shortcuts to typing, never the
+ *  menu of legal answers (the gap stays closed:false, so the text input is
+ *  always there). */
+const FALLBACK_LANGUAGES = ['Python', 'JavaScript/TypeScript', 'Java', 'Go'];
+
+/** The language floor. Code owns WHETHER the question exists; the model still
+ *  supplies the OPTIONS, because its suggestions come from the paste ("Go"
+ *  because the JD says Go) and a hardcoded list would throw that away. Keyed
+ *  on language_evidence, never on gap ids — ids drift between re-inferences,
+ *  so id-matching would be unreliable in exactly the case the floor exists
+ *  for. */
+function languageGap(options: string[]): PracticeGap {
+  const opts = (options.length ? options : FALLBACK_LANGUAGES).slice(0, 4);
+  return {
+    id: 'language',
+    label: 'language',
+    question: 'Which language should the generated problem use?',
+    why: 'The repo, the tests, and the error messages are all written in it.',
+    status: 'open',
+    value: '',
+    evidence: 'inferred',
+    closed: false,
+    answer_type: 'text',
+    options: opts.map((label) => ({ label })),
+    affects: 'flavor',
+    target: 'context',
+    section: 'Environment',
+  };
+}
+
 /** Deterministic runtime-gap derivation. Pure; unit-tested as a truth table. */
 export function deriveRuntimeGaps(input: {
   timeEvidence: TimeEvidence;
   timeLimitMs: number | null;
+  languageEvidence: LanguageEvidence;
+  language: string;
+  languageOptions: string[];
   answeredIds: ReadonlySet<string>;
+  answers?: { id: string; answer: string }[];
 }): PracticeGap[] {
-  const settled = (value: string, evidence: PracticeGap['evidence']): PracticeGap => ({
-    ...timeLimitGap(),
-    status: 'settled',
-    value,
-    evidence,
+  const out: PracticeGap[] = [];
+
+  const settledTime = (value: string, evidence: PracticeGap['evidence']): PracticeGap => ({
+    ...timeLimitGap(), status: 'settled', value, evidence,
   });
   const asWords = (ms: number | null): string => (ms === null ? 'untimed' : `${Math.round(ms / 60_000)} minutes`);
-  if (input.answeredIds.has('time-limit')) return [settled(asWords(input.timeLimitMs), 'answered')];
-  if (input.timeEvidence === 'stated_timed') return [settled(asWords(input.timeLimitMs), 'stated')];
-  if (input.timeEvidence === 'stated_untimed') return [settled('untimed', 'stated')];
-  return [timeLimitGap()];
+  if (input.answeredIds.has('time-limit')) out.push(settledTime(asWords(input.timeLimitMs), 'answered'));
+  else if (input.timeEvidence === 'stated_timed') out.push(settledTime(asWords(input.timeLimitMs), 'stated'));
+  else if (input.timeEvidence === 'stated_untimed') out.push(settledTime('untimed', 'stated'));
+  else out.push(timeLimitGap());
+
+  const base = languageGap(input.languageOptions);
+  const answered = (input.answers ?? []).find((a) => a.id === 'language');
+  if (answered) out.push({ ...base, status: 'settled', value: answered.answer, evidence: 'answered' });
+  else if (input.languageEvidence === 'stated' && input.language.trim()) {
+    out.push({ ...base, status: 'settled', value: input.language.trim(), evidence: 'stated' });
+  } else out.push(base);
+
+  return out;
 }
 
 /** The code-owned backstop: parse the time answer and patch every draft's
@@ -380,11 +461,18 @@ export function gatePracticeClarify(
     console.warn(`[practice-clarify] dropped ${droppedGaps.length} gap(s): ${droppedGaps.join(' | ')}`);
   }
 
+  const first = rawByDraft[0]!;
   gaps.push(
     ...deriveRuntimeGaps({
       timeEvidence,
       timeLimitMs: drafts[0]!.spec.capabilities.time_limit_ms,
+      languageEvidence: text(first.language_evidence) === 'stated' ? 'stated' : 'unknown',
+      language: text(first.language),
+      languageOptions: coerceArray(first.language_options ?? [])
+        .map((o) => text(o))
+        .filter(Boolean),
       answeredIds,
+      answers,
     }),
   );
 
@@ -443,7 +531,7 @@ export function claudePPracticeClarifier(templatePath: string, model = 'sonnet')
         : '';
       const prompt =
         buildPrompt(templatePath, input) + attachNote +
-        '\n\nReply with ONLY a JSON object: {"rounds": [{id, label, interviewer, can_run_tests, time_limit_minutes, time_evidence, starts_from, submit, check_kind, emphasis, rationale, unsupported}], "gaps": [{id, label, question, why, status, value, evidence, closed, answer_type, options: [{label, detail}], affects, target, section}], "brief": "..."}';
+        '\n\nReply with ONLY a JSON object: {"rounds": [{id, label, interviewer, can_run_tests, time_limit_minutes, time_evidence, language, language_evidence, language_options, starts_from, submit, check_kind, emphasis, rationale, unsupported}], "gaps": [{id, label, question, why, status, value, evidence, closed, answer_type, options: [{label, detail}], affects, target, section}], "brief": "..."}';
       const child = spawn('claude', ['-p', prompt, '--output-format', 'text', '--model', model], {
         stdio: ['ignore', 'pipe', 'pipe'],
       });

@@ -19,6 +19,8 @@ import {
 } from './practice-clarify.js';
 import { draftToSpec } from './intake.js';
 
+const isRuntime = (g: { id: string }) => (RUNTIME_GAP_IDS as readonly string[]).includes(g.id);
+
 const round = (over: Record<string, unknown> = {}) => ({
   id: 'palantir-oa',
   label: 'Palantir OA',
@@ -26,6 +28,9 @@ const round = (over: Record<string, unknown> = {}) => ({
   can_run_tests: true,
   time_limit_minutes: 90,
   time_evidence: 'stated_timed',
+  language: '',
+  language_evidence: 'unknown',
+  language_options: ['Go', 'Python'],
   starts_from: 'blank',
   submit: 'one_shot',
   check_kind: 'all_failing',
@@ -36,19 +41,19 @@ const round = (over: Record<string, unknown> = {}) => ({
 });
 
 const gap = (over: Record<string, unknown> = {}) => ({
-  id: 'language',
-  label: 'language',
-  question: 'Which language should the generated problem use?',
-  why: 'The whole repo is generated in it.',
+  id: 'bug-class',
+  label: 'bug class',
+  question: 'What kind of bug should the round hide?',
+  why: 'A concurrency round and an off-by-one round are different interviews.',
   status: 'open',
   value: '',
   evidence: 'inferred',
   closed: false,
   answer_type: 'text',
-  options: [{ label: 'Go', detail: 'the JD names Go services' }, { label: 'Python' }],
+  options: [{ label: 'Race condition', detail: 'the JD names concurrent services' }, { label: 'Off-by-one' }],
   affects: 'flavor',
   target: 'context',
-  section: 'Environment',
+  section: 'Topic guidance',
   ...over,
 });
 
@@ -68,7 +73,7 @@ describe('gatePracticeClarify', () => {
     expect(time.status).toBe('settled');
     expect(time.evidence).toBe('stated');
     expect(time.value).toBe('90 minutes');
-    expect(out.gaps.find((g) => g.id === 'language')!.status).toBe('open');
+    expect(out.gaps.find((g) => g.id === 'bug-class')!.status).toBe('open');
   });
 
   it('unknown time evidence opens the code-owned time gap', () => {
@@ -84,10 +89,11 @@ describe('gatePracticeClarify', () => {
     expect(out.gaps.find((g) => g.id === 'time-limit')!.status).toBe('open');
   });
 
-  it('a model-authored time gap is dropped — code owns that question', () => {
+  it('model-authored time/language gaps are dropped — code owns those questions', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const out = gatePracticeClarify(body({ gaps: [gap({ id: 'time-limit' }), gap({ id: 'timing', target: 'spec.capabilities.time_limit_ms' })] }));
+    const out = gatePracticeClarify(body({ gaps: [gap({ id: 'time-limit' }), gap({ id: 'language' }), gap({ id: 'timing', target: 'spec.capabilities.time_limit_ms' })] }));
     expect(out.gaps.filter((g) => g.id === 'time-limit')).toHaveLength(1); // the runtime one only
+    expect(out.gaps.filter((g) => g.id === 'language')).toHaveLength(1);   // ditto
     expect(out.gaps.some((g) => g.id === 'timing')).toBe(false);
     warn.mockRestore();
   });
@@ -99,7 +105,7 @@ describe('gatePracticeClarify', () => {
         gap({ id: 'round-kind', label: 'round type', question: 'Debug or build?', target: 'spec.check.kind', affects: 'flavor', closed: true, answer_type: 'enum', options: [{ label: 'Debugging' }, { label: 'Build to a suite' }] }),
       ],
     }));
-    expect(out.gaps.find((g) => g.id === 'language')!.affects).toBe('flavor');
+    expect(out.gaps.find((g) => g.id === 'bug-class')!.affects).toBe('flavor');
     expect(out.gaps.find((g) => g.id === 'round-kind')!.affects).toBe('shape');
   });
 
@@ -114,15 +120,15 @@ describe('gatePracticeClarify', () => {
         gap({ id: 'bad-target', target: 'DROP TABLE' }),
       ],
     }));
-    expect(out.gaps.filter((g) => g.id !== 'time-limit').map((g) => g.id)).toEqual(['seniority']);
+    expect(out.gaps.filter((g) => !isRuntime(g)).map((g) => g.id)).toEqual(['seniority']);
     warn.mockRestore();
   });
 
   it('duplicate gap ids: first wins', () => {
     const out = gatePracticeClarify(body({ gaps: [gap({ value: '' }), gap({ question: 'Second copy?' })] }));
-    const langs = out.gaps.filter((g) => g.id === 'language');
-    expect(langs).toHaveLength(1);
-    expect(langs[0]!.question).toMatch(/Which language/);
+    const dupes = out.gaps.filter((g) => g.id === 'bug-class');
+    expect(dupes).toHaveLength(1);
+    expect(dupes[0]!.question).toMatch(/What kind of bug/);
   });
 
   it('open gaps are capped at 5; settled gaps are not counted against the cap', () => {
@@ -131,7 +137,8 @@ describe('gatePracticeClarify', () => {
       gap({ id: `g${i}`, question: `Open question ${i}?` }));
     const settled = gap({ id: 'stated-lang', status: 'settled', value: 'Go', evidence: 'stated' });
     const out = gatePracticeClarify(body({ gaps: [settled, ...many] }));
-    expect(out.gaps.filter((g) => g.status === 'open' && g.id !== 'time-limit')).toHaveLength(5);
+    // The cap bounds MODEL gaps; the runtime floor is deliberately exempt.
+    expect(out.gaps.filter((g) => g.status === 'open' && !isRuntime(g))).toHaveLength(5);
     expect(out.gaps.some((g) => g.id === 'stated-lang')).toBe(true);
     warn.mockRestore();
   });
@@ -139,12 +146,12 @@ describe('gatePracticeClarify', () => {
   it('an answered gap the model forgot to settle is settled by the gate', () => {
     const out = gatePracticeClarify(
       body(),
-      [{ id: 'language', answer: 'Rust' }],
+      [{ id: 'bug-class', answer: 'Race condition' }],
     );
-    const lang = out.gaps.find((g) => g.id === 'language')!;
-    expect(lang.status).toBe('settled');
-    expect(lang.value).toBe('Rust');
-    expect(lang.evidence).toBe('answered');
+    const bc = out.gaps.find((g) => g.id === 'bug-class')!;
+    expect(bc.status).toBe('settled');
+    expect(bc.value).toBe('Race condition');
+    expect(bc.evidence).toBe('answered');
   });
 
   it('an answered time gap is applied by CODE: spec patched, tags re-derived, gap settled', () => {
@@ -201,6 +208,53 @@ describe('gatePracticeClarify', () => {
   });
 });
 
+describe('the language floor (2026-08-12: a live run asked nothing and the candidate had to type it)', () => {
+  it('unknown evidence opens a language gap even when the model emitted no gaps at all', () => {
+    const out = gatePracticeClarify(body({ gaps: [] }));
+    const lang = out.gaps.find((g) => g.id === 'language')!;
+    expect(lang.status).toBe('open');
+    expect(lang.closed).toBe(false);      // pills are shortcuts; the text input stays
+    expect(lang.affects).toBe('flavor');  // prose, not spec — settles with no round trip
+    expect(lang.target).toBe('context');
+  });
+
+  it('takes its OPTIONS from the model — material-derived beats a hardcoded list', () => {
+    const out = gatePracticeClarify(body({ gaps: [] }));
+    expect(out.gaps.find((g) => g.id === 'language')!.options.map((o) => o.label))
+      .toEqual(['Go', 'Python']);
+  });
+
+  it('falls back to generic options only when the model offered none', () => {
+    const out = gatePracticeClarify(body({ gaps: [], rounds: [round({ language_options: [] })] }));
+    expect(out.gaps.find((g) => g.id === 'language')!.options.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('stated language settles instead of asking', () => {
+    const out = gatePracticeClarify(body({
+      gaps: [], rounds: [round({ language: 'Java', language_evidence: 'stated' })],
+    }));
+    const lang = out.gaps.find((g) => g.id === 'language')!;
+    expect(lang.status).toBe('settled');
+    expect(lang.evidence).toBe('stated');
+    expect(lang.value).toBe('Java');
+  });
+
+  it('stated with an empty value is a contradiction — asks rather than settling blank', () => {
+    const out = gatePracticeClarify(body({
+      gaps: [], rounds: [round({ language: '', language_evidence: 'stated' })],
+    }));
+    expect(out.gaps.find((g) => g.id === 'language')!.status).toBe('open');
+  });
+
+  it('an answer settles it, and survives a re-inference that still reports unknown', () => {
+    const out = gatePracticeClarify(body({ gaps: [] }), [{ id: 'language', answer: 'Rust' }]);
+    const lang = out.gaps.find((g) => g.id === 'language')!;
+    expect(lang.status).toBe('settled');
+    expect(lang.value).toBe('Rust');
+    expect(lang.evidence).toBe('answered');
+  });
+});
+
 describe('deriveRuntimeGaps — the truth table', () => {
   const none = new Set<string>();
   it.each([
@@ -209,7 +263,10 @@ describe('deriveRuntimeGaps — the truth table', () => {
     ['unknown', null, none, 'open', 'inferred', ''],
     ['unknown', 45 * 60_000, new Set(['time-limit']), 'settled', 'answered', '45 minutes'],
   ] as const)('%s / answered=%o → %s', (timeEvidence, timeLimitMs, answeredIds, status, evidence, value) => {
-    const [g] = deriveRuntimeGaps({ timeEvidence, timeLimitMs, answeredIds });
+    const [g] = deriveRuntimeGaps({
+      timeEvidence, timeLimitMs, answeredIds,
+      languageEvidence: 'unknown', language: '', languageOptions: [],
+    });
     expect(g!.id).toBe('time-limit');
     expect(g!.status).toBe(status);
     expect(g!.evidence).toBe(evidence);
@@ -291,6 +348,6 @@ describe('practice-clarify.md — the fence stays (TODOS #19 regression pin)', (
 
   it('lists every gap section verbatim, and owns the time question', () => {
     for (const s of GAP_SECTIONS) expect(template).toContain(`- ${s}`);
-    expect(template).toContain('NEVER author a time-limit gap');
+    expect(template).toContain('NEVER author a time-limit or language gap');
   });
 });
