@@ -1692,8 +1692,11 @@ function renderSeason(row, state) {
     const item = d.items[0] || null;
     // Real-set binding bits for one item: a provenance line (user picks show
     // the title — they named it; auto picks stay hidden until the round) and,
-    // while the item hasn't BUILT, the name/change/clear controls. Built
-    // items route identity changes through rebuild, so no controls there.
+    // while the item hasn't BUILT, ONE control — pick your own problem. There
+    // is deliberately no unbind link: now that algorithmic rounds source by
+    // default, "go back to an invented problem" is the weaker path and does
+    // not belong at the same weight as choosing (2026-08-13). The endpoint
+    // still accepts an empty ref as an escape valve.
     const sourceBits = (it) => {
       const editable = it.status === 'pending' || it.status === 'failed';
       const ids = ' data-t="' + esc(t.id) + '" data-i="' + esc(it.id) + '"';
@@ -1703,9 +1706,11 @@ function renderSeason(row, state) {
             : 'real set · ' + it.source.difficulty + ' — hidden until the round')
         : null;
       const links = editable
-        ? (it.source
-            ? ' <a href="#" class="srcedit"' + ids + '>change</a> · <a href="#" class="srcclear"' + ids + '>invent instead</a>'
-            : '<a href="#" class="srcedit"' + ids + '>name a real problem</a>')
+        ? ' <a href="#" class="srcedit"' + ids + '>' +
+          (it.source && it.source.picked_by === 'user'
+            ? 'choose a different problem'
+            : 'choose your own LC problem') +
+          '</a>'
         : '';
       return {
         line: (label || links) ? '<span class="srcline">' + (label ? esc(label) : '') + links + '</span>' : '',
@@ -2116,16 +2121,6 @@ function wireTimeline(container) {
         f.hidden = !f.hidden;
         if (!f.hidden) f.querySelector('.srcinput').focus();
       }
-    });
-  }
-  for (const a of container.querySelectorAll('a.srcclear')) {
-    a.addEventListener('click', async (e) => {
-      e.preventDefault();
-      await fetch('/api/item/source', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ target_id: a.dataset.t, item_id: a.dataset.i, ref: '' }),
-      });
-      refresh(true);
     });
   }
   for (const b of container.querySelectorAll('button.srcset')) {
