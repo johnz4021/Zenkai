@@ -131,21 +131,99 @@ export function extractSection(markdown: string, heading: string): string | null
 
 // ---- skeleton selection ----
 
-/** Which starter skeleton a spec drafts from. Keyword match on the spec's
- *  own words first; capability shape as the fallback. Returns a basename
- *  under prompts/blueprints/ — a test existence-checks every branch. */
-export function pickSkeletonFile(spec: RoundSpec): string {
-  const words = `${spec.label} ${spec.emphasis ?? ''}`.toLowerCase();
-  if (/hackerrank|codesignal|leetcode|leet code|\blc\b|codility|\boa\b|online assessment/.test(words)) return 'oa-hackerrank-classic.md';
-  if (/lld|low.level|class design|implement.*(class|api)/.test(words)) return 'lld-build.md';
-  if (/learning|unfamiliar|collab/.test(words)) return 'learning-round.md';
-  if (/debug/.test(words)) return 'debugging-round.md';
-  const caps = spec.capabilities;
-  if (spec.check.kind === 'one_failing_test') return 'debugging-round.md';
-  if (spec.check.kind === 'all_failing') {
-    return resolveSurface(caps) === 'panes' ? 'oa-hackerrank-classic.md' : 'lld-build.md';
+/**
+ * The task taxonomy — what the candidate is asked to DO, one skeleton each.
+ * Grounded in 2026 market research (plan 2026-08-12/13), not company quirks:
+ * algorithmic OAs are still the volume format; debugging is the
+ * fastest-growing round; practical builds with STAGED requirements are the
+ * post-LeetCode replacement (Stripe/OpenAI class); comprehension of an
+ * unfamiliar codebase is a Google-official 2026 format; extend-keep-green and
+ * review-a-diff fill the all_passing / diff_present halves of the check-kind
+ * space that previously fell into the learning catch-all.
+ *
+ * RECIPE-SIDE ON PURPOSE: task routes generation and nothing else. The
+ * session runtime never reads it, the validator never proves it, memory never
+ * counts it — so it stays OUT of RoundSpec (the two-artifact rule). It rides
+ * in tool outputs, the rep record, and this resolver.
+ */
+export const ROUND_TASKS = [
+  'algorithmic_set',
+  'debug',
+  'practical_build',
+  'comprehend',
+  'extend_keep_green',
+  'review_diff',
+] as const;
+export type RoundTask = (typeof ROUND_TASKS)[number];
+
+export const TASK_FILES: Record<RoundTask, string> = {
+  algorithmic_set: 'oa-hackerrank-classic.md',
+  debug: 'debugging-round.md',
+  practical_build: 'lld-build.md',
+  comprehend: 'learning-round.md',
+  extend_keep_green: 'extend-keep-green.md',
+  review_diff: 'review-a-diff.md',
+};
+
+/**
+ * The capability fallback: a task derived from FACTS the spec already holds,
+ * for specs with no stored hypothesis (legacy reps, the plans path until it
+ * carries task). Known residual, stated honestly: blank+all_failing+panes
+ * cannot distinguish algorithmic_set from practical_build — capability-
+ * identical; only a hypothesis separates them. Defaults to the volume format.
+ */
+export function deriveTaskFromSpec(spec: RoundSpec): RoundTask {
+  switch (spec.check.kind) {
+    case 'one_failing_test': return 'debug';
+    case 'all_passing': return 'extend_keep_green';
+    case 'diff_present': return 'review_diff';
+    case 'all_failing':
+      return resolveSurface(spec.capabilities) === 'panes' ? 'algorithmic_set' : 'practical_build';
   }
-  return 'learning-round.md';
+}
+
+/**
+ * Which starter skeleton a spec drafts from. With a task hypothesis (made by
+ * the model that READ the material — the clarifier), this is a total map
+ * lookup; without one, the capability fallback above.
+ *
+ * The keyword layer that used to live here is DELETED, deliberately. It
+ * routed on `label` — documented "display + file naming only" — and its rule
+ * list was platform names (hackerrank, codesignal, leetcode…) tested before
+ * the task words, so "Palantir OA (HackerRank, 3 parts)" short-circuited to
+ * the algorithmic skeleton on the word HackerRank and a decomp-LLD round
+ * misgenerated (2026-08-12). Platform is delivery, not task, and delivery
+ * already lives in capabilities (deliveryNotes below). The
+ * precomputed-verdicts rule applies: classification belongs in the model
+ * with the full material; code does lookups.
+ */
+export function pickSkeletonFile(spec: RoundSpec, task?: RoundTask): string {
+  return TASK_FILES[task ?? deriveTaskFromSpec(spec)];
+}
+
+/**
+ * Delivery facts, derived from capabilities — code states the facts, the
+ * drafter writes prose consistent with them. This is what lets any task ship
+ * in any delivery (an LLD build inside an OA, a debug round in a live IDE
+ * session) without a skeleton per combination, and why skeletons no longer
+ * assert delivery at all.
+ */
+export function deliveryNotes(spec: RoundSpec): string {
+  const caps = spec.capabilities;
+  const surface = resolveSurface(caps) === 'panes'
+    ? 'a browser panes editor (statement beside editor and test panel)'
+    : 'a real IDE workspace (file tree and terminal)';
+  const time = caps.time_limit_ms === null
+    ? 'no fixed time limit'
+    : `a single ${Math.round(caps.time_limit_ms / 60_000)}-minute clock`;
+  const submitStyle = caps.submit === 'one_shot'
+    ? 'graded once at submit — no feedback until then'
+    : 'the candidate can run the suite and iterate freely';
+  const interviewer = caps.interviewer
+    ? 'a live interviewer listens and probes'
+    : 'no interviewer — unproctored, think-aloud still recorded';
+  const tests = caps.can_run_tests ? '' : '; executing code is not permitted in this round';
+  return `Delivered in ${surface}; ${time}; ${submitStyle}; ${interviewer}${tests}.`;
 }
 
 // ---- the round brief composition (used by cli.ts generate-for) ----
@@ -199,6 +277,9 @@ function buildPrompt(
 ): string {
   return readFileSync(templatePath, 'utf8')
     .replace(/\{\{SPEC_JSON\}\}/g, JSON.stringify(input.spec))
+    // Delivery facts come from code so skeletons never assert them and the
+    // drafter cannot contradict the spec (task/delivery split, 2026-08-13).
+    .replace(/\{\{DELIVERY\}\}/g, deliveryNotes(input.spec))
     .replace(/\{\{DESCRIPTION\}\}/g, input.description || '(none provided)')
     .replace(/\{\{CONTEXT\}\}/g, input.context || '(none provided)')
     .replace(/\{\{SKELETON\}\}/g, input.skeleton);
