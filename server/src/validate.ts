@@ -169,10 +169,18 @@ export function checkExpectations(problem: GeneratedProblem): string[] {
   // Vocabulary pool: the spec AND the planted bug. reflect/approach
   // expectations legitimately speak the bug's language ("the boundary
   // instant"), which the candidate-facing spec deliberately does not.
+  // Identifiers stay WHOLE (`[^a-z0-9_]+`, not `[^a-z]+`): `min_ms` used to
+  // shred into "min"+"ms", both under the floor, so the most
+  // problem-specific token a spec and its expectations can share was
+  // invisible to the gate. Skinned LC rounds fail on this structurally —
+  // the spec speaks the story ("chime", "pulses") while expectations speak
+  // the algorithm ("recurrence", "modulus"), and the shared identifiers are
+  // the whole bridge (rep-e2e52324, 2026-08-13; standing limitation #5 in
+  // docs/problem-generation.md). Strictly additive: nothing that matched
+  // before stops matching.
+  const tokenize = (s: string) => s.toLowerCase().split(/[^a-z0-9_]+/);
   const specWords = new Set(
-    `${problem.spec ?? ''} ${problem.planted_bug?.description ?? ''}`
-      .toLowerCase()
-      .split(/[^a-z]+/)
+    tokenize(`${problem.spec ?? ''} ${problem.planted_bug?.description ?? ''}`)
       .filter((w) => w.length >= 5),
   );
   for (const key of DIMENSIONS) {
@@ -187,10 +195,7 @@ export function checkExpectations(problem: GeneratedProblem): string[] {
     if (VAGUE_STEMS.test(exp.trim())) {
       failures.push(`expectation for ${key} starts with a vague stem: "${exp.slice(0, 40)}..."`);
     }
-    const tied = exp
-      .toLowerCase()
-      .split(/[^a-z]+/)
-      .some((w) => w.length >= 5 && specWords.has(w));
+    const tied = tokenize(exp).some((w) => w.length >= 5 && specWords.has(w));
     if (!tied) {
       failures.push(`expectation for ${key} shares no vocabulary with the spec — not problem-specific: "${exp.slice(0, 60)}..."`);
     }
