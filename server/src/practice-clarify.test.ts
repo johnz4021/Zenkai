@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import {
   GAP_SECTIONS,
   RUNTIME_GAP_IDS,
+  SPOILER_SECTION,
   applyTimeAnswer,
   deriveRuntimeGaps,
   gatePracticeClarify,
@@ -41,19 +42,19 @@ const round = (over: Record<string, unknown> = {}) => ({
 });
 
 const gap = (over: Record<string, unknown> = {}) => ({
-  id: 'bug-class',
-  label: 'bug class',
-  question: 'What kind of bug should the round hide?',
-  why: 'A concurrency round and an off-by-one round are different interviews.',
+  id: 'part-scope',
+  label: 'part scope',
+  question: 'Build all three parts they described, or just the hardest one?',
+  why: 'Decides whether this is one escalating task or a single fixed-difficulty task.',
   status: 'open',
   value: '',
   evidence: 'inferred',
   closed: false,
   answer_type: 'text',
-  options: [{ label: 'Race condition', detail: 'the JD names concurrent services' }, { label: 'Off-by-one' }],
+  options: [{ label: 'All three parts', detail: 'as their paste describes' }, { label: 'Just the hardest' }],
   affects: 'flavor',
   target: 'context',
-  section: 'Topic guidance',
+  section: 'What the candidate does',
   ...over,
 });
 
@@ -73,7 +74,7 @@ describe('gatePracticeClarify', () => {
     expect(time.status).toBe('settled');
     expect(time.evidence).toBe('stated');
     expect(time.value).toBe('90 minutes');
-    expect(out.gaps.find((g) => g.id === 'bug-class')!.status).toBe('open');
+    expect(out.gaps.find((g) => g.id === 'part-scope')!.status).toBe('open');
   });
 
   it('unknown time evidence opens the code-owned time gap', () => {
@@ -105,7 +106,7 @@ describe('gatePracticeClarify', () => {
         gap({ id: 'round-kind', label: 'round type', question: 'Debug or build?', target: 'spec.check.kind', affects: 'flavor', closed: true, answer_type: 'enum', options: [{ label: 'Debugging' }, { label: 'Build to a suite' }] }),
       ],
     }));
-    expect(out.gaps.find((g) => g.id === 'bug-class')!.affects).toBe('flavor');
+    expect(out.gaps.find((g) => g.id === 'part-scope')!.affects).toBe('flavor');
     expect(out.gaps.find((g) => g.id === 'round-kind')!.affects).toBe('shape');
   });
 
@@ -126,9 +127,9 @@ describe('gatePracticeClarify', () => {
 
   it('duplicate gap ids: first wins', () => {
     const out = gatePracticeClarify(body({ gaps: [gap({ value: '' }), gap({ question: 'Second copy?' })] }));
-    const dupes = out.gaps.filter((g) => g.id === 'bug-class');
+    const dupes = out.gaps.filter((g) => g.id === 'part-scope');
     expect(dupes).toHaveLength(1);
-    expect(dupes[0]!.question).toMatch(/What kind of bug/);
+    expect(dupes[0]!.question).toMatch(/Build all three parts/);
   });
 
   it('open gaps are capped at 5; settled gaps are not counted against the cap', () => {
@@ -146,9 +147,9 @@ describe('gatePracticeClarify', () => {
   it('an answered gap the model forgot to settle is settled by the gate', () => {
     const out = gatePracticeClarify(
       body(),
-      [{ id: 'bug-class', answer: 'Race condition' }],
+      [{ id: 'part-scope', answer: 'Race condition' }],
     );
-    const bc = out.gaps.find((g) => g.id === 'bug-class')!;
+    const bc = out.gaps.find((g) => g.id === 'part-scope')!;
     expect(bc.status).toBe('settled');
     expect(bc.value).toBe('Race condition');
     expect(bc.evidence).toBe('answered');
@@ -204,6 +205,59 @@ describe('gatePracticeClarify', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(gatePracticeClarify(body({ brief: 'ok' })).brief).toBe('');
     expect(gatePracticeClarify(body({ brief: 42 })).brief).toBe('');
+    warn.mockRestore();
+  });
+});
+
+describe('the spoiler rule — a gap describes the ROUND, never the PROBLEM', () => {
+  // Live use 2026-08-12: the door asked "what kind of logic did the discount
+  // problems test — combinatorics, string parsing, or greedy/DP?" and "what
+  // kind of bug are you hunting?". Answering either designs the exam you came
+  // to sit. Recognizability alone cannot catch this: a more specific problem
+  // is always more recognizable.
+  const topic = (over: Record<string, unknown> = {}) =>
+    gap({ id: 'algorithmic-focus', label: 'algorithm', question: 'Greedy, DP, or string parsing?', section: SPOILER_SECTION, ...over });
+
+  it('drops an OPEN gap that asks what the problem is about', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = gatePracticeClarify(body({ gaps: [topic()] }));
+    expect(out.gaps.some((g) => g.id === 'algorithmic-focus')).toBe(false);
+    warn.mockRestore();
+  });
+
+  it('drops a GUESSED topic too — a spoiler on the rail is still a spoiler', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = gatePracticeClarify(body({
+      gaps: [topic({ status: 'settled', value: 'greedy/DP optimization', evidence: 'inferred' })],
+    }));
+    expect(out.gaps.some((g) => g.id === 'algorithmic-focus')).toBe(false);
+    warn.mockRestore();
+  });
+
+  it('KEEPS a topic the candidate themselves stated — confirming their own words leaks nothing', () => {
+    const out = gatePracticeClarify(body({
+      gaps: [topic({ id: 'theme', label: 'theme', status: 'settled', value: "Trader Yojoe's discounts", evidence: 'stated' })],
+    }));
+    expect(out.gaps.find((g) => g.id === 'theme')!.value).toBe("Trader Yojoe's discounts");
+  });
+
+  it('leaves FORM questions alone — scope, difficulty and interviewer style are not spoilers', () => {
+    const out = gatePracticeClarify(body({
+      gaps: [
+        gap(),                                                                       // part scope
+        gap({ id: 'seniority', label: 'seniority bar', question: 'How senior?', section: 'Difficulty calibration' }),
+        gap({ id: 'style', label: 'interviewer style', question: 'Hints, or observe?', section: 'Interviewer engagement' }),
+      ],
+    }));
+    expect(out.gaps.filter((g) => !isRuntime(g)).map((g) => g.id))
+      .toEqual(['part-scope', 'seniority', 'style']);
+  });
+
+  it('one bad gap does not sink the round — the rest of the screen still renders', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = gatePracticeClarify(body({ gaps: [topic(), gap()] }));
+    expect(out.drafts).toHaveLength(1);
+    expect(out.gaps.some((g) => g.id === 'part-scope')).toBe(true);
     warn.mockRestore();
   });
 });
@@ -349,5 +403,8 @@ describe('practice-clarify.md — the fence stays (TODOS #19 regression pin)', (
   it('lists every gap section verbatim, and owns the time question', () => {
     for (const s of GAP_SECTIONS) expect(template).toContain(`- ${s}`);
     expect(template).toContain('NEVER author a time-limit or language gap');
+    // The spoiler rule and its escape hatch must both stay in the prompt.
+    expect(template).toContain('hand them the exam');
+    expect(template).toContain('Topical intent goes in `emphasis`, never in a gap');
   });
 });

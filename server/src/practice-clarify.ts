@@ -27,6 +27,15 @@
  *     Provenance lives HERE, never in RoundSpec — the two-artifact rule
  *     forbids widening the closed vocabulary (clarify-only state).
  *
+ * The SPOILER RULE (2026-08-12, live use): a gap may describe the round, never
+ * the problem. The candidate came to face something unseen, so "which discount
+ * rules?" or "which bug class?" hands them the exam — and a model-guessed topic
+ * rendered on the rail spoils it just as thoroughly. The recognizability
+ * discriminator alone could not catch this: it optimizes for fidelity, and more
+ * content-specificity is always more faithful. This is the same instinct as
+ * interviewer.ts's leaksBugLocation() — the interviewer KNOWS the bug and is
+ * mechanically stopped from saying it.
+ *
  * Same module shape as judge.ts et al: pure exported gate that throws,
  * buildPrompt, forced tool call on the API path, claude -p fallback, pickX().
  * Gate errors reuse clarify.ts's message prefixes so clarifyFailureMessage
@@ -47,6 +56,10 @@ export const GAP_SECTIONS: readonly string[] = [
   ...REQUIRED_HEADINGS.map((h) => h.replace(/^##\s*/, '')),
   'Interviewer engagement',
 ];
+
+/** The section that names what the problem is ABOUT. Confirm-only, and only
+ *  for material the candidate stated — see the spoiler rule in gateGap. */
+export const SPOILER_SECTION = 'Topic guidance';
 
 /** Gap ids the CODE owns. The gate rejects model-authored gaps that collide —
  *  a field the drafter never reads, or one the product cannot ship without,
@@ -344,6 +357,20 @@ function gateGap(raw: unknown): PracticeGap {
   if (!status) throw new Error(`gap "${id}" has bad status`);
   const value = text(g.value);
   if (status === 'settled' && !value) throw new Error(`gap "${id}" settled with no value`);
+  const evidences = ['stated', 'inferred', 'answered'] as const;
+  const evidence = evidences.includes(g.evidence as never) ? (g.evidence as PracticeGap['evidence']) : 'inferred';
+  // THE SPOILER RULE. A gap may describe the round, never the problem: the
+  // candidate came to face something they have not seen. `Topic guidance` is
+  // the section that says what the problem is ABOUT, so it is confirm-only
+  // and only for what the candidate already told us — asking "which discount
+  // rules?" or "which bug class?" makes them author their own exam, and a
+  // model-GUESSED topic on the rail spoils it just by being readable.
+  // Topical intent belongs in spec.emphasis, which reaches the drafter and
+  // never renders. Same shape as the runtime-gap rule: the prompt carries the
+  // nuance, this catches the blunt case.
+  if (section === SPOILER_SECTION && !(status === 'settled' && evidence === 'stated')) {
+    throw new Error(`gap "${id}" would hand the candidate the problem (${SPOILER_SECTION} is confirm-only, and only for stated material)`);
+  }
   const options = coerceArray(g.options ?? [])
     .map((op) => {
       const o = op as { label?: unknown; detail?: unknown };
@@ -359,8 +386,6 @@ function gateGap(raw: unknown): PracticeGap {
   if ((closed || answer_type === 'enum') && options.length < 2) {
     throw new Error(`gap "${id}" is closed with ${options.length} option(s)`);
   }
-  const evidences = ['stated', 'inferred', 'answered'] as const;
-  const evidence = evidences.includes(g.evidence as never) ? (g.evidence as PracticeGap['evidence']) : 'inferred';
   return {
     id,
     label,
