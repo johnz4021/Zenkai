@@ -95,7 +95,9 @@ LeetCode corpus — fetched, never committed).
 memory counts over. A blueprint (`targets/<id>/blueprints/<spec_id>.md`) is the open
 *recipe* — a full markdown generation prompt. Never widen the closed vocabulary to
 express something the blueprint can say in prose; the one enforceable size knob is
-`check.max_source_files`.
+`check.max_source_files`. The round *task* (`blueprint.ts` `ROUND_TASKS` — which
+skeleton generation drafts from) is deliberately RECIPE-SIDE: it routes generation and
+nothing else, so it lives in clarifier output and the rep record, never in RoundSpec.
 
 **Single sources of truth in `shared/`:** `dimensions.ts` (the six judge dimensions —
 the judge prompt, gap graph, feedback card, and gauntlet all import from here),

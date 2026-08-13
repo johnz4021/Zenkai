@@ -990,3 +990,54 @@ and the record-only topic ledger (`topic-graph.ts`).
   rescuing either class: the blocklist visibly starving a tag the user needs.
 
 **Found by:** the LC integration build (plan `glittery-stirring-harbor`, 2026-08-12).
+
+---
+
+## 40. Task hypothesis on the plans path (planner / adapt / target specs)
+
+**What:** Extend the round-task hypothesis (blueprint.ts `ROUND_TASKS`) from the
+practice door to the season-plan path: `propose_rounds` and `adapt_plan` emit
+`task`/`task_evidence`, the planner conversation surfaces it ("I'm reading this as a
+build round — correct me"), the confirm gate renders it, and it persists alongside the
+target's specs so `cli.ts blueprint`/`generate-for` route on it.
+
+**Why it matters:** the plans path currently uses the capability fallback, which cannot
+distinguish `algorithmic_set` from `practical_build` (blank+all_failing+panes is
+capability-identical — the exact ambiguity that misgenerated the 2026-08-12 practice
+round). Queue rounds carry the same risk today.
+
+**Why deferred:** touching shared `ROUND_FIELDS` changes the planner AND adapt tool
+schemas at once, and persisting task next to append-only specs deserves its own review
+(validateRoundSpec ignores unknown fields, so storage is mechanically safe, but the
+append-only discipline is a design decision, not a syntax one).
+
+**Named trigger:** the first misrouted QUEUE round, or when the planner conversation
+starts asking round-nature questions on its own.
+
+**Effort:** human ~1 day / CC ~40 min. **Priority:** P2.
+
+---
+
+## 41. AI-assisted rounds — a delivery capability the market now runs
+
+**What:** A session mode where the CANDIDATE has an AI assistant inside the round
+(chat pane against a model, prompt/verify/debug workflow), matching the fastest-moving
+2026 interview format: Meta pilots a discrete "AI-enabled" coding slot (candidate picks
+the model, CoderPad-hosted); Google's code-comprehension pilot puts Gemini in the round
+and grades prompt engineering, output validation, and debugging of model output.
+
+**Why it matters:** these rounds are graded on HOW the candidate uses the assistant —
+a skill Zenkai currently cannot let anyone practice. It is a capability (RoundSpec-level,
+session-runtime-enforced: an `assistant` capability is exactly what the closed vocabulary
+exists for), NOT a skeleton — any task can be delivered with or without an assistant.
+
+**Cons / cost:** a real in-session model integration (spend per round), interviewer
+prompts that know the assistant exists, and judge dimensions for assistant use — this is
+a feature, not a patch.
+
+**Named trigger:** the first user paste describing an AI-allowed round (grep clarify
+logs), or Meta/Google expanding the pilots beyond select orgs.
+
+**Effort:** human ~1-2 weeks / CC ~half a day. **Priority:** P3 until the trigger fires.
+**Context:** 2026-08-13 market research in
+~/.gstack/projects/interview_prep/johnzhang-beta-plan-20260812-task-taxonomy.md.
