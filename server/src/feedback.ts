@@ -136,10 +136,14 @@ export function buildAssessmentCard(
   bugDescription?: string,
 ): AssessmentCard {
   if (result.status === 'unassessed') {
+    // The stored reason can carry a raw provider error blob (QA 2026-08-14:
+    // a full 401 JSON body rendered verbatim on the candidate's card). Keep
+    // the human-readable head; the full text stays in assessments/<sid>.json.
+    const why = String(result.reason ?? '').split('{')[0]!.replace(/[\s:—-]+$/, '').trim() || 'judge failure';
     return {
       session_id: result.session_id,
       state: 'unassessed',
-      reason: `Couldn't assess this session (${result.reason}). Your trace is saved — rejudge anytime.`,
+      reason: `Couldn't assess this session (${why}). Your trace is saved — rejudge anytime.`,
       ...graphBits(graph),
     };
   }

@@ -193,6 +193,12 @@ export function parseAssessmentOutput(raw: string): {
   if (typeof o.summary !== 'string') throw new Error('missing/invalid summary');
   if (!Array.isArray(o.dimensions)) throw new Error('missing dimensions array');
 
+  // The claude -p transport sometimes glues tool-call scaffolding onto the
+  // end of string fields — QA 2026-08-14 found "</summary>\n</invoke>"
+  // persisted verbatim across six stored assessments and into the rendered
+  // feedback card. Prose never legitimately ends with a closing tag.
+  const stripScaffolding = (s: string) => s.replace(/(\s*<\/[a-z_]+>\s*)+$/gi, '').trim();
+
   const seen = new Set<string>();
   const dims = o.dimensions.map((d) => {
     const dim = d as { dimension?: unknown; verdict?: unknown; analysis?: unknown; evidence?: unknown };
@@ -206,12 +212,12 @@ export function parseAssessmentOutput(raw: string): {
       ? dim.evidence.filter((e): e is number => typeof e === 'number' && Number.isFinite(e))
       : [];
     seen.add(dim.dimension);
-    return { dimension: dim.dimension, verdict: dim.verdict, analysis: dim.analysis.trim(), evidence };
+    return { dimension: dim.dimension, verdict: dim.verdict, analysis: stripScaffolding(dim.analysis), evidence };
   });
   for (const k of DIMENSIONS) {
     if (!seen.has(k)) throw new Error(`missing dimension: ${k}`);
   }
-  return { solved: o.solved, summary: o.summary.trim(), dimensions: dims };
+  return { solved: o.solved, summary: stripScaffolding(o.summary), dimensions: dims };
 }
 
 // ---- citation verification ----
