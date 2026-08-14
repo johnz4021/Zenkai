@@ -45,3 +45,6 @@ datasets/
 
 # per-user topic ledgers (same class of data as gaps/)
 topics/
+
+# git worktrees parked under .claude/ (full repo checkouts, never commit)
+.claude/worktrees/
