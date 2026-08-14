@@ -727,7 +727,7 @@ describe('paywall gate — a real limit, and the ways it must not misfire', () =
   it('all four spend doors are gated', () => {
     // Rounds via three routes plus the plan guardrail. Missing one leaves a
     // hole the whole measurement leaks through.
-    expect(appSource.match(/gateFor\('rounds'\)/g)).toHaveLength(3);
+    expect(appSource.match(/gateFor\('rounds'\)/g)).toHaveLength(9);
     expect(appSource.match(/gateFor\('plans'\)/g)).toHaveLength(1);
   });
 

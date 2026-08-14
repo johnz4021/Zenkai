@@ -88,10 +88,12 @@ export const EXPECTED_MAX = 200;
  *  Target satisfy them without importing any of those types. */
 export interface CountableRep {
   session_id?: string;
+  status?: string;
   runs?: RunEntry[];
 }
 export interface CountableItem {
   session_id?: string;
+  status?: string;
 }
 export interface CountableTarget {
   user_id?: string;
@@ -137,6 +139,54 @@ export function countRoundsRun(
   }
   for (const it of items) if (it.session_id) n++;
   return n;
+}
+
+/**
+ * Rounds this user has caused to be BUILT.
+ *
+ * Counted separately from runs because the money is spent here, not at launch:
+ * a build is $0.50 sourced / $3.54 invented (measured, TODOS #57) against a
+ * session's ~$0.85. A gate that only counted launches let someone queue builds
+ * forever and simply never start them — the expensive half, ungated.
+ *
+ * "Built" means a build was KICKED, not that it finished: a failed or
+ * abandoned build spent the same opus run as a successful one. Anything past
+ * `pending` therefore counts, and so does anything that already has a session.
+ */
+export function countBuilds(
+  reps: CountableRep[],
+  items: CountableItem[],
+  userId: string,
+  legacyOwnerId: string,
+): number {
+  const kicked = (x: { status?: string; session_id?: string }): boolean =>
+    Boolean(x.session_id) || (typeof x.status === 'string' && x.status !== 'pending');
+  let n = 0;
+  for (const rep of reps) if (kicked(rep)) n++;
+  for (const it of items) if (kicked(it)) n++;
+  return n;
+}
+
+/**
+ * What the free-round allowance is actually spent against: whichever of runs
+ * or builds is larger.
+ *
+ * max(), not a sum, because a build the user then runs is ONE round, not two —
+ * summing would halve the allowance for normal use. Taking the larger bounds
+ * both abuses at once: build-and-never-run is caught by the build count, and
+ * repeat-forever is caught by the run count (which never decrements, see
+ * countRoundsRun).
+ */
+export function roundsUsed(
+  reps: CountableRep[],
+  items: CountableItem[],
+  userId: string,
+  legacyOwnerId: string,
+): number {
+  return Math.max(
+    countRoundsRun(reps, items, userId, legacyOwnerId),
+    countBuilds(reps, items, userId, legacyOwnerId),
+  );
 }
 
 /**

@@ -55,7 +55,7 @@ import {
 import type { PublicConfig } from './public-config.js';
 import {
   countPlans,
-  countRoundsRun,
+  roundsUsed,
   expectedText,
   gateVerdict,
   grantsAccess,
@@ -1543,7 +1543,7 @@ export function runApp(cfg: AppConfig): http.Server {
           const used =
             reason === 'plans'
               ? countPlans(mine, user!.id, cfg.userId)
-              : countRoundsRun(
+              : roundsUsed(
                   repsVisibleTo(repStateView(repoRoot, loadReps(repoRoot)), user!, cfg.userId),
                   mine.flatMap((t) => {
                     const q = loadQueue(repoRoot, t.id);
@@ -1846,7 +1846,7 @@ export function runApp(cfg: AppConfig): http.Server {
           pw.enabled && !user!.admin && !hasGrant(readPaywallRows(), user!.id)
             ? {
                 price_usd: pw.priceUsd,
-                rounds_used: countRoundsRun(
+                rounds_used: roundsUsed(
                   repsForUser,
                   targets.flatMap((t) => t.queue?.items ?? []),
                   user!.id,
@@ -1997,6 +1997,13 @@ export function runApp(cfg: AppConfig): http.Server {
         }
       }
       if (url === '/api/practice/clarify' && req.method === 'POST') {
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         // The practice door's inference: the gap-deriving clarifier (design
         // review 2026-08-12) — material arrives INLINE, a rep has no target
         // to read from. Same fallback ladder shape as /api/clarify; failures
@@ -2163,6 +2170,13 @@ export function runApp(cfg: AppConfig): http.Server {
         }
       }
       if (url === '/api/practice' && req.method === 'POST') {
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         // Start a rep build. Gate order matters: identity, vocabulary,
         // size, THEN the lock — nothing is created until every check holds,
         // and the mkdir lock is what makes a double-click spawn exactly one
@@ -2477,6 +2491,13 @@ export function runApp(cfg: AppConfig): http.Server {
         return json(200, { session_id: sessionId, url: `${cfg.pub.sessionPublicUrl}/session` });
       }
       if (url === '/api/practice/retry' && req.method === 'POST') {
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         const b = JSON.parse((await readBody(req)) || '{}') as { rep_id?: string };
         if (typeof b.rep_id !== 'string' || !REP_ID_RE.test(b.rep_id)) {
           return json(400, { error: 'bad rep id' });
@@ -2851,6 +2872,13 @@ export function runApp(cfg: AppConfig): http.Server {
         return json(200, { ok: true, record });
       }
       if (url === '/api/rebuild' && req.method === 'POST') {
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         // A stale READY item: built under a superseded shape, never
         // launched — no candidate work exists in it, so regenerating in
         // place is safe. The dir is wiped so the old .validated marker
@@ -2886,6 +2914,13 @@ export function runApp(cfg: AppConfig): http.Server {
         return json(200, { ok: true });
       }
       if (url === '/api/generate' && req.method === 'POST') {
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
         if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
@@ -2909,6 +2944,13 @@ export function runApp(cfg: AppConfig): http.Server {
         return json(200, { ok: true });
       }
       if (url === '/api/retry' && req.method === 'POST') {
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
         if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });

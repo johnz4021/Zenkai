@@ -9,8 +9,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   EXPECTED_MAX,
+  countBuilds,
   countPlans,
   countRoundsRun,
+  roundsUsed,
   expectedText,
   gateVerdict,
   grantsAccess,
@@ -102,6 +104,41 @@ describe('countRoundsRun — rounds STARTED, from the append-only ledger', () =>
 
   it('sums reps and plan-queue items that have a session', () => {
     expect(countRoundsRun([{ runs: [run('u2')] }], [{ session_id: 'sess-q' }, {}], 'u2', 'u1')).toBe(2);
+  });
+});
+
+describe('countBuilds / roundsUsed — the money is spent at BUILD time', () => {
+  it('counts a build the moment it is kicked, not when it finishes', () => {
+    // A failed or abandoned build spent the same opus run as a good one.
+    for (const status of ['generating', 'ready', 'done', 'failed']) {
+      expect(countBuilds([{ status }], [], 'u2', 'u1')).toBe(1);
+    }
+    expect(countBuilds([{ status: 'pending' }], [], 'u2', 'u1')).toBe(0);
+    expect(countBuilds([{}], [], 'u2', 'u1')).toBe(0);
+  });
+
+  it('counts plan-queue builds too', () => {
+    expect(countBuilds([], [{ status: 'ready' }, { status: 'pending' }], 'u2', 'u1')).toBe(1);
+  });
+
+  it('build-and-never-run is caught — the leak that made this necessary', () => {
+    // Three builds, zero launches. Counting runs alone said 0 and let them
+    // queue opus runs forever; the expensive half was ungated.
+    const built = [{ status: 'ready' }, { status: 'ready' }, { status: 'ready' }];
+    expect(countRoundsRun(built, [], 'u2', 'u1')).toBe(0);
+    expect(roundsUsed(built, [], 'u2', 'u1')).toBe(3);
+  });
+
+  it('a build the user then runs is ONE round, not two', () => {
+    // max(), not a sum — summing would halve the allowance for normal use.
+    const ran = [{ status: 'done', session_id: 'sess-a', runs: [run('u2', 'sess-a')] }];
+    expect(roundsUsed(ran, [], 'u2', 'u1')).toBe(1);
+  });
+
+  it('repeats still count, so the run side keeps its job', () => {
+    const repeated = [{ status: 'done', session_id: 'sess-b', runs: [run('u2', 'sess-a'), run('u2', 'sess-b')] }];
+    expect(countBuilds(repeated, [], 'u2', 'u1')).toBe(1);
+    expect(roundsUsed(repeated, [], 'u2', 'u1')).toBe(2); // the run side wins
   });
 });
 
