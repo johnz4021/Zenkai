@@ -891,7 +891,12 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     // One-shot rounds are graded HERE, server-side: the suite runs once, at
     // submit, via docker exec — the extension's Run button never existed for
     // this round, so there is no other path to a test_run in the trace.
-    if (caps.submit === 'one_shot') {
+    // can_run_tests:false rounds (review_diff — the coherence gate in
+    // round-spec.ts makes that the only shape) have NO graded suite: the
+    // deliverable is the written review, and QA 2026-08-14 showed the
+    // unconditional run injecting a green 31/31 test_run into the trace,
+    // which the judge then narrated as the candidate's result.
+    if (caps.submit === 'one_shot' && caps.can_run_tests) {
       console.log('[session] one-shot submit — running the grading suite');
       const t0 = Date.now();
       const run = spawnSync(
