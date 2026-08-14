@@ -597,9 +597,12 @@ if (cmd === 'generate') {
     .map((l) => JSON.parse(l) as import('@interview-prep/shared').TraceEvent);
 
   // Find the problem this session ran (the .used marker names the session).
-  // Both universes: the generic pool AND every target's own problems dir —
-  // the lookup predated targets, which silently made every targeted session
-  // un-rejudgeable ("no .used marker names it" on a marker that existed).
+  // ALL THREE universes: the generic pool, every target's problems dir, and
+  // reps/<id>/problem — the lookup predated targets, which silently made
+  // every targeted session un-rejudgeable ("no .used marker names it" on a
+  // marker that existed), and the same regression recurred for rep-based
+  // rounds when the practice door landed (QA 2026-08-14: sess-qa814-lcset4
+  // was named by reps/rep-set67388/problem/.used and still exited 2).
   const candidateDirs: string[] = [];
   try {
     for (const dir of readdirSync(problemsRoot)) candidateDirs.push(path.join(problemsRoot, dir));
@@ -612,6 +615,11 @@ if (cmd === 'generate') {
       } catch { /* target without problems */ }
     }
   } catch { /* no targets */ }
+  try {
+    for (const r of readdirSync(path.join(repoRoot, 'reps'))) {
+      candidateDirs.push(path.join(repoRoot, 'reps', r, 'problem'));
+    }
+  } catch { /* no reps */ }
   let problemDir: string | null = null;
   for (const dir of candidateDirs) {
     try {
