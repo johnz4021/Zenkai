@@ -36,7 +36,7 @@ import { describeStuck, detectStuck, type StuckState } from './stuck.js';
 import { describeAdrift, describeWarm, detectAdrift, regionContainsAnswer } from './adrift.js';
 import { assessAgenda, renderAgenda } from './agenda.js';
 import { CLOSING_TOPIC, WRAP_UP_QUESTIONS, detectWrapSignal, renderWrapState, selectWrapTopic } from './wrapup.js';
-import { isModelPath, listWorkspaceFiles, parseRunCounts, runGuard, safeWorkspacePath, summarizeTail } from './panes.js';
+import { isModelPath, listWorkspaceFiles, parseRunCounts, runGuard, safeWorkspacePath, shadowsTestRunner, summarizeTail } from './panes.js';
 import { isCorrectionFollowUp, isExplicitAsk } from './addressing.js';
 import { decideAck } from './ack.js';
 import { renderWorkspaceView, selectRecentlyEdited, snapshotWorkspace } from './workspace-view.js';
@@ -1272,7 +1272,10 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       const relPath = path.relative(cfg.problemDir, abs);
       if (
         caps.submit === 'one_shot' &&
-        (relPath === 'tests' || relPath.startsWith(`tests${path.sep}`) || /^cases.*\.json$/i.test(path.basename(abs)))
+        (relPath === 'tests' ||
+          relPath.startsWith(`tests${path.sep}`) ||
+          /^cases.*\.json$/i.test(path.basename(abs)) ||
+          shadowsTestRunner(relPath))
       ) {
         res.writeHead(403, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ error: 'the grading suite is read-only on a one-shot round' }));

@@ -133,6 +133,38 @@ export type RunRejection = 'no_runs' | 'one_shot' | 'ended' | 'busy';
  * keeps the panes Run route from quietly reintroducing iteration into
  * rounds whose whole point is that you cannot iterate.
  */
+/**
+ * Files a candidate could drop at the workspace ROOT to hijack the graded
+ * run without ever touching tests/.
+ *
+ *   graded run:  cd <workspace> && <test_command>
+ *                        │
+ *                        └─ python puts CWD on sys.path for `-m`, so a
+ *                           root-level unittest.py IS the `unittest` the
+ *                           runner imports; vitest reads its config from
+ *                           CWD; python auto-imports sitecustomize.
+ *
+ * QA 2026-08-14 fix-verification: the one-shot read-only block covered
+ * tests/ and cases*.json, and a root-level unittest.py still forced a green
+ * graded suite (demonstrated end to end). Root level only — a nested copy is
+ * never the one that gets imported. Exported for tests.
+ */
+const RUNNER_SHADOWS = new Set([
+  'unittest.py',
+  'pytest.py',
+  'conftest.py',
+  'sitecustomize.py',
+  'usercustomize.py',
+  'vitest.config.ts',
+  'vitest.config.js',
+  'vitest.config.mjs',
+]);
+
+export function shadowsTestRunner(relPath: string): boolean {
+  if (relPath.includes(path.sep)) return false; // only CWD shadows the runner
+  return RUNNER_SHADOWS.has(relPath.toLowerCase());
+}
+
 export function runGuard(
   caps: RoundCapabilities,
   ended: boolean,
