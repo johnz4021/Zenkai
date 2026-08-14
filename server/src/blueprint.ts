@@ -235,6 +235,11 @@ export interface BriefInputs {
   plannedTitle?: string;
   description?: string;
   context?: string;
+  /** The plan's frozen concept vocabulary (Target.topics). When present the
+   *  brief instructs the generator to declare which it exercises in the
+   *  manifest; the declaration is subset-filtered mechanically after the
+   *  build, so an invented slug never reaches state. */
+  topics?: { id: string; label: string }[];
 }
 
 /**
@@ -253,8 +258,15 @@ export function composeRoundBrief(inp: BriefInputs): string {
   const titleLine = inp.plannedTitle
     ? `Planned title for THIS problem (build exactly this system, and set the manifest "title" to it): ${inp.plannedTitle} — the round description's difficulty calibration outranks any difficulty this title implies.`
     : '';
+  // Season topics travel inside the brief (no template variable): the
+  // generator declares which it exercised in the manifest, and the build
+  // pipeline subset-filters the declaration against this same frozen list —
+  // so the instruction and the enforcement share one source.
+  const topicsLine = inp.topics?.length
+    ? `This plan's concept topics: ${inp.topics.map((t) => t.id).join(', ')}. In the manifest, set "topics_exercised" to the subset (1-3) this problem genuinely tests — exact ids only, never new ones, and never mention topics anywhere the candidate can see.`
+    : '';
   if (inp.blueprint) {
-    return [inp.blueprint.trim(), titleLine].filter(Boolean).join('\n\n');
+    return [inp.blueprint.trim(), titleLine, topicsLine].filter(Boolean).join('\n\n');
   }
   return [
     `Round: ${inp.spec.label}.`,
@@ -262,6 +274,7 @@ export function composeRoundBrief(inp: BriefInputs): string {
     inp.spec.emphasis ? `Emphasis: ${inp.spec.emphasis}.` : '',
     inp.description ? `The candidate describes it as: ${inp.description}` : '',
     inp.context ? `Reference material from the candidate:\n${inp.context}` : '',
+    topicsLine,
   ]
     .filter(Boolean)
     .join('\n\n');

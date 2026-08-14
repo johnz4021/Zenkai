@@ -114,6 +114,9 @@ async function generateInto(
   brief: string = THEME,
   spec?: import('@interview-prep/shared').RoundSpec,
   sourced?: SourcedBuild,
+  /** The plan's frozen concept vocabulary — when present, the generator's
+   *  topics_exercised declaration is subset-filtered against it below. */
+  allowedTopics?: import('./concept-topics.js').ConceptTopic[],
 ): Promise<number> {
   let sourceBlock: string | undefined;
   if (sourced) {
@@ -198,6 +201,26 @@ async function generateInto(
     } catch {
       // Missing/unparseable manifest — the validator reports it properly below.
     }
+  }
+  // Plan-topic subset filter — same doctrine as the source stamp above: the
+  // manifest field is never trusted from the generator. With a frozen list,
+  // the declaration is filtered to it (drops logged); without one there is
+  // no vocabulary to validate against, so any declaration is stripped
+  // entirely. Runs on every build, sourced or invented.
+  try {
+    const { filterExercised } = await import('./concept-topics.js');
+    const { writeFileSync: wf, readFileSync: rf } = await import('node:fs');
+    const manifestPath = path.join(targetDir, 'problem.json');
+    const manifest = JSON.parse(rf(manifestPath, 'utf8')) as Record<string, unknown>;
+    if (manifest.topics_exercised !== undefined || allowedTopics?.length) {
+      const { kept, dropped } = filterExercised(manifest.topics_exercised, allowedTopics ?? []);
+      if (dropped.length) console.warn(`[topics] dropped out-of-plan declaration(s): ${dropped.join(', ')}`);
+      if (kept.length) manifest.topics_exercised = kept;
+      else delete manifest.topics_exercised;
+      wf(manifestPath, JSON.stringify(manifest, null, 2));
+    }
+  } catch {
+    // Missing/unparseable manifest — the validator reports it properly below.
   }
   // Sweep twice: the generator's own suite runs left bytecode, and the
   // validator's run below re-creates it — only the second sweep decides
@@ -361,6 +384,7 @@ if (cmd === 'generate') {
     plannedTitle: flags.title,
     description: t.description,
     context: t.context,
+    topics: t.topics,
   });
   const { targetDir: tDir } = await import('./intake.js');
   // --into pins the output dir (queue items know their dir up front, so
@@ -378,7 +402,7 @@ if (cmd === 'generate') {
   // prepare's does — via the target note.
   const store = loadStore(path.join(repoRoot, 'gaps'), userId);
   const note = buildTargetNote(buildGraphView(store), store);
-  process.exit(await generateInto(dir, note, brief, spec, sourced));
+  process.exit(await generateInto(dir, note, brief, spec, sourced, t.topics));
 } else if (cmd === 'blueprint') {
   // Draft the round blueprint for one spec. Idempotent: an existing file is
   // the terminal state, which is what makes accept-spec's unconditional
@@ -644,11 +668,16 @@ if (cmd === 'generate') {
   );
 
   // --record writes into the gap graph; plain rejudge is a dry look.
+  // qa-* sessions never deposit — the same sess- boundary finalize enforces
+  // (two QA runs silently polluted the founder's store, found 2026-08-13).
   let store = loadStore(path.join(repoRoot, 'gaps'), userId);
-  if (process.argv.includes('--record') && result.status === 'assessed') {
+  if (process.argv.includes('--record') && result.status === 'assessed' && /^sess-/.test(sessionId)) {
     const { resolveRoundSpec } = await import('@interview-prep/shared');
     const spec = resolveRoundSpec(problem);
-    store = recordAssessment(store, result, spec.label, spec.memory_tags);
+    // The owning plan, when the .used-marker dir sits under a target — the
+    // same derivation session launch uses.
+    const rejudgeTargetId = /^targets\/([^/]+)\/problems\//.exec(path.relative(repoRoot, problemDir))?.[1];
+    store = recordAssessment(store, result, spec.label, spec.memory_tags, rejudgeTargetId);
     saveStore(path.join(repoRoot, 'gaps'), store);
     console.error('[rejudge] recorded into the gap graph');
     // Topic ledger: rejudge REPLACES the session's row (upsert by
@@ -662,6 +691,21 @@ if (cmd === 'generate') {
       }
     } catch (e) {
       console.warn(`[rejudge] topic record skipped: ${String(e)}`);
+    }
+    // Plan topic-log: same corrective upsert, same never-fatal posture.
+    if (rejudgeTargetId && Array.isArray(problem.topics_exercised) && problem.topics_exercised.length) {
+      try {
+        const { recordTopicLogRow } = await import('./topic-log.js');
+        recordTopicLogRow(repoRoot, rejudgeTargetId, {
+          session_id: sessionId,
+          ts: result.judged_at,
+          topics: problem.topics_exercised,
+          solved: result.solved ?? null,
+        });
+        console.error('[rejudge] plan topic-log updated');
+      } catch (e) {
+        console.warn(`[rejudge] plan-topic record skipped: ${String(e)}`);
+      }
     }
   }
   const card = buildAssessmentCard(
@@ -687,6 +731,88 @@ if (cmd === 'generate') {
   }
   console.log(JSON.stringify(card, null, 2));
   process.exit(result.status === 'assessed' ? 0 : 3);
+} else if (cmd === 'purge-qa') {
+  // Memory hygiene: remove qa-* sessions from the gap store and the LC topic
+  // ledger. Two /qa harness runs deposited as real history (2 of the
+  // founder's 10 store sessions; 100% of the topic ledger — found
+  // 2026-08-13); the recording guard stops NEW pollution, this removes the
+  // existing rows. Archive-first (the gaps/archive convention), atomic
+  // writes, and --dry-run prints the focus-ranking diff: dropping sessions
+  // shifts every instance's sessionsAgo, so the 0.5^(n/5) weights feeding
+  // buildTargetNote — live generation and the interviewer — move too. That
+  // diff must be seen before it is applied.
+  const dryRun = process.argv.includes('--dry-run');
+  const { mkdirSync, renameSync, writeFileSync } = await import('node:fs');
+  const gapsDir = path.join(repoRoot, 'gaps');
+  const store = loadStore(gapsDir, userId);
+  const qaIds = new Set(store.sessions.map((s) => s.session_id).filter((id) => !/^sess-/.test(id)));
+
+  const tg = await import('./topic-graph.js');
+  let topicStore: import('./topic-graph.js').TopicStore | null = null;
+  try {
+    topicStore = tg.loadTopicStore(tg.topicsDir(repoRoot), userId);
+  } catch (e) {
+    console.warn(`[purge-qa] topic ledger unreadable, skipping it: ${String(e).slice(0, 120)}`);
+  }
+  const qaAttempts = topicStore?.attempts.filter((a) => !/^sess-/.test(a.session_id)) ?? [];
+
+  if (qaIds.size === 0 && qaAttempts.length === 0) {
+    console.log('[purge-qa] nothing to purge — both stores are clean');
+    process.exit(0);
+  }
+
+  const next = {
+    ...store,
+    sessions: store.sessions.filter((s) => !qaIds.has(s.session_id)),
+    gaps: Object.fromEntries(
+      Object.entries(store.gaps).map(([k, g]) => [
+        k,
+        { ...g, instances: g.instances.filter((i) => !qaIds.has(i.session_id)) },
+      ]),
+    ),
+  };
+
+  const rank = (s: typeof store) =>
+    buildGraphView(s).active.map((g) => `${g.key}:${g.weight}`).join('  ');
+  console.log(`[purge-qa] gap-store sessions to remove (${qaIds.size}): ${[...qaIds].join(', ') || '—'}`);
+  console.log(`[purge-qa] topic-ledger rows to remove (${qaAttempts.length}): ${qaAttempts.map((a) => `${a.session_id}(${a.slug})`).join(', ') || '—'}`);
+  console.log(`[purge-qa] focus ranking before: ${rank(store)}`);
+  console.log(`[purge-qa] focus ranking after:  ${rank(next)}`);
+  if (dryRun) {
+    console.log('[purge-qa] dry run — nothing written');
+    process.exit(0);
+  }
+
+  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  if (qaIds.size > 0) {
+    // Backup is a SIBLING file, deliberately NOT gaps/archive/: the memory
+    // reader treats every file there as an excluded ERA, and this backup is
+    // a full store snapshot — putting it in archive/ blacklists every live
+    // session it contains (caught by the 2026-08-14 smoke test: the Gaps
+    // band collapsed from 10 sessions to 2). loadStore reads exactly
+    // `${userId}.json`, so the suffixed sibling is inert.
+    mkdirSync(gapsDir, { recursive: true });
+    writeFileSync(path.join(gapsDir, `${userId}-pre-qa-purge-${stamp}.backup.json`), JSON.stringify(store, null, 2));
+    // saveStore is a plain write (#17); the store this command exists to
+    // protect gets the atomic path.
+    const file = path.join(gapsDir, `${userId}.json`);
+    const tmp = `${file}.tmp-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(next, null, 2));
+    renameSync(tmp, file);
+    console.log(`[purge-qa] gap store written; backup at gaps/${userId}-pre-qa-purge-${stamp}.backup.json`);
+  }
+  if (topicStore && qaAttempts.length > 0) {
+    writeFileSync(
+      path.join(tg.topicsDir(repoRoot), `${userId}-pre-qa-purge-${stamp}.json`),
+      JSON.stringify(topicStore, null, 2),
+    );
+    tg.saveTopicStore(tg.topicsDir(repoRoot), {
+      ...topicStore,
+      attempts: topicStore.attempts.filter((a) => /^sess-/.test(a.session_id)),
+    });
+    console.log(`[purge-qa] topic ledger written; archive at topics/${userId}-pre-qa-purge-${stamp}.json`);
+  }
+  process.exit(0);
 } else if (cmd === 'validate') {
   const report = validateProblem(path.resolve(target ?? '.'));
   console.log(JSON.stringify(report, null, 2));

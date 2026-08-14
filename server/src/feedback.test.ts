@@ -85,11 +85,14 @@ describe('buildAssessmentCard', () => {
     expect(card.bug?.description).toContain('sweep');
   });
 
-  it('unassessed is its own state with the rejudge promise, never an empty success', () => {
+  it('unassessed is its own state whose copy promises only what a user can do', () => {
     const un: Unassessed = { session_id: 's1', status: 'unassessed', judged_at: 1, reason: 'judge timed out twice' };
     const card = buildAssessmentCard(un, view, EVENTS);
     expect(card.state).toBe('unassessed');
-    expect(card.reason).toContain('rejudge');
+    // The work is kept and the failure is ours, not theirs. "Rejudge" is a
+    // CLI only the founder can run — it must never be the user's next step.
+    expect(card.reason).toContain('saved');
+    expect(card.reason).not.toContain('rejudge');
     expect(card.rows).toBeUndefined();
   });
 });

@@ -117,6 +117,15 @@ export interface GeneratedProblem {
   mutations: { offset_ms: number; new_spec: string }[];
   rubric: Rubric;
   /**
+   * Plan-topic annotation: which of the owning plan's frozen concept topics
+   * (Target.topics) this problem exercises. Generator-declared, then
+   * SUBSET-FILTERED mechanically by the build pipeline against the frozen
+   * list — an id outside it never reaches disk. Feeds the per-plan
+   * topic-log at finalize; absent on pool problems, reps, and pre-topics
+   * plans. Never rendered to the candidate.
+   */
+  topics_exercised?: string[];
+  /**
    * Dataset-sourced rounds: where this problem came from. Patched in
    * mechanically by the build pipeline from the vendored dataset record
    * (never trusted from the generator), so the topic ledger records truth.

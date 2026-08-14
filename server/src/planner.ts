@@ -32,6 +32,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { attachmentBlocks, draftToSpec, targetDir, type DraftToolOutput, type SpecDraft, type Target } from './intake.js';
 import { ROUND_FIELDS, coerceArray } from './clarify.js';
+import { gateConceptTopics, type ConceptTopic } from './concept-topics.js';
 
 // ---- conversation store (targets/<id>/conversation.jsonl) ----
 
@@ -126,6 +127,12 @@ const PROPOSE_TOOL = {
         type: 'string',
         description: 'Settled facts of the loop, written for the generation blueprints. Include once the shape is settled; omit while things are still moving.',
       },
+      topics: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          "4-12 lowercase_snake_case concept topics this loop's rounds test, drawn from the candidate's material (e.g. hash_map_indexing, async_error_handling, class_responsibility_design). Concepts the problems are ABOUT — never tasks (debugging), delivery (timed), or behaviors (communication). Include with the summary once the shape is settled; omit while moving.",
+      },
     },
     required: ['rounds'],
   },
@@ -169,6 +176,11 @@ export interface PlannerProposal {
   /** Practice rounds/week from the time-budget conversation; sizes the queue. */
   pace_per_week?: number;
   summary?: string;
+  /** Concept topics for the season, gated by gateConceptTopics. Frozen onto
+   *  the Target at accept-spec; rounds later bind to this list. Absent when
+   *  the model omitted them or they failed the gate — a plan without topics
+   *  is a plan, never a failure. */
+  topics?: ConceptTopic[];
 }
 
 export interface PlannerQuestion {
@@ -268,7 +280,25 @@ export function gateProposal(raw: unknown): PlannerProposal {
   const pace = Number.isFinite(paceRaw) ? Math.min(7, Math.max(1, Math.round(paceRaw))) : undefined;
 
   const summary = text(o.summary);
-  return { drafts, ...(pace !== undefined ? { pace_per_week: pace } : {}), ...(summary ? { summary } : {}) };
+
+  // Topics degrade, never sink: a filler slug in the topic list must not
+  // cost the candidate their round proposal. The warn keeps the failure
+  // visible in the log for prompt tuning.
+  let topics: ConceptTopic[] | undefined;
+  if (o.topics !== undefined) {
+    try {
+      topics = gateConceptTopics(o.topics);
+    } catch (e) {
+      console.warn(`[planner] topics failed the gate, plan stays topic-less: ${String(e).slice(0, 160)}`);
+    }
+  }
+
+  return {
+    drafts,
+    ...(pace !== undefined ? { pace_per_week: pace } : {}),
+    ...(summary ? { summary } : {}),
+    ...(topics ? { topics } : {}),
+  };
 }
 
 /** Gate one ask_user input. Strict: a malformed question is a model
