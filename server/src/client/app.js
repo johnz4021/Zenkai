@@ -2070,7 +2070,15 @@ function renderHistory(state) {
       line = (x.phase === 'drafting' ? 'shaping the round' : genProgressLine(x));
     } else if (x.status === 'ready') {
       line = 'ready · ' + shape;
-      if (!state.session_live) action = '<button type="button" class="primary repstart" data-rep="' + esc(x.id) + '">Start</button>';
+      // A CONSUMED ready rep (its run crashed, or reconcile demoted it after a
+      // repeat) cannot Start — that 409s `already-used`, and the 409's own copy
+      // points at practice again. Offering Start there was a closed loop with
+      // no way out (QA 2026-08-14). `repeatable` implies .used server-side.
+      if (!state.session_live) {
+        action = x.repeatable
+          ? '<button type="button" class="mini repagain" data-rep="' + esc(x.id) + '">practice again</button>'
+          : '<button type="button" class="primary repstart" data-rep="' + esc(x.id) + '">Start</button>';
+      }
     } else if (x.status === 'failed') {
       line = '<span class="err">' + (x.phase === 'draft_failed' ? 'couldn’t shape the round from those notes' : 'build failed') + '</span>';
       action = '<button type="button" class="mini repretry" data-rep="' + esc(x.id) + '">Retry</button>';

@@ -388,3 +388,21 @@ describe('the ledger heals a torn tail instead of swallowing the next row', () =
     expect(dirRanSession(dir, 'sess-after')).toBe(true);
   });
 });
+
+describe('preserveRunTree never overwrites its own insurance', () => {
+  it('a second preserve for the same sid keeps the FIRST (candidate) tree', () => {
+    const dir = makeProblemDir(scratch());
+    writeFileSync(path.join(dir, 'CANDIDATE.txt'), 'the work they did\n');
+
+    expect(preserveRunTree(dir, 'sess-dup').ok).toBe(true);
+    const list = () =>
+      spawnSync('tar', ['-tzf', path.join(runsDirPath(dir), 'sess-dup.tar.gz')], { encoding: 'utf8' }).stdout;
+    expect(list()).toContain('CANDIDATE.txt');
+
+    // The legacy double-click: the tree is pristine by now, and re-taring it
+    // over the first archive would erase the only copy of their work.
+    rmSync(path.join(dir, 'CANDIDATE.txt'));
+    expect(preserveRunTree(dir, 'sess-dup').ok).toBe(true);
+    expect(list()).toContain('CANDIDATE.txt');
+  });
+});

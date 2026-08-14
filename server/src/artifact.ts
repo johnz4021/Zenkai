@@ -314,8 +314,14 @@ export function preserveRunTree(problemDir: string, sessionId: string): { ok: bo
     const safe = sessionId.replace(/[^\w-]/g, '_');
     const dir = runsDirPath(problemDir);
     mkdirSync(dir, { recursive: true });
+    const dest = path.join(dir, `${safe}.tar.gz`);
+    // NEVER overwrite. A second restore against the same `.used` sid (the
+    // legacy double-click, QA 2026-08-14) would re-tar the now-PRISTINE tree
+    // over the candidate's — the insurance destroying exactly what it exists
+    // to keep. The first write is the one holding their work.
+    if (existsSync(dest)) return { ok: true };
     const r = tar([
-      '-czf', path.join(dir, `${safe}.tar.gz`),
+      '-czf', dest,
       '--exclude', 'node_modules',
       '--exclude', '__pycache__',
       '--exclude', '*.pyc',

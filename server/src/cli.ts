@@ -13,7 +13,7 @@ import { generateProblem } from './generate.js';
 import { validateProblem } from './validate.js';
 import { buildGraphView, buildTargetNote, loadStore } from './gap-graph.js';
 import { listReady, markUsed, pickProblem } from './pool.js';
-import { appendRun, backfillRunFromUsed, dirRanSession, makePristineArchive } from './artifact.js';
+import { appendRun, backfillRunFromUsed, dirRanSession, makePristineArchive, readRuns } from './artifact.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
@@ -698,10 +698,20 @@ if (cmd === 'generate') {
     writeFileSync(assessPath, JSON.stringify(result, null, 2));
   }
 
+  // Deposits belong to whoever RAN the round, not whoever is at the terminal.
+  // The dir was just resolved through the run ledger, which records the owner,
+  // so read it back: an operator rejudging a beta user's crashed round (the
+  // documented recovery) would otherwise bank the result in their own gap
+  // graph and topic ledger, leaving the user's memory blind to their own
+  // session. Falls back to IP_USER_ID for pre-ledger runs.
+  const owner =
+    readRuns(problemDir).find((r) => r.session_id === sessionId && r.user_id !== 'unknown')?.user_id ?? userId;
+  if (owner !== userId) console.error(`[rejudge] depositing as ${owner} (the user who ran it)`);
+
   // --record writes into the gap graph; plain rejudge is a dry look.
   // QA sessions never deposit — the mint-shape boundary finalize enforces
   // (see isMemorableSessionId for the two pollution incidents behind it).
-  let store = loadStore(path.join(repoRoot, 'gaps'), userId);
+  let store = loadStore(path.join(repoRoot, 'gaps'), owner);
   const { isMemorableSessionId } = await import('./gap-graph.js');
   if (process.argv.includes('--record') && result.status === 'assessed' && isMemorableSessionId(sessionId)) {
     const { resolveRoundSpec } = await import('@interview-prep/shared');
@@ -718,7 +728,7 @@ if (cmd === 'generate') {
       const tg = await import('./topic-graph.js');
       const attempts = tg.attemptsFromSession({ assessment: result, problem, spec, events, origin: 'rejudge' });
       if (attempts.length) {
-        tg.recordTopicAttempts(repoRoot, userId, attempts);
+        tg.recordTopicAttempts(repoRoot, owner, attempts);
         console.error(`[rejudge] topic ledger updated (${attempts.length} row${attempts.length === 1 ? '' : 's'})`);
       }
     } catch (e) {

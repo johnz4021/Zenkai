@@ -224,9 +224,12 @@ describe('launchVerdict', () => {
 
 describe('repeatVerdict — refusing to destroy a tree that still means something', () => {
   it.each([
-    // A ready+used rep is a crashed/unassessed run: its working tree is the
-    // rejudge evidence, so repeat must refuse rather than wipe it.
-    ['ready', true, false, 'pristine', 'not-done'],
+    // A consumed 'ready' rep is a crashed/unjudged run — or a repeat that
+    // reconcile demoted. It MUST be repeatable: refusing left it with no
+    // affordance at all, since launch answers already-used (QA 2026-08-14).
+    // preserveRunTree banks its tree before the restore.
+    ['ready', true, false, 'pristine', 'ok'],
+    ['ready', false, false, 'pristine', 'not-consumed'],
     ['failed', true, false, 'pristine', 'not-done'],
     ['generating', false, false, 'pristine', 'not-done'],
     ['done', false, false, 'pristine', 'not-consumed'],
@@ -241,11 +244,21 @@ describe('repeatVerdict — refusing to destroy a tree that still means somethin
     },
   );
 
-  it('checks not-done BEFORE liveness — an unjudged live round is never repeatable', () => {
+  it('a live session outranks repeatability — never swap files under a round', () => {
     expect(
       repeatVerdict(rep({ status: 'ready' }), {
         usedExists: true,
         sessionLiveOnDir: true,
+        restorable: 'pristine',
+      }),
+    ).toBe('session-live');
+  });
+
+  it('an artifact that never built is refused before anything else', () => {
+    expect(
+      repeatVerdict(rep({ status: 'generating' }), {
+        usedExists: true,
+        sessionLiveOnDir: false,
         restorable: 'pristine',
       }),
     ).toBe('not-done');
@@ -309,6 +322,36 @@ describe('repStateView', () => {
     const view = repStateView(root, repsFile(r))[0]!;
     expect(view.repeatable).toBe(false);
     expect(view.runs).toEqual([]);
+  });
+
+  it('a consumed rep whose run never got a verdict stays repeatable', () => {
+    // QA 2026-08-14: reconcile demotes done → ready when .used names a new
+    // session, so a repeat whose round crashed used to answer not-done to
+    // repeat AND already-used to launch — a rep with no way forward at all.
+    freshRoot();
+    const r = rep({ id: 'rep-stranded', status: 'ready', session_id: 'sess-crashed' });
+    const dir = repProblemDir(root, r.id);
+    mkdirSync(path.join(dir, '.session-snapshot'), { recursive: true });
+    writeFileSync(path.join(dir, '.session-snapshot', 'solution.py'), 'print(1)\n');
+    writeFileSync(path.join(dir, '.used'), 'sess-crashed\n2026-08-14T00:00:00Z\n');
+
+    expect(repStateView(root, repsFile(r))[0]!.repeatable).toBe(true);
+    expect(
+      repeatVerdict({ status: 'ready' }, {
+        usedExists: true,
+        sessionLiveOnDir: false,
+        restorable: 'snapshot',
+      }),
+    ).toBe('ok');
+  });
+
+  it('a ready rep that never ran is NOT repeatable — Start is the honest action', () => {
+    freshRoot();
+    const r = rep({ id: 'rep-virgin', status: 'ready' });
+    const dir = repProblemDir(root, r.id);
+    mkdirSync(path.join(dir, '.session-snapshot'), { recursive: true });
+    writeFileSync(path.join(dir, '.session-snapshot', 'solution.py'), 'print(1)\n');
+    expect(repStateView(root, repsFile(r))[0]!.repeatable).toBe(false);
   });
 
   it('falls back to the session snapshot when no archive exists', () => {
