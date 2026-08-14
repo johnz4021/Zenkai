@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly Zenkai backup
+
+[Timer]
+# 04:12 UTC — off the hour so it never collides with cron-o'clock load,
+# and well clear of a US-evening practice session.
+OnCalendar=*-*-* 04:12:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

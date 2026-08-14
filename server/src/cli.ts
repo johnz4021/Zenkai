@@ -769,6 +769,29 @@ if (cmd === 'generate') {
     intentCheck: process.env.IP_INTERVIEWER === '0' ? null : undefined,
     voice: process.env.IP_VOICE !== '0',
   });
+} else if (cmd === 'backup') {
+  // Off-box backup of the irreplaceable dirs. Runs from cli.ts so the
+  // Supabase key arrives via process.loadEnvFile — a shell one-liner
+  // mangles it (docs/beta-runbook.md, and this file's own history).
+  const { runBackup } = await import('./backup.js');
+  const { flags } = parseFlags(process.argv.slice(3));
+  const url = process.env.IP_SUPABASE_URL;
+  const key = process.env.IP_SUPABASE_SERVICE_KEY;
+  if (!url || !key) {
+    console.error('[backup] IP_SUPABASE_URL and IP_SUPABASE_SERVICE_KEY are required');
+    process.exit(2);
+  }
+  try {
+    console.log(await runBackup(repoRoot, {
+      supabaseUrl: url,
+      serviceKey: key,
+      ...(flags.bucket ? { bucket: flags.bucket } : {}),
+      ...(flags.keep ? { keep: Number(flags.keep) } : {}),
+    }));
+  } catch (e) {
+    console.error(`[backup] ${String(e instanceof Error ? e.message : e)}`);
+    process.exit(1);
+  }
 } else if (cmd === 'lc') {
   // Vendored LeetCode dataset ops. fetch is idempotent and pinned — see
   // LC_DATASET_PINS in lc-source.ts for the integrity story.
@@ -945,6 +968,7 @@ if (cmd === 'generate') {
       '  cli.ts blueprint <target-id> <spec-id>   draft the round blueprint (idempotent)\n' +
       '  cli.ts rep-build <rep-id>   build a practice rep (draft blueprint + generate)\n' +
       '  cli.ts lc <fetch|list|show> ...   vendored LeetCode dataset ops\n' +
+      '  cli.ts backup [--keep N]  tar gaps/topics/traces/feedback/targets → Supabase Storage\n' +
       '  cli.ts app               run the home app (:3300) - targets, queues, launch',
   );
   process.exit(64);

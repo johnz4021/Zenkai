@@ -119,9 +119,15 @@ rm -rf "${PY_CTX}"
 
 echo "== systemd units =="
 cp ops/systemd/zenkai-app.service /etc/systemd/system/
+# Nightly off-box backup of the irreplaceable dirs (gaps/topics/traces/
+# feedback/targets). db.ts mirrors reps/targets/sessions to Postgres but NOT
+# the memory layer, so without this a disk loss is permanent.
+cp ops/systemd/zenkai-backup.service /etc/systemd/system/
+cp ops/systemd/zenkai-backup.timer /etc/systemd/system/
 install -d /etc/caddy
 cp ops/Caddyfile /etc/caddy/Caddyfile
 systemctl daemon-reload
+systemctl enable --now zenkai-backup.timer 2>/dev/null || true
 systemctl enable zenkai-app caddy
 # Caddy's .deb STARTS the service at install time with the stock Caddyfile, so
 # the copy above lands under a caddy that is already running — and `systemctl
