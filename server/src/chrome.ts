@@ -101,7 +101,11 @@ function panesMain(view: SessionPageView): string {
     window.MonacoEnvironment = {
       getWorkerUrl: function () {
         var base = location.origin + '/vendor/monaco';
-        var boot = 'self.MonacoEnvironment={baseUrl:"' + base + '/"};importScripts("' + base + '/base/worker/workerMain.js");';
+        // The worker must get the SAME vs-path mapping the page uses: with
+        // only baseUrl set, the worker resolves 'vs/language/json/…' under a
+        // dir that already IS vs/, doubling the segment into a 404 for every
+        // language worker (QA 2026-08-14 — 4 console errors per JSON tab).
+        var boot = 'self.MonacoEnvironment={baseUrl:"' + base + '/"};importScripts("' + base + '/base/worker/workerMain.js");require.config({paths:{vs:"' + base + '"}});';
         return 'data:text/javascript;charset=utf-8,' + encodeURIComponent(boot);
       },
     };
