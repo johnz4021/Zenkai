@@ -927,6 +927,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       sessionId: cfg.sessionId,
       events,
       problem,
+      problemDir: cfg.problemDir,
       templatePath: path.join(cfg.repoRoot, 'prompts', 'judge-session.md'),
     });
 

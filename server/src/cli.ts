@@ -643,6 +643,7 @@ if (cmd === 'generate') {
     sessionId,
     events,
     problem,
+    problemDir,
     templatePath: path.join(repoRoot, 'prompts', 'judge-session.md'),
   });
   mkdirSync(path.join(repoRoot, 'assessments'), { recursive: true });

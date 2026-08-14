@@ -30,6 +30,7 @@
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import type { DimensionKey, GeneratedProblem, TraceEvent, Verdict } from '@interview-prep/shared';
 import { DIMENSIONS, DIMENSION_DEFS, isDimensionKey, isVerdict, resolveExpectations } from '@interview-prep/shared';
@@ -398,10 +399,45 @@ export interface JudgeSessionOptions {
   events: TraceEvent[];
   problem: Pick<GeneratedProblem, 'round_type' | 'spec' | 'planted_bug' | 'rubric'>;
   templatePath: string;
+  /** Host path of the round's problem dir. When set, review-shaped rounds
+   *  (no planted bug, no test run) get their written deliverable read from
+   *  here and appended to the ground truth — see deliverableText. */
+  problemDir?: string;
   /** Injectable; tests and the gauntlet pass fakes/instrumented models. */
   judgeModel?: JudgeModel;
   modelName?: string;
   now?: () => number;
+}
+
+/**
+ * The written deliverable of a round that has nothing runnable to grade —
+ * review_diff rounds, whose entire graded artifact is the candidate's
+ * write-up (the generated round's own copy: "It is the entire artifact that
+ * gets read"). QA 2026-08-14 (sess-1786722081844): a correct, correctly-
+ * ranked review was graded weak on every dimension because the judge only
+ * ever saw the timeline — the write-up itself was invisible to grading.
+ * REVIEW.md is the generation convention; any .md the candidate saved
+ * during the session is included as well in case a round names it
+ * differently. Exported for tests.
+ */
+export function deliverableText(problemDir: string, events: TraceEvent[]): string {
+  const candidates = new Set<string>(['REVIEW.md']);
+  for (const e of events) {
+    if (e.type === 'file_save' || e.type === 'edit') {
+      const p = String((e.payload as { path?: unknown })?.path ?? '');
+      if (p.toLowerCase().endsWith('.md')) candidates.add(p.replace(/^\/+/, ''));
+    }
+  }
+  const parts: string[] = [];
+  for (const rel of candidates) {
+    try {
+      const txt = readFileSync(path.join(problemDir, rel), 'utf8').trim();
+      if (txt) parts.push(`--- ${rel} ---\n${txt.slice(0, 12_000)}`);
+    } catch {
+      /* file not present — nothing submitted under that name */
+    }
+  }
+  return parts.join('\n\n');
 }
 
 /**
@@ -440,7 +476,15 @@ export async function judgeSession(opts: JudgeSessionOptions): Promise<JudgeResu
     : pickJudgeModel();
 
   const expectations = resolveExpectations(opts.problem.round_type, opts.problem.rubric?.dimensions);
-  const bug = groundTruth(opts.problem, opts.events);
+  let bug = groundTruth(opts.problem, opts.events);
+  // Review-shaped rounds only: no planted bug and no run to grade means the
+  // written deliverable IS the ground truth's other half.
+  if (!opts.problem.planted_bug && opts.problemDir && !opts.events.some((e) => e.type === 'test_run')) {
+    const deliverable = deliverableText(opts.problemDir, opts.events);
+    if (deliverable) {
+      bug += `\n\nThe candidate's submitted written deliverable, verbatim:\n${deliverable}`;
+    }
+  }
 
   const prompt = buildJudgePrompt(template, {
     timeline: renderTimeline(opts.events),
