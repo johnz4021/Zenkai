@@ -54,6 +54,7 @@ async function pollStatus() {
     el.textContent =
       'observing: ' + n('edit') + ' edits · ' + n('file_save') + ' saves · ' +
       n('test_run') + ' test runs' + (trigger ? ' · ' + trigger : '');
+    if (s.ended && !ending) markEndedChrome();
   } catch {}
 }
 const statusTimer = setInterval(pollStatus, 3000);
@@ -148,6 +149,22 @@ function stopSessionLoops() {
   if (eventsWs) { try { eventsWs.close(); } catch {} eventsWs = null; }
 }
 
+// Everything interactive goes quiet together. Reached from the end flow AND
+// from pollStatus on a reload: a page opened onto an already-ended session
+// used to render as a live round — ticking clock, enabled Run Tests and
+// Submit (QA 2026-08-14).
+function markEndedChrome() {
+  stopSessionLoops();
+  document.body.classList.add('ended');
+  const btn = document.getElementById('end');
+  btn.disabled = true;
+  btn.textContent = 'Session ended';
+  const run = document.getElementById('run');
+  if (run) run.disabled = true;
+  const mute = document.getElementById('mute');
+  if (mute) mute.disabled = true;
+}
+
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
   const input = document.getElementById('msg');
@@ -214,10 +231,10 @@ async function endSession() {
   }
   stopSessionLoops();
   const res = await fetch('/api/end', { method: 'POST' });
-  if (res.status === 409) { btn.textContent = 'Session ended'; return; }
+  if (res.status === 409) { markEndedChrome(); return; }
   const card = await res.json();
   render(card);
-  btn.textContent = 'Session ended';
+  markEndedChrome();
 }
 
 document.getElementById('end').addEventListener('click', endSession);
