@@ -179,9 +179,12 @@
         if (out.error) {
           $('runstate').textContent = out.error === 'busy' ? 'a run is already in progress' : 'run refused: ' + out.error;
         } else {
+          // Say what the fraction IS: "failed 0/17" read as its own opposite
+          // when all 17 failed (QA 2026-08-14) — the number beside "failed"
+          // is the PASS count.
           const counts = typeof out.passed === 'number' && typeof out.total === 'number'
-            ? ' ' + out.passed + '/' + out.total : '';
-          $('runstate').textContent = (out.exit_code === 0 ? 'passed' : 'failed') + counts;
+            ? out.passed + '/' + out.total + ' passing' : '';
+          $('runstate').textContent = (out.exit_code === 0 ? 'passed' : 'failed') + (counts ? ' — ' + counts : '');
           // Presentation hook only: lets the stylesheet color the verdict.
           $('runstate').className = out.exit_code === 0 ? 'pass' : 'fail';
           $('runout').textContent = out.tail || out.summary || '';
