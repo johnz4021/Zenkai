@@ -128,8 +128,22 @@ export interface GraphView {
  * session semantics.
  */
 export function isMemorableSessionId(sid: string): boolean {
-  return /^sess-\d{10,}$/.test(sid);
+  return MINTED_SESSION_ID.test(sid);
 }
+
+/**
+ * The two shapes a real launch produces, and nothing else:
+ *   single-session  `sess-<ms>`                  (app.ts, cli.ts default)
+ *   multi-session   `sess-<ms>-<4 hex>`          (newSessionId, session-registry.ts)
+ *
+ * The hex suffix is NOT optional decoration — multi-session is the beta
+ * configuration, and concurrent launches can collide on a millisecond, so
+ * every beta session carries it. A guard that omitted it (first cut,
+ * 2026-08-14) would have silently recorded NOTHING for every real beta
+ * user while still looking correct on the founder's legacy single-session
+ * history. Keep this in sync with newSessionId.
+ */
+const MINTED_SESSION_ID = /^sess-\d{10,}(-[0-9a-f]{4})?$/;
 
 export const PATTERN_MIN_SESSIONS = 3;
 const HALF_LIFE_SESSIONS = 5;
