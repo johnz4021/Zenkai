@@ -1247,6 +1247,19 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         res.writeHead(400);
         return res.end('bad path or content');
       }
+      // One-shot rounds extend the block to the grading contract itself:
+      // tests/ and the cases files are exactly what the submit run executes
+      // (QA 2026-08-14 — test_partN.py was editable in-session, so a
+      // candidate could grade their own round green). Iterate rounds keep
+      // test-editing freedom; their runs are formative, not graded.
+      const relPath = path.relative(cfg.problemDir, abs);
+      if (
+        caps.submit === 'one_shot' &&
+        (relPath === 'tests' || relPath.startsWith(`tests${path.sep}`) || /^cases.*\.json$/i.test(path.basename(abs)))
+      ) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'the grading suite is read-only on a one-shot round' }));
+      }
       markCandidateContact();
       mkdirSync(path.dirname(abs), { recursive: true }); // blank scaffolds invite new files
       writeFileSync(abs, body.content);
