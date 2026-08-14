@@ -646,10 +646,23 @@ if (cmd === 'generate') {
     templatePath: path.join(repoRoot, 'prompts', 'judge-session.md'),
   });
   mkdirSync(path.join(repoRoot, 'assessments'), { recursive: true });
-  writeFileSync(
-    path.join(repoRoot, 'assessments', `${sessionId}.json`),
-    JSON.stringify(result, null, 2),
-  );
+  // A failed judge call must never replace an assessed record with a stub —
+  // the same invariant session.ts holds for the gap graph ("a judge failure
+  // must not become history"). Forced by QA 2026-08-14: a rotated API key
+  // made every rejudge 401, and the unconditional write shredded a good
+  // assessment (summary, six verdicts, citations, version stamps) into a
+  // 4-field unassessed stub.
+  const assessPath = path.join(repoRoot, 'assessments', `${sessionId}.json`);
+  let priorAssessed = false;
+  try {
+    priorAssessed =
+      (JSON.parse(readFileSync(assessPath, 'utf8')) as { status?: string }).status === 'assessed';
+  } catch { /* no prior record */ }
+  if (result.status !== 'assessed' && priorAssessed) {
+    console.error('[rejudge] judge failed — keeping the existing assessed record untouched');
+  } else {
+    writeFileSync(assessPath, JSON.stringify(result, null, 2));
+  }
 
   // --record writes into the gap graph; plain rejudge is a dry look.
   let store = loadStore(path.join(repoRoot, 'gaps'), userId);
