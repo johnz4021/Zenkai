@@ -1690,37 +1690,20 @@ function renderSeason(row, state) {
       continue;
     }
     const item = d.items[0] || null;
-    // Real-set binding bits for one item: a provenance line (user picks show
-    // the title — they named it; auto picks stay hidden until the round) and,
-    // while the item hasn't BUILT, ONE control — pick your own problem. There
-    // is deliberately no unbind link: now that algorithmic rounds source by
-    // default, "go back to an invented problem" is the weaker path and does
-    // not belong at the same weight as choosing (2026-08-13). The endpoint
-    // still accepts an empty ref as an escape valve.
+    // Provenance ONLY — the plan row says where a round came from and offers
+    // no control over it. Per-item rebinding was removed 2026-08-13: a queue
+    // item carries a single `source`, but an algorithmic_set round may be a
+    // multi-part OA (the oa-hackerrank-classic skeleton mandates "same count
+    // of parts"), so "change this round's problem" is unrepresentable the
+    // moment a set has more than one part. Restore it — plural — when
+    // `sources[]` lands. A user pick shows its title (they named it); an auto
+    // pick stays hidden so the reskin still lands fresh.
     const sourceBits = (it) => {
-      const editable = it.status === 'pending' || it.status === 'failed';
-      const ids = ' data-t="' + esc(t.id) + '" data-i="' + esc(it.id) + '"';
-      const label = it.source
-        ? (it.source.picked_by === 'user'
-            ? 'real set: ' + it.source.title + ' · ' + it.source.difficulty
-            : 'real set · ' + it.source.difficulty + ' — hidden until the round')
-        : null;
-      const links = editable
-        ? ' <a href="#" class="srcedit"' + ids + '>' +
-          (it.source && it.source.picked_by === 'user'
-            ? 'choose a different problem'
-            : 'choose your own LC problem') +
-          '</a>'
-        : '';
-      return {
-        line: (label || links) ? '<span class="srcline">' + (label ? esc(label) : '') + links + '</span>' : '',
-        form: editable
-          ? '<div class="srcform" data-form="' + esc(it.id) + '" hidden>' +
-            '<input class="srcinput" placeholder="problem name or LC number" />' +
-            '<button class="mini srcset"' + ids + '>set</button>' +
-            '<span class="meta srcerr"></span></div>'
-          : '',
-      };
+      if (!it.source) return { line: '' };
+      const label = it.source.picked_by === 'user'
+        ? 'real set: ' + it.source.title + ' · ' + it.source.difficulty
+        : 'real set · ' + it.source.difficulty + ' — hidden until the round';
+      return { line: '<span class="srcline">' + esc(label) + '</span>' };
     };
     if (d.today) {
       html += '<li class="today" aria-current="date"><span class="date">TODAY</span><span class="dot"></span><div class="body">';
@@ -1753,13 +1736,13 @@ function renderSeason(row, state) {
         const sb = sourceBits(item);
         html += '<div class="grow"><div class="title">' + esc(itemTitle(item)) + '</div>' +
           '<div class="metaline err">couldn\'t build this one</div>' +
-          (sb.line ? '<div class="metaline">' + sb.line + '</div>' : '') + sb.form + '</div>' +
+          (sb.line ? '<div class="metaline">' + sb.line + '</div>' : '') + '</div>' +
           '<button class="retry" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">retry</button>';
       } else {
         const sb = sourceBits(item);
         html += '<div class="grow"><div class="title">' + esc(itemTitle(item)) + '</div>' +
           '<div class="metaline">not built yet — usually 5–8 minutes to generate</div>' +
-          (sb.line ? '<div class="metaline">' + sb.line + '</div>' : '') + sb.form + '</div>' +
+          (sb.line ? '<div class="metaline">' + sb.line + '</div>' : '') + '</div>' +
           '<button class="primary gen" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">Generate</button>';
       }
       html += '</div></li>';
@@ -1795,8 +1778,7 @@ function renderSeason(row, state) {
       html += '<li class="future"><span class="date">' + fmtDate(d.date) + '</span><span class="dot"></span>' +
         '<span class="body">' + esc(itemTitle(item)) +
         (item.stale ? ' <span class="stale">— built for the old shape</span>' : '') +
-        (sb.line ? ' <span class="meta">·</span> ' + sb.line : '') + action + '</span>' +
-        sb.form + '</li>';
+        (sb.line ? ' <span class="meta">·</span> ' + sb.line : '') + action + '</span></li>';
     } else {
       html += '<li class="future empty"><span class="date">' + fmtDate(d.date) + '</span><span class="dot"></span>' +
         '<span class="body"></span></li>';
@@ -2111,39 +2093,6 @@ function wireTimeline(container) {
       const s = await r.json();
       if (s.error) { el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>'; b.disabled = false; return; }
       refresh(true);
-    });
-  }
-  for (const a of container.querySelectorAll('a.srcedit')) {
-    a.addEventListener('click', (e) => {
-      e.preventDefault();
-      const f = container.querySelector('.srcform[data-form="' + a.dataset.i + '"]');
-      if (f) {
-        f.hidden = !f.hidden;
-        if (!f.hidden) f.querySelector('.srcinput').focus();
-      }
-    });
-  }
-  for (const b of container.querySelectorAll('button.srcset')) {
-    const submit = async () => {
-      const f = b.closest('.srcform');
-      const input = f.querySelector('.srcinput');
-      const err = f.querySelector('.srcerr');
-      const v = (input.value || '').trim();
-      if (!v) return;
-      b.disabled = true;
-      const r = await fetch('/api/item/source', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ target_id: b.dataset.t, item_id: b.dataset.i, ref: v }),
-      });
-      const s = await r.json();
-      // The refusal reason renders inline — it's the verdict's copy
-      // ("not sourceable yet", "failed mechanical verification").
-      if (s.error) { err.textContent = s.error; b.disabled = false; return; }
-      refresh(true);
-    };
-    b.addEventListener('click', submit);
-    b.closest('.srcform').querySelector('.srcinput').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') submit();
     });
   }
   for (const a of container.querySelectorAll('a.addlearn')) {

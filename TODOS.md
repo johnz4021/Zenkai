@@ -986,6 +986,22 @@ and the record-only topic ledger (`topic-graph.ts`).
 - **`cli.ts topics rebuild`** (ledger reconstruction from assessments + manifests —
   the store is non-precious by design; this makes it provably so). Trigger: first
   corrupt-store warning in a beta log.
+- **Plural `sources[]` for multi-part OA sets** — `QueueItem.source` holds ONE
+  slug, but `algorithmic_set` legitimately means a 2-3 problem set (the
+  oa-hackerrank-classic skeleton: "when the material describes MULTIPLE PARTS
+  the set MUST carry that structure"). Two consequences today: auto-sourcing
+  silently collapses a multi-part OA into one problem, AND the generator gets
+  a contradiction (blueprint "same count of parts" vs the source block's
+  "exactly ONE file, solution.py" — both claim precedence in
+  generate-round.md). Per-item manual rebinding was REMOVED 2026-08-13 rather
+  than ship a control that cannot express a set. Fix: `sources[]`, converter
+  emits `part1/`/`part2/` each with its own solution+tests (unittest discover
+  recurses, so test_command is unchanged), per-part display and rebinding.
+  Interim option if this waits: have the source block state "one problem this
+  session" so the contradiction is at least resolved in one direction.
+  Trigger: the first multi-part OA a beta user actually asks for — or now,
+  since Amazon/Meta screens are usually two problems.
+
 - **Two known oracle-failure classes the blocklist absorbs** (~5% of eligible in the
   2026-08-12 sample sweep): any-order answers where the canonical's output order
   differs from the recorded order (a sort-on-mismatch comparator would false-accept

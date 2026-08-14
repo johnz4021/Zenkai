@@ -127,6 +127,11 @@ export async function judgeNeed(
    *  grading on them measured snippet availability rather than ranking.
    *  See enrich.ts for the confound this fixes. */
   contents?: Record<string, string>,
+  /** `reverse` flips the presentation order. The order is otherwise a fixed
+   *  function of the URL, which controls it across passes — but "controlled"
+   *  is not "harmless", so reliability runs use this to separate model
+   *  sampling noise from position effects. */
+  opts: { reverse?: boolean } = {},
 ): Promise<Verdict[]> {
   // Dedupe by URL, keeping the longest engine-native snippet as a fallback
   // for URLs the enricher could not read.
@@ -137,6 +142,7 @@ export async function judgeNeed(
     if (!prev || h.snippet.length > prev.snippet.length) byUrl.set(h.url, h);
   }
   const unique = [...byUrl.values()].sort((a, b) => shuffleKey(a.url) - shuffleKey(b.url));
+  if (opts.reverse) unique.reverse();
   if (unique.length === 0) return [];
 
   const rendered = unique

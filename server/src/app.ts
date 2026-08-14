@@ -2293,47 +2293,6 @@ export function runApp(cfg: AppConfig): http.Server {
         spawnGeneration(t, item, dir);
         return json(200, { ok: true });
       }
-      if (url === '/api/item/source' && req.method === 'POST') {
-        // Manual real-set binding on a plan item — the after-the-fact door
-        // ("a friend just told me they got two sum"). Only items that have
-        // not BUILT yet: a ready item's problem already exists, and
-        // changing its identity is the rebuild flow's job. Empty ref
-        // unbinds (back to invention). The server resolves and re-proves;
-        // the client never picks a slug, only speaks.
-        const b = JSON.parse((await readBody(req)) || '{}') as {
-          target_id?: string; item_id?: string; ref?: string;
-        };
-        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
-        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
-        if (!t) return json(404, { error: 'no such target' });
-        const q = loadQueue(repoRoot, t.id);
-        const item = q?.items.find((i) => i.id === b.item_id);
-        if (!q || !item) return json(404, { error: 'no such item' });
-        if (item.status !== 'pending' && item.status !== 'failed') {
-          return json(409, { error: `this round is ${item.status} — rebuild it to change what it practices` });
-        }
-        const ref = typeof b.ref === 'string' ? b.ref.trim() : '';
-        if (!ref) {
-          delete item.source;
-          saveQueue(repoRoot, q);
-          return json(200, { ok: true, source: null });
-        }
-        const lc = await import('./lc-source.js');
-        const { resolveProblemRef } = await import('./lc-refs.js');
-        const ready = lc.lcReady(repoRoot);
-        if (!ready.ok) return json(400, { error: ready.reason });
-        const hit = resolveProblemRef(ref, lc.loadLcIndex(repoRoot));
-        if (!hit) return json(400, { error: `couldn't match "${ref.slice(0, 60)}" to a problem — try its exact name or LC number` });
-        const verdict = lc.sourceBindingVerdict(repoRoot, hit.slug);
-        if (!verdict.ok) return json(400, { error: verdict.reason });
-        item.source = {
-          kind: 'leetcode', slug: hit.slug, title: hit.title, difficulty: hit.difficulty, picked_by: 'user',
-        };
-        // The invented title no longer describes what will build.
-        delete item.planned_title;
-        saveQueue(repoRoot, q);
-        return json(200, { ok: true, source: { slug: hit.slug, title: hit.title, difficulty: hit.difficulty } });
-      }
       if (url === '/api/generate' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;

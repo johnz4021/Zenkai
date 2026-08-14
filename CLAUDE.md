@@ -117,7 +117,8 @@ the dataset record and is what the topic ledger (`topic-graph.ts`, `topics/<uid>
 records on. Bindings come from intake extraction (`named_problems` on both doors,
 resolved mechanically by `lc-refs.ts`), from `lc-pick.ts` auto-sourcing (the default
 for unnamed algorithmic rounds — memory-BLIND diverse picks; the topic ledger is read
-only as a 14-day seen-window dedup), or from `POST /api/item/source`. Weakness-ranked
+only as a 14-day seen-window dedup). Per-item manual rebinding was removed pending
+plural `sources[]` — a multi-part OA cannot be expressed by one slug. Weakness-ranked
 selection stays deferred (TODOS #40). Read `server/src/lc-source.ts` / `lc-convert.ts`
 headers before touching any of it.
 
