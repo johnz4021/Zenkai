@@ -277,14 +277,28 @@ function logLaunch(origin: unknown, sessionId: string): void {
 }
 
 function spawnDetached(args: string[], env: Record<string, string> = {}): number | null {
+  // Diagnostics used to vanish with stdio:'ignore': an app-launched round's
+  // [interviewer]/[intent]/judge failures left nothing on disk to read (QA
+  // 2026-08-14 — a silent interviewer was undiagnosable without relaunching
+  // from a terminal). One log per spawn under .ide-data/logs, named by the
+  // session when the env names one. Best-effort: never blocks a launch.
+  let out: number | 'ignore' = 'ignore';
+  try {
+    const logDir = path.join(repoRoot, '.ide-data', 'logs');
+    mkdirSync(logDir, { recursive: true });
+    out = openSync(path.join(logDir, `${env.IP_SESSION_ID ?? `${args[0] ?? 'spawn'}-${Date.now()}`}.log`), 'w');
+  } catch { /* fall back to ignore */ }
   const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), ...args], {
     cwd: repoRoot,
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', out, out],
     // WU8: sessions need both API keys; the DB service key reaches no child.
     env: childEnv('session', process.env, env),
   });
   child.unref();
+  if (typeof out === 'number') {
+    try { closeSync(out); } catch { /* child holds its own copy */ }
+  }
   return child.pid ?? null;
 }
 
