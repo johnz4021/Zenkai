@@ -232,9 +232,21 @@ export function reconcileWithDisk(root: string, queue: Queue): Queue {
     }
     if (item.session_id && item.status !== 'done') {
       const assessment = path.join(root, 'assessments', `${item.session_id}.json`);
+      // Existence is not enough: judge failures leave an `unassessed` stub
+      // (status UNASSESSED is never a verdict — CLAUDE.md), and QA
+      // 2026-08-14 showed a stub flipping a queue item to done off a round
+      // that was never actually judged. Only a real verdict completes the
+      // item; anything else keeps it ready for a re-run or a rejudge.
       if (existsSync(assessment)) {
-        item.status = 'done';
-        item.done_at = localDate(statSync(assessment).mtimeMs);
+        try {
+          const status = (JSON.parse(readFileSync(assessment, 'utf8')) as { status?: string }).status;
+          if (status !== 'unassessed') {
+            item.status = 'done';
+            item.done_at = localDate(statSync(assessment).mtimeMs);
+          }
+        } catch {
+          /* unreadable record proves nothing — leave the item live */
+        }
       }
     }
   }
