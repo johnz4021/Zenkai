@@ -1262,3 +1262,83 @@ and the legacy round:
 **Where the fixes would start (when unfrozen):** `interviewer.ts` guard family
 + `round-rules.ts` ANSWERABLE, `session.ts` intent-gate error path, prompt
 emphasis handling. **Priority:** owner's call.
+
+---
+
+## 52. Reload and post-end trace hygiene — the rest of it
+
+**What:** three residual leaks around the same seam, found by fix-verification
+after the post-end append guard landed (2026-08-14):
+
+- **Every session-page reload fires an extra automatic test run and a second
+  `session_start` into the trace** — and it demonstrably changed a verdict: the
+  judge narrated a phantom "session restart" as graded fact
+  (sess-qa814-verify-ide). Reload is a candidate's most ordinary recovery move;
+  it must be free.
+- **A 403-refused save still posts `file_save` into the trace** and increments
+  the header save counter, so the record shows a save that never happened — and
+  the candidate is shown no error at all, so they believe it saved.
+- **A reloaded ended page loses the feedback card** and leaves an enabled chat
+  box (now 409-refused) as the only affordance, with a 00:00 clock.
+
+**Why grouped:** all three are the client and the trace disagreeing about
+session state across a page load. Fixing them one at a time invites three
+different notions of "is this page live"; the client wants ONE resume path that
+asks the server what state it is in and renders that (live / ended+card).
+
+**Where to start:** `client/session.js` boot path (it re-emits `session_start`
+and re-triggers autorun), then the save-error path in `client/panes.js:44-56`,
+then the ended-page render (`markEndedChrome` + `/api/status` carrying the card).
+
+**Effort:** CC ~1-2 hr. **Priority:** P2 (P1 for the autorun/duplicate-start
+half — it reaches the judge).
+
+---
+
+## 53. `reconcileWithDisk` never heals an item already persisted as `done`
+
+**What:** the unassessed-stub guard (2026-08-14) stops NEW wrong completions,
+but items written `done` before it landed stay `done` forever — reconciliation
+only ever moves an item forward. Two live items are wrongly `done` today off
+sessions whose assessment is an unassessed stub.
+
+**Why it is not just a data patch:** a one-off script fixes today's two rows and
+the same drift returns the next time a judge write shape changes. The
+reconciler should be able to CORRECT a status from disk, not only advance it —
+which means deciding whether disk or the stored queue wins per field. That is
+the same question `repace` and the adapt flow already answer differently.
+
+**Where to start:** `server/src/queue.ts` `reconcileWithDisk` (the
+`item.status !== 'done'` precondition), plus a migration pass over
+`targets/*/queue.json` for the rows already stuck.
+
+**Effort:** CC ~45 min. **Priority:** P2.
+
+---
+
+## 54. Contract inconsistencies the fix-verification pass turned up
+
+Small, individually cheap, each one a place where two parts of the product
+state different things. Recorded together so they can be swept in one pass:
+
+- **`/api/file` GET serves pipeline marker files** (`.used`, `.validated`,
+  `.session-snapshot`) by guessed name, contradicting the spoiler contract
+  56bd859's own commit message states. `listWorkspaceFiles` hides them; the
+  fetch route does not. (`session.ts` GET `/api/file` — mirror the dotfile skip.)
+- **`deliverableText` labels ANY saved `.md`** — including the round's own
+  `README.md` / `PROBLEM.md` — as "the candidate's submitted written
+  deliverable, verbatim". Exclude round-provided docs, or take only files the
+  trace shows the candidate actually wrote to. (`judge.ts:445`.)
+- **The degenerate-tool-call retry does not cover an ABSENT tool call**, and the
+  `claude -p` transport has no equivalent retry at all — so the same judge
+  flake is fatal on one path and survivable on the other. (`judge.ts:390-405`.)
+- **The feedback card narrates an interviewer on `interviewer:false` rounds**
+  ("the interviewer would have had to interrupt") — the same copy contract
+  06b70ba fixed in the session chrome, unfixed in the card and in the judge's
+  own dimension prose. (`feedback.ts` + the `communicate` anchor.)
+- **One-shot rounds render the submit action to the judge as "candidate clicked
+  End Session"** when the button says Submit, and that fiction reached a graded
+  card. (`timeline.ts` `renderTimeline` session_end line.)
+
+**Effort:** CC ~15-30 min each. **Priority:** P3, except the deliverable
+labeling (P2 — it is in the judge's ground truth).
