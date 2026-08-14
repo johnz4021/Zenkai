@@ -1053,3 +1053,212 @@ logs), or Meta/Google expanding the pilots beyond select orgs.
 **Effort:** human ~1-2 weeks / CC ~half a day. **Priority:** P3 until the trigger fires.
 **Context:** 2026-08-13 market research in
 ~/.gstack/projects/interview_prep/johnzhang-beta-plan-20260812-task-taxonomy.md.
+
+---
+
+## 43. Skinned LC rounds de-skin themselves through the cases files
+
+**What:** `tests/cases.json` / `cases_partN.json` carry the dataset's raw kwarg
+strings verbatim — original LeetCode parameter names (`low`, `high`, `zero`,
+`one`) — and the panes file strip lists them, so one tab-click reveals the
+problem's real identity on every skinned round (single AND multi-part; 2026-08-14
+full-surface QA hit it on `count-ways-to-build-good-strings` and all 3 parts of
+rep-set67388).
+
+**Why it's a decision, not just a fix:** the harness already passes case values
+POSITIONALLY (lc-convert.ts header: "a skinned scaffold may rename parameters
+freely as long as order and meaning hold"), so the kwarg NAMES in cases files are
+display-only. Two viable shapes: (a) hide cases/tests files from the panes list
+on one-shot rounds — matches real OAs, which never show the grading suite, and
+the in-session PUT block for the grading contract already landed (2026-08-14);
+(b) re-emit cases keys renamed to the skinned scaffold's own signature (parse the
+generated `def`). (a) is 10 lines in `listWorkspaceFiles`; (b) preserves
+inspectability. Pick one deliberately — (a) changes what a candidate sees.
+
+**Where to start:** `server/src/panes.ts` `listWorkspaceFiles` for (a);
+`server/src/lc-convert.ts` `renderCasesJson` + a signature parse for (b).
+
+**Effort:** (a) CC ~15 min / (b) CC ~1-2 hr. **Priority:** P1 — it defeats the
+skinned-mode policy on every sourced round.
+
+---
+
+## 44. Multi-part rounds: per-part outcomes for the topic ledger and the judge
+
+**What:** a multi-part set records the whole-session `solved` boolean on every
+part row and drops per-part pass counts — so a set where part 1 went 12/12 and
+part 3 went 0/12 scores every part at the unsolved floor, and the judge (which
+only receives the aggregate "29/36") asserts breakage in parts that fully passed.
+Feedback card gives no per-part outcome either. (2026-08-14 QA, sess-qa813-lcset
+lineage; three agents confirmed independently.)
+
+**Why deferred:** needs per-part results plumbed from the graded run. The
+unittest aggregate output does contain per-class failures (`Part1Tests` …), so
+`parseRunCounts` could grow a per-class variant and `topic-graph.ts`
+`attemptsFromSession` could stamp real per-part solved/tests — but that touches
+the ledger row shape, and the topic graph is record-only by decision; get the
+record RIGHT before anything reads it.
+
+**Where to start:** `server/src/panes.ts` `parseRunCounts` (per-class parse),
+then `topic-graph.ts` `attemptsFromSession`, then the card's multi-part block.
+
+**Effort:** CC ~1-2 hr. **Priority:** P2.
+
+---
+
+## 45. One invalid ANTHROPIC_API_KEY silently degrades everything — no preflight, no fallback, no signal
+
+**What:** with a set-but-invalid key, `pick*Model()` commits to the API path on
+env presence alone; the interviewer goes silent with zero user-visible signal,
+every judge run lands UNASSESSED, and generation burns ~180s of retries per
+build before surfacing a raw JSON blob. The documented `claude -p` degraded mode
+never engages because the bad key also poisons the CLI. (2026-08-14 QA: the
+harness's shell key shadowed the repo's valid .env key and took down eleven
+sessions' judges and every interviewer before root-cause.)
+
+**Fix shape (pick deliberately):** a 1-second auth preflight at process start
+(GET /v1/models) that logs loudly and flips the transport to `claude -p` with a
+clean env, plus a session-chrome chip when the interviewer's model path is dead
+(the silent-interviewer UX is the worst part). The rejudge/report plumbing
+already stopped destroying records on this failure (fixed 2026-08-14).
+
+**Where to start:** the `pickX()` family (judge.ts:395 is canonical), then a
+`voiceOffReason`-style `interviewerOffReason` in session.ts + chrome chip.
+
+**Effort:** CC ~1 hr. **Priority:** P1 — cheapest insurance against the worst
+silent-failure class found in the full-surface QA.
+
+---
+
+## 46. CLI `generate-for` is a second, poorer generation path
+
+**What:** the CLI path is queue-blind: it drops a queue item's bound LC
+`source` unless an undocumented `--source` flag is repeated by hand, binds
+nothing back to the queue item (the app shows 8/8 pending while two validated
+problems sit on disk), writes no `.generating` marker and no `<dir>.build.log`,
+bypasses the app's build caps, and leaves orphan empty dirs with no `.failed`
+reason on death. The app's `spawnGeneration` does all of this correctly.
+(2026-08-14 QA; three generation agents hit different facets.)
+
+**Fix shape:** extract the app's spawn/bind/marker logic into one function both
+paths call, or make `generate-for` resolve the target's queue and behave like a
+headless click of the timeline's Generate button.
+
+**Where to start:** `server/src/app.ts` `spawnGeneration` vs `cli.ts`
+`generate-for`; the marker/log helpers already exist beside `openBuildLog`.
+
+**Effort:** CC ~1-2 hr. **Priority:** P2.
+
+---
+
+## 47. Review-round surface: the diff deserves a diff
+
+**What:** `starts_from:'diff'` has no diff-specific UI: CHANGE.diff renders as
+uncolored plaintext (word wrap for .md landed 2026-08-14, the diff itself is
+still monochrome), a dead 180px TEST RESULTS pane occupies the work column on a
+round where nothing can run, REVIEW.md — the only graded artifact — is one
+undistinguished tab among twelve, and the PR's changed-file set is never
+surfaced. The format WORKS end-to-end now (judge reads REVIEW.md, no phantom
+suite run — both fixed 2026-08-14); this is the experience gap that remains.
+
+**Where to start:** `chrome.ts` `panesMain` (hide the run panel when
+`!can_run_tests`; pin REVIEW.md + CHANGE.diff as primary tabs), a minimal diff
+colorizer for Monaco (`monaco.languages` tokenizer, ~40 lines).
+
+**Effort:** CC ~1-2 hr. **Priority:** P2 — first-impression quality of a format
+the practice door now generates on demand.
+
+---
+
+## 48. `.used` is a single-session slot — reruns orphan history and replay dirty workspaces
+
+**What:** re-running a problem dir overwrites `.used` (the session→problem
+binding), so earlier sessions of the same dir become un-rejudgeable and their
+provenance is gone; and because the panes editor writes into the host problem
+dir with no restore, a re-run replays the previous candidate's code (2026-08-14
+QA: four sessions consumed rep-set67388; only the last is recoverable, and the
+queue-launch path handed a QA agent a pre-solved workspace).
+
+**Fix shape:** append-only `.used` (one line per session; rejudge matches any
+line) is 5 lines and fixes provenance. Workspace restore is the bigger half —
+either a pristine snapshot taken at validate time (`.session-snapshot` machinery
+already exists) restored on launch, or per-session workspace copies.
+
+**Where to start:** `cli.ts` markUsed + the rejudge `.used` scan (now three
+universes, cli.ts:599); `session.ts` launch path for the restore.
+
+**Effort:** CC ~1-2 hr. **Priority:** P2 (P1 the moment anyone re-runs a round
+deliberately).
+
+---
+
+## 49. Voice pipeline trace hygiene (ambient transcripts, health disagreement)
+
+**What:** an open mic on a silent room streams non-speech to STT and plants
+empty/noise `utterance` events in the graded trace (five sessions in the
+2026-08-14 QA; on one no-interviewer round SEVEN phantom "you (voice)" turns
+rendered in the chat rail); separately the trace recorded 8 stt 'up' events
+while /api/status said `stt_up:false` — the two health surfaces disagree.
+
+**Why deferred:** energy-gate tuning is judgment work against real audio, and
+the QA's phantom turns may partly be the harness's silent-room setup; needs a
+human listen-through before touching thresholds. The health split is mechanical
+but lives in the same file.
+
+**Where to start:** `server/src/voice.ts` (energy gate, health events), then
+`judge`'s `isPhantomUtterance` for whether graded traces should drop empties.
+
+**Effort:** CC ~1-2 hr + a real-mic session. **Priority:** P2.
+
+---
+
+## 50. Planner first-turn failure orphans an empty plan card
+
+**What:** the #/new client creates the target BEFORE the first planner turn (so
+conversations can resume — the documented orphan-litter fix), but when that
+FIRST turn fails or is abandoned there is no conversation to resume: an empty
+spec-less target rots as a junk plan card, named by a mid-phrase truncation of
+the paste. Two accumulated during the 2026-08-14 QA alone
+(`i-have-a-stripe-phone-mssin1je`, `-mst3i4t0`).
+
+**Fix shape:** on first-turn failure with no persisted conversation, the client
+deletes the just-created target and restores the message into the composer (no
+data loss, no litter); or the plans list hides spec-less conversation-less
+targets. Also: derive the label from the planner's first reply, not the paste.
+
+**Where to start:** `client/app.js` #/new send flow + `/api/target/delete`.
+
+**Effort:** CC ~30-45 min. **Priority:** P2.
+
+---
+
+## 51. Interviewer observations from the 2026-08-14 full-surface QA (record, not fixes)
+
+Deliberately note-only (owner's instruction: no interviewer changes from QA).
+From live probed sessions (sess-qa814-leak trace analysis, sess-qa813-panesint-b)
+and the legacy round:
+
+- **Mechanism leak in a stuck nudge:** one nudge handed over the planted bug's
+  MECHANISM without naming the file; `leaksBugLocation()` is deliberately
+  locational and has zero coverage for non-locational disclosure. The
+  `leaksImplementationVocabulary` stuck-turn guard exists but did not catch it.
+- **Ground-truth vocabulary volunteered:** replied to a bug-location probe with
+  "boundary minute" before the candidate had used any such term.
+- **Latency cliff:** a direct root-cause statement went unanswered 190s, then
+  was answered by a turn the pipeline flagged unprompted (~40x median latency).
+- **Repetition:** near-identical follow-up appended to three consecutive turns
+  within 43s (settle-window shape).
+- **Invented constraints:** told an untimed round it had "45 minutes"; skipped
+  the round emphasis's mandated LP questions entirely.
+- **Intent gate fails open to 'narration'** when the classifier call errors —
+  directly-addressed questions get silence (session.ts routing, arguably
+  interviewer-side; left untouched per instruction).
+- **Refused a rubric-rewarded clarifying question** on the implement round, and
+  the judge then penalized the candidate for not clarifying — the two ends of
+  the product disagree about the same behavior.
+- **Wrong runner claim:** stated the Run Tests button is "the only runner
+  installed here" on an IDE round whose terminal runs the suite fine.
+
+**Where the fixes would start (when unfrozen):** `interviewer.ts` guard family
++ `round-rules.ts` ANSWERABLE, `session.ts` intent-gate error path, prompt
+emphasis handling. **Priority:** owner's call.
