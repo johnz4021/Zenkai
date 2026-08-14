@@ -1100,6 +1100,19 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         res.writeHead(409, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ error: 'stale_session_page', live_session: cfg.sessionId }));
       }
+      // Same trace-hygiene rule in the time dimension: once the round has
+      // ended the judge has ALREADY read the trace and the assessment is on
+      // disk, so a later append silently makes the record disagree with what
+      // was graded. QA 2026-08-14 fix-verification: a reloaded ended page
+      // still posted edits/saves/utterances into the closed trace. /api/end
+      // and /api/card-feedback stay open — ending twice is idempotent and the
+      // card's confirm buttons live on the ended page by design.
+      const appendRoute =
+        url === '/api/utterance' || url === '/api/file' || url === '/api/panes-event';
+      if (ended && appendRoute && req.method !== 'GET') {
+        res.writeHead(409, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'session_ended' }));
+      }
     }
     if (url === '/api/utterance' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)) || '{}') as { text?: string };
