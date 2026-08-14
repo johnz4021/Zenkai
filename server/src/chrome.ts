@@ -51,6 +51,11 @@ export interface SessionPageView {
    *  keys workbench state by folder URI in browser IndexedDB, so a constant
    *  path resurrects the previous round's tabs. */
   workspace_path?: string;
+  /** How far into the round the server says we are, at page render. The
+   *  client clock seeds from this instead of page-load time — QA 2026-08-14:
+   *  a reload mid-round restarted the displayed countdown at the full limit
+   *  while the server kept enforcing the real deadline. */
+  elapsed_ms?: number;
 }
 
 const DEFAULT_VIEW: SessionPageView = {
@@ -223,7 +228,7 @@ export function sessionPage(sessionId: string, partial: Partial<SessionPageView>
 <header>
   ${view.back_url ? `<a id="back" href="${view.back_url}">← back to plan</a>` : ''}
   <span>session <b>${sessionId}</b></span>
-  <span class="t" id="clock"${view.time_limit_ms ? ` data-limit="${view.time_limit_ms}"` : ''}>00:00</span>
+  <span class="t" id="clock"${view.time_limit_ms ? ` data-limit="${view.time_limit_ms}"` : ''}${view.elapsed_ms ? ` data-elapsed="${view.elapsed_ms}"` : ''}>00:00</span>
   <span class="t" id="status"${view.one_shot ? ' data-one-shot="1"' : ''}>observing: —</span>
   <span class="t" id="voicechip">voice: —</span>
   ${

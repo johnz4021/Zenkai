@@ -18,8 +18,11 @@
 // Count up untimed, count DOWN when the round carries a limit (data-limit,
 // set by the server from the round spec). The server owns enforcement; this
 // clock is display only.
-const t0 = Date.now();
 const clockEl = document.getElementById('clock');
+// Seed from the server's elapsed time, not page load: a mid-round reload
+// used to restart the displayed countdown at the full limit while the
+// server kept enforcing the real deadline (QA 2026-08-14).
+const t0 = Date.now() - Number(clockEl.dataset.elapsed || 0);
 const limitMs = Number(clockEl.dataset.limit || 0);
 const clockTimer = setInterval(() => {
   const elapsed = Date.now() - t0;
