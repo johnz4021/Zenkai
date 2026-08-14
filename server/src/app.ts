@@ -54,6 +54,17 @@ import {
 } from './session-registry.js';
 import type { PublicConfig } from './public-config.js';
 import {
+  countPlans,
+  countRoundsRun,
+  expectedText,
+  gateVerdict,
+  grantsAccess,
+  hasGrant,
+  probeAction,
+  type GateView,
+  type PaywallRow,
+} from './paywall.js';
+import {
   acquireRepLock,
   admissionVerdict,
   createRepRecord,
@@ -285,6 +296,53 @@ function logLaunch(origin: unknown, sessionId: string): void {
   } catch {
     /* metrics never block a launch */
   }
+}
+
+/** One durable line per willingness-to-pay probe event (paywall.ts) — the
+ *  same falsifier discipline as logLaunch above, and for the same reason:
+ *  scrollback is not a metric.
+ *
+ *  Two deliberate divergences from logLaunch. It records `user_id` (and the
+ *  email, at n≈10, because you will want to follow up): the unit of analysis
+ *  is a PERSON, so one user shown the price four times is one data point, not
+ *  four, and only an identity makes that dedup possible at read time. And the
+ *  price and threshold come from the SERVER's own config, never the request
+ *  body, so a crafted POST cannot fabricate a data point. */
+function logPaywall(row: Record<string, unknown>): void {
+  try {
+    appendFileSync(path.join(repoRoot, 'paywall.jsonl'), JSON.stringify(row) + '\n');
+  } catch {
+    /* metrics never block a launch */
+  }
+}
+
+/** The grant ledger, read back. Same torn-tail-tolerant shape as readRuns
+ *  (artifact.ts:272) and loadConversation (planner.ts:57): an absent file is
+ *  `[]`, and a half-written last line from a crash mid-append is skipped
+ *  rather than throwing.
+ *
+ *  Note what "absent is []" means here: a lost paywall.jsonl reads as NO
+ *  grants, so a previously-granted user is gated again. That is not fail-open,
+ *  it is recoverable-closed — they press Subscribe a second time, and
+ *  dedup-by-user_id at read time absorbs the duplicate row. */
+function readPaywallRows(): PaywallRow[] {
+  let raw: string;
+  try {
+    raw = readFileSync(path.join(repoRoot, 'paywall.jsonl'), 'utf8');
+  } catch {
+    return [];
+  }
+  const out: PaywallRow[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const e = JSON.parse(line) as PaywallRow;
+      if (typeof e.action === 'string') out.push(e);
+    } catch {
+      /* torn last line from a crash mid-append proves nothing — skip it */
+    }
+  }
+  return out;
 }
 
 function spawnDetached(args: string[], env: Record<string, string> = {}): number | null {
@@ -836,6 +894,31 @@ export function appPage(): string {
   label { display: block; margin: 18px 0 5px; font-weight: 500; }
   .banner { border: 1px solid var(--steel); background: rgba(53, 112, 143, .08); padding: 10px 14px; margin: 0 0 20px; border-radius: 6px; }
 
+  /* WTP gate (paywall.ts). An OVERLAY: the app stays visible and dimmed
+     behind it, so the gate reads as an interruption of work in progress
+     rather than a page you navigated to — which is what it is.
+     Still no shadow and no glow (DESIGN.md rule 1): the card separates from
+     the scrim the system's way, by one tone-step (--raised) plus a 1px
+     hairline. The scrim is a dimming layer, not elevation.
+     z-index clears the sticky nav (z-index 10); overflow-y keeps a tall card
+     reachable on a short viewport. */
+  #paywall {
+    position: fixed; inset: 0; z-index: 20;
+    background: rgba(14, 14, 15, .78);
+    backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px; overflow-y: auto;
+  }
+  #paywall .card { width: 100%; max-width: 460px; background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 24px 26px; }
+  #paywall h2 { margin: 0 0 12px; font-size: 17px; font-weight: 600; }
+  #paywall p { margin: 0 0 14px; color: var(--text-2); }
+  #paywall .price { font-family: var(--mono); font-size: 22px; color: var(--text-1); margin: 0 0 14px; }
+  #paywall .ask { margin-top: 18px; }
+  #paywall label { display: block; margin: 0 0 6px; color: var(--text-2); }
+  #paywall input { width: 100%; min-height: 44px; box-sizing: border-box; background: var(--sunk); border: 1px solid var(--line); border-radius: 6px; color: var(--text-1); font: inherit; padding: 0 12px; }
+  #paywall .btnrow { display: flex; gap: 10px; margin-top: 20px; }
+  #paywall .btnrow button { flex: 1; min-height: 44px; }
+
   /* ---- entrance choreography: one orchestrated load per page, never on
          polls; fully off under reduced motion ---- */
   @keyframes rise { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
@@ -1250,6 +1333,13 @@ export function appPage(): string {
 
   <section id="timeline" hidden></section>
 </div>
+<!-- Willingness-to-pay probe host (paywall.ts). OUTSIDE every repainted
+     region: render() clears #banner and rewrites #timeline/#index,
+     renderPractice() rewrites #practice-flow, renderHistory() rewrites
+     #history — an inline card anywhere would be wiped by the 5s poll
+     mid-read. A div, not a section, so renderLogin's section sweep does not
+     own it. Empty and hidden until showPaywallProbe paints it. -->
+<div id="paywall" hidden></div>
 <script src="/client/app.js"></script>
 `;
 }
@@ -1424,6 +1514,88 @@ export function runApp(cfg: AppConfig): http.Server {
         Boolean(t && (user!.admin || (t.user_id ?? cfg.userId) === user!.id));
       const ownsRep = (r: { user_id?: string }): boolean =>
         user!.admin || repOwnedBy(r, user!.id, cfg.userId);
+
+      /**
+       * The willingness-to-pay gate (paywall.ts). Returns a GateView to refuse
+       * with, or null to proceed. THIS ONE REALLY DENIES — see the module
+       * header for why that is deliberate.
+       *
+       * FAILS OPEN on any throw. A broken counter, an unreadable target dir, a
+       * corrupt queue — all let the round start. What is lost is the
+       * measurement, which is the right thing to lose. The try/catch wraps the
+       * WHOLE body rather than each call, so a disk read added here later
+       * cannot quietly become the exception.
+       *
+       * Uses loadQueue + reconcileWithDisk WITHOUT saving: refreshQueue writes
+       * (app.ts saveQueue) and pulls in the gap graph, and a launch must not
+       * mutate state just to count. Reconciling matters even so — session_id
+       * is re-pointed from the .used marker there, so a raw loadQueue would
+       * count differently from the number /api/state already showed the user.
+       */
+      const gateFor = (reason: 'rounds' | 'plans'): GateView | null => {
+        const pw = cfg.pub.paywall;
+        if (!pw.enabled || user!.admin) return null;
+        try {
+          if (hasGrant(readPaywallRows(), user!.id)) return null;
+          const mine = listTargets(repoRoot).filter(
+            (t) => (t.user_id ?? cfg.userId) === user!.id,
+          );
+          const used =
+            reason === 'plans'
+              ? countPlans(mine, user!.id, cfg.userId)
+              : countRoundsRun(
+                  repsVisibleTo(repStateView(repoRoot, loadReps(repoRoot)), user!, cfg.userId),
+                  mine.flatMap((t) => {
+                    const q = loadQueue(repoRoot, t.id);
+                    return q ? (reconcileWithDisk(repoRoot, q).items ?? []) : [];
+                  }),
+                  user!.id,
+                  cfg.userId,
+                );
+          return gateVerdict({
+            enabled: true,
+            admin: false,
+            granted: false,
+            reason,
+            used,
+            free: reason === 'plans' ? pw.freePlans : pw.freeRounds,
+            priceUsd: pw.priceUsd,
+          });
+        } catch {
+          return null;
+        }
+      };
+
+      /**
+       * Refuse, and record that we did. The `error` string is load-bearing:
+       * every existing client call site branches on `s.error` and none read
+       * `r.status` (the 429 build-cap precedent, app.ts admissionVerdict), so
+       * a body without it would fall through into the launch poll loop and
+       * hang on "Starting…" for 180s. Updated call sites read the richer
+       * `paywall` object; un-updated ones degrade to a readable sentence.
+       */
+      const refuse = (g: GateView): { code: number; body: Record<string, unknown> } => {
+        logPaywall({
+          ts: new Date().toISOString(),
+          user_id: user!.id,
+          email: user!.email,
+          action: 'gated',
+          reason: g.reason,
+          used: g.used,
+          free: g.free,
+          price_usd: g.price_usd,
+        });
+        return {
+          code: 402,
+          body: {
+            error:
+              g.reason === 'plans'
+                ? `You have used your ${g.free} free plans. Zenkai is $${g.price_usd}/mo after the beta.`
+                : `You have used your ${g.free} free rounds. Zenkai is $${g.price_usd}/mo after the beta.`,
+            paywall: g,
+          },
+        };
+      };
       if (url === '/api/memory' && req.method === 'GET') {
         // The Gaps band's data: every assessed session the caller owns, full
         // verdict rows, trend, per-dimension states — read fresh from disk
@@ -1656,17 +1828,97 @@ export function runApp(cfg: AppConfig): http.Server {
           db.upsertUsers([{ id: user!.id, email: user!.email, is_admin: user!.admin }]);
         }
         sweepSessionsToDb();
+        const repsForUser = repsVisibleTo(repStateView(repoRoot, repsFresh), user!, cfg.userId);
+        // Willingness-to-pay allowance (paywall.ts). ADVISORY ONLY — the gate
+        // itself is enforced at the four spend routes, which is what makes it
+        // real; this key exists so the client can gate the "new plan" entry
+        // point BEFORE the user types a description. Gating only at the POST
+        // would mean writing out a whole target and then being stopped, and
+        // the composer is cleared before the request with no draft persistence
+        // (client/app.js send()), so the words would be gone.
+        //
+        // Pure arithmetic over arrays this handler already holds, plus one
+        // small ledger read — a route polled every 5s gains no per-target disk
+        // work. ABSENT for admins, a gate-off box, and anyone already granted,
+        // so the client's fail-open default is the only default it has.
+        const pw = cfg.pub.paywall;
+        const allowance =
+          pw.enabled && !user!.admin && !hasGrant(readPaywallRows(), user!.id)
+            ? {
+                price_usd: pw.priceUsd,
+                rounds_used: countRoundsRun(
+                  repsForUser,
+                  targets.flatMap((t) => t.queue?.items ?? []),
+                  user!.id,
+                  cfg.userId,
+                ),
+                free_rounds: pw.freeRounds,
+                // `targets` is already owner-filtered above, so its length IS
+                // the plan count — countPlans is for the routes that hold raw
+                // Target records instead.
+                plans_used: targets.length,
+                free_plans: pw.freePlans,
+              }
+            : null;
         return json(200, {
           targets,
-          reps: repsVisibleTo(repStateView(repoRoot, repsFresh), user!, cfg.userId),
+          reps: repsForUser,
           focus,
           today: new Date(now).toISOString(),
           session_live: live,
           session_url: sessionUrl,
           user: { id: user!.id, email: user!.email, admin: user!.admin },
+          ...(allowance ? { paywall: allowance } : {}),
         });
       }
+      if (url === '/api/paywall/probe' && req.method === 'POST') {
+        // The WTP gate's recorder (paywall.ts). This route can return ONLY
+        // 200 — the client awaits it on the grant path, and a 4xx/5xx here
+        // would strand a user who just pressed Subscribe.
+        //
+        // It is also where a grant is MINTED: pressing Subscribe writes the
+        // row that hasGrant() reads at every gate. That makes the write
+        // ordering load-bearing — the row must be on disk before this
+        // responds, because the client retries the launch the moment it
+        // resolves. Everything here is synchronous for that reason; an async
+        // append would deadlock the user on their own gate.
+        const b = JSON.parse((await readBody(req)) || '{}') as { action?: string; expect?: string };
+        const action = probeAction(b.action);
+        // Admins and a gate-off box record NOTHING: the founder's own clicks
+        // are not signal, and a stale tab must not pollute the log.
+        const recorded = cfg.pub.paywall.enabled && !user!.admin;
+        if (recorded) {
+          const expect = expectedText(b.expect);
+          logPaywall({
+            ts: new Date().toISOString(),
+            user_id: user!.id,
+            email: user!.email,
+            action,
+            price_usd: cfg.pub.paywall.priceUsd,
+            free_rounds: cfg.pub.paywall.freeRounds,
+            free_plans: cfg.pub.paywall.freePlans,
+            ...(expect ? { expect } : {}),
+          });
+        }
+        // `granted` tells the client its retry will get through rather than
+        // looping on the same gate. True for an admin/gate-off box too — they
+        // were never gated in the first place.
+        return json(200, { ok: true, granted: !recorded || grantsAccess(action) });
+      }
       if (url === '/api/target' && req.method === 'POST') {
+        // The plan guardrail, checked FIRST — before label validation, before
+        // decodeAttachments, before any byte hits disk. This handler makes no
+        // model call (that is /api/plan/turn, which planFirstSend fires right
+        // after), so refusing here costs the user nothing but a message.
+        // The client gates the entry point earlier so nobody types a whole
+        // description first; this is the backstop that makes it real.
+        {
+          const g = gateFor('plans');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         const b = JSON.parse((await readBody(req)) || '{}') as {
           label?: string; date?: string; description?: string; context?: string;
           attachments?: { name?: string; media_type?: string; data?: string }[];
@@ -2039,6 +2291,15 @@ export function runApp(cfg: AppConfig): http.Server {
         const rep = views.find((r) => r.id === b.rep_id);
         if (!rep) return json(404, { error: 'no such rep' });
         if (!ownsRep(rep)) return json(403, { error: 'not your rep' });
+        // WTP gate, above the mode fork so one check covers both session
+        // modes. After ownership so a stranger still gets 403, not a price.
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         const dir = repProblemDir(repoRoot, rep.id);
         if (cfg.pub.multiSession) {
           // Ready/used checks still apply; liveness verdicts live in the
@@ -2101,13 +2362,16 @@ export function runApp(cfg: AppConfig): http.Server {
         // session on the same rep. Same request/response shape as
         // /api/practice/launch — the client's launchCommon drives both.
         //
-        // DELIBERATELY no admissionVerdict: a repeat spends zero generation
-        // budget (no opus build, no new problem dir), so the build caps have
-        // nothing to protect here. The session concurrency caps
-        // (maxSessionsPerUser / maxConcurrentSessions in multi mode, the
-        // one-session port probe in legacy) still bound it, and the exposure
-        // is identical to today's — a ready rep already grants an uncapped
-        // session.
+        // Still DELIBERATELY no admissionVerdict: a repeat spends zero
+        // GENERATION budget (no opus build, no new problem dir), so the build
+        // caps have nothing to protect here.
+        //
+        // The WTP gate below is the opposite case, and the distinction is the
+        // point: that reasoning is build-cost-based, and a repeat still spends
+        // full SESSION cost — interviewer turns, judge, voice, container time
+        // — and is a round the user experiences. Leaving repeats ungated would
+        // also make the whole gate bypassable: use your free rounds, then
+        // repeat forever.
         const b = JSON.parse((await readBody(req)) || '{}') as { rep_id?: string; origin?: string };
         if (typeof b.rep_id !== 'string' || !REP_ID_RE.test(b.rep_id)) {
           return json(400, { error: 'bad rep id' });
@@ -2116,6 +2380,13 @@ export function runApp(cfg: AppConfig): http.Server {
         const rep = views.find((r) => r.id === b.rep_id);
         if (!rep) return json(404, { error: 'no such rep' });
         if (!ownsRep(rep)) return json(403, { error: 'not your rep' });
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         const dir = repProblemDir(repoRoot, rep.id);
         const usedFile = path.join(dir, '.used');
         const restorable = restorability({
@@ -2676,6 +2947,15 @@ export function runApp(cfg: AppConfig): http.Server {
         const item = q?.items.find((i) => i.id === b.item_id);
         if (!q || !item?.problem_dir || item.status !== 'ready') {
           return json(400, { error: 'item is not ready' });
+        }
+        // WTP gate, above the mode fork. After the readiness check so a
+        // not-ready item still reports that rather than a price.
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
         }
         if (cfg.pub.multiSession) {
           const out = await multiLaunch({ id: user!.id, admin: user!.admin }, item.problem_dir);

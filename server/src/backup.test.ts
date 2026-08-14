@@ -52,6 +52,10 @@ describe('BACKUP_PATHS', () => {
     // reps/ holds consumed problem artifacts and their pristine tarballs —
     // generation is nondeterministic, so a lost artifact is lost forever.
     expect(BACKUP_PATHS).toContain('reps');
+    // The falsifier logs live only on the box — nothing mirrors or
+    // regenerates them, so losing the disk loses the experiment.
+    expect(BACKUP_PATHS).toContain('launches.jsonl');
+    expect(BACKUP_PATHS).toContain('paywall.jsonl');
     expect(BACKUP_PATHS as readonly string[]).not.toContain('.env');
     expect(BACKUP_PATHS as readonly string[]).not.toContain('datasets'); // regenerable
     expect(BACKUP_PATHS as readonly string[]).not.toContain('problems'); // regenerable

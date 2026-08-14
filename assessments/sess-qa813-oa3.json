@@ -1,0 +1,71 @@
+{
+  "session_id": "sess-qa813-oa3",
+  "status": "assessed",
+  "judged_at": 1786729628432,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "45bab0da9f82",
+  "schema_version": 1,
+  "renderer_version": 3,
+  "expectations_used": {
+    "clarify": "Pins the contract down from the visible suites instead of guessing — saying out loud that percent discounts floor to whole cents, that only the largest order-level percent applies, and that the rebate is judged on the amount owed after vouchers.",
+    "approach": "Names a mechanism before typing: that ring_up runs three ordered stages (sku percents, then one order percent, then coupons tested against the running total), and that best_checkout has to search voucher-to-item pairings because a smaller discount can preserve the rebate.",
+    "communicate": "Says which of the three parts they are on and which rule they are encoding as they encode it — announcing the move from bag_total's every-third-free arithmetic to ring_up's stage order, and stating the rebate trade-off in Part 3 out loud instead of working it out silently.",
+    "implement": "Keeps every figure in integer cents with floor division, sorts sku promos by percent descending then code ascending, appends to the trail as each promo is applied rather than reconstructing it afterwards, and leaves the test files untouched.",
+    "verify": "Hand-walks the stated examples before submitting — the 4100-cent cart through all three stages to 2458, and the 10000-cent rebate case where the voucher is better left unused — because each suite is graded once, at submit.",
+    "reflect": "States which of the three parts they finished, names what is still shaky (for example the tie-break between equal-saving voucher assignments, or the skipped-coupon rule), and says what they would check next with more time."
+  },
+  "solved": false,
+  "summary": "The candidate spent most of the 7-minute session reading the spec and test files, made a single implementation pass at part1_bag_total.py, and left parts 2 and 3 entirely unimplemented, submitting with only 10/37 tests passing. No plan, verification, or narrated reasoning was observable due to a near-total evidence gap and the compressed timeline.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "weak",
+      "analysis": "The candidate stated one assumption (percent discounts floor to whole cents) but only at the very end, after implementation was already done, rather than using it to resolve ambiguity before committing to a direction. There is no evidence they pinned down the ring_up stage order or the rebate-after-vouchers rule from the spec before running out of time to even attempt those parts.",
+      "evidence": [
+        387
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "weak",
+      "analysis": "No mechanism was stated before editing part1_bag_total.py at +303s; the only planning-adjacent statement came at +387s, after the code was already written and saved, and it addressed only a minor floor-division detail rather than a plan for the every-third-free logic or the validation rules. Parts 2 and 3 were never approached at all despite files being opened early.",
+      "evidence": [
+        303,
+        387
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "unassessable",
+      "analysis": "The microphone was off for the entire working stretch from +42s onward, which covers essentially all reading, editing, and decision-making. The one line of speech at +387s is a summary statement made after the fact, not narration of in-progress reasoning, so there is no reliable window into whether they narrated their thinking as they worked.",
+      "evidence": []
+    },
+    {
+      "dimension": "implement",
+      "verdict": "weak",
+      "analysis": "Only part1_bag_total.py was ever edited (at +303s and +325s), and the final submission scored just 10/37, indicating the bag_total implementation itself was incomplete or incorrect beyond a few passing cases, while parts 2 and 3 were left completely untouched despite having been opened and reviewed early in the session.",
+      "evidence": [
+        303,
+        325,
+        412
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "weak",
+      "analysis": "There is no test run, trace, or hand-check visible between the code edits at +303s/+325s and the final submission at +412s; the candidate went straight from editing to submitting without any observable verification step, and the low score (10/37) suggests confidence was not backed by checking.",
+      "evidence": [
+        325,
+        412
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "weak",
+      "analysis": "The closing statement names one assumption and acknowledges parts 2 and 3 are unimplemented, but does not explain why part 1 itself only reached 10/37, nor does it identify what specifically is shaky in the completed work or what they would check next with more time.",
+      "evidence": [
+        387
+      ]
+    }
+  ]
+}

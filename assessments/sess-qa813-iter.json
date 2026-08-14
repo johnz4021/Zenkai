@@ -1,0 +1,6 @@
+{
+  "session_id": "sess-qa813-iter",
+  "status": "unassessed",
+  "judged_at": 1786690265389,
+  "reason": "judge call failed: Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"API key is invalid.\"},\"request_id\":null}"
+}

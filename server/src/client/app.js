@@ -106,11 +106,12 @@ function renderLogin(msg) {
     '<button id="login-google" class="primary" type="button">Continue with Google</button>' +
     '<div class="loginsep">or</div>' +
     '<div><label for="login-email">Email</label>' +
-    '<div class="loginrow"><input id="login-email" type="email" placeholder="you@school.edu" autocomplete="email">' +
-    '<button id="login-otp" type="button">Send code</button></div></div>' +
-    '<div id="login-code-row" hidden><label for="login-code">6-digit code</label>' +
-    '<div class="loginrow"><input id="login-code" inputmode="numeric" autocomplete="one-time-code" placeholder="000000">' +
-    '<button id="login-verify" class="primary" type="button">' + (signUp ? 'Create account' : 'Sign in') + '</button></div></div>' +
+    '<div class="loginrow"><input id="login-email" type="email" placeholder="you@school.edu" autocomplete="email"></div></div>' +
+    '<div><label for="login-pass">Password</label>' +
+    '<div class="loginrow"><input id="login-pass" type="password"' +
+      (signUp ? ' placeholder="at least 6 characters"' : '') +
+      ' autocomplete="' + (signUp ? 'new-password' : 'current-password') + '"></div></div>' +
+    '<button id="login-submit" class="primary" type="button">' + (signUp ? 'Create account' : 'Sign in') + '</button>' +
     '<p id="login-msg">' + esc(msg || '') + '</p>' +
     '<p class="loginfine">Free while in beta. Everyone shares one daily build budget, so rounds can run out before the day does.</p>' +
     '</div></div>';
@@ -120,14 +121,16 @@ function renderLogin(msg) {
     n.classList.toggle('bad', tone === 'bad');
     n.classList.toggle('good', tone === 'good');
   };
-  // Carry the typed address across the swap. Someone who types their email,
-  // then realises they need the other tab, should not have to type it twice.
+  // Carry what was typed across the swap. Someone who fills the form, then
+  // realises they need the other tab, should not start over.
   const swap = (mode) => {
     if (loginMode === mode) return;
     const typed = el('login-email').value;
+    const pass = el('login-pass').value;
     loginMode = mode;
     renderLogin();
     el('login-email').value = typed;
+    el('login-pass').value = pass;
   };
   el('mode-in').addEventListener('click', () => swap('in'));
   el('mode-up').addEventListener('click', () => swap('up'));
@@ -140,43 +143,67 @@ function renderLogin(msg) {
     headers: { apikey: authCfg.anon_key, 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  el('login-otp').addEventListener('click', async () => {
+  // Email + password, plain GoTrue REST (no SDK — the repo has a no-bundler
+  // rule). Replaced the OTP/magic-code flow: a 6-digit code round-trips
+  // through email, which is the one dependency this beta cannot rely on
+  // (built-in Supabase SMTP is rate-limited to a handful an hour, and custom
+  // SMTP was never set up). A password needs no delivery at all.
+  //
+  // The two tabs still mean something: `signup` refuses to sign an existing
+  // user in, and `token` refuses to create an account, so a typo'd address
+  // says so instead of silently minting a second empty account.
+  const submit = async () => {
     const email = el('login-email').value.trim();
+    const password = el('login-pass').value;
     if (!email) { say('enter your email first', 'bad'); return; }
-    const btn = el('login-otp');
+    if (!password) { say('enter your password', 'bad'); return; }
+    if (signUp && password.length < 6) { say('password needs at least 6 characters', 'bad'); return; }
+    const btn = el('login-submit');
     btn.disabled = true;
-    btn.textContent = 'Sending…';
     say('working');
-    // create_user is what makes the two tabs mean something. Sign in refuses
-    // to mint an account, so a typo'd address says so instead of silently
-    // creating a second empty one the user will never find again.
-    const r = await gotrue('otp', { email, create_user: signUp });
-    btn.disabled = false;
-    btn.textContent = 'Send code';
-    if (r.ok) {
-      el('login-code-row').hidden = false;
-      el('login-code').focus();
-      say('code sent to ' + email, 'good');
+    let r;
+    try {
+      r = signUp
+        ? await gotrue('signup', { email, password })
+        : await gotrue('token?grant_type=password', { email, password });
+    } catch {
+      btn.disabled = false;
+      say('could not reach the sign-in service — try again', 'bad');
       return;
     }
-    if (!signUp) { say('no account with that email yet — switch to Sign up', 'bad'); return; }
-    say('could not send a code (' + r.status + ') — check the address and try again', 'bad');
-  });
-  el('login-verify').addEventListener('click', async () => {
-    const email = el('login-email').value.trim();
-    const code = el('login-code').value.trim();
-    if (!code) { say('enter the code from the email', 'bad'); return; }
-    const btn = el('login-verify');
-    btn.disabled = true;
-    say('verifying');
-    const r = await gotrue('verify', { type: 'email', email, token: code });
+    let body = {};
+    try { body = await r.json(); } catch { /* a body-less error is still an error */ }
     btn.disabled = false;
-    if (!r.ok) { say('that code did not verify — request a fresh one', 'bad'); return; }
-    const body = await r.json();
-    if (!body.access_token) { say('no token in the reply — try again', 'bad'); return; }
+    if (!r.ok) {
+      // GoTrue puts the human-readable reason in msg or error_description.
+      const why = String(body.msg || body.error_description || body.error || '');
+      if (!signUp && /invalid login credentials/i.test(why)) {
+        say('wrong email or password — or switch to Sign up if you are new', 'bad');
+      } else if (signUp && /already|registered|exists/i.test(why)) {
+        say('there is already an account with that email — switch to Sign in', 'bad');
+      } else {
+        say(why || 'that did not work (' + r.status + ') — try again', 'bad');
+      }
+      return;
+    }
+    if (!body.access_token) {
+      // Signup succeeded but returned no session: Supabase has "Confirm
+      // email" ON, so the account is pending a link this beta probably cannot
+      // deliver. Say it plainly — the fix is the operator's (turn confirmation
+      // off, or configure SMTP), not something the user can work around.
+      say('account created — check your email to confirm it, then sign in', 'good');
+      loginMode = 'in';
+      return;
+    }
     setJwt(body.access_token);
     window.location.reload();
-  });
+  };
+  el('login-submit').addEventListener('click', submit);
+  // Enter submits from either field. A password form that needs a mouse is a
+  // password form people abandon.
+  for (const id of ['login-email', 'login-pass']) {
+    el(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  }
 }
 
 async function initAuth() {
@@ -378,6 +405,21 @@ async function planFirstSend(text) {
       body: JSON.stringify({ label, description: text, context: buildContext(), attachments: buildBinaryAttachments() }),
     });
     const sBody = await r.json();
+    // WTP gate. Status-checked before the error branch for the same reason as
+    // launchCommon, plus one specific to this path: wirePlan's send() clears
+    // the composer BEFORE calling here and there is no draft persistence
+    // anywhere, so a gated user would lose everything they typed. Restore it.
+    if (r.status === 402 && sBody.paywall && !paywallOpen) {
+      plan.busy = false;
+      if (text) plan.turns.pop();
+      let proceed = false;
+      try { proceed = await showPaywallGate(sBody.paywall); } catch { proceed = false; }
+      if (proceed) { renderPlan(); planFirstSend(text); return; }
+      const box = el('plan-msg');
+      if (box && text) box.value = text; // their words, back where they left them
+      renderPlan();
+      return;
+    }
     if (sBody.error) { plan.busy = false; plan.error = sBody.error; if (text) plan.turns.pop(); renderPlan(); return; }
     plan.tid = sBody.id;
     flowTargetId = sBody.id;
@@ -2070,15 +2112,7 @@ function renderHistory(state) {
       line = (x.phase === 'drafting' ? 'shaping the round' : genProgressLine(x));
     } else if (x.status === 'ready') {
       line = 'ready · ' + shape;
-      // A CONSUMED ready rep (its run crashed, or reconcile demoted it after a
-      // repeat) cannot Start — that 409s `already-used`, and the 409's own copy
-      // points at practice again. Offering Start there was a closed loop with
-      // no way out (QA 2026-08-14). `repeatable` implies .used server-side.
-      if (!state.session_live) {
-        action = x.repeatable
-          ? '<button type="button" class="mini repagain" data-rep="' + esc(x.id) + '">practice again</button>'
-          : '<button type="button" class="primary repstart" data-rep="' + esc(x.id) + '">Start</button>';
-      }
+      if (!state.session_live) action = '<button type="button" class="primary repstart" data-rep="' + esc(x.id) + '">Start</button>';
     } else if (x.status === 'failed') {
       line = '<span class="err">' + (x.phase === 'draft_failed' ? 'couldn’t shape the round from those notes' : 'build failed') + '</span>';
       action = '<button type="button" class="mini repretry" data-rep="' + esc(x.id) + '">Retry</button>';
@@ -2598,6 +2632,13 @@ function setTitle(r, state) {
 }
 
 function render(state) {
+  // WTP allowance (paywall.ts). First statement, before anything that can
+  // throw. ADVISORY ONLY — it pre-gates the "new plan" entry point so nobody
+  // types a description and is then stopped. An absent field means no gate,
+  // which is the safe default for admins, a gate-off server, an already
+  // granted user, and a client newer than its server. Enforcement is the
+  // server's 402, always.
+  paywallAllowance = state.paywall ? { ...state.paywall, email: state.user && state.user.email } : null;
   // Persistent status lives in the masthead; the banner is for genuine
   // problems only. A full-width bar on every page for a usually-false
   // condition was pure vertical tax.
@@ -2703,10 +2744,205 @@ function launchStatus(btn, text, isError) {
 /** Shared launch: POST, then poll session-live until the editor is up —
  *  identical boot semantics for queue items and reps, one copy of the
  *  Docker error truth. */
-async function launchCommon(endpoint, body, btn, idleLabel) {
+// ---- willingness-to-pay gate (paywall.ts) ---------------------------------
+// A REAL limit. Past the free allowance the server answers 402 and the round
+// does not start until the user answers: Subscribe records intent, mints a
+// grant, and the launch is retried; "Maybe later" means no round. An earlier
+// draft never denied anything, which measured cheap talk — a click that cost
+// nothing and changed nothing.
+//
+// NO CARD FIELDS, EVER. The measurement is the CLICK: pressing
+// "Subscribe - $39/mo" while believing it starts checkout has already
+// answered the question. The reveal that payments are not switched on yet is
+// immediate and in place, so nobody is charged or left misled.
+//
+// paywallAllowance is ADVISORY, set from render(). It gates the "new plan"
+// entry point before the user types a description — the composer is cleared
+// before its request and there is no draft persistence, so being stopped at
+// the POST would lose their words. Enforcement is always the server's 402.
+let paywallAllowance = null;
+let paywallOpen = false;
+
+/** Fire-and-forget. keepalive is load-bearing on paths that navigate away:
+ *  a plain in-flight fetch is cancelled by a same-tab navigation, and we
+ *  would lose exactly the events we are here to measure. */
+function probeBeacon(action, expect) {
+  try {
+    fetch('/api/paywall/probe', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      keepalive: true,
+      body: JSON.stringify(expect ? { action: action, expect: expect } : { action: action }),
+    }).catch(() => {});
+  } catch { /* a metric never blocks a launch */ }
+}
+
+/** The ONE beacon that is awaited. The caller retries the gated request the
+ *  moment this resolves, so the grant row must already be on disk — a
+ *  fire-and-forget POST here would race the retry and re-gate the user on
+ *  their own purchase, forever. Returns whether the retry will get through. */
+async function probeGrant(action, expect) {
+  try {
+    const r = await fetch('/api/paywall/probe', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(expect ? { action: action, expect: expect } : { action: action }),
+    });
+    const s = await r.json();
+    return Boolean(s && s.granted);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The gate. Resolves true when the caller should retry the request, false
+ * when the user declined and nothing should happen.
+ *
+ * To see it yourself (you are an admin, so the server will never gate you):
+ *   showPaywallGate({ price_usd: 39, reason: 'rounds', used: 3, free: 3 })
+ * in the devtools console. Deliberately no ?preview= param and no env
+ * bypass - a QA hole is a production hole.
+ */
+function showPaywallGate(pw) {
+  return new Promise((resolve) => {
+    var host = el('paywall');
+    if (!host) { resolve(false); return; }
+    paywallOpen = true;
+    var prevFocus = document.activeElement;
+    var price = '$' + Number(pw.price_usd) + '/mo';
+    var unit = pw.reason === 'plans' ? 'plans' : 'rounds';
+    var done = false;
+
+    function teardown(result) {
+      if (done) return;
+      done = true;
+      try {
+        window.removeEventListener('keydown', onKey);
+        host.hidden = true;
+        host.innerHTML = '';
+        if (prevFocus && prevFocus.focus) prevFocus.focus();
+      } catch { /* teardown is best effort */ }
+      paywallOpen = false;
+      resolve(result);
+    }
+    function onKey(e) { if (e.key === 'Escape' && !host.dataset.step) { probeBeacon('not_yet'); teardown(false); } }
+
+    // Step 2: the reveal. Reached only by pressing Subscribe, and it always
+    // ends in the request going through — nothing here can strand the user.
+    function reveal(granted) {
+      host.dataset.step = 'reveal';
+      var who = (paywallAllowance && paywallAllowance.email) || '';
+      host.innerHTML =
+        '<div class="card" role="dialog" aria-modal="true" aria-labelledby="paywall-h">' +
+          '<h2 id="paywall-h">Payments are not switched on yet</h2>' +
+          '<p>You are early. Nothing has been charged, and your ' +
+            (unit === 'plans' ? 'plan' : 'round') + ' is unlocked either way.</p>' +
+          '<p>Want me to email you' + (who ? ' at ' + esc(who) : '') + ' when they are?</p>' +
+          '<div class="btnrow">' +
+            '<button type="button" class="primary" id="paywall-notify">Yes, tell me</button>' +
+            '<button type="button" id="paywall-nonotify">No thanks</button>' +
+          '</div>' +
+        '</div>';
+      var yes = el('paywall-notify');
+      var no = el('paywall-nonotify');
+      if (!yes || !no) { teardown(granted); return; }
+      yes.addEventListener('click', function () { probeBeacon('would_pay_confirmed'); teardown(granted); });
+      no.addEventListener('click', function () { probeBeacon('notify_declined'); teardown(granted); });
+      if (yes.focus) yes.focus();
+    }
+
+    try {
+      host.dataset.step = '';
+      host.innerHTML =
+        '<div class="card" role="dialog" aria-modal="true" aria-labelledby="paywall-h">' +
+          '<h2 id="paywall-h">You have used your ' + Number(pw.free) + ' free ' + unit + '</h2>' +
+          '<p class="price">' + esc(price) + '</p>' +
+          '<p>Zenkai is ' + esc(price) + ' once the beta ends - plans and rounds included.</p>' +
+          '<div class="ask">' +
+            '<label for="paywall-expect">What would you expect to pay? (optional)</label>' +
+            '<input id="paywall-expect" type="text" maxlength="200" autocomplete="off" />' +
+          '</div>' +
+          '<div class="btnrow">' +
+            '<button type="button" class="primary" id="paywall-yes">Subscribe - ' + esc(price) + '</button>' +
+            '<button type="button" id="paywall-no">Maybe later</button>' +
+          '</div>' +
+        '</div>';
+      host.hidden = false;
+      probeBeacon('gated');
+
+      var yes = el('paywall-yes');
+      var no = el('paywall-no');
+      if (!yes || !no) { teardown(false); return; }
+      no.addEventListener('click', function () {
+        var input = el('paywall-expect');
+        probeBeacon('not_yet', input && input.value ? input.value : '');
+        teardown(false);
+      });
+      yes.addEventListener('click', async function () {
+        var input = el('paywall-expect');
+        var expect = input && input.value ? input.value : '';
+        yes.disabled = true;
+        no.disabled = true;
+        yes.textContent = 'One moment...';
+        var granted = await probeGrant('would_pay', expect);
+        if (!granted) {
+          // The grant did not land. Say so plainly and let them try again -
+          // launching anyway is not an option, the server would gate the
+          // retry regardless.
+          yes.disabled = false;
+          no.disabled = false;
+          yes.textContent = 'Subscribe - ' + price;
+          launchStatusInGate('that did not go through - try once more');
+          return;
+        }
+        reveal(true);
+      });
+      window.addEventListener('keydown', onKey);
+      if (yes.focus) yes.focus();
+    } catch {
+      teardown(false);
+    }
+  });
+}
+
+/** One-line error inside the gate card (the card is innerHTML-owned, so this
+ *  appends rather than rewriting and losing the buttons). */
+function launchStatusInGate(msg) {
+  try {
+    var card = el('paywall') && el('paywall').querySelector('.card');
+    if (!card) return;
+    var line = card.querySelector('.gate-err');
+    if (!line) {
+      line = document.createElement('p');
+      line.className = 'gate-err err';
+      card.appendChild(line);
+    }
+    line.textContent = msg;
+  } catch { /* cosmetic */ }
+}
+
+async function launchCommon(endpoint, body, btn, idleLabel, isRetry) {
   if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
   const r = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const s = await r.json();
+  // WTP gate (paywall.ts). MUST come before the s.error branch and MUST read
+  // r.status: nothing else here inspects the status, so a 402 whose body had
+  // no `error` key would fall straight into the poll loop below — a 180s hang
+  // on "Starting…" in legacy mode, or a navigation to the string "undefined"
+  // if some other session happened to be live. The server sends `error` too,
+  // so an un-updated call site degrades to a readable sentence.
+  if (r.status === 402 && s.paywall && !paywallOpen && !isRetry) {
+    let proceed = false;
+    try { proceed = await showPaywallGate(s.paywall); } catch { proceed = false; }
+    if (!proceed) {
+      if (btn) { btn.disabled = false; btn.textContent = idleLabel; }
+      return;
+    }
+    // Granted. The grant row is already on disk (probeGrant is awaited), so
+    // the retry gets through. isRetry stops any chance of a gate loop.
+    return launchCommon(endpoint, body, btn, idleLabel, true);
+  }
   if (s.error) {
     if (btn) { btn.disabled = false; btn.textContent = idleLabel; launchStatus(btn, s.error, true); }
     else el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>';

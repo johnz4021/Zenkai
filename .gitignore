@@ -35,6 +35,8 @@ reps.json
 
 # launch-origin metric (the composer-landing falsifier)
 launches.jsonl
+# willingness-to-pay probe (paywall.ts) — carries user ids and emails
+paywall.jsonl
 sessions-live.json
 .ide-data/
 

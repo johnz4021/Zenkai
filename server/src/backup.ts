@@ -42,6 +42,11 @@ export const BACKUP_PATHS = [
   'targets',     // plans, queues, blueprints, learnings.md
   'reps.json',   // the practice-door index
   'reps',        // consumed artifacts are irreplaceable (generation is nondeterministic); pristine tarballs + run-tree archives live here
+  // The two falsifier logs. Both are append-only metrics that exist ONLY on
+  // the box — nothing mirrors them to Postgres and nothing regenerates them,
+  // so a disk failure loses the experiment, not just a convenience.
+  'launches.jsonl', // launch origin (the composer-landing falsifier)
+  'paywall.jsonl',  // willingness-to-pay probe (paywall.ts); carries emails
 ] as const;
 
 /** Bulk that is regenerable or machine-local — never worth the bytes. */

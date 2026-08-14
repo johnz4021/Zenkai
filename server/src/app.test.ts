@@ -47,12 +47,23 @@ describe('home app page', () => {
     // violation that already shipped once; the login email field was the
     // second time. Both fields now carry a visible <label for>.
     expect(js).toContain('<label for="login-email">Email</label>');
-    expect(js).toContain('<label for="login-code">6-digit code</label>');
-    // Sign in / Sign up is a real difference, not two labels on one path:
-    // create_user follows the tab, so signing in with an unknown address says
-    // so instead of silently minting a second empty account.
-    expect(js).toContain("create_user: signUp");
-    expect(js).toContain('no account with that email yet — switch to Sign up');
+    expect(js).toContain('<label for="login-pass">Password</label>');
+    // Sign in / Sign up is a real difference, not two labels on one path: the
+    // tab picks the ENDPOINT, so `signup` refuses to sign an existing user in
+    // and `token` refuses to create an account. A typo'd address says so
+    // instead of silently minting a second empty account nobody finds again.
+    expect(js).toContain("gotrue('signup'");
+    expect(js).toContain("gotrue('token?grant_type=password'");
+    expect(js).toContain('switch to Sign up if you are new');
+    expect(js).toContain('switch to Sign in');
+    // Password autocomplete must follow the tab or managers offer the wrong
+    // thing: a saved password on the signup tab, a new one on sign-in.
+    expect(js).toContain("signUp ? 'new-password' : 'current-password'");
+    // No email round-trip anywhere in the credential path — that dependency
+    // is exactly what this replaced (built-in SMTP is rate-limited, custom
+    // SMTP was never configured).
+    expect(js).not.toContain("gotrue('otp'");
+    expect(js).not.toContain("gotrue('verify'");
     // Signup is open (decision 2026-08-12) — the screen must not claim to be
     // invite-gated when nothing enforces an invite.
     expect(js).not.toContain('small invited beta');
@@ -708,6 +719,114 @@ describe('launch origin — the falsifier is durable, not scrollback', () => {
   });
 });
 
+describe('paywall gate — a real limit, and the ways it must not misfire', () => {
+  const appSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'app.ts'), 'utf8');
+  const html = appPage();
+  const js = clientScript('app.js') ?? '';
+
+  it('all four spend doors are gated', () => {
+    // Rounds via three routes plus the plan guardrail. Missing one leaves a
+    // hole the whole measurement leaks through.
+    expect(appSource.match(/gateFor\('rounds'\)/g)).toHaveLength(3);
+    expect(appSource.match(/gateFor\('plans'\)/g)).toHaveLength(1);
+  });
+
+  it('the gate fails OPEN — a broken counter never stops a round', () => {
+    const start = appSource.indexOf('const gateFor =');
+    const body = appSource.slice(start, appSource.indexOf('const refuse =', start));
+    expect(body).toContain('catch {');
+    // The catch returns null (= not gated), never a GateView.
+    expect(body).toMatch(/catch \{\s*return null;\s*\}/);
+  });
+
+  it('the 402 carries an error string so un-updated callers degrade', () => {
+    // Every existing client call site branches on s.error and none read
+    // r.status (the 429 build-cap precedent). A body without `error` would
+    // fall into the launch poll loop and hang for 180s.
+    const start = appSource.indexOf('const refuse =');
+    const body = appSource.slice(start, start + 1400);
+    expect(body).toContain('code: 402');
+    expect(body).toMatch(/error:/);
+    expect(body).toContain('paywall: g');
+  });
+
+  it('being gated is itself recorded, so there is a denominator', () => {
+    const start = appSource.indexOf('const refuse =');
+    expect(appSource.slice(start, start + 800)).toContain("action: 'gated'");
+  });
+
+  it('the recorder refuses admins and a gate-off box', () => {
+    expect(appSource).toMatch(/cfg\.pub\.paywall\.enabled && !user!\.admin/);
+  });
+
+  it('price and limits come from the server, never the request body', () => {
+    expect(appSource).toContain('price_usd: cfg.pub.paywall.priceUsd');
+    expect(appSource).toContain('free_rounds: cfg.pub.paywall.freeRounds');
+  });
+
+  it('the probe route answers 200 only, and reports whether a grant landed', () => {
+    const start = appSource.indexOf("url === '/api/paywall/probe'");
+    expect(start).toBeGreaterThan(0);
+    const handler = appSource.slice(start, appSource.indexOf('if (url ===', start + 10));
+    expect(handler).toContain('json(200, { ok: true, granted:');
+    expect(handler).not.toMatch(/json\([45]\d\d/);
+  });
+
+  it('the advisory state key is absent unless the user is actually limited', () => {
+    expect(appSource).toContain('...(allowance ? { paywall: allowance } : {})');
+  });
+
+  it('the client reads r.status BEFORE the error branch', () => {
+    // The whole 402 flow hinges on this ordering: launchCommon inspects no
+    // status today, so a 402 read as a 200 hangs the button.
+    const start = js.indexOf('async function launchCommon');
+    const body = js.slice(start, js.indexOf('launchStatus(btn,', start));
+    const statusAt = body.indexOf('r.status === 402');
+    const errorAt = body.indexOf('if (s.error)');
+    expect(statusAt).toBeGreaterThan(0);
+    expect(errorAt).toBeGreaterThan(0);
+    expect(statusAt).toBeLessThan(errorAt);
+  });
+
+  it('the grant beacon is awaited; the rest are fire-and-forget', () => {
+    // A fire-and-forget grant would race the retry and re-gate the user on
+    // their own purchase, forever.
+    expect(js).toContain('await probeGrant(');
+    expect(js).toContain('async function probeGrant');
+    expect(js).toContain('keepalive: true'); // still true for the others
+  });
+
+  it('a gated plan restores the words the composer already cleared', () => {
+    // wirePlan's send() empties the textarea before the request and there is
+    // no draft persistence anywhere.
+    const start = js.indexOf('async function planFirstSend');
+    const body = js.slice(start, start + 2200);
+    expect(body).toContain('r.status === 402');
+    expect(body).toMatch(/box\.value = text/);
+  });
+
+  it('the retry cannot loop on the gate', () => {
+    expect(js).toContain('idleLabel, true)');
+    expect(js).toContain('!isRetry');
+  });
+
+  it('the host is outside every repainted region and has no elevation', () => {
+    expect(html).toContain('id="paywall"');
+    const block = html.slice(html.indexOf('#paywall {'), html.indexOf('#paywall .btnrow button'));
+    expect(block.length).toBeGreaterThan(0);
+    expect(block).not.toMatch(/box-shadow/); // DESIGN.md rule 1
+  });
+
+  it('no card fields anywhere in the flow', () => {
+    // The hard rule. A form collecting payment credentials under false
+    // pretenses is deceptive regardless of intent.
+    const start = js.indexOf('function showPaywallGate');
+    const gate = js.slice(start, js.indexOf('function launchStatusInGate', start));
+    expect(gate).not.toMatch(/card number|cardnumber|cc-number|credit card|cvc|autocomplete="cc/i);
+    expect(gate).not.toMatch(/type="password"/);
+  });
+});
+
 describe('build logs — recoverable, never candidate-visible', () => {
   const appSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'app.ts'), 'utf8');
 
@@ -737,8 +856,8 @@ describe('beta auth — client wiring (WU4)', () => {
     // Login flow exists and uses plain GoTrue REST (no SDK — no-bundler rule).
     expect(js).toContain("'/api/auth-config'");
     expect(js).toContain('/auth/v1/authorize?provider=google');
-    expect(js).toContain("gotrue('otp'");
-    expect(js).toContain("gotrue('verify'");
+    expect(js).toContain("gotrue('signup'");
+    expect(js).toContain("gotrue('token?grant_type=password'");
     // Cookie is what the servers read; session links carry the fragment
     // because the session origin cannot see the app origin's cookie.
     expect(js).toContain('ip_jwt=');

@@ -19,6 +19,43 @@ describe('resolvePublicConfig', () => {
     expect(c.caps.maxPendingPerUser).toBe(Infinity);
     expect(c.retention.days).toBeNull();
     expect(c.retention.reapNodeModules).toBe(false);
+    // The regression that protects the dev machine: merging the WTP probe
+    // must leave a box with no .env entry for it byte-identical.
+    expect(c.paywall.enabled).toBe(false);
+  });
+
+  it('the paywall gate is opt-in — price and limits alone do not arm it', () => {
+    const off = resolvePublicConfig({ IP_PAYWALL_PRICE_USD: '19', IP_PAYWALL_FREE_ROUNDS: '0' });
+    expect(off.paywall.enabled).toBe(false);
+
+    const on = resolvePublicConfig({ IP_PAYWALL_GATE: '1' });
+    expect(on.paywall).toEqual({ enabled: true, priceUsd: 39, freeRounds: 3, freePlans: 3 });
+
+    const tuned = resolvePublicConfig({
+      IP_PAYWALL_GATE: '1',
+      IP_PAYWALL_PRICE_USD: '19',
+      IP_PAYWALL_FREE_ROUNDS: '5',
+      IP_PAYWALL_FREE_PLANS: '2',
+    });
+    expect(tuned.paywall).toEqual({ enabled: true, priceUsd: 19, freeRounds: 5, freePlans: 2 });
+  });
+
+  it('a free allowance of ZERO is honored — intOr would have eaten it', () => {
+    // The whole point of zeroOr. IP_PAYWALL_FREE_ROUNDS=0 means "gate the very
+    // first round", which is a real config AND the only way to exercise the
+    // flow locally. Under intOr this silently resolved to the default of 3 and
+    // every verification step would have run against the wrong limit.
+    const c = resolvePublicConfig({ IP_PAYWALL_GATE: '1', IP_PAYWALL_FREE_ROUNDS: '0', IP_PAYWALL_FREE_PLANS: '0' });
+    expect(c.paywall.freeRounds).toBe(0);
+    expect(c.paywall.freePlans).toBe(0);
+
+    // Garbage and empty still take the fallback — only a real number counts.
+    expect(resolvePublicConfig({ IP_PAYWALL_GATE: '1', IP_PAYWALL_FREE_ROUNDS: 'junk' }).paywall.freeRounds).toBe(3);
+    expect(resolvePublicConfig({ IP_PAYWALL_GATE: '1', IP_PAYWALL_FREE_ROUNDS: '' }).paywall.freeRounds).toBe(3);
+    expect(resolvePublicConfig({ IP_PAYWALL_GATE: '1', IP_PAYWALL_FREE_ROUNDS: '-2' }).paywall.freeRounds).toBe(3);
+
+    // And the caps still use intOr — a cap of 0 would deadlock the product.
+    expect(resolvePublicConfig({ IP_MAX_CONCURRENT_BUILDS: '0' }).caps.maxConcurrentBuilds).toBe(Infinity);
   });
 
   it('beta env resolves the public origins, trimming trailing slashes', () => {

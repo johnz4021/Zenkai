@@ -14,10 +14,19 @@ branch; this is what the founder does once, plus the per-day ops.
 ## 1. Supabase project (~15 min)
 
 1. Create a project at supabase.com (free tier).
-2. **Auth → Providers:** enable **Google** (primary — no email deliverability
-   risk). If you also want email OTP: configure **custom SMTP** (Auth →
-   Settings) first; the built-in sender is rate-limited to a handful of mails
-   an hour and will eat a login wave.
+2. **Auth → Providers:** enable **Google** (no email deliverability risk) and
+   leave **Email** enabled — the login screen offers Google plus email +
+   password. The old 6-digit OTP flow is gone precisely because it round-trips
+   through email, and the built-in Supabase sender is rate-limited to a handful
+   of mails an hour.
+
+   ⚠️ **Auth → Settings → turn OFF "Confirm email".** It is ON by default, and
+   with it on a password signup returns a user with **no session** — the person
+   is told to click a link this beta cannot reliably deliver, which reinstates
+   exactly the problem password auth was meant to remove. The client handles
+   that case honestly ("check your email to confirm it, then sign in") but it
+   is a dead end for the user until you flip this. Turn it back on, with custom
+   SMTP, whenever the beta stops being ten people you know.
 3. **Auth → Settings → Access token expiry: `86400`** (24h). Sessions run
    longer than the 1h default and the beta has no refresh flow; an expiring
    token mid-round would 401 the voice socket.
@@ -112,6 +121,14 @@ in Testing only permits explicitly-listed test users (cap 100), so Google
 enforces the invite allowlist for you. No verification is needed either —
 email/profile are non-sensitive scopes, so there is no multi-day Google review.
 
+⚠️ **Google's test-user list is no longer the whole allowlist.** It gates the
+*Google* button only. Since the login screen also offers email + password,
+anyone with the URL can create an account without appearing in that list. That
+is consistent with signup being open by decision (2026-08-12) — but if you were
+treating the Google list as the invite control, it is not anymore. If you need
+a real gate, it has to live server-side (an allowlist checked in `auth.ts`), not
+in Google's console.
+
 **The one caveat:** test-user authorizations expire 7 days after consent. An
 invitee returning after a week re-sees the consent screen. It does not break
 their Zenkai session (that runs on the Supabase JWT, set to 24h) — it is
@@ -201,6 +218,65 @@ curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer garbage' http
 - ≥3 invite redemptions (any launch) · ≥1 completed round · ≥1 unprompted
   follow-up ("when's the next one / can I do another").
 - Upvotes and "this is sick" count as **zero**.
+
+## 6a. Willingness-to-pay gate (`paywall.ts`)
+
+The gate above asks *would you do another round*. This asks *would you buy
+one* — and unlike a survey it actually stops someone, which is the only way
+the answer means anything. Armed by `IP_PAYWALL_GATE=1` (already in
+`ops/env.launch.template`): after 3 rounds (or 3 plans) a user sees a price and
+does not get that round until they answer. Pressing Subscribe records intent,
+reveals that payments are not switched on yet, and unlocks them for the rest of
+the beta. **No card details are collected anywhere.**
+
+You are an admin, so you never see it and nothing you click is recorded.
+
+**KILL SWITCH — know this before you serve.** Comment out `IP_PAYWALL_GATE`
+and `sudo systemctl restart zenkai-app`. About ten seconds, and
+`KillMode=process` means nobody's live round is touched. One bad report from a
+beta user and it is off; no deploy, no code change.
+
+**Pull it** (lives only on the box; gitignored, in `BACKUP_PATHS`):
+
+```bash
+ssh zenkai@<box-ip> 'cat Zenkai/paywall.jsonl' > paywall.jsonl
+```
+
+**Read it deduped BY PERSON, never by row** — someone gated four times is one
+data point, not four:
+
+```bash
+jq -r '[.action,.user_id] | @tsv' paywall.jsonl | sort -u | cut -f1 | sort | uniq -c
+jq -r 'select(.expect) | "\(.email)\t\(.expect)"' paywall.jsonl
+```
+
+The five actions: `gated` (the denominator — actually stopped), `would_pay`
+(pressed Subscribe), `not_yet` (declined, got no round),
+`would_pay_confirmed` (agreed to be emailed about paying) and
+`notify_declined`.
+
+**`would_pay_confirmed` is the honest number.** `would_pay` costs nothing and
+still yields the round, so it is a ceiling. Agreeing to be contacted about
+paying is a second deliberate act — the gap between the two is the size of the
+cheap-talk problem, measured instead of assumed.
+
+**The decision rule, written down before any data exists** (same
+pre-registration discipline as "upvotes count as zero" above — a rule invented
+after seeing the numbers is not a rule):
+
+- **≥5 distinct users gated, ≥1 distinct `would_pay_confirmed`** → there is a
+  price worth pursuing. Read the `expect` free text for where it sits.
+- **≥5 gated, several `would_pay` but 0 `would_pay_confirmed`** → people will
+  click a free button and will not commit. Treat as no at $39.
+- **≥5 gated, 0 `would_pay`** → no at $39. Lower `IP_PAYWALL_PRICE_USD` and
+  run again rather than concluding there is no business.
+- **<5 distinct users gated** → **the instrument did not run.** Not a negative
+  result. Lower `IP_PAYWALL_FREE_ROUNDS`, or get more users, and try again.
+
+Two honesty notes for whoever reads it. Every `expect` answer was given
+*after* seeing $39, so it is anchored — read them as a floor, not an estimate.
+And a fresh email resets the counter, since signup is open by decision; at
+this size that costs precision, not money.
 
 ## 7. VPS cutover (supersedes 2, 3 and 5 — rev 2)
 
