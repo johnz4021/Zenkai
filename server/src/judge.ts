@@ -33,7 +33,14 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import type { DimensionKey, GeneratedProblem, TraceEvent, Verdict } from '@interview-prep/shared';
-import { DIMENSIONS, DIMENSION_DEFS, isDimensionKey, isVerdict, resolveExpectations } from '@interview-prep/shared';
+import {
+  DIMENSIONS,
+  DIMENSION_DEFS,
+  isDimensionKey,
+  isVerdict,
+  resolveExpectations,
+  resolveRoundSpec,
+} from '@interview-prep/shared';
 import { RENDERER_VERSION, eventAtOffset, isPhantomUtterance, renderTimeline, sensorDownIntervals } from './timeline.js';
 
 export const SCHEMA_VERSION = 1;
@@ -419,11 +426,13 @@ export function pickJudgeModel(): { model: JudgeModel; name: string } {
 export interface JudgeSessionOptions {
   sessionId: string;
   events: TraceEvent[];
-  problem: Pick<GeneratedProblem, 'round_type' | 'spec' | 'planted_bug' | 'rubric'>;
+  problem: Pick<GeneratedProblem, 'round_type' | 'spec' | 'planted_bug' | 'rubric'> &
+    Partial<Pick<GeneratedProblem, 'round_spec'>>;
   templatePath: string;
   /** Host path of the round's problem dir. When set, review-shaped rounds
-   *  (no planted bug, no test run) get their written deliverable read from
-   *  here and appended to the ground truth — see deliverableText. */
+   *  (check.kind 'diff_present' / can_run_tests false — or any round where
+   *  nothing was graded) get their written deliverable read from here and
+   *  appended to the ground truth — see deliverableText. */
   problemDir?: string;
   /** Injectable; tests and the gauntlet pass fakes/instrumented models. */
   judgeModel?: JudgeModel;
@@ -499,9 +508,27 @@ export async function judgeSession(opts: JudgeSessionOptions): Promise<JudgeResu
 
   const expectations = resolveExpectations(opts.problem.round_type, opts.problem.rubric?.dimensions);
   let bug = groundTruth(opts.problem, opts.events);
-  // Review-shaped rounds only: no planted bug and no run to grade means the
-  // written deliverable IS the ground truth's other half.
-  if (!opts.problem.planted_bug && opts.problemDir && !opts.events.some((e) => e.type === 'test_run')) {
+  // Review-shaped rounds: the written deliverable IS the ground truth's
+  // other half. Dispatch on the CLOSED vocabulary (check.kind), never on
+  // trace shape — QA 2026-08-14 verification caught the first cut of this
+  // gate ("no planted bug and no test_run") never firing on a single real
+  // review round: the generator DOES plant bugs in the diff under review
+  // (rep-mst39p35 carries planted_bug api.py:77 alongside
+  // check.kind:'diff_present'), so the round it was written for excluded
+  // itself. RoundSpec is the ruler the judge dispatches on; a round that
+  // cannot run tests has nothing else to be graded on.
+  const spec = (() => {
+    try {
+      return resolveRoundSpec(opts.problem);
+    } catch {
+      return null; // legacy manifest — fall back to the trace-shape test below
+    }
+  })();
+  const reviewShaped =
+    spec?.check.kind === 'diff_present' || spec?.capabilities.can_run_tests === false;
+  const nothingGraded =
+    !opts.problem.planted_bug && !opts.events.some((e) => e.type === 'test_run');
+  if (opts.problemDir && (reviewShaped || nothingGraded)) {
     const deliverable = deliverableText(opts.problemDir, opts.events);
     if (deliverable) {
       bug += `\n\nThe candidate's submitted written deliverable, verbatim:\n${deliverable}`;
