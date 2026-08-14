@@ -56,6 +56,9 @@ export interface SessionPageView {
    *  a reload mid-round restarted the displayed countdown at the full limit
    *  while the server kept enforcing the real deadline. */
   elapsed_ms?: number;
+  /** Whether the voice runtime is actually on. The intro copy must not
+   *  promise a live mic on IP_VOICE=0 / no-key rounds (QA 2026-08-14). */
+  voice?: boolean;
 }
 
 const DEFAULT_VIEW: SessionPageView = {
@@ -110,9 +113,14 @@ export function sessionPage(sessionId: string, partial: Partial<SessionPageView>
   // Merge over defaults: callers state only what differs from the classic
   // debugging round, and a new capability field never breaks old call sites.
   const view: SessionPageView = { ...DEFAULT_VIEW, ...partial };
+  const voiceOn = view.voice !== false;
   const intro = view.interviewer
-    ? `<p class="u"><b>interviewer</b> — just talk. The mic is live (headphones recommended); think out loud freely — the interviewer only replies when you actually address it, and answers spec questions. Where the bug is, you won't get. Typing here works the same way. Mute is in the header.</p>`
-    : `<p class="u"><b>no interviewer this round</b> — it runs like an online assessment: nobody replies. The mic stays live and thinking out loud still counts; notes typed here land in your record the same way.</p>`;
+    ? voiceOn
+      ? `<p class="u"><b>interviewer</b> — just talk. The mic is live (headphones recommended); think out loud freely — the interviewer only replies when you actually address it, and answers spec questions. Where the bug is, you won't get. Typing here works the same way. Mute is in the header.</p>`
+      : `<p class="u"><b>interviewer</b> — voice is off this round, so type here. The interviewer only replies when you actually address it, and answers spec questions. Where the bug is, you won't get.</p>`
+    : voiceOn
+      ? `<p class="u"><b>no interviewer this round</b> — it runs like an online assessment: nobody replies. The mic stays live and thinking out loud still counts; notes typed here land in your record the same way.</p>`
+      : `<p class="u"><b>no interviewer this round</b> — it runs like an online assessment: nobody replies. Notes typed here still count — they land in your record the same way.</p>`;
   const endLabel = view.one_shot ? 'Submit' : 'End session';
   return /* html */ `<!doctype html>
 <meta charset="utf-8" />
@@ -229,7 +237,7 @@ export function sessionPage(sessionId: string, partial: Partial<SessionPageView>
   ${view.back_url ? `<a id="back" href="${view.back_url}">← back to plan</a>` : ''}
   <span>session <b>${sessionId}</b></span>
   <span class="t" id="clock"${view.time_limit_ms ? ` data-limit="${view.time_limit_ms}"` : ''}${view.elapsed_ms ? ` data-elapsed="${view.elapsed_ms}"` : ''}>00:00</span>
-  <span class="t" id="status"${view.one_shot ? ' data-one-shot="1"' : ''}>observing: —</span>
+  <span class="t" id="status"${view.one_shot ? ' data-one-shot="1"' : ''}${view.interviewer ? ' data-interviewer="1"' : ''}${view.can_run_tests ? '' : ' data-no-run="1"'}>observing: —</span>
   <span class="t" id="voicechip">voice: —</span>
   ${
     view.can_run_tests && !view.one_shot
@@ -245,8 +253,8 @@ export function sessionPage(sessionId: string, partial: Partial<SessionPageView>
     <div id="log">
       ${intro}
       ${view.surface === 'panes'
-        ? `<p class="u"><b>observed</b> — edits, tab switches, saves (automatic), this chat, and test runs via the <b>Run Tests</b> button. Silences ≥20s with no activity anywhere count as going quiet.${view.one_shot ? ' The suite runs ONCE, when you press Submit — make it count.' : ''}</p>`
-        : `<p class="u"><b>observed</b> — edits, saves, which file is focused and roughly where you're scrolled to, this chat, and test runs (the <b>Run Tests</b> button, or a test command in the terminal). Other terminal commands are not observed. Silences ≥20s with no activity anywhere count as going quiet.${view.autorun ? ' The suite runs once automatically at start.' : ''}${view.one_shot ? ' The suite runs ONCE, when you press Submit — make it count.' : ''}</p>`}
+        ? `<p class="u"><b>observed</b> — edits, tab switches, saves (automatic), and this chat${view.can_run_tests && !view.one_shot ? ', and test runs via the <b>Run Tests</b> button' : ''}. Silences ≥20s with no activity anywhere count as going quiet.${view.one_shot ? (view.can_run_tests ? ' The suite runs ONCE, when you press Submit — make it count.' : ' Nothing runs in this round — press Submit when your write-up is ready.') : ''}</p>`
+        : `<p class="u"><b>observed</b> — edits, saves, which file is focused and roughly where you're scrolled to, and this chat${view.can_run_tests && !view.one_shot ? ', and test runs (the <b>Run Tests</b> button, or a test command in the terminal). Other terminal commands are not observed' : ''}. Silences ≥20s with no activity anywhere count as going quiet.${view.autorun ? ' The suite runs once automatically at start.' : ''}${view.one_shot ? (view.can_run_tests ? ' The suite runs ONCE, when you press Submit — make it count.' : ' Nothing runs in this round — press Submit when your write-up is ready.') : ''}</p>`}
     </div>
     <div id="feedback"></div>
     <form id="f"><input id="msg" autocomplete="off" placeholder="ask / note an assumption…" /><button>send</button></form>

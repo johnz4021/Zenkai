@@ -43,12 +43,17 @@ async function pollStatus() {
     // trigger ("first failing test run") can NEVER arm — the candidate
     // would read a status describing an impossible event for the whole
     // round. State the rule that actually governs their round instead.
+    // No-interviewer rounds get no trigger clause at all: "trigger armed"
+    // describes someone who is not there (QA 2026-08-14). No-run rounds
+    // have nothing to run, at submit or otherwise.
     const trigger = el.dataset.oneShot === '1'
-      ? 'suite runs once at submit'
-      : (s.trigger_armed ? 'trigger armed ✓' : 'waiting for first failing test run');
+      ? (el.dataset.noRun === '1' ? 'nothing runs this round' : 'suite runs once at submit')
+      : (el.dataset.interviewer === '1'
+          ? (s.trigger_armed ? 'trigger armed ✓' : 'waiting for first failing test run')
+          : '');
     el.textContent =
       'observing: ' + n('edit') + ' edits · ' + n('file_save') + ' saves · ' +
-      n('test_run') + ' test runs · ' + trigger;
+      n('test_run') + ' test runs' + (trigger ? ' · ' + trigger : '');
   } catch {}
 }
 const statusTimer = setInterval(pollStatus, 3000);

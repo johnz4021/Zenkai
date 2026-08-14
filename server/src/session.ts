@@ -1045,6 +1045,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           back_url: backUrl,
           workspace_path: workspacePath,
           elapsed_ms: sessionStartedAt ? Date.now() - sessionStartedAt : 0,
+          voice: Boolean(voice),
         }),
       );
     }
