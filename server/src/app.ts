@@ -35,6 +35,13 @@ import { authConfigFromPublic, makeAuth } from './auth.js';
 import { childEnv } from './child-env.js';
 import { makeDb, repRow, sessionRow, targetRow, type SessionRow } from './db.js';
 import { applyReaping, gatherRepDiskFacts, planReaping } from './retention.js';
+import {
+  preserveRunTree,
+  pristineArchivePath,
+  restorability,
+  restoreFromSnapshot,
+  restorePristine,
+} from './artifact.js';
 import { makeSessionRouter } from './session-router.js';
 import { applySessionSweep, listSessionContainers, planSessionSweep } from './session-sweep.js';
 import {
@@ -56,6 +63,7 @@ import {
   launchVerdict,
   loadReps,
   REP_ID_RE,
+  repeatVerdict,
   repProblemDir,
   repStateView,
   retryVerdict,
@@ -263,10 +271,12 @@ function attachmentBlocksFromDecoded(
 
 /** One durable line per session launch — the falsifier's data (2026-08-10
  *  CEO review: if plan-queue launches dominate, the composer landing is
- *  optimizing for the wrong user). Origin is sanitized to the two call-site
- *  values; console scrollback is not a metric, a JSONL file is. */
+ *  optimizing for the wrong user). Origin is sanitized to the known call-site
+ *  values ('repeat' joined them with practice-again, which must be countable
+ *  separately from a first run); console scrollback is not a metric, a JSONL
+ *  file is. */
 function logLaunch(origin: unknown, sessionId: string): void {
-  const o = origin === 'plans' || origin === 'practice' ? origin : 'unknown';
+  const o = origin === 'repeat' || origin === 'plans' || origin === 'practice' ? origin : 'unknown';
   try {
     appendFileSync(
       path.join(repoRoot, 'launches.jsonl'),
@@ -1256,10 +1266,18 @@ export function runApp(cfg: AppConfig): http.Server {
   /** Multi-session launch (WU-D): verdict → allocate → spawn → append+persist,
    *  serialized behind launchChain with no awaits inside the critical block —
    *  concurrent launches can't share a slot, and the registry entry exists
-   *  before the container it names. Returns the HTTP response to send. */
+   *  before the container it names. Returns the HTTP response to send.
+   *
+   *  `beforeSpawn` is the repeat path's workspace reset (preserve the old run
+   *  tree, restore pristine). It runs INSIDE the serialized block, after the
+   *  verdict and the slot both hold and before the container is spawned, so a
+   *  double-click can never re-wipe a dir mid-boot. It must stay synchronous:
+   *  an await here would reopen the slot race the chain exists to close. A
+   *  throw aborts the launch with no registry entry and no container. */
   const multiLaunch = async (
     who: { id: string; admin: boolean },
     problemDirArg: string,
+    opts?: { ignoreEndedOnSameDir?: boolean; beforeSpawn?: () => void },
   ): Promise<{ code: number; body: Record<string, unknown> }> => {
     await reconcileRegistryNow();
     let result: { code: number; body: Record<string, unknown> } = {
@@ -1271,7 +1289,7 @@ export function runApp(cfg: AppConfig): http.Server {
     };
     await (launchChain = launchChain.then(() => {
       const reg = loadRegistry(repoRoot);
-      const verdict = launchVerdict2(reg.entries, who.id, who.admin, problemDirArg, cfg.pub.sessions);
+      const verdict = launchVerdict2(reg.entries, who.id, who.admin, problemDirArg, cfg.pub.sessions, opts);
       if (verdict === 'your-session-live') {
         result = { code: 409, body: { error: 'your session is live — finish or end it first' } };
         return;
@@ -1283,6 +1301,22 @@ export function runApp(cfg: AppConfig): http.Server {
       if (verdict === 'all-slots-busy') { result = busy; return; }
       const slot = allocateSlot(reg.entries, cfg.pub.sessions.maxConcurrentSessions);
       if (!slot) { result = busy; return; }
+      if (opts?.beforeSpawn) {
+        try {
+          opts.beforeSpawn();
+        } catch (e) {
+          // The slot was never persisted, so returning here releases it —
+          // nothing was spawned and no entry names a container that will
+          // not exist. Loud on purpose: a half-restored workspace must not
+          // become a session.
+          console.error(`[app] launch aborted before spawn: ${String(e)}`);
+          result = {
+            code: 500,
+            body: { error: `could not reset the workspace: ${String(e instanceof Error ? e.message : e).slice(0, 200)}` },
+          };
+          return;
+        }
+      }
       const sid = newSessionId(Date.now());
       const pid = spawnDetached(['session', problemDirArg], {
         IP_SESSION_ID: sid,
@@ -2014,7 +2048,7 @@ export function runApp(cfg: AppConfig): http.Server {
             sessionLive: false,
           });
           if (pre === 'not-ready') return json(400, { error: 'rep is not ready' });
-          if (pre === 'already-used') return json(409, { error: 'that rep already ran — its card is under history' });
+          if (pre === 'already-used') return json(409, { error: 'that rep already ran — its card is under history, where "practice again" runs it fresh' });
           const out = await multiLaunch({ id: user!.id, admin: user!.admin }, dir);
           if (out.code === 200) {
             logLaunch(b.origin, String(out.body.session_id));
@@ -2028,7 +2062,7 @@ export function runApp(cfg: AppConfig): http.Server {
           sessionLive: probe.reachable && !probe.ended,
         });
         if (verdict === 'not-ready') return json(400, { error: 'rep is not ready' });
-        if (verdict === 'already-used') return json(409, { error: 'that rep already ran — its card is under history' });
+        if (verdict === 'already-used') return json(409, { error: 'that rep already ran — its card is under history, where "practice again" runs it fresh' });
         if (verdict === 'session-live') {
           const owner = await probeSessionOwner(cfg.sessionPort);
           return json(409, {
@@ -2059,6 +2093,116 @@ export function runApp(cfg: AppConfig): http.Server {
             : {}),
         });
         console.log(`[app] rep ${rep.id} launching as ${sessionId}`);
+        return json(200, { session_id: sessionId, url: `${cfg.pub.sessionPublicUrl}/session` });
+      }
+      if (url === '/api/practice/repeat' && req.method === 'POST') {
+        // "Practice again" (artifact.ts / TODOS #48): preserve the finished
+        // run's tree, reset the workspace to pristine, launch a fresh
+        // session on the same rep. Same request/response shape as
+        // /api/practice/launch — the client's launchCommon drives both.
+        //
+        // DELIBERATELY no admissionVerdict: a repeat spends zero generation
+        // budget (no opus build, no new problem dir), so the build caps have
+        // nothing to protect here. The session concurrency caps
+        // (maxSessionsPerUser / maxConcurrentSessions in multi mode, the
+        // one-session port probe in legacy) still bound it, and the exposure
+        // is identical to today's — a ready rep already grants an uncapped
+        // session.
+        const b = JSON.parse((await readBody(req)) || '{}') as { rep_id?: string; origin?: string };
+        if (typeof b.rep_id !== 'string' || !REP_ID_RE.test(b.rep_id)) {
+          return json(400, { error: 'bad rep id' });
+        }
+        const views = repStateView(repoRoot, loadReps(repoRoot));
+        const rep = views.find((r) => r.id === b.rep_id);
+        if (!rep) return json(404, { error: 'no such rep' });
+        if (!ownsRep(rep)) return json(403, { error: 'not your rep' });
+        const dir = repProblemDir(repoRoot, rep.id);
+        const usedFile = path.join(dir, '.used');
+        const restorable = restorability({
+          hasPristine: existsSync(pristineArchivePath(dir)),
+          hasSnapshot: existsSync(path.join(dir, '.session-snapshot')),
+        });
+        // Liveness is per-DIR here, not per-user: the danger is restoring
+        // files out from under a container that has them bind-mounted.
+        const probe = cfg.pub.multiSession ? null : await probeSession(cfg.sessionPort);
+        const sessionLiveOnDir = cfg.pub.multiSession
+          ? (await reconcileRegistryNow()).entries.some(
+              (e) => e.problem_dir === dir && e.ended_at === undefined,
+            )
+          : probe!.reachable && !probe!.ended;
+        const verdict = repeatVerdict(rep, {
+          usedExists: existsSync(usedFile),
+          sessionLiveOnDir,
+          restorable,
+        });
+        if (verdict === 'not-done') {
+          return json(409, { error: "that round hasn't finished — its session is still live or unjudged" });
+        }
+        if (verdict === 'not-consumed') {
+          return json(409, { error: "that rep hasn't run yet — use start" });
+        }
+        if (verdict === 'session-live') {
+          const owner = cfg.pub.multiSession ? null : await probeSessionOwner(cfg.sessionPort);
+          return json(409, {
+            error: owner === null || owner === user!.id || user!.admin
+              ? 'a session is already running — finish or end it first'
+              : 'someone is mid-round — sessions run one at a time in the beta; check back in ~45 minutes',
+          });
+        }
+        if (verdict === 'not-repeatable') {
+          return json(409, { error: 'this round predates repeatable artifacts and its pristine copy is gone' });
+        }
+        // `.used` is overwrite-latest and two lines (`sid\nISO\n`) — the
+        // first line names the run whose tree we are about to replace.
+        const oldSid = readFileSync(usedFile, 'utf8').split('\n')[0]!;
+        const resetWorkspace = (): void => {
+          preserveRunTree(dir, oldSid); // non-fatal insurance
+          if (restorable === 'pristine') restorePristine(dir);
+          else restoreFromSnapshot(dir);
+        };
+        if (cfg.pub.multiSession) {
+          // ignoreEndedOnSameDir: the round we are repeating just ended and
+          // its entry lingers to serve its card — that must not 409 us.
+          const out = await multiLaunch({ id: user!.id, admin: user!.admin }, dir, {
+            ignoreEndedOnSameDir: true,
+            beforeSpawn: resetWorkspace,
+          });
+          if (out.code === 200) {
+            logLaunch(b.origin, String(out.body.session_id));
+            console.log(`[app] rep ${rep.id} repeating as ${String(out.body.session_id)} (was ${oldSid})`);
+          }
+          return json(out.code, out.body);
+        }
+        if (probe!.reachable && probe!.ended) {
+          // Reap a graded session's lingering card server (the /api/launch
+          // pattern, verbatim) so port 3200 frees up for the new session.
+          await postSession(cfg.sessionPort, '/api/shutdown');
+          for (let i = 0; i < 10; i++) {
+            if (!(await probeSession(cfg.sessionPort)).reachable) break;
+            await new Promise((r) => setTimeout(r, 500));
+          }
+        }
+        try {
+          resetWorkspace();
+        } catch (e) {
+          console.error(`[app] repeat aborted before spawn: ${String(e)}`);
+          return json(500, {
+            error: `could not reset the workspace: ${String(e instanceof Error ? e.message : e).slice(0, 200)}`,
+          });
+        }
+        const sessionId = `sess-${Date.now()}`;
+        logLaunch(b.origin, sessionId);
+        spawnDetached(['session', dir], {
+          IP_SESSION_ID: sessionId,
+          // The person at the keyboard is whose gap graph gets written.
+          IP_USER_ID: user!.id,
+          IP_PREPARE_NEXT: '0',
+          IP_APP_URL: cfg.pub.appPublicUrl,
+          ...(internalHeaders['x-ip-internal']
+            ? { IP_INTERNAL_TOKEN: internalHeaders['x-ip-internal'] }
+            : {}),
+        });
+        console.log(`[app] rep ${rep.id} repeating as ${sessionId} (was ${oldSid})`);
         return json(200, { session_id: sessionId, url: `${cfg.pub.sessionPublicUrl}/session` });
       }
       if (url === '/api/practice/retry' && req.method === 'POST') {

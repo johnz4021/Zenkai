@@ -117,6 +117,28 @@ describe('allocateSlot / launchVerdict2', () => {
     const a = entry({ ended_at: T0 });
     expect(launchVerdict2([a], 'someone', false, a.problem_dir, caps)).toBe('already-launching');
   });
+
+  it('ignoreEndedOnSameDir (repeat only) lets an ENDED same-dir entry through', () => {
+    // The round being repeated just ended; its entry lingers ~30-40 min to
+    // serve the card, and "practice again" must not 409 on it.
+    const ended = entry({ ended_at: T0 });
+    expect(
+      launchVerdict2([ended], 'someone', false, ended.problem_dir, caps, {
+        ignoreEndedOnSameDir: true,
+      }),
+    ).toBe('ok');
+  });
+
+  it('ignoreEndedOnSameDir still blocks a LIVE session on the same dir', () => {
+    // Restoring pristine under a live container would swap the workspace
+    // out from beneath whoever is mid-round in it.
+    const live = entry({});
+    expect(
+      launchVerdict2([live], 'someone', true, live.problem_dir, caps, {
+        ignoreEndedOnSameDir: true,
+      }),
+    ).toBe('already-launching');
+  });
 });
 
 describe('persistence + ids', () => {

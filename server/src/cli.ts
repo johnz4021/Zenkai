@@ -13,6 +13,7 @@ import { generateProblem } from './generate.js';
 import { validateProblem } from './validate.js';
 import { buildGraphView, buildTargetNote, loadStore } from './gap-graph.js';
 import { listReady, markUsed, pickProblem } from './pool.js';
+import { appendRun, dirRanSession, makePristineArchive } from './artifact.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
@@ -235,6 +236,11 @@ async function generateInto(
     // recover item status without trusting its own memory.
     const { writeFileSync: wf } = await import('node:fs');
     wf(path.join(targetDir, '.validated'), new Date().toISOString());
+    // Pristine copy taken here, after the second sweep and before any session
+    // can bind-mount and mutate the tree (TODOS #48). Never fatal: a failed
+    // archive must not fail a build that already spent real money.
+    const arch = makePristineArchive(targetDir);
+    if (!arch.ok) console.warn(`[artifact] pristine archive skipped: ${arch.skipped}`);
     if (!result.ok) console.log('[generate] the killed run had already finished — kept');
   }
   // 2 = ran clean but the artifact is not a valid round; 1 = died AND left
@@ -620,13 +626,16 @@ if (cmd === 'generate') {
     .filter((l) => l.trim())
     .map((l) => JSON.parse(l) as import('@interview-prep/shared').TraceEvent);
 
-  // Find the problem this session ran (the .used marker names the session).
-  // ALL THREE universes: the generic pool, every target's problems dir, and
-  // reps/<id>/problem — the lookup predated targets, which silently made
-  // every targeted session un-rejudgeable ("no .used marker names it" on a
-  // marker that existed), and the same regression recurred for rep-based
-  // rounds when the practice door landed (QA 2026-08-14: sess-qa814-lcset4
-  // was named by reps/rep-set67388/problem/.used and still exited 2).
+  // Find the problem this session ran. ALL THREE universes: the generic
+  // pool, every target's problems dir, and reps/<id>/problem — the lookup
+  // predated targets, which silently made every targeted session
+  // un-rejudgeable ("no .used marker names it" on a marker that existed),
+  // and the same regression recurred for rep-based rounds when the practice
+  // door landed (QA 2026-08-14: sess-qa814-lcset4 was named by
+  // reps/rep-set67388/problem/.used and still exited 2). The match is
+  // dirRanSession, not the .used first line: .used names only the LATEST
+  // run, so on a repeated dir every earlier session would be a fourth way to
+  // lose this lookup — the append-only .runs.jsonl ledger covers them.
   const candidateDirs: string[] = [];
   try {
     for (const dir of readdirSync(problemsRoot)) candidateDirs.push(path.join(problemsRoot, dir));
@@ -647,7 +656,7 @@ if (cmd === 'generate') {
   let problemDir: string | null = null;
   for (const dir of candidateDirs) {
     try {
-      if (readFileSync(path.join(dir, '.used'), 'utf8').split('\n')[0] === sessionId) {
+      if (dirRanSession(dir, sessionId)) {
         problemDir = dir;
         break;
       }
@@ -656,7 +665,7 @@ if (cmd === 'generate') {
     }
   }
   if (!problemDir) {
-    console.error(`no problem found for session ${sessionId} (no .used marker names it)`);
+    console.error(`no problem found for session ${sessionId} (no .used marker or run ledger names it)`);
     process.exit(2);
   }
   const problem = JSON.parse(readFileSync(path.join(problemDir, 'problem.json'), 'utf8'));
@@ -848,11 +857,18 @@ if (cmd === 'generate') {
   // queue unable to tell a validated problem from an unchecked one — the
   // pipeline diagram's ".validated" step simply never happened on this
   // path.
+  // This sweep runs AFTER validateProblem's own suite run, so the tree the
+  // pristine archive below captures is the one the candidate will see.
   const { removePythonArtifacts } = await import('./generation-state.js');
   removePythonArtifacts(dir);
   if (report.ok) {
     const { writeFileSync: wf } = await import('node:fs');
     wf(path.join(dir, '.validated'), new Date().toISOString());
+    // Same pristine copy the generate path takes (TODOS #48). Refuses on its
+    // own when this command is pointed at a consumed dir or one that already
+    // has an archive — never fatal, the report below is what validate means.
+    const arch = makePristineArchive(dir);
+    if (!arch.ok) console.warn(`[artifact] pristine archive skipped: ${arch.skipped}`);
   }
   console.log(JSON.stringify(report, null, 2));
   process.exit(report.ok ? 0 : 2);
@@ -917,7 +933,12 @@ if (cmd === 'generate') {
       }
     : undefined;
   await runSession({
-    onReady: () => markUsed(problemDir, sessionId),
+    onReady: () => {
+      // .used stays overwrite-latest (every existing reader depends on that);
+      // the ledger beside it is the history a repeated dir needs.
+      markUsed(problemDir, sessionId);
+      appendRun(problemDir, { session_id: sessionId, user_id: userId, at: new Date().toISOString() });
+    },
     repoRoot,
     problemDir,
     sessionId,

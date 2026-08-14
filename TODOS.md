@@ -1170,25 +1170,15 @@ the practice door now generates on demand.
 
 ---
 
-## 48. `.used` is a single-session slot — reruns orphan history and replay dirty workspaces
+## 48. ~~`.used` is a single-session slot~~ SHIPPED 2026-08-14 — `artifact.ts`
 
-**What:** re-running a problem dir overwrites `.used` (the session→problem
-binding), so earlier sessions of the same dir become un-rejudgeable and their
-provenance is gone; and because the panes editor writes into the host problem
-dir with no restore, a re-run replays the previous candidate's code (2026-08-14
-QA: four sessions consumed rep-set67388; only the last is recoverable, and the
-queue-launch path handed a QA agent a pre-solved workspace).
-
-**Fix shape:** append-only `.used` (one line per session; rejudge matches any
-line) is 5 lines and fixes provenance. Workspace restore is the bigger half —
-either a pristine snapshot taken at validate time (`.session-snapshot` machinery
-already exists) restored on launch, or per-session workspace copies.
-
-**Where to start:** `cli.ts` markUsed + the rejudge `.used` scan (now three
-universes, cli.ts:599); `session.ts` launch path for the restore.
-
-**Effort:** CC ~1-2 hr. **Priority:** P2 (P1 the moment anyone re-runs a round
-deliberately).
+Pristine archives are tarred at validation time to a sibling
+`<dir>.pristine.tar.gz`; every run appends to `.runs.jsonl` (`.used` stays
+overwrite-latest so all three of its parse conventions keep working); rejudge
+resolves any historical session via `dirRanSession`; `/api/practice/repeat`
+restores pristine (snapshot fallback for pre-change reps) and relaunches. Two
+descendants deferred with their reasoning: #55 (rejudge-from-run-tarball) and
+#56 (topic-ledger repeat bias).
 
 ---
 
@@ -1312,6 +1302,11 @@ the same question `repace` and the adapt flow already answer differently.
 `item.status !== 'done'` precondition), plus a migration pass over
 `targets/*/queue.json` for the rows already stuck.
 
+**Partial (2026-08-14, repeat sessions):** reconcile now DOES correct one case —
+a `done` item whose `.used` first line changed (a repeat ran) re-points to the
+new session and demotes to `ready`. The stub-heal case above is still open;
+the demote is the precedent for "disk wins on this field".
+
 **Effort:** CC ~45 min. **Priority:** P2.
 
 ---
@@ -1342,3 +1337,64 @@ state different things. Recorded together so they can be swept in one pass:
 
 **Effort:** CC ~15-30 min each. **Priority:** P3, except the deliverable
 labeling (P2 — it is in the judge's ground truth).
+
+---
+
+## 55. Rejudging an old session of a review-shaped round reads the wrong tree
+
+**What:** `deliverableText` (judge.ts:445) reads REVIEW.md/*.md from the LIVE
+problem dir at rejudge time. After a repeat, rejudging the EARLIER session
+grades the current tree's markdown, not what that candidate wrote. The bytes
+are preserved (`<dir>.runs/<sid>.tar.gz`, written before every restore) but
+rejudge does not read tarballs. Deferred from the 2026-08-14 repeat build:
+only review-shaped rounds are affected, the original finalize-time judgment
+was correct, and rejudge is an operator tool.
+
+**Fix shape:** when the target session is not `.used`'s first line, extract
+its run tarball to a temp dir and pass THAT as `problemDir` to `judgeSession`.
+~15 lines, but it touches the judge path — do it with a golden fixture.
+
+**Trigger:** the first time someone actually rejudges a superseded session of
+a review round. **Effort:** CC ~30 min. **Priority:** P3.
+
+---
+
+## 56. Topic ledger counts a memorized re-solve like a first-sight solve
+
+**What:** a repeat session gets a fresh session id, so `attemptsFromSession`
+appends a new ledger row and a re-solve of a problem seen last week inflates
+topic strength as if it were novel. `TopicAttempt.origin` is a closed
+`'session' | 'rejudge'` union and stays closed (two-artifact-rule instinct:
+don't widen a closed vocabulary for a display concern).
+
+**Fix shape when it matters:** the ledger already has everything needed to
+DERIVE repeat-ness at read time — same user, same slug, earlier row. Discount
+in `buildTopicView` scoring, not in the record. Blocked on the same trigger as
+weakness-ranked selection (#40): the ledger is record-only today by user
+decision, so a scoring bias has no consumer to mislead yet.
+
+**Trigger:** wiring any picker/report that reads topic strength. **Effort:**
+CC ~30 min. **Priority:** P3.
+
+---
+
+## 57. Cross-user artifact library (Phase 2 of the caching plan)
+
+**What:** before generating, check for an existing validated artifact whose
+closed core matches the request — exact equality on task + capabilities +
+check + runtime + source binding + generation-prompt hash; label/date/user
+fields excluded — and claim it instead of spending an opus run. Prose is a
+VETO, never a matcher (any emphasis/named-company/topic constraint → generate
+fresh; the clarifier is already the canonicalizer that makes differently-worded
+same-shape requests collide). Never serve the same artifact twice to one user
+(`.runs.jsonl` is the seen-set). Phase 1 (2026-08-14) built the substrate:
+pristine archives are what a library would serve.
+
+**Deferred by user decision (2026-08-14):** beta users will have varied
+targets, so hit rate starts near zero; measured build cost is ~$3.54 (opus,
+invented) vs ~$0.50 (sonnet, LC-sourced), and the round mix is mostly sourced.
+
+**Trigger:** generation spend >$500/mo with invented rounds >40% of the mix
+(~50+ active users), or build-queue latency becoming a user complaint.
+**Effort:** CC ~1-2 days including the veto gates. **Priority:** P3 until the
+trigger fires.

@@ -123,6 +123,21 @@ describe('reconcileWithDisk — restart-safe by construction', () => {
     expect(reconcileWithDisk(root, q).items[0]!.status).toBe('done');
   });
 
+  it('a ready item still takes its session_id from .used, unchanged', () => {
+    const root = scratch();
+    const pdir = path.join(root, 'p1');
+    mkdirSync(pdir, { recursive: true });
+    const q = proposeQueue(target({ interview_date: '2026-08-15' }), NOW);
+    q.items[0]!.status = 'ready';
+    q.items[0]!.problem_dir = pdir;
+    q.items[0]!.session_id = 'sess-stale';
+    writeFileSync(path.join(pdir, '.validated'), 'now');
+    writeFileSync(path.join(pdir, '.used'), 'sess-live\n2026-08-02T10:00:00.000Z\n');
+    const out = reconcileWithDisk(root, q).items[0]!;
+    expect(out.session_id).toBe('sess-live');
+    expect(out.status).toBe('ready');
+  });
+
   it('a source binding survives the JSON round-trip untouched', () => {
     const root = scratch();
     const q = proposeQueue(target({ interview_date: '2026-08-15' }), NOW);
@@ -131,6 +146,78 @@ describe('reconcileWithDisk — restart-safe by construction', () => {
       difficulty: 'easy', picked_by: 'user',
     };
     expect(reconcileWithDisk(root, q).items[0]!.source).toEqual(q.items[0]!.source);
+  });
+});
+
+/**
+ * "Practice again" overwrites `.used` with the new sid while the row still
+ * reads `done` from the previous run. Reconciliation has to move BACKWARD
+ * here (TODOS #53's forward-only rule, narrowed) or the second attempt would
+ * never show as live and would never re-complete.
+ */
+describe('reconcileWithDisk — a repeat re-points and demotes the row', () => {
+  const doneRow = (root: string, pdir: string, usedSid: string) => {
+    mkdirSync(pdir, { recursive: true });
+    mkdirSync(path.join(root, 'assessments'), { recursive: true });
+    const q = proposeQueue(target({ interview_date: '2026-08-15' }), NOW);
+    q.items[0]!.status = 'done';
+    q.items[0]!.problem_dir = pdir;
+    q.items[0]!.session_id = 'sess-first';
+    q.items[0]!.done_at = '2026-08-02';
+    writeFileSync(path.join(pdir, '.validated'), 'now');
+    writeFileSync(path.join(pdir, '.used'), `${usedSid}\n2026-08-05T09:00:00.000Z\n`);
+    writeFileSync(path.join(root, 'assessments', 'sess-first.json'), JSON.stringify({ status: 'assessed' }));
+    return q;
+  };
+
+  it('a different sid in .used demotes done → ready and drops done_at', () => {
+    const root = scratch();
+    const pdir = path.join(root, 'p1');
+    const out = reconcileWithDisk(root, doneRow(root, pdir, 'sess-second')).items[0]!;
+    expect(out.session_id).toBe('sess-second');
+    expect(out.status).toBe('ready');
+    expect(out.done_at).toBeUndefined();
+  });
+
+  it('the same sid leaves a done row completely alone', () => {
+    const root = scratch();
+    const pdir = path.join(root, 'p1');
+    const out = reconcileWithDisk(root, doneRow(root, pdir, 'sess-first')).items[0]!;
+    expect(out.session_id).toBe('sess-first');
+    expect(out.status).toBe('done');
+    expect(out.done_at).toBe('2026-08-02'); // pinned, not recomputed
+  });
+
+  it('the repeat completes normally once the NEW assessment lands', () => {
+    const root = scratch();
+    const pdir = path.join(root, 'p1');
+    let q = reconcileWithDisk(root, doneRow(root, pdir, 'sess-second'));
+    expect(q.items[0]!.status).toBe('ready');
+
+    // A judge failure is not a verdict: the row stays live.
+    writeFileSync(
+      path.join(root, 'assessments', 'sess-second.json'),
+      JSON.stringify({ status: 'unassessed', reason: 'judge call failed' }),
+    );
+    expect(reconcileWithDisk(root, q).items[0]!.status).toBe('ready');
+
+    writeFileSync(
+      path.join(root, 'assessments', 'sess-second.json'),
+      JSON.stringify({ status: 'assessed' }),
+    );
+    q = reconcileWithDisk(root, q);
+    expect(q.items[0]!.status).toBe('done');
+    expect(q.items[0]!.session_id).toBe('sess-second');
+    expect(q.items[0]!.done_at).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it('an empty first line never clobbers a completed row', () => {
+    const root = scratch();
+    const pdir = path.join(root, 'p1');
+    const q = doneRow(root, pdir, '');
+    const out = reconcileWithDisk(root, q).items[0]!;
+    expect(out.session_id).toBe('sess-first');
+    expect(out.status).toBe('done');
   });
 });
 

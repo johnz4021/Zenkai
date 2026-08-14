@@ -212,6 +212,7 @@ export function proposeQueue(target: Target, now: number, perWeek: number = DEFA
  *   problem_dir/.validated exists      generating → ready
  *   problem_dir/.failed (no .validated) generating → failed (retryable)
  *   problem_dir/.used exists           its session started → session_id
+ *   .used names a DIFFERENT session    done → ready, re-pointed (a repeat)
  *   assessments/<session>.json exists  → done (+ done_at from file mtime)
  */
 export function reconcileWithDisk(root: string, queue: Queue): Queue {
@@ -227,8 +228,22 @@ export function reconcileWithDisk(root: string, queue: Queue): Queue {
       }
     }
     const usedFile = path.join(dir, '.used');
-    if ((item.status === 'ready' || item.status === 'generating') && existsSync(usedFile)) {
-      item.session_id = readFileSync(usedFile, 'utf8').split('\n')[0];
+    if (existsSync(usedFile)) {
+      const latest = readFileSync(usedFile, 'utf8').split('\n')[0];
+      if (item.status === 'ready' || item.status === 'generating') {
+        item.session_id = latest;
+      } else if (item.status === 'done' && latest && latest !== item.session_id) {
+        // Repeat sessions ("practice again") overwrite `.used` with the NEW
+        // sid, so a done row whose stored sid no longer matches disk is a
+        // re-run in flight: the newest run owns the row. Re-point and DEMOTE
+        // (done → ready, done_at dropped); the block below re-derives done
+        // when the new assessment lands. This is the one place reconciliation
+        // moves an item BACKWARD — TODOS #53's forward-only concern, narrowed
+        // to the case disk unambiguously proves.
+        item.session_id = latest;
+        item.status = 'ready';
+        delete item.done_at;
+      }
     }
     if (item.session_id && item.status !== 'done') {
       const assessment = path.join(root, 'assessments', `${item.session_id}.json`);

@@ -694,13 +694,17 @@ describe('launch origin — the falsifier is durable, not scrollback', () => {
   it('every call site names its origin; nothing defaults', () => {
     expect(js).toMatch(/origin: 'plans'/);
     expect(js).toMatch(/origin: 'practice'/);
+    expect(js).toMatch(/origin: 'repeat'/);
   });
 
-  it('both handlers log to launches.jsonl with a sanitized origin', () => {
+  it('all three handlers log to launches.jsonl with a sanitized origin', () => {
     expect(appSource).toContain('launches.jsonl');
-    expect(appSource).toMatch(/origin === 'plans' \|\| origin === 'practice' \? origin : 'unknown'/);
-    // one logLaunch per handler, after the session id exists
-    expect(appSource.match(/logLaunch\(b\.origin, sessionId\)/g)).toHaveLength(2);
+    expect(appSource).toMatch(
+      /origin === 'repeat' \|\| origin === 'plans' \|\| origin === 'practice' \? origin : 'unknown'/,
+    );
+    // one logLaunch per legacy handler (launch, queue-launch, repeat), after
+    // the session id exists; the multi paths log via out.body.session_id
+    expect(appSource.match(/logLaunch\(b\.origin, sessionId\)/g)).toHaveLength(3);
   });
 });
 

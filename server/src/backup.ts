@@ -1,7 +1,7 @@
 /**
  * Off-box backup of the data that cannot be regenerated.
  *
- *   gaps/ topics/ traces/ feedback/ targets/ assessments/ reps.json
+ *   gaps/ topics/ traces/ feedback/ targets/ assessments/ reps.json reps/
  *        │  tar -czf (excludes node_modules, __pycache__, snapshots)
  *        ▼
  *   Supabase Storage: zenkai-backups/zenkai-<ISO>.tar.gz
@@ -41,6 +41,7 @@ export const BACKUP_PATHS = [
   'assessments', // git-tracked too, but cheap and keeps a restore self-contained
   'targets',     // plans, queues, blueprints, learnings.md
   'reps.json',   // the practice-door index
+  'reps',        // consumed artifacts are irreplaceable (generation is nondeterministic); pristine tarballs + run-tree archives live here
 ] as const;
 
 /** Bulk that is regenerable or machine-local — never worth the bytes. */

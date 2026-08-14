@@ -3,7 +3,7 @@
  * is never age-reaped (TODOS #27), and an ungraded round is never touched —
  * a crashed session's problem dir must stay runnable and rejudgeable.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -60,6 +60,9 @@ describe('gather + apply against a real temp dir', () => {
   let root: string;
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
+  /** The REAL on-disk shape: `.used` is two lines, `sid\nISO\n` (pool.ts:56-58). */
+  const USED = (sid: string) => `${sid}\n2026-08-14T12:00:00.000Z\n`;
+
   it('facts reflect disk; slim keeps exactly the survivors', () => {
     root = mkdtempSync(path.join(tmpdir(), 'retention-'));
     const dir = path.join(root, 'reps', 'rep-x', 'problem');
@@ -67,7 +70,11 @@ describe('gather + apply against a real temp dir', () => {
     mkdirSync(path.join(dir, 'src'), { recursive: true });
     writeFileSync(path.join(dir, 'problem.json'), '{}');
     writeFileSync(path.join(dir, '.validated'), '');
-    writeFileSync(path.join(dir, '.used'), 'sess-123');
+    writeFileSync(path.join(dir, '.used'), USED('sess-123'));
+    writeFileSync(path.join(dir, '.runs.jsonl'), '{"session_id":"sess-123"}\n');
+    // Pristine archive: a SIBLING of the problem dir, outside everything slim touches.
+    const pristine = path.join(root, 'reps', 'rep-x', 'problem.pristine.tar.gz');
+    writeFileSync(pristine, 'not-really-a-tarball');
     mkdirSync(path.join(root, 'assessments'), { recursive: true });
     mkdirSync(path.join(root, 'feedback'), { recursive: true });
     writeFileSync(path.join(root, 'assessments', 'sess-123.json'), '{}');
@@ -75,19 +82,25 @@ describe('gather + apply against a real temp dir', () => {
 
     const facts = gatherRepDiskFacts(root);
     expect(facts).toHaveLength(1);
+    // REGRESSION: `.trim()` left the ISO line attached, so this was ALWAYS
+    // false and neither reap pass had ever fired in production.
     expect(facts[0]).toMatchObject({ id: 'rep-x', graded: true, hasNodeModules: true, slimmed: false });
 
     applyReaping([{ kind: 'slim', id: 'rep-x', dir }]);
     const after = gatherRepDiskFacts(root)[0]!;
     expect(after.hasNodeModules).toBe(false);
     expect(after.slimmed).toBe(true); // only problem.json + markers left
+    // The ledger is a marker: history of every run survives the slim.
+    expect(readdirSync(dir).sort()).toEqual(['.runs.jsonl', '.used', '.validated', 'problem.json']);
+    // And repeatability survives: slim only deletes INSIDE problem/.
+    expect(existsSync(pristine)).toBe(true);
   });
 
   it('an unjudged .used session reads as ungraded', () => {
     root = mkdtempSync(path.join(tmpdir(), 'retention-'));
     const dir = path.join(root, 'reps', 'rep-y', 'problem');
     mkdirSync(dir, { recursive: true });
-    writeFileSync(path.join(dir, '.used'), 'sess-crashed');
+    writeFileSync(path.join(dir, '.used'), USED('sess-crashed'));
     expect(gatherRepDiskFacts(root)[0]!.graded).toBe(false);
   });
 });

@@ -1488,6 +1488,15 @@ async function launchRep(repId, btn) {
   await launchCommon('/api/practice/launch', { rep_id: repId, origin: 'practice' }, btn, 'Start session →');
 }
 
+/** "practice again" on a finished row — the SAME artifact, restored to its
+ *  pristine bytes server-side inside the launch critical section, so the
+ *  candidate never inherits their own edits. Boot semantics are launchCommon's
+ *  (identical to every other door); origin is its own value, never reused from
+ *  the first run, because the falsifier metric divides on it. */
+async function practiceAgain(repId, btn) {
+  await launchCommon('/api/practice/repeat', { rep_id: repId, origin: 'repeat' }, btn, 'practice again');
+}
+
 async function repRetry(repId, btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'Retrying…'; }
   const r = await fetch('/api/practice/retry', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rep_id: repId }) });
@@ -2067,13 +2076,21 @@ function renderHistory(state) {
       action = '<button type="button" class="mini repretry" data-rep="' + esc(x.id) + '">Retry</button>';
     } else if (x.status === 'done') {
       line = 'done' + (x.done_at ? ' · ' + fmtDate(x.done_at) : '');
-      if (x.session_id) action = feedbackToggle({ session_id: x.session_id });
+      // `repeatable` is the server's disk truth (a pristine archive or a
+      // pre-archive snapshot survives) — the button never appears where
+      // /api/practice/repeat would refuse. Hidden while a session is live for
+      // the same reason Start is: one round at a time.
+      if (x.repeatable && !state.session_live) {
+        action = '<button type="button" class="mini repagain" data-rep="' + esc(x.id) + '">practice again</button>';
+      }
+      if (x.session_id) action += feedbackToggle({ session_id: x.session_id });
     } else {
       line = x.status;
     }
     html += '<div class="reprow"><div class="grow"><b>' + esc(x.title || x.label) + '</b>' +
       '<div class="metaline">' + line + '</div>' +
       feedbackPanel({ session_id: x.session_id }) +
+      priorAttempts(x) +
       '</div>' + action + '</div>';
   }
   html += '</div>';
@@ -2081,6 +2098,9 @@ function renderHistory(state) {
   host.innerHTML = html;
   for (const b of host.querySelectorAll('.repstart')) {
     b.addEventListener('click', () => launchRep(b.dataset.rep, b));
+  }
+  for (const b of host.querySelectorAll('.repagain')) {
+    b.addEventListener('click', () => practiceAgain(b.dataset.rep, b));
   }
   for (const b of host.querySelectorAll('.repretry')) {
     b.addEventListener('click', () => repRetry(b.dataset.rep, b));
@@ -2298,6 +2318,36 @@ function feedbackToggle(i) {
   if (!i.session_id) return '';
   return ' <a href="#" class="fbtoggle" data-s="' + esc(i.session_id) + '">' +
     (openFeedback.has(i.session_id) ? 'hide feedback' : 'feedback') + '</a>';
+}
+
+/** Every earlier run of a repeated round, still readable. `runs` is the
+ *  append-only ledger, oldest→newest, so everything before the last row is
+ *  history — and a "practice again" that hid the previous card would READ as
+ *  erasure (the old sid's assessment is still on disk; only the row moved on).
+ *  Deliberately plain: the same feedbackToggle/feedbackPanel pair every other
+ *  finished row uses, so the per-sid cache and the `a.fbtoggle` wiring cover
+ *  these for free. */
+function priorAttempts(x) {
+  const runs = x.runs || [];
+  if (runs.length < 2) return '';
+  // The last run owns the row above; drop it, and drop the row's own sid
+  // defensively so one card never renders twice under two toggles.
+  // Numbering counts over the WHOLE ledger, so "attempt 1" stays the first run
+  // even if a row below is dropped.
+  const earlier = runs
+    .map((r, n) => ({ r, n }))
+    .slice(0, -1)
+    .filter(({ r }) => r && r.session_id && r.session_id !== x.session_id);
+  if (!earlier.length) return '';
+  const links = earlier.map(({ r, n }) => {
+    // run.at is a full ISO stamp; fmtDate reads the calendar day only, and a
+    // garbled one degrades to no date rather than rendering "NaN".
+    const day = String(r.at || '').slice(0, 10);
+    const when = /^\d{4}-\d{2}-\d{2}$/.test(day) ? ' (' + fmtDate(day) + ')' : '';
+    return esc('attempt ' + (n + 1) + when) + feedbackToggle({ session_id: r.session_id });
+  }).join(' · ');
+  return '<div class="metaline">earlier attempts: ' + links + '</div>' +
+    earlier.map(({ r }) => feedbackPanel({ session_id: r.session_id })).join('');
 }
 
 function feedbackPanel(i) {

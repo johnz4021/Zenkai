@@ -49,6 +49,9 @@ describe('BACKUP_PATHS', () => {
     expect(BACKUP_PATHS).toContain('gaps');    // not mirrored to Postgres
     expect(BACKUP_PATHS).toContain('topics');  // not mirrored to Postgres
     expect(BACKUP_PATHS).toContain('traces');
+    // reps/ holds consumed problem artifacts and their pristine tarballs —
+    // generation is nondeterministic, so a lost artifact is lost forever.
+    expect(BACKUP_PATHS).toContain('reps');
     expect(BACKUP_PATHS as readonly string[]).not.toContain('.env');
     expect(BACKUP_PATHS as readonly string[]).not.toContain('datasets'); // regenerable
     expect(BACKUP_PATHS as readonly string[]).not.toContain('problems'); // regenerable
