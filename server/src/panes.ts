@@ -89,6 +89,42 @@ export function summarizeTail(tail: string): string {
   return lines.slice(-2).join(' — ');
 }
 
+/**
+ * Pass/fail counts from a run's output tail. Parses the SUMMARY lines only
+ * — the tail is capped at 4000 chars, which can truncate per-test lines but
+ * never the trailing summary. Recognizes:
+ *   unittest:  "Ran 16 tests in 0.01s" + "OK" | "FAILED (failures=3, errors=2)"
+ *   vitest:    "Tests  3 failed | 5 passed (8)" | "Tests  8 passed (8)"
+ * Null when neither pattern is present — callers omit counts rather than
+ * guess, and the timeline falls back to the binary PASSED/FAILED line.
+ * Why: on one-shot rounds the graded run is the ONLY signal; without counts
+ * the judge cannot tell 15/16 from 0/16 (renderer v3).
+ */
+export function parseRunCounts(tail: string): { total: number; passed: number; failed: number } | null {
+  const ran = tail.match(/^Ran (\d+) tests? in /m);
+  if (ran) {
+    const total = Number(ran[1]);
+    if (/^OK\b/m.test(tail)) return { total, passed: total, failed: 0 };
+    const verdict = tail.match(/^FAILED \(([^)]*)\)/m);
+    if (!verdict) return null; // truncated or still running — do not guess
+    let failed = 0;
+    for (const m of verdict[1]!.matchAll(/(?:failures|errors)=(\d+)/g)) failed += Number(m[1]);
+    if (failed === 0) return null; // "FAILED (skipped=…)" shapes prove nothing
+    return { total, passed: Math.max(0, total - failed), failed };
+  }
+  const vt = tail.match(/^\s*Tests\s+(?:(\d+) failed \| )?(\d+) passed \((\d+)\)/m);
+  if (vt) {
+    const failed = Number(vt[1] ?? 0);
+    const passed = Number(vt[2]);
+    return { total: Number(vt[3]), passed, failed };
+  }
+  const vtAllFail = tail.match(/^\s*Tests\s+(\d+) failed \((\d+)\)/m);
+  if (vtAllFail) {
+    return { total: Number(vtAllFail[2]), passed: Number(vtAllFail[2]) - Number(vtAllFail[1]), failed: Number(vtAllFail[1]) };
+  }
+  return null;
+}
+
 export type RunRejection = 'no_runs' | 'one_shot' | 'ended' | 'busy';
 
 /**
@@ -97,6 +133,38 @@ export type RunRejection = 'no_runs' | 'one_shot' | 'ended' | 'busy';
  * keeps the panes Run route from quietly reintroducing iteration into
  * rounds whose whole point is that you cannot iterate.
  */
+/**
+ * Files a candidate could drop at the workspace ROOT to hijack the graded
+ * run without ever touching tests/.
+ *
+ *   graded run:  cd <workspace> && <test_command>
+ *                        │
+ *                        └─ python puts CWD on sys.path for `-m`, so a
+ *                           root-level unittest.py IS the `unittest` the
+ *                           runner imports; vitest reads its config from
+ *                           CWD; python auto-imports sitecustomize.
+ *
+ * QA 2026-08-14 fix-verification: the one-shot read-only block covered
+ * tests/ and cases*.json, and a root-level unittest.py still forced a green
+ * graded suite (demonstrated end to end). Root level only — a nested copy is
+ * never the one that gets imported. Exported for tests.
+ */
+const RUNNER_SHADOWS = new Set([
+  'unittest.py',
+  'pytest.py',
+  'conftest.py',
+  'sitecustomize.py',
+  'usercustomize.py',
+  'vitest.config.ts',
+  'vitest.config.js',
+  'vitest.config.mjs',
+]);
+
+export function shadowsTestRunner(relPath: string): boolean {
+  if (relPath.includes(path.sep)) return false; // only CWD shadows the runner
+  return RUNNER_SHADOWS.has(relPath.toLowerCase());
+}
+
 export function runGuard(
   caps: RoundCapabilities,
   ended: boolean,

@@ -16,19 +16,53 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateRoundSpec, type GeneratedProblem, type RoundSpec } from '@interview-prep/shared';
-import { listTargets, loadTarget, pickSpecInferrer, saveTarget, slugify, targetDir, type SpecDraft, type Target } from './intake.js';
+import { isDimensionKey, validateRoundSpec, type GeneratedProblem, type RoundSpec } from '@interview-prep/shared';
+import { ATTACHMENT_MEDIA_TYPES, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, listTargets, loadTarget, pickSpecInferrer, saveTarget, slugify, targetDir, type SpecDraft, type Target } from './intake.js';
 import { bucketIntoDays, loadQueue, nextUp, proposeQueue, reconcileWithDisk, repace, saveQueue, type Queue, type QueueItem } from './queue.js';
 import { buildGraphView, gapDescription, loadStore } from './gap-graph.js';
+import { mergeConfirm } from './feedback.js';
+import { loadTopicLog, rollupTopics } from './topic-log.js';
 import { applyAdaptation, pickAdapter, planAdaptation, reconcileAdaptation, retiredSpecIds, type AdaptDiff } from './adapt.js';
 import { appendLearnings, gateBlueprint, loadBlueprint, writeBlueprintWithBackup } from './blueprint.js';
 import { clearGeneratingMarker, generationProgress, pidAlive, readGeneratingMarker, sweepVerdict, writeGeneratingMarker } from './generation-state.js';
 import { pickTopicNamer } from './plan-topics.js';
 import { clientScript } from './chrome.js';
+import { authConfigFromPublic, makeAuth } from './auth.js';
+import { childEnv } from './child-env.js';
+import { makeDb, repRow, sessionRow, targetRow, type SessionRow } from './db.js';
+import { applyReaping, gatherRepDiskFacts, planReaping } from './retention.js';
+import { makeSessionRouter } from './session-router.js';
+import { applySessionSweep, listSessionContainers, planSessionSweep } from './session-sweep.js';
+import {
+  allocateSlot,
+  launchVerdict2,
+  loadRegistry,
+  newSessionId,
+  reconcileEntries,
+  saveRegistry,
+} from './session-registry.js';
+import type { PublicConfig } from './public-config.js';
+import {
+  acquireRepLock,
+  admissionVerdict,
+  createRepRecord,
+  repOwnedBy,
+  repsVisibleTo,
+  gateRepInput,
+  launchVerdict,
+  loadReps,
+  REP_ID_RE,
+  repProblemDir,
+  repStateView,
+  retryVerdict,
+  saveReps,
+  sweepReps,
+  type Rep,
+} from './reps.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
@@ -37,6 +71,8 @@ export interface AppConfig {
   port: number;
   sessionPort: number;
   userId: string;
+  /** Browser-facing origins + beta knobs; resolvePublicConfig({}) ≡ pre-beta. */
+  pub: PublicConfig;
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {
@@ -52,24 +88,62 @@ function readBody(req: http.IncomingMessage): Promise<string> {
  *  graded session's server lingers to keep serving the card, and treating
  *  its 200 as "live" soft-locked every future launch. Probed, never
  *  remembered. */
-function probeSession(port: number): Promise<{ reachable: boolean; ended: boolean }> {
+/**
+ * Multi-session manager (WU-D, TODOS #22). Registry on disk is truth; every
+ * read reconciles against live probes + pids, same discipline as the queue's
+ * marker files. Launches serialize behind a promise mutex: verdict →
+ * allocate → spawn → append+persist runs with NO awaits between allocate and
+ * persist, so two concurrent launches cannot pick one slot — and the entry
+ * always exists before the container it names is born (the orphan-container
+ * sweep depends on that ordering).
+ */
+let launchChain: Promise<void> = Promise.resolve();
+
+async function reconcileRegistryNow(): Promise<import('./session-registry.js').Registry> {
+  const reg = loadRegistry(repoRoot);
+  const probes = new Map<string, import('./session-registry.js').ProbeResult>();
+  await Promise.all(
+    reg.entries.map(async (e) => {
+      const p = await probeSession(e.port);
+      probes.set(e.sid, { reachable: p.reachable, ended: p.ended, session_id: p.session_id });
+    }),
+  );
+  const out = reconcileEntries(reg.entries, probes, pidAlive, Date.now());
+  if (out.changed) saveRegistry(repoRoot, { entries: out.entries });
+  return { entries: out.entries };
+}
+
+/** Server-to-server auth for the session probes below. Set once in runApp;
+ *  stable across app restarts (derived, not random) so a session spawned by
+ *  a previous app process still honors it. */
+let internalHeaders: Record<string, string> = {};
+/** The pre-beta/local owner id (cfg.userId), for the module-level spawn
+ *  helpers that run outside runApp's closure. Set once in runApp. */
+let legacyUserId = 'u1';
+
+function probeSession(port: number): Promise<{ reachable: boolean; ended: boolean; session_id: string | null; user_id: string | null }> {
   return new Promise((resolve) => {
-    const r = http.get({ host: '127.0.0.1', port, path: '/api/status', timeout: 1_000 }, (res) => {
+    const r = http.get({ host: '127.0.0.1', port, path: '/api/status', timeout: 1_000, headers: internalHeaders }, (res) => {
       let body = '';
       res.on('data', (d) => (body += d));
       res.on('end', () => {
         try {
-          const parsed = JSON.parse(body) as { ended?: boolean };
-          resolve({ reachable: res.statusCode === 200, ended: Boolean(parsed.ended) });
+          const parsed = JSON.parse(body) as { ended?: boolean; session_id?: string; user_id?: string };
+          resolve({
+            reachable: res.statusCode === 200,
+            ended: Boolean(parsed.ended),
+            session_id: parsed.session_id ?? null,
+            user_id: parsed.user_id ?? null,
+          });
         } catch {
-          resolve({ reachable: res.statusCode === 200, ended: false });
+          resolve({ reachable: res.statusCode === 200, ended: false, session_id: null, user_id: null });
         }
       });
     });
-    r.on('error', () => resolve({ reachable: false, ended: false }));
+    r.on('error', () => resolve({ reachable: false, ended: false, session_id: null, user_id: null }));
     r.on('timeout', () => {
       r.destroy();
-      resolve({ reachable: false, ended: false });
+      resolve({ reachable: false, ended: false, session_id: null, user_id: null });
     });
   });
 }
@@ -80,11 +154,34 @@ async function sessionLive(port: number): Promise<boolean> {
   return p.reachable && !p.ended;
 }
 
+/** The live session's owner (session /api/status user_id), or null when no
+ *  session answers / the field is absent (pre-beta session process). */
+function probeSessionOwner(port: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    const r = http.get({ host: '127.0.0.1', port, path: '/api/status', timeout: 1_000, headers: internalHeaders }, (res) => {
+      let body = '';
+      res.on('data', (d) => (body += d));
+      res.on('end', () => {
+        try {
+          resolve(((JSON.parse(body) as { user_id?: string }).user_id) ?? null);
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+    r.on('error', () => resolve(null));
+    r.on('timeout', () => {
+      r.destroy();
+      resolve(null);
+    });
+  });
+}
+
 /** POST to the session server; ok=false on any failure. */
 function postSession(port: number, apiPath: string): Promise<{ ok: boolean }> {
   return new Promise((resolve) => {
     const r = http.request(
-      { host: '127.0.0.1', port, path: apiPath, method: 'POST', timeout: 5_000 },
+      { host: '127.0.0.1', port, path: apiPath, method: 'POST', timeout: 5_000, headers: internalHeaders },
       (res) => {
         res.resume();
         res.on('end', () => resolve({ ok: (res.statusCode ?? 500) < 300 }));
@@ -104,30 +201,158 @@ function postSession(port: number, apiPath: string): Promise<{ ok: boolean }> {
  *  stays on disk (.validated / .failed markers). */
 const liveGenerations = new Set<string>();
 
-function spawnDetached(args: string[], env: Record<string, string> = {}): void {
+/** The soonest date any of this target's rounds happens — spec dates first,
+ *  the target's single date as fallback. Drives index ordering. */
+function nearestDeadline(t: {
+  interview_date?: string | null;
+  specs: { date?: string | null }[];
+}): string | undefined {
+  let min: string | undefined;
+  for (const s of t.specs) {
+    const d = s.date ?? t.interview_date;
+    if (d && (!min || d < min)) min = d;
+  }
+  return min ?? t.interview_date ?? undefined;
+}
+
+/** Attachment validation shared by /api/target and /api/practice/clarify:
+ *  count, media-type allowlist, non-empty, 10MB cap, name trimmed. Byte-
+ *  identical to the original /api/target loop it was extracted from. */
+function decodeAttachments(
+  incoming: { name?: string; media_type?: string; data?: string }[],
+): { decoded: { name: string; media_type: string; bytes: Buffer }[] } | { error: string } {
+  if (incoming.length > MAX_ATTACHMENTS) {
+    return { error: `${incoming.length} attachments — max ${MAX_ATTACHMENTS}` };
+  }
+  const decoded: { name: string; media_type: string; bytes: Buffer }[] = [];
+  for (const a of incoming) {
+    const mediaType = a.media_type ?? '';
+    if (!ATTACHMENT_MEDIA_TYPES.has(mediaType)) {
+      return { error: `"${a.name ?? 'file'}": unsupported type ${mediaType || '(none)'} — images and PDFs only` };
+    }
+    const bytes = Buffer.from(a.data ?? '', 'base64');
+    if (bytes.length === 0) return { error: `"${a.name ?? 'file'}" is empty` };
+    if (bytes.length > MAX_ATTACHMENT_BYTES) {
+      return { error: `"${a.name ?? 'file'}" is ${Math.round(bytes.length / 1024 / 1024)}MB — max 10MB` };
+    }
+    decoded.push({ name: (a.name ?? 'attachment').slice(0, 120), media_type: mediaType, bytes });
+  }
+  return { decoded };
+}
+
+/** The typed content blocks attachmentBlocks() builds from a target's disk —
+ *  built here straight from request memory instead: reps never persist
+ *  attachments (no re-draft path exists to re-read them). */
+function attachmentBlocksFromDecoded(
+  decoded: { name: string; media_type: string; bytes: Buffer }[],
+): Record<string, unknown>[] {
+  return decoded.map((d) =>
+    d.media_type === 'application/pdf'
+      ? {
+          type: 'document',
+          source: { type: 'base64', media_type: 'application/pdf', data: d.bytes.toString('base64') },
+          title: d.name,
+          citations: { enabled: true },
+        }
+      : {
+          type: 'image',
+          source: { type: 'base64', media_type: d.media_type, data: d.bytes.toString('base64') },
+        },
+  );
+}
+
+/** One durable line per session launch — the falsifier's data (2026-08-10
+ *  CEO review: if plan-queue launches dominate, the composer landing is
+ *  optimizing for the wrong user). Origin is sanitized to the two call-site
+ *  values; console scrollback is not a metric, a JSONL file is. */
+function logLaunch(origin: unknown, sessionId: string): void {
+  const o = origin === 'plans' || origin === 'practice' ? origin : 'unknown';
+  try {
+    appendFileSync(
+      path.join(repoRoot, 'launches.jsonl'),
+      JSON.stringify({ ts: new Date().toISOString(), origin: o, session_id: sessionId }) + '\n',
+    );
+  } catch {
+    /* metrics never block a launch */
+  }
+}
+
+function spawnDetached(args: string[], env: Record<string, string> = {}): number | null {
+  // Diagnostics used to vanish with stdio:'ignore': an app-launched round's
+  // [interviewer]/[intent]/judge failures left nothing on disk to read (QA
+  // 2026-08-14 — a silent interviewer was undiagnosable without relaunching
+  // from a terminal). One log per spawn under .ide-data/logs, named by the
+  // session when the env names one. Best-effort: never blocks a launch.
+  let out: number | 'ignore' = 'ignore';
+  try {
+    const logDir = path.join(repoRoot, '.ide-data', 'logs');
+    mkdirSync(logDir, { recursive: true });
+    out = openSync(path.join(logDir, `${env.IP_SESSION_ID ?? `${args[0] ?? 'spawn'}-${Date.now()}`}.log`), 'w');
+  } catch { /* fall back to ignore */ }
   const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), ...args], {
     cwd: repoRoot,
     detached: true,
-    stdio: 'ignore',
-    env: { ...process.env, ...env },
+    stdio: ['ignore', out, out],
+    // WU8: sessions need both API keys; the DB service key reaches no child.
+    env: childEnv('session', process.env, env),
   });
   child.unref();
+  if (typeof out === 'number') {
+    try { closeSync(out); } catch { /* child holds its own copy */ }
+  }
+  return child.pid ?? null;
+}
+
+/** Build output goes to `<dir>.build.log` — BESIDE the problem dir, never
+ *  inside it: the dir reaches the candidate's IDE and generation output
+ *  discusses the planted bug. Truncated per attempt so the log is always
+ *  the latest build's. Forced by rep-msnrmt0d (2026-08-10): a build died
+ *  partway with stdio ignored and left nothing to diagnose. */
+function openBuildLog(dir: string): number {
+  return openSync(dir + '.build.log', 'w');
 }
 
 /** Generation spawn with failure bookkeeping: a non-zero exit writes a
  *  .failed marker into the item dir so reconcile derives `failed` and the
  *  timeline can offer retry — a silent stuck "generating" row was the
  *  design review's exact never-silent rule. */
+/** Builds generating RIGHT NOW across reps and every target queue —
+ *  disk-derived (markers via reconcile), never from memory, so an app
+ *  restart can't forget a detached opus run when enforcing the cap. */
+function countLiveBuilds(): number {
+  let n = 0;
+  try {
+    const reps = reconcileWithDisk(repoRoot, loadReps(repoRoot)) as ReturnType<typeof loadReps>;
+    n += reps.items.filter((i) => i.status === 'generating').length;
+  } catch { /* unreadable reps file: count what we can */ }
+  for (const t of listTargets(repoRoot)) {
+    try {
+      const q = loadQueue(repoRoot, t.id);
+      if (q) n += reconcileWithDisk(repoRoot, q).items.filter((i) => i.status === 'generating').length;
+    } catch { /* skip a broken queue, never block the gate on it */ }
+  }
+  return n;
+}
+
 function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
   const args = ['generate-for', target.id, item.spec_id, '--into', dir];
-  if (item.planned_title) args.push('--title', item.planned_title);
+  // Sourced items skip --title: the LC title must not become the manifest
+  // title in skinned mode (the title-commitment line would defeat the skin);
+  // the generator names its own skin instead. Sets ride as comma slugs, in
+  // part order (escalation already applied by the binder).
+  if (item.source?.kind === 'leetcode') {
+    const slugs = (item.source.parts ?? [item.source]).map((p) => p.slug).join(',');
+    args.push('--source', `lc:${slugs}`);
+  } else if (item.planned_title) args.push('--title', item.planned_title);
   liveGenerations.add(dir);
   mkdirSync(dir, { recursive: true });
+  const logFd = openBuildLog(dir);
   const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), ...args], {
     cwd: repoRoot,
     detached: true,
-    stdio: 'ignore',
-    env: { ...process.env },
+    stdio: ['ignore', logFd, logFd],
+    // The generator's targeting note reads the OWNER's gap graph.
+    env: childEnv('generator', process.env, { IP_USER_ID: target.user_id ?? legacyUserId }),
   });
   child.unref();
   // Disk-derived liveness (ISSUE-003): the marker carries {pid, started_at}
@@ -135,11 +360,43 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
   // orphan — and the UI gets an honest start time.
   if (child.pid) writeGeneratingMarker(dir, child.pid);
   child.on('close', (code) => {
+    closeSync(logFd);
     liveGenerations.delete(dir);
     clearGeneratingMarker(dir);
     if (code !== 0 && !existsSync(path.join(dir, '.validated'))) {
-      writeFileSync(path.join(dir, '.failed'), `exit ${code} at ${new Date().toISOString()}\n`);
+      writeFileSync(path.join(dir, '.failed'), `exit ${code} at ${new Date().toISOString()}; output in ${dir}.build.log\n`);
       console.warn(`[app] generation failed for ${item.id} (exit ${code})`);
+    }
+  });
+}
+
+/** Rep build spawn — same failure bookkeeping as spawnGeneration, but the
+ *  child is `rep-build` (drafts the blueprint, then generates) and the log
+ *  lines are rep-shaped: a rep has no target/item pair to interpolate. */
+function spawnRepBuild(rep: Rep): void {
+  const dir = repProblemDir(repoRoot, rep.id);
+  liveGenerations.add(dir);
+  mkdirSync(dir, { recursive: true });
+  const logFd = openBuildLog(dir);
+  const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), 'rep-build', rep.id], {
+    cwd: repoRoot,
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+    // The rep creator's gap graph steers the blueprint's emphasis.
+    env: childEnv('generator', process.env, { IP_USER_ID: rep.user_id ?? legacyUserId }),
+  });
+  child.unref();
+  // Marker at REQUEST time with the child's pid — drafting happens inside
+  // this child, so one pid honestly covers both phases and the wait UI's
+  // elapsed includes the ~30s draft (design decision 4A/T6).
+  if (child.pid) writeGeneratingMarker(dir, child.pid);
+  child.on('close', (code) => {
+    closeSync(logFd);
+    liveGenerations.delete(dir);
+    clearGeneratingMarker(dir);
+    if (code !== 0 && !existsSync(path.join(dir, '.validated')) && !existsSync(path.join(dir, '.failed'))) {
+      writeFileSync(path.join(dir, '.failed'), `exit ${code} at ${new Date().toISOString()}; output in ${dir}.build.log\n`);
+      console.warn(`[app] rep ${rep.id} build failed (exit ${code})`);
     }
   });
 }
@@ -175,12 +432,42 @@ function sweepOrphanedGenerations(isAlive: (pid: number) => boolean = pidAlive):
       }
     }
   }
+  // The reps half: same verdicts, rep-shaped logs. Without this loop a rep
+  // orphaned by a restart would show "building" forever — the exact failure
+  // class generation-state.ts was written to kill, reintroduced through a
+  // door the sweep never knew about (CEO review GAP 1A).
+  for (const line of sweepReps(repoRoot, loadReps(repoRoot), isAlive, liveGenerations)) {
+    console.warn(line);
+  }
 }
 
 /** Display title for an item: the generated problem's own name wins, the
  *  planned title promises it, the spec's first sentence is the legacy
  *  fallback. Never the "label — round N" string (the twelve-identical-rows
  *  bug the redesign exists to kill). */
+/** Post-namer net (2026-08-13): a title that names a real problem both
+ *  spoils the round pre-launch and drags that problem's difficulty into the
+ *  build commitment against the blueprint's ("Two sum — hash table lookup"
+ *  vs "LeetCode-medium", sess-1786643587196). Offenders become undefined —
+ *  that item alone goes quiet — the rest land. Dataset absent = no check. */
+async function stripSpoilerTitles(titles: string[]): Promise<(string | undefined)[]> {
+  try {
+    const lc = await import('./lc-source.js');
+    if (!lc.lcReady(repoRoot).ok) return titles;
+    const { titleSpoilsProblem } = await import('./lc-refs.js');
+    const index = lc.loadLcIndex(repoRoot);
+    return titles.map((title) => {
+      if (titleSpoilsProblem(title, index)) {
+        console.warn(`[app] title "${title}" names a real problem — dropped (quiet row)`);
+        return undefined;
+      }
+      return title;
+    });
+  } catch {
+    return titles;
+  }
+}
+
 function resolveTitle(item: QueueItem): string | null {
   if (item.problem_dir) {
     const dir = path.isAbsolute(item.problem_dir) ? item.problem_dir : path.join(repoRoot, item.problem_dir);
@@ -195,6 +482,24 @@ function resolveTitle(item: QueueItem): string | null {
         /* half-written manifest mid-generation */
       }
     }
+  }
+  // A bound-but-unbuilt item: display follows provenance. The candidate
+  // NAMED a user pick, so its real title is theirs to see; an auto pick
+  // stays hidden — the reskin is what keeps the round fresh, and the plan
+  // view is read the night before.
+  if (item.source) {
+    const parts = item.source.parts ?? [item.source];
+    const named = parts.filter((p) => p.picked_by === 'user');
+    if (parts.length === 1) {
+      return item.source.picked_by === 'user'
+        ? `${item.source.title} · ${item.source.difficulty} · from the real set`
+        : `sourced · ${item.source.difficulty} — hidden until the round`;
+    }
+    if (named.length) {
+      const extra = parts.length - named.length;
+      return `${named.map((p) => p.title).join(', ')}${extra ? ` + ${extra} more` : ''} · from the real set`;
+    }
+    return `${parts.length} from the real set — hidden until the round`;
   }
   return item.planned_title ?? null;
 }
@@ -239,51 +544,52 @@ export function appPage(): string {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Zenkai</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64' fill='none'%3E%3Crect width='64' height='64' fill='%2317171a'/%3E%3Ccircle cx='32' cy='32' r='24' stroke='%230088b0' stroke-width='8' stroke-dasharray='118 33'/%3E%3Cpath d='M18 46 L52 12' stroke='%23e6e6ea' stroke-width='8'/%3E%3Cpath d='M40 12 L52 12 L52 24' stroke='%23e6e6ea' stroke-width='8' stroke-linejoin='miter'/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%230e0e0f'/%3E%3Cpath d='M42.8 56 L18.5 56 L19.85 42.5 L44.15 21.5 L36.5 42.5 L53.6 42.5 Z' fill='%23bf2b50'/%3E%3Cpath d='M19.85 42.5 L44.15 21.5 L36.5 42.5 Z' fill='%2399203f'/%3E%3Cpath d='M21.2 8 L45.5 8 L44.15 21.5 L19.85 42.5 L27.5 21.5 L10.4 21.5 Z' fill='%235099c2'/%3E%3Cpath d='M44.15 21.5 L19.85 42.5 L27.5 21.5 Z' fill='%2338708f'/%3E%3Cpath d='M44.15 21.5 L19.85 42.5' stroke='%230e0e0f' stroke-width='1.5'/%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Source+Serif+4:opsz,wght@8..60,600&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
 <style>
   :root {
-    /* Brand plates, exactly as drawn on the identity sheet (Direction 2). */
-    --plate-cyan: #0088b0; --plate-mag: #d6006c;
-    /* UI derivations: both plates lifted for contrast on the dark ground.
-       Cyan is the FORWARD axis (today, action, the interview itself);
-       magenta is the ATTENTION axis (your gap, failures). Green still
-       owns "done" — neither plate can carry completion. */
-    --accent: #17a9d4; --accent-dim: rgba(23, 169, 212, .35);
-    --mag: #e82b86; --mag-dim: rgba(232, 43, 134, .3);
-    --line: #2a2a2e; --line-soft: #232327;
-    --dim: #9a9aa2; --bright: #e6e6ea; --ok: #4caf7d;
-    --bg: #17171a;
+    /* Graphite Steel (direction 3a). Brand plates survive at full saturation —
+       the ONLY branded pixels in a monochrome shell. The mark is one ribbon
+       folded into a Z, so each plate ships a lit face and the fold behind it;
+       the pair is what makes the mark read as folded rather than drawn. */
+    --plate-blue: #5099c2; --plate-blue-fold: #38708f;
+    --plate-red: #bf2b50;  --plate-red-fold: #99203f;
+    /* Ground: one tone-step per layer, no elevation. */
+    --bg: #0e0e0f; --panel: #151517; --raised: #1d1e20; --sunk: #131314;
+    --text-1: #f4f4f5; --text-2: #96979b; --text-3: #66676b;
+    --line: #292a2c; --line-soft: #1c1c1e; --rule: #191919;
+    /* Steel marks TIME and POSITION — never action, never grade, never identity. */
+    --steel: #35708f; --steel-text: #7ea9c2;
+    /* Grades: the only other saturation on screen. Shape backs up hue (■/◆/▫). */
+    --ok: #5f9e7a; --weak: #e82b86; --weak-text: #ff6fae; --none: #4a4b4f;
+    --mono: 'JetBrains Mono', ui-monospace, monospace;
     --rail: 93px; /* x of the timeline spine: date col 74 + gap 14 + dot half */
   }
   * { box-sizing: border-box; }
+  /* The hidden attribute is only a UA display:none, so ANY display rule of our
+     own outranks it and the "hidden" element keeps its box. #practice carries
+     display:flex to center its hero, which meant a hidden #practice still held
+     411px above the login screen on the live box. Every route toggle in the
+     client sets .hidden, so one specificity slip anywhere silently strands
+     content on screen — this makes the attribute mean what it says.
+     (No backticks in this block: the stylesheet is a TS template literal.) */
+  [hidden] { display: none !important; }
   html { background: var(--bg); }
   body {
     margin: 0 auto; max-width: 760px; padding: 40px 20px 64px;
-    font: 13px/1.55 'IBM Plex Mono', ui-monospace, monospace;
-    background: var(--bg); color: var(--bright);
+    font: 14px/1.55 'Archivo', system-ui, sans-serif;
+    background: var(--bg); color: var(--text-1);
     min-height: 100vh;
   }
-  /* Atmosphere: a faint violet aura at the crown and film grain over the
-     field — depth without decoration; both invisible until you look. */
-  body::before {
-    content: ''; position: fixed; inset: 0; pointer-events: none; z-index: -1;
-    background: radial-gradient(60% 40% at 50% -10%, rgba(23, 169, 212, .07), transparent 70%);
-  }
-  body::after {
-    content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 9;
-    opacity: .035; mix-blend-mode: overlay;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
-  }
-  ::selection { background: var(--accent); color: #fff; }
+  ::selection { background: var(--steel); color: #fff; }
 
-  .micro { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .18em; color: var(--dim); margin: 0 0 18px; }
-  .meta { color: var(--dim); }
-  .err { color: var(--mag); }
+  .micro { font-family: var(--mono); font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .18em; color: var(--text-3); margin: 0 0 18px; }
+  .meta { color: var(--text-2); }
+  .err { color: var(--weak-text); }
   a { color: inherit; }
-  /* ---- masthead: the one persistent chrome, sticky over the grain ---- */
+  /* ---- masthead: the one persistent chrome ---- */
   nav {
     display: flex; justify-content: space-between; align-items: center;
     gap: 16px; margin: 0 -20px 30px; padding: 0 20px 16px;
@@ -291,32 +597,198 @@ export function appPage(): string {
     background: var(--bg); border-bottom: 1px solid var(--line-soft);
   }
   nav a { text-decoration: none; }
-  /* Lockup: mark and wordmark side by side (identity sheet, Direction 2).
-     The wordmark is the one serif in the product - an editorial voice
-     against the instrument's monospace chrome. */
-  .brand { display: flex; align-items: center; gap: 13px; }
-  .brand svg { display: block; overflow: visible; }
-  .brand .plate-mag { stroke: var(--plate-mag); }
-  .brand .plate-cyan { stroke: var(--plate-cyan); }
-  .brand .vector { stroke: var(--bright); }  /* reversed for the dark ground, per the sheet's own reversed-on-black variant */
-  .brand svg .plate-cyan, .brand svg .vector { transition: filter .3s; }
-  #nav-home:hover .plate-cyan { filter: drop-shadow(0 0 6px var(--accent-dim)); }
+  /* Lockup: mark and wordmark side by side. The plates keep full saturation —
+     deliberately the only branded pixels in the graphite shell. The wordmark
+     is Archivo in sentence case, NOT mono caps: mono is reserved for micro
+     labels and instrument readouts (DESIGN.md, Type), and the shipped
+     mono-caps wordmark was that rule's one standing violation. */
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand svg { display: block; height: 30px; width: auto; }
+  .brand .plate-blue { fill: var(--plate-blue); }
+  .brand .plate-blue-fold { fill: var(--plate-blue-fold); }
+  .brand .plate-red { fill: var(--plate-red); }
+  .brand .plate-red-fold { fill: var(--plate-red-fold); }
+  /* The fold gap is ground showing through, not a drawn line — so it tracks
+     --bg and stays invisible as a shape if the ground ever moves. */
+  .brand .seam { stroke: var(--bg); }
   .brand .word {
-    font-family: 'Source Serif 4', serif; font-size: 25px; font-weight: 600;
-    letter-spacing: -.01em; line-height: 1; color: var(--bright);
+    font-size: 20px; font-weight: 500; letter-spacing: -.005em;
+    line-height: 1; color: var(--text-1);
     transition: color .18s;
   }
   #nav-home:hover .word { color: #fff; }
   .navright { display: flex; align-items: center; gap: 18px; }
-  #nav-live { display: none; align-items: center; gap: 7px; color: var(--accent); font-size: 12px; }
+  #nav-live { display: none; align-items: center; gap: 7px; color: var(--steel-text); font-size: 12px; font-family: var(--mono); }
   #nav-live.on { display: flex; }
-  #nav-kill { display: none; color: var(--dim); font-size: 12px; }
+  #nav-kill { display: none; color: var(--text-2); font-size: 12px; }
   #nav-kill.on { display: inline; }
-  #nav-kill:hover { color: var(--mag); }
-  #nav-live .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 1.8s ease-in-out infinite; }
-  @keyframes pulse { 0%, 100% { opacity: 1; box-shadow: 0 0 0 0 var(--accent-dim); } 50% { opacity: .55; box-shadow: 0 0 0 4px transparent; } }
-  #nav-new { color: var(--dim); font-size: 12px; transition: color .18s; }
-  #nav-new:hover { color: var(--accent); }
+  #nav-kill:hover { color: var(--weak-text); }
+  #nav-live .pulse { width: 6px; height: 6px; background: var(--steel-text); animation: pulse 1.8s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+  /* The tabs (composer-first IA, 2026-08-10). The daily action IS the page
+     under the wordmark now; plans and history are secondary destinations.
+     Active tab = 2px steel underline — steel marks POSITION, never action.
+     The attribute selector outranks the nav-wide text-decoration reset. */
+  #nav-practice, #nav-plans, #nav-history { color: var(--text-2); font-size: 12px; transition: color .18s; }
+  #nav-practice:hover, #nav-plans:hover, #nav-history:hover { color: var(--text-1); }
+  .navright a[aria-current="page"] {
+    color: var(--text-1);
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 6px;
+    text-decoration-color: var(--steel);
+  }
+
+  /* ---- the practice door (design review 2026-08-08, approved mockup) ---- */
+  #practice-wrap { max-width: 62ch; margin: 0 auto; }
+  #practice-wrap .micro { margin-bottom: 10px; }
+  /* The landing composes VERTICALLY: the empty field is deliberate framing,
+     not leftover space — the hero block floats at the visual center until
+     content (confirm/wait) grows past it. */
+  #practice {
+    min-height: calc(100vh - 240px);
+    display: flex; flex-direction: column; justify-content: center;
+  }
+  /* The landing hero: the a11y label IS the heading (real-labels rule) —
+     the page's voice, centered over the instrument. */
+  #practice-wrap .hero { margin: 0 0 30px; text-align: center; }
+  #practice-wrap .hero label {
+    display: inline; margin: 0;
+    font-size: 38px; font-weight: 500; letter-spacing: -.015em;
+    line-height: 1.2; color: var(--text-1);
+  }
+  /* The one status line beneath the composer. Steel-TEXT on the countdown
+     (time in its readable tier — raw steel fails contrast on the ground).
+     The container keeps the body font-size so 62ch computes the SAME width
+     as the composer wrap — the inner line drops to 12px. */
+  #home-status { max-width: 62ch; margin: 0 auto; color: var(--text-2); }
+  /* The readout strip: the status sentence spoken in the system's own
+     instrument voice — mono micro, centered under the composer. Same JS
+     strings; the telemetry look is pure presentation. */
+  #home-status .statusline {
+    margin-top: 22px; text-align: center;
+    font-family: var(--mono); font-size: 11px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: .14em; color: var(--text-2);
+  }
+  #home-status .statusline > div + div { margin-top: 7px; }
+  #home-status a { color: var(--text-2); text-decoration: none; }
+  #home-status a:hover { color: var(--text-1); }
+  /* The composer is ONE instrument: a single frame holding the borderless
+     textarea and its footer row (affordances left, the action right). Focus
+     lifts the whole frame's hairline to steel — the established focus
+     convention, applied to the unit the user is actually operating. */
+  .composer-frame {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    transition: border-color .18s;
+  }
+  .composer-frame:focus-within { border-color: var(--steel); }
+  #rep-paste {
+    width: 100%; min-height: 132px; resize: vertical; display: block;
+    background: transparent; color: var(--text-1); border: 0;
+    padding: 16px 18px 8px; font: inherit; font-size: 15px; line-height: 1.6;
+  }
+  #rep-paste::placeholder { color: var(--text-3); }
+  .composer-foot {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; padding: 8px 10px 10px 18px;
+  }
+  .composer-foot .quiet-affordances { font-size: 12px; color: var(--text-3); }
+  .composer-foot .quiet-affordances a { color: var(--text-2); text-decoration: none; }
+  .composer-foot .quiet-affordances a:hover { color: var(--text-1); }
+  /* The readback: ONE chevron select for the closed vocabulary; open prose
+     values were real inputs styled flat — affordance matches constraint (D4).
+     Superseded 2026-08-12 by the gap-derived confirm screen: #rep-confirm is
+     a two-column grid AT 760px (decision 5A — the rail is ~220px and the
+     question column ~500px, the planner chat's own 62ch measure). DOM order
+     puts the question column FIRST (tab order follows the task, pass 6);
+     the grid places the rail visually left, and narrow widths stack the
+     rail ABOVE via order (the readback reads before the questions). */
+  /* The grid BREAKS OUT of #practice-wrap's 62ch composer measure to the full
+     760px shell. Left inside 62ch the question column resolved to 249px, not
+     the ~500px decision 5A sized it for, and every question wrapped into a
+     tall narrow block (QA 2026-08-12, ISSUE-002). The composer keeps 62ch —
+     that calm center is the approved landing (2026-08-10); only the confirm
+     step needs two columns. Symmetric negative inline margins, so the grid
+     stays centered on the same axis as the composer. */
+  #rep-confirm {
+    display: grid; grid-template-columns: 220px minmax(0, 1fr);
+    gap: 4px 28px; margin-top: 22px; align-items: start;
+    margin-inline: calc((720px - 100%) / -2);
+  }
+  #rep-rail { grid-column: 1; grid-row: 1; }
+  #rep-open { grid-column: 2; grid-row: 1; }
+  /* Brief + decline + Start span both columns: the brief is prose to read
+     before an irreversible build, and the rail is 220px. */
+  #rep-commit { grid-column: 1 / -1; grid-row: 2; margin-top: 8px; border-top: 1px solid var(--rule); padding-top: 14px; }
+  @media (max-width: 760px) {
+    /* Narrow: no breakout (it would overflow the shell), rail above questions. */
+    #rep-confirm { display: flex; flex-direction: column; margin-inline: 0; }
+    #rep-rail { order: -1; }
+  }
+  /* Rail rows are the editable readback (decision 1A): 44px controls with
+     real labels; .gaterow/.tier reuse the planner's chips and flash. */
+  #rep-rail .gaterow { padding: 10px 2px; }
+  #rep-rail .gaterow label { display: block; }
+  /* The planner's .tier is a BUTTON that cycles evidence, so it carries
+     cursor: pointer. On the rail it is a read-only span stating provenance —
+     inheriting the pointer made it look clickable and do nothing (QA
+     2026-08-12, ISSUE-003). Affordance matches constraint (DESIGN.md rule 3)
+     cuts both ways: no affordance where there is no action. */
+  #rep-rail .tier { cursor: default; }
+  .gapedit {
+    display: block; width: 100%; min-height: 44px; margin-top: 4px;
+    background: var(--panel); color: var(--text-1); border: 1px solid var(--line);
+    border-radius: 6px; padding: 8px 10px; font: inherit;
+  }
+  .gapwhy { color: var(--text-3); font-size: 12px; margin-top: 4px; }
+  .gapinput-row { display: flex; margin-top: 8px; }
+  .gapinput {
+    flex: 1; min-height: 44px; background: var(--panel); color: var(--text-1);
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit;
+  }
+  #rep-brief { color: var(--text-2); font-size: 14px; line-height: 1.6; margin-top: 18px; }
+  /* The honest decline (decision 2B): visible, never blocking. --weak is a
+     verdict color and this IS a verdict about the round's fidelity. */
+  #rep-unsupported { color: var(--text-2); font-size: 13px; margin-top: 10px; border-left: 2px solid var(--weak); padding-left: 10px; }
+  /* Step 2's read-only referent for "Confirmed from your paste", and the way
+     back to step 1. A button, not a field: in step 2 the paste is frozen. */
+  #rep-back {
+    display: block; width: 100%; text-align: left; background: var(--sunk);
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px;
+    min-height: 44px; font: inherit; color: var(--text-2); cursor: pointer;
+  }
+  #rep-back:hover { border-color: var(--line); color: var(--text-1); }
+  #rep-back .micro { display: block; margin-bottom: 2px; }
+  #rep-back .rep-src {
+    display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #rep-note { color: var(--text-3); font-size: 12px; margin: 6px 0 14px; }
+  /* .metaline is runway/reprow-scoped elsewhere; the practice surface needs
+     its own copy or helper lines shout in body white (QA ISSUE-001). */
+  #practice-wrap .metaline { color: var(--text-2); font-size: 12px; margin-top: 6px; }
+  #practice-wrap .metaline a { color: var(--text-2); }
+  /* Chips and the link row live INSIDE the composer frame. */
+  .composer-frame #plan-attach { padding: 0 18px; }
+  /* The explicit link input — same row the planner composer carries,
+     revealed on request (progressive disclosure). */
+  #practice-wrap .linkrow { display: flex; gap: 8px; margin-top: 8px; }
+  .composer-frame .linkrow { margin: 4px 10px 0 18px; }
+  #practice-wrap .linkrow input { flex: 1; font-size: 13px; padding: 7px 10px; color: var(--text-2); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font-family: inherit; }
+  #practice-wrap .linkrow input:focus { color: var(--text-1); }
+  #practice-wrap .linkrow button { min-height: 0; padding: 4px 12px; font-size: 13px; color: var(--text-2); }
+  /* One sticky-bottom element per stack (QA ISSUE-003): the practice screen
+     has NO sticky at all — it fits a viewport; Start sits in flow. */
+  .rep-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
+  .rep-strip { margin-top: 34px; }
+  .rep-strip .err { font-size: 12px; }
+  .reprow {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 12px 2px; border-top: 1px solid var(--rule);
+  }
+  .reprow .grow { flex: 1; min-width: 0; }
+  .reprow .metaline { color: var(--text-2); margin-top: 3px; font-size: 12px; }
+  .reprow .primary { min-width: 96px; min-height: 44px; }
+  .reprow b { font-weight: 500; }
 
   /* ---- first paint: the shape of the page before data lands ---- */
   #boot { padding-top: 6px; }
@@ -328,29 +800,31 @@ export function appPage(): string {
   @keyframes breathe { 0%, 100% { opacity: .5; } 50% { opacity: .22; } }
 
   /* ---- scrollbar: part of the instrument, not the OS ---- */
-  * { scrollbar-width: thin; scrollbar-color: #33333a var(--bg); }
+  * { scrollbar-width: thin; scrollbar-color: #2a2b2e var(--bg); }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-track { background: var(--bg); }
-  ::-webkit-scrollbar-thumb { background: #2f2f36; border: 3px solid var(--bg); border-radius: 5px; }
-  ::-webkit-scrollbar-thumb:hover { background: #43434c; }
+  ::-webkit-scrollbar-thumb { background: #2a2b2e; border: 3px solid var(--bg); border-radius: 5px; }
+  ::-webkit-scrollbar-thumb:hover { background: #3c3d40; }
 
   button {
-    background: none; border: 1px solid var(--line); color: var(--bright);
-    padding: 6px 14px; font: inherit; cursor: pointer; min-height: 32px;
-    transition: border-color .18s, background .18s, box-shadow .18s;
+    background: none; border: 1px solid var(--line); color: var(--text-1);
+    padding: 6px 14px; font: inherit; font-weight: 500; cursor: pointer; min-height: 32px;
+    border-radius: 6px;
+    transition: border-color .18s, background .18s;
   }
-  button:hover { border-color: #45454c; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 500; }
-  button.primary:hover { box-shadow: 0 0 22px var(--accent-dim); }
-  :is(button, input, textarea, a, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button:hover { border-color: #3c3d40; }
+  /* The action is WHITE. Steel never sits on a button — it would stop meaning time. */
+  button.primary { background: var(--text-1); border-color: var(--text-1); color: var(--bg); font-weight: 600; }
+  button.primary:hover { background: #fff; border-color: #fff; }
+  :is(button, input, textarea, a, [tabindex]):focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; }
   input, textarea {
-    width: 100%; background: rgba(255, 255, 255, .015); border: 1px solid var(--line);
-    color: inherit; font: inherit; padding: 9px 11px; transition: border-color .18s;
+    width: 100%; background: var(--sunk); border: 1px solid var(--line);
+    color: inherit; font: inherit; padding: 9px 11px; border-radius: 6px; transition: border-color .18s;
   }
-  input:hover, textarea:hover { border-color: #3a3a40; }
-  input:focus, textarea:focus { border-color: var(--accent-dim); }
+  input:hover, textarea:hover { border-color: #3c3d40; }
+  input:focus, textarea:focus { border-color: var(--steel); }
   label { display: block; margin: 18px 0 5px; font-weight: 500; }
-  .banner { border: 1px solid var(--accent); background: rgba(124, 92, 255, .06); padding: 10px 14px; margin: 0 0 20px; }
+  .banner { border: 1px solid var(--steel); background: rgba(53, 112, 143, .08); padding: 10px 14px; margin: 0 0 20px; border-radius: 6px; }
 
   /* ---- entrance choreography: one orchestrated load per page, never on
          polls; fully off under reduced motion ---- */
@@ -361,133 +835,334 @@ export function appPage(): string {
   }
 
   /* ---- entry (make a plan) ---- */
-  #entry h2 { font-size: 16px; font-weight: 500; margin: 0 0 8px; }
-  #e-desc { min-height: 118px; }
-  .optrow { display: flex; gap: 18px; }
-  .optrow > div { flex: 1; }
-  #refbox { border: 1px solid var(--line); padding: 14px 16px; margin-top: 20px; background: rgba(255, 255, 255, .012); }
-  #refbox .help { color: var(--dim); margin: 2px 0 10px; }
-  .linkrow { display: flex; gap: 8px; }
-  .linkrow input { flex: 1; }
-  #e-attachlist { margin-top: 4px; }
   .attach { display: flex; gap: 10px; align-items: baseline; padding: 7px 0; border-top: 1px solid var(--line-soft); }
   .attach .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .attach .kind { color: var(--dim); font-size: 12px; }
-  .attach button { border: 0; color: var(--dim); padding: 0 6px; min-height: 0; }
-  .attach button:hover { color: var(--bright); }
-  #e-build { width: 100%; margin-top: 24px; padding: 13px; min-height: 44px; letter-spacing: .02em; }
-  .closing { border-top: 1px solid var(--line); margin-top: 28px; padding-top: 15px; color: var(--dim); }
+  .attach .kind { color: var(--text-2); font-size: 12px; }
+  .attach button { border: 0; color: var(--text-2); padding: 0 6px; min-height: 0; }
+  .attach button:hover { color: var(--text-1); }
   .findings p { margin: 7px 0; }
-  .rationale { color: var(--dim); white-space: pre-wrap; }
-  .specbox { border: 1px solid var(--line); padding: 13px 15px; margin: 10px 0; background: rgba(255, 255, 255, .012); }
+  .rationale { color: var(--text-2); white-space: pre-wrap; }
+  .specbox { border: 1px solid var(--line); padding: 13px 15px; margin: 10px 0; background: var(--panel); border-radius: 6px; }
   .specbox.dropped { opacity: .55; }
-  .specbox .keep { display: inline-flex; gap: 6px; margin-left: 12px; color: var(--dim); font-weight: 400; }
+  .specbox .keep { display: inline-flex; gap: 6px; margin-left: 12px; color: var(--text-2); font-weight: 400; }
   .specbox .keep input { width: auto; }
-  .q { border: 1px solid var(--line); padding: 14px 16px; margin: 14px 0; background: rgba(255, 255, 255, .012); }
-  .q .qtext { margin: 0 0 2px; font-weight: 500; }
-  .q .qwhy { margin: 0 0 10px; }
-  .q .opt { display: flex; gap: 10px; align-items: baseline; padding: 7px 0; margin: 0; border-top: 1px solid var(--line-soft); cursor: pointer; }
-  .q .opt input[type="radio"] { width: auto; accent-color: var(--accent); }
-  .q .opt .rec { color: var(--accent); font-style: normal; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; margin-left: 6px; }
-  .q .otherbox { width: 260px; display: inline-block; padding: 4px 8px; margin-left: 6px; }
   .progress { height: 2px; background: var(--line); margin: 16px 0; overflow: hidden; }
-  .progress .fill { height: 100%; background: var(--accent); width: 30%; animation: slide 1.5s ease-in-out infinite alternate; box-shadow: 0 0 8px var(--accent-dim); }
+  .progress .fill { height: 100%; background: var(--steel); width: 30%; animation: slide 1.5s ease-in-out infinite alternate; }
   /* Determinate variant: width measures real elapsed vs the 8-min wall. */
   .progress .fill.det { animation: none; transition: width 1s linear; }
   @keyframes slide { from { margin-left: 0; } to { margin-left: 70%; } }
 
+  /* ---- planning surface: Cowork grammar (design D1, 2026-08-07) ----
+     The chat contains NOTHING but prose; ALL structure lives in the plan
+     panel, which the model maintains through its propose_rounds tool. Wide
+     screens get a right rail; narrow ones stack the panel above the
+     composer. body.wide widens the page column for this route only. */
+  body.wide { max-width: 1180px; }
+  #plan-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 28px; align-items: start; }
+  /* Empty state (no conversation yet): no panel to reserve a rail for —
+     single column, centered, so the intake moment isn't lopsided (QA ISSUE-001). */
+  #plan-wrap.nopanel { grid-template-columns: minmax(0, 1fr); min-height: calc(100vh - 230px); align-content: center; }
+  #plan-wrap.nopanel #plan-main { max-width: 62ch; margin: 0 auto; width: 100%; }
+  /* This moment IS the intake — "paste everything you have" needs room to
+     land in, not a two-row sliver. Conversation mode stays compact. */
+  #plan-wrap.nopanel #plan-composer { position: static; }
+  #plan-wrap.nopanel #plan-composer textarea { min-height: 170px; flex-basis: 100%; }
+  #plan-wrap.nopanel #plan-composer .row { flex-wrap: wrap; }
+  #plan-wrap.nopanel #plan-composer .row button:first-of-type { margin-left: auto; }
+  #plan-wrap.nopanel #plan-intro { margin-top: 0; }
+  #plan-main { min-width: 0; }
+  #plan-chat { max-width: 62ch; }
+  .turn-user { border-left: 1px solid var(--line); padding-left: 16px; margin: 24px 0; white-space: pre-wrap; }
+  .turn-user .att { color: var(--text-2); font-size: 12px; margin-top: 6px; white-space: normal; }
+  .turn-planner { margin: 24px 0; }
+  .turn-planner p { margin: 0 0 12px; line-height: 1.65; }
+  .turn-planner a { color: var(--steel-text); text-decoration: none; border-bottom: 1px solid rgba(126, 169, 194, .4); overflow-wrap: anywhere; }
+  .turn-planner strong { color: var(--text-1); font-weight: 500; }
+  .turn-planner code { font-family: var(--mono); font-size: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 3px; padding: 1px 5px; }
+  /* Settled turns recede; the current turn is where the eye should land. */
+  .turn-planner.history { opacity: .55; }
+  .turn-planner.history:hover { opacity: 1; }
+  /* Pasted walls collapse to chips — the candidate's own paste must never
+     dominate the viewport (live-screenshot finding, 2026-08-07). */
+  .pastechip { display: flex; gap: 10px; width: 100%; text-align: left; background: none; border: 0; border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); padding: 7px 0; min-height: 0; color: var(--text-2); font-size: 12px; cursor: pointer; font-family: var(--mono); }
+  .pastechip:hover { color: var(--text-1); }
+  .pastebody { margin: 0; padding: 4px 0 10px 20px; font-size: 13px; line-height: 1.6; color: var(--text-2); white-space: pre-wrap; }
+  #plan-intro { color: var(--text-2); margin: 28px 0; line-height: 1.65; }
+  /* An unreadable link: a fact about the plan's evidence, not an app error
+     — stated calmly, with the repair (paste it) in the same sentence. */
+  .unread { border-left: 2px solid var(--weak); padding: 8px 0 8px 12px; margin: 12px 0; color: var(--text-2); font-size: 13px; line-height: 1.6; }
+  .unread b { color: var(--text-1); font-weight: 500; }
+  /* ask_user options: tappable shortcuts under the latest planner turn.
+     Pills, not radios — tapping IS answering. */
+  /* The open question rides the COMPOSER, not the transcript: a live
+     control you have to scroll back to find is not a control. Inside
+     #plan-composer it inherits the sticky bottom in both layouts. */
+  #plan-ask { position: relative; border: 1px solid var(--line); border-bottom: 0; background: var(--panel); border-radius: 6px 6px 0 0; padding: 12px 14px 10px; }
+  #plan-ask + #plan-attach { margin-top: 6px; }
+  #ask-dismiss { position: absolute; top: 6px; right: 8px; background: none; border: 0; min-height: 0; padding: 2px 6px; color: var(--text-3); font-size: 14px; line-height: 1; cursor: pointer; }
+  #ask-dismiss:hover { color: var(--text-1); }
+  .askrow { margin: 0 0 4px; padding-right: 20px; }
+  .askrow + .askrow { margin-top: 12px; border-top: 1px solid var(--line-soft); padding-top: 12px; }
+  .askq { font-weight: 500; margin-bottom: 8px; }
+  .askopts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .qopt { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 6px 14px; min-height: 0; font-size: 13px; color: var(--text-1); cursor: pointer; }
+  .qopt:hover { border-color: var(--steel); }
+  .qopt .rec { color: var(--steel-text); font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; margin-left: 7px; }
+  .optdetail { color: var(--text-3); font-size: 12px; margin-right: 4px; }
+  .askor { color: var(--text-3); font-size: 12px; margin-top: 9px; }
+  /* The plan panel: the ONE structured surface. */
+  #plan-panel { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; position: sticky; top: 64px; display: flex; flex-direction: column; max-height: calc(100vh - 90px); }
+  #plan-panel .phead { padding: 12px 16px 8px; border-bottom: 1px solid var(--line); }
+  #plan-panel .phead .micro { margin: 0; }
+  #plan-panel .phead .meta { font-size: 12px; margin-top: 3px; }
+  #plan-panel .pbody { overflow-y: auto; min-height: 0; }
+  .gaterow { border-bottom: 1px solid var(--line-soft); border-left: 2px solid transparent; padding: 10px 14px 10px 12px; }
+  .gaterow.flash { animation: rowflash 1.1s ease-out; }
+  @keyframes rowflash { 0% { border-left-color: transparent; } 15% { border-left-color: var(--steel); } 100% { border-left-color: transparent; } }
+  @media (prefers-reduced-motion: reduce) { .gaterow.flash { animation: none; } }
+  .gaterow .gcheck { display: flex; gap: 8px; align-items: baseline; margin: 0; font-weight: 500; cursor: pointer; }
+  .gaterow .gcheck input { width: auto; accent-color: var(--steel); }
+  .gaterow .gshape { color: var(--text-2); font-size: 12px; margin: 3px 0 0 22px; line-height: 1.5; }
+  .gaterow .grow2 { display: flex; align-items: center; gap: 10px; margin: 6px 0 0 22px; }
+  .gaterow .gdate { font-size: 12px; color: var(--text-2); }
+  .gaterow .gdate.nodate { color: var(--text-3); }
+  .tier { font: inherit; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; background: none; border: 1px solid var(--line); padding: 1px 7px; cursor: pointer; color: var(--text-2); min-height: 0; }
+  .tier:hover { border-color: var(--text-3); color: var(--text-1); }
+  .gaterow .gexpand { background: none; border: 0; min-height: 0; padding: 0; margin-left: auto; color: var(--text-2); font-size: 12px; cursor: pointer; white-space: nowrap; }
+  .gaterow .gexpand:hover { color: var(--text-1); }
+  .gatedetail { padding: 6px 0 2px 22px; color: var(--text-2); font-size: 12px; line-height: 1.6; }
+  .gatedetail b { color: var(--text-1); font-weight: 500; }
+  .gatedecline { color: var(--text-2); font-size: 12px; padding: 8px 14px; border-bottom: 1px solid var(--line-soft); }
+  .paceline { padding: 10px 14px; font-size: 12px; line-height: 1.5; color: var(--text-2); }
+  #plan-panel .pfoot { padding: 12px 14px 14px; border-top: 1px solid var(--line); }
+  #plan-panel .pfoot button { width: 100%; padding: 10px; }
+  #plan-panel .pfoot .meta { font-size: 12px; margin-top: 8px; display: block; line-height: 1.5; }
+  #plan-composer { margin-top: 14px; position: sticky; bottom: 0; background: var(--bg); padding-bottom: 10px; max-width: 62ch; }
+  #plan-composer .row { display: flex; gap: 8px; align-items: flex-start; }
+  #plan-composer textarea { flex: 1; min-height: 58px; resize: none; }
+  #plan-composer .helper { font-size: 12px; color: var(--text-3); margin-top: 7px; line-height: 1.5; }
+  #plan-attach { margin-bottom: 6px; }
+  /* Optional link row: deliberately quiet — links are one more kind of
+     evidence, not a required field. */
+  #plan-composer .linkrow { display: flex; gap: 8px; margin-top: 8px; }
+  #plan-composer .linkrow input { flex: 1; font-size: 13px; padding: 7px 10px; color: var(--text-2); }
+  #plan-composer .linkrow input:focus { color: var(--text-1); }
+  #plan-composer .linkrow button { min-height: 0; padding: 4px 12px; font-size: 13px; color: var(--text-2); }
+  #plan-composer .linkrow button:hover { color: var(--text-1); }
+  @media (max-width: 1099px) {
+    body.wide { max-width: 760px; }
+    /* The base grid rule's align-items:start would leak into this flex
+       context and shrink the panel to content width (QA ISSUE-004). */
+    #plan-wrap { display: flex; flex-direction: column; align-items: stretch; }
+    #plan-main { display: contents; }
+    #plan-chat { order: 1; }
+    #plan-panel { order: 2; position: sticky; bottom: 0; top: auto; max-height: 45vh; }
+    /* Only ONE bottom-sticky element per stack: a sticky composer here would
+       sit on top of the panel and hide the confirm button (QA ISSUE-003). */
+    #plan-composer { order: 3; position: static; }
+  }
+  .carddel { border: 0; color: var(--text-2); font-size: 12px; padding: 0; min-height: 0; margin-top: 8px; }
+  .carddel:hover { color: var(--weak-text); }
+
   /* ---- all plans (index) ---- */
   a.plancard {
     display: block; border: 1px solid var(--line); padding: 16px; margin: 12px 0;
-    text-decoration: none; background: rgba(255, 255, 255, .012);
+    text-decoration: none; background: var(--panel); border-radius: 6px;
     transition: border-color .18s, transform .18s;
   }
-  a.plancard:hover { border-color: #45454c; transform: translateY(-1px); }
+  a.plancard:hover { border-color: #3c3d40; transform: translateY(-1px); }
   .plancard h2 { font-size: 16px; font-weight: 500; margin: 0 0 4px; }
   .plancard .bar { height: 2px; background: var(--line); margin: 12px 0 8px; }
-  .plancard .bar .fill { height: 100%; background: var(--accent); }
-  .plancard .nextline { color: var(--dim); }
-  .plancard.setup { color: var(--dim); }
-  .plancard.setup .go { color: var(--accent); }
-  .backlink { display: inline-block; color: var(--dim); text-decoration: none; margin-bottom: 16px; transition: color .18s; }
-  .backlink:hover { color: var(--bright); }
+  .plancard .bar .fill { height: 100%; background: var(--steel); }
+  .plancard .nextline { color: var(--text-2); }
+  .plancard.setup { color: var(--text-2); }
+  .plancard.setup .go { color: var(--text-1); }
+  .backlink { display: inline-block; color: var(--text-2); text-decoration: none; margin-bottom: 16px; transition: color .18s; }
+  .backlink:hover { color: var(--text-1); }
+  .addlink { color: var(--text-2); }
+  .addlink:hover { color: var(--text-1); }
 
   /* ---- season timeline: the countdown instrument ---- */
   .season { margin-bottom: 44px; }
-  .season .daysleft { font-size: 17px; font-weight: 400; line-height: 1.2; margin: 0; color: var(--dim); }
-  .season .daysleft b { font-size: 54px; font-weight: 600; letter-spacing: -.03em; color: var(--bright); display: inline-block; margin-right: 6px; vertical-align: -4px; text-shadow: 0 0 34px var(--accent-dim); }
-  .seasonbar { height: 2px; background: var(--line); margin: 16px 0 7px; }
-  .seasonbar .fill { height: 100%; background: var(--accent); box-shadow: 0 0 8px var(--accent-dim); transition: width .8s cubic-bezier(.2, .7, .2, 1); }
-  .paceline { display: flex; justify-content: space-between; color: var(--dim); font-size: 12px; margin-bottom: 26px; }
+  .season .daysleft { font-size: 15px; font-weight: 400; line-height: 1.2; margin: 0; color: var(--text-2); }
+  /* The countdown numeral: JBM light, tabular — steel's label sits beside it,
+     the number itself stays white (the brightest thing on the page). */
+  .season .daysleft b { font-family: var(--mono); font-size: 54px; font-weight: 300; letter-spacing: -.04em; font-variant-numeric: tabular-nums; color: var(--text-1); display: inline-block; margin-right: 6px; vertical-align: -4px; }
+  .seasonbar { height: 2px; background: var(--line); margin: 16px 0 7px; position: relative; }
+  .seasonbar .fill { height: 100%; background: var(--steel); transition: width .8s cubic-bezier(.2, .7, .2, 1); }
+  /* Round-day milestones on the one spine — markers, never separate bars. */
+  .seasonbar .tick { position: absolute; top: -3px; width: 1px; height: 8px; background: var(--text-3); }
+  .debrief { margin: -12px 0 18px; }
+  .debrief a { color: var(--steel-text); }
+  .paceline { display: flex; justify-content: space-between; color: var(--text-2); font-family: var(--mono); font-size: 12px; margin-bottom: 26px; }
 
   /* adaptation: the last change + the door for new information */
   .adaptrow { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; font-size: 12px; margin: -14px 0 22px; }
-  .adaptrow .addlearn { color: var(--dim); text-decoration: none; border-bottom: 1px dotted var(--line); white-space: nowrap; }
-  .adaptrow .addlearn:hover { color: var(--accent); border-bottom-color: var(--accent-dim); }
-  .adaptpanel { border: 1px solid var(--line); padding: 15px; margin: 0 0 24px; background: rgba(255, 255, 255, .012); }
+  .adaptrow .addlearn { color: var(--text-2); text-decoration: none; border-bottom: 1px dotted var(--line); white-space: nowrap; }
+  .adaptrow .addlearn:hover { color: var(--text-1); border-bottom-color: var(--text-3); }
+  .adaptpanel { border: 1px solid var(--line); padding: 15px; margin: 0 0 24px; background: var(--panel); border-radius: 6px; }
   .adaptpanel .learnbox { width: 100%; min-height: 96px; resize: vertical; }
   .adaptpanel .btnrow { margin-top: 12px; }
   .adaptpanel .adaptsum { font-weight: 500; margin-bottom: 10px; }
-  /* Judged feedback, re-readable from the plan. Same visual grammar as the
-     session card: hairline rows, ONE accent, dim uppercase dimension tags. */
-  .fbtoggle { color: var(--dim); margin-left: 10px; font-size: 12px; }
+  /* Judged feedback, re-readable from the plan. Grade grammar = color AND
+     shape (■ strong · ◆ weak · ▫ not-shown + hatch) so no pair of grades
+     ever rests on hue alone. */
+  .fbtoggle { color: var(--text-2); margin-left: 10px; font-size: 12px; }
   .fbtoggle:hover { color: inherit; }
-  .fbcard { display: block; margin: 10px 0 4px; padding: 4px 14px 10px; border: 1px solid var(--line); font-weight: 400; }
+  .fbcard { display: block; margin: 10px 0 4px; padding: 4px 14px 10px; border: 1px solid var(--line); border-radius: 6px; font-weight: 400; }
   .fbcard .desc { margin: 8px 0 4px; }
   .fbcard .fbrow { padding: 8px 0; border-bottom: 1px solid var(--line); }
   .fbcard .fbrow:last-child { border-bottom: 0; }
-  .fbcard .dim { text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
-  .fbcard .v-strong .dim { color: var(--accent); }
-  .fbcard .v-weak .dim { color: #e6a23c; }
-  .fbcard .v-none { opacity: .55; }
-  .fbcard .cite { color: var(--dim); font-size: 12px; margin: 3px 0 3px 14px; }
+  .fbcard .dim { font-family: var(--mono); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+  .fbcard .fbrow .dim::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 7px; border: 1px solid var(--none); vertical-align: 0; }
+  .fbcard .v-strong .dim { color: var(--ok); }
+  .fbcard .v-strong .dim::before { background: var(--ok); border-color: var(--ok); }
+  .fbcard .v-weak .dim { color: var(--weak-text); }
+  .fbcard .v-weak .dim::before { background: var(--weak); border-color: var(--weak); transform: rotate(45deg) scale(.9); }
+  .fbcard .v-none { opacity: .55; background: repeating-linear-gradient(45deg, transparent 0 5px, rgba(255, 255, 255, .03) 5px 10px); }
+  .fbcard .cite { color: var(--text-2); font-size: 12px; margin: 3px 0 3px 14px; }
   .fbcard .clk { color: inherit; opacity: .9; }
-  .fbcard .closedmark { border-left: 2px solid var(--accent); padding-left: 10px; }
-  .fbcard .fbfocus { border: 1px solid var(--accent); padding: 8px 10px; margin-top: 10px; }
-  .fbcard .fbfocus .k { color: var(--accent); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; margin: 0 0 4px; }
+  .fbcard .closedmark { border-left: 2px solid var(--steel); padding-left: 10px; }
+  .fbcard .fbfocus { border: 1px solid var(--steel); padding: 8px 10px; margin-top: 10px; border-radius: 6px; }
+  .fbcard .fbfocus .k { color: var(--steel-text); font-family: var(--mono); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; margin: 0 0 4px; }
+  /* The Gaps band (#/history) + the season topics band. Existing tokens
+     only: verdict hues stay --ok/--weak/--none, shape backs hue (the strip
+     glyphs differ by character, never color alone), no elevation. */
+  .gapsband { border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px 12px; margin: 0 0 18px; }
+  .gapsband .micro { margin: 0 0 2px; }
+  .gaprow { border-top: 1px solid var(--line-soft); padding: 7px 0 6px; }
+  .gaprow:first-of-type { border-top: 0; }
+  .gaprow .dim { font-family: var(--mono); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; display: inline-block; width: 104px; }
+  .gapstrip { font-family: var(--mono); font-size: 12px; letter-spacing: .12em; margin-right: 10px; white-space: nowrap; }
+  .g-ok { color: var(--ok); }
+  .g-weak { color: var(--weak-text); }
+  .g-none { color: var(--none); }
+  .gb { letter-spacing: 0; opacity: .8; }
+  .gapstate { color: var(--text-2); font-size: 12px; }
+  .gapcite { color: var(--text-3); font-size: 12px; margin: 3px 0 0 104px; }
+  .topicband { border: 1px solid var(--line); border-radius: 6px; padding: 8px 14px 10px; margin: 10px 0 4px; }
+  .topicrow { display: flex; gap: 10px; align-items: baseline; border-top: 1px solid var(--line-soft); padding: 5px 0; }
+  .topicrow:first-of-type { border-top: 0; }
+  .topicrow .tmark { font-family: var(--mono); font-size: 11px; color: var(--steel-text); width: 44px; flex: none; }
+  .topicrow.drill .tlabel { color: var(--weak-text); }
   .adaptpanel .bpchange summary { cursor: pointer; margin: 6px 0; }
   .adaptpanel .bpview { max-height: 260px; overflow: auto; border: 1px solid var(--line); padding: 10px 12px; font-size: 12px; white-space: pre-wrap; }
-  .adaptpanel .repoint b { color: var(--bright); }
-  .stale { color: var(--mag); }
+  .adaptpanel .repoint b { color: var(--text-1); }
+  .stale { color: var(--weak-text); }
+  .genclock { font-family: var(--mono); font-size: 11px; color: var(--text-3); }
 
   ol.runway { list-style: none; margin: 0; padding: 0; position: relative; }
   /* The spine: one continuous rail the whole season hangs from. */
   ol.runway::before { content: ''; position: absolute; left: var(--rail); top: 10px; bottom: 10px; width: 1px; background: var(--line); }
   .runway li { display: flex; gap: 14px; border-top: 1px solid var(--line-soft); padding: 9px 0; align-items: baseline; position: relative; }
   .runway li:first-child { border-top: 0; }
-  .runway .date { width: 74px; flex: none; color: var(--dim); font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .08em; }
-  .runway .dot { flex: none; width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid var(--line); background: var(--bg); align-self: center; z-index: 1; position: relative; left: -1px; }
+  .runway .date { width: 74px; flex: none; color: var(--text-2); font-family: var(--mono); font-size: 11px; font-weight: 400; text-transform: uppercase; letter-spacing: .08em; font-variant-numeric: tabular-nums; }
+  /* Rail marks are SQUARES (3a mark grammar); the one diamond belongs to the interview. */
+  .runway .dot { flex: none; width: 11px; height: 11px; border: 1.5px solid var(--line); background: var(--bg); align-self: center; z-index: 1; position: relative; left: -1px; }
   .runway .body { flex: 1; min-width: 0; }
   .runway li.past { opacity: .5; }
   .runway li.past .dot.done { border-color: var(--ok); background: var(--ok); }
   .runway li.past .body .ok { color: var(--ok); margin-right: 6px; }
-  .runway li.empty .body { color: var(--dim); }
+  .runway li.empty .body { color: var(--text-2); }
   .runway li.today { padding: 18px 0; opacity: 1; border-top-color: var(--line); }
-  .runway li.today .date { color: var(--accent); }
-  .runway li.today .dot { border-color: var(--accent); background: var(--accent); box-shadow: 0 0 14px var(--accent-dim); }
+  .runway li.today .date { color: var(--steel-text); }
+  /* Today is the brightest mark on the rail — white, outranking even the
+     interview's steel diamond. Steel says where the terminus is; white says
+     where YOU are. */
+  .runway li.today .dot { border-color: var(--text-1); background: var(--text-1); }
   .runway li.today .title { font-size: 16px; font-weight: 500; }
-  .runway .metaline { color: var(--dim); margin-top: 3px; font-size: 12px; }
-  .runway .aimed { color: var(--mag); margin-top: 6px; font-style: italic; }  /* the gap is the attention axis */
+  .runway .metaline { color: var(--text-2); margin-top: 3px; font-size: 12px; }
+  .runway .aimed { color: var(--weak-text); margin-top: 6px; font-style: italic; }  /* the gap is the attention axis */
   .runway li.today .body { display: flex; gap: 16px; align-items: center; }
   .runway li.today .grow { flex: 1; min-width: 0; }
   .runway li.today button.primary { min-width: 96px; min-height: 44px; }
-  .runway li.future { color: #c9c9cf; }
+  .runway li.future { color: var(--text-2); }
   .runway li.future.empty { padding: 5px 0; }
   .runway li.quiet { padding: 4px 0; border-top: 1px solid var(--line-soft); }
-  .runway li.quiet .body { color: var(--dim); font-size: 11px; letter-spacing: .08em; }
+  .runway li.quiet .body { color: var(--text-3); font-family: var(--mono); font-size: 11px; letter-spacing: .08em; }
   .runway li.past.donetoday { opacity: .78; }
   .runway li.past.donetoday .date { color: var(--ok); }
   .runway li.today.complete .date { color: var(--ok); }
-  .runway li.today.complete .dot { border-color: var(--ok); background: var(--ok); box-shadow: 0 0 14px rgba(76, 175, 125, .35); }
-  .runway button.mini { background: none; border: 1px solid var(--line); color: var(--dim); padding: 2px 9px; font: inherit; font-size: 11px; cursor: pointer; margin-left: 10px; }
-  .runway button.mini:hover { color: var(--bright); border-color: var(--accent-dim); }
+  .runway li.today.complete .dot { border-color: var(--ok); background: var(--ok); }
+  .runway button.mini { background: none; border: 1px solid var(--line); color: var(--text-2); padding: 2px 9px; font: inherit; font-size: 11px; cursor: pointer; margin-left: 10px; border-radius: 6px; }
+  .runway button.mini:hover { color: var(--text-1); border-color: #3c3d40; }
   .runway li.future.empty .dot { width: 5px; height: 5px; border-width: 1px; left: 2px; }
-  .runway li.collapsed .body { color: var(--dim); }
+  .runway li.collapsed .body { color: var(--text-2); }
   .runway li.collapsed .dot { border-style: dashed; background: transparent; }
-  .runway li.interview { padding: 16px 0; color: var(--accent); border-top: 1px solid var(--line); }
-  .runway li.interview .date { color: var(--accent); }
-  .runway li.interview .dot { border-color: var(--accent); background: transparent; box-shadow: 0 0 10px var(--accent-dim); }
+  .runway li.interview { padding: 16px 0; color: var(--text-1); border-top: 1px solid var(--line); }
+  .runway li.interview .date { color: var(--steel-text); }
+  .runway li.interview .dot { border-color: var(--steel); background: var(--steel); transform: rotate(45deg); }
   .runway li.interview .body { font-weight: 500; letter-spacing: .02em; }
+
+  /* Beta tag (WU9): micro-label voice, steel not identity — global
+     expectation-setting that buys forgiveness for rough edges without
+     pointing at any specific missing feature. */
+  .betatag { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .18em; color: var(--steel-text); border: 1px solid var(--steel); border-radius: 4px; padding: 1px 6px; margin-left: 10px; align-self: center; }
+
+  /* ---- beta login (WU4) — shown only when auth is on and no token ---- */
+  /* ---- signed-out auth: two-pane brief (design review 2026-08-12, direction B).
+     The old screen was a headline and two buttons floating in a 760px column:
+     an invited stranger could not tell what they were signing into, and the
+     email field used its placeholder as its label, the exact hard-rule
+     violation DESIGN.md rule 5 records as having already shipped once.
+     The left pane now does the explaining so the right can stay bare. Rides
+     body.wide (the planner's existing 1180px precedent) and collapses to the
+     single column on the same 1099px breakpoint. ---- */
+  #login { padding-top: 60px; }
+  .loginpane { display: grid; grid-template-columns: 1fr 380px; gap: 72px; align-items: start; }
+  .loginsay h1 { font-size: 34px; line-height: 1.2; margin: 0; font-weight: 600; letter-spacing: -.01em; max-width: 21ch; }
+  .loginsay .desc { color: var(--text-2); font-size: 15px; margin: 12px 0 0; max-width: 52ch; }
+  .loginbox { display: flex; flex-direction: column; gap: 16px; }
+  /* Mode tabs are mono micro-labels on a hairline. Never a filled pill: fill
+     means primary action in this system, and the action here is the white
+     button below. */
+  .modes { display: flex; gap: 26px; border-bottom: 1px solid var(--line-soft); }
+  .mode {
+    background: none; border: 0; border-bottom: 1px solid transparent; border-radius: 0;
+    padding: 0 0 10px; margin-bottom: -1px; min-height: 0;
+    font-family: var(--mono); font-size: 11px; font-weight: 500;
+    letter-spacing: .18em; text-transform: uppercase; color: var(--text-3);
+  }
+  .mode:hover { border-color: transparent; color: var(--text-2); }
+  .mode[aria-selected="true"] { color: var(--text-1); border-bottom-color: var(--text-1); }
+  .loginbox label {
+    margin: 0 0 7px; font-family: var(--mono); font-size: 11px; font-weight: 500;
+    letter-spacing: .18em; text-transform: uppercase; color: var(--text-3);
+  }
+  .loginbox .primary { width: 100%; min-height: 44px; }
+  .loginsep {
+    display: flex; align-items: center; gap: 12px; color: var(--text-3);
+    font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .18em;
+  }
+  .loginsep::before, .loginsep::after { content: ""; flex: 1; height: 1px; background: var(--line-soft); }
+  .loginrow { display: flex; gap: 8px; }
+  .loginrow input { flex: 1; min-height: 44px; }
+  .loginrow button { min-height: 44px; white-space: nowrap; }
+  #login-msg {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--text-3); margin: 0;
+  }
+  #login-msg.bad { color: var(--weak-text); }
+  #login-msg.good { color: var(--steel-text); }
+  .loginfine { color: var(--text-3); font-size: 12px; line-height: 1.6; margin: 0; }
+  /* What a round actually costs you, before you commit to 45 minutes. */
+  .expect {
+    border-top: 1px solid var(--line-soft); margin: 34px 0 0; padding-top: 16px;
+    display: flex; flex-direction: column; gap: 9px; max-width: 52ch;
+  }
+  /* Grid, not flex with a min-width: THE INTERVIEWER is wider than any min
+     that suits the other two, so a flex row pushed its value out of the
+     column and the three descriptions no longer shared a left edge. */
+  .expect > div { display: grid; grid-template-columns: 136px 1fr; gap: 14px; align-items: baseline; }
+  .expect dt {
+    font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: .18em;
+    text-transform: uppercase; color: var(--text-3);
+  }
+  .expect dd { margin: 0; color: var(--text-2); font-size: 13px; }
+  @media (max-width: 1099px) {
+    .loginpane { grid-template-columns: 1fr; gap: 40px; max-width: 460px; }
+    .loginsay h1 { font-size: 28px; }
+  }
 
   /* ---- desktop only (design decision D7: stated, not broken) ---- */
   #narrow { display: none; }
@@ -502,19 +1177,28 @@ export function appPage(): string {
 </div>
 <div id="page">
   <nav>
-    <a href="#/" id="nav-home" class="brand" aria-label="Zenkai — all plans">
-      <svg width="32" height="32" viewBox="0 0 64 64" fill="none" aria-hidden="true">
-        <circle class="plate-mag" cx="32" cy="32" r="24" stroke-width="5" stroke-dasharray="118 33" transform="translate(3.4 2.8)" />
-        <circle class="plate-cyan" cx="32" cy="32" r="24" stroke-width="5" stroke-dasharray="118 33" />
-        <path class="vector" d="M18 46 L52 12" stroke-width="5" />
-        <path class="vector" d="M40 12 L52 12 L52 24" stroke-width="5" stroke-linejoin="miter" />
+    <a href="#/" id="nav-home" class="brand" aria-label="Zenkai — home">
+      <!-- One ribbon folded into a Z, split corner-to-corner across the
+           diagonal: blue half above the fold, red half below, each with its
+           own darker fold face. The whole mark is 180°-rotationally
+           symmetric — the red half IS the blue half turned over — so the two
+           paths are the same shape and only the colors differ. -->
+      <svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true">
+        <path class="plate-red" d="M34.8 48 L10.5 48 L11.85 34.5 L36.15 13.5 L28.5 34.5 L45.6 34.5 Z" />
+        <path class="plate-red-fold" d="M11.85 34.5 L36.15 13.5 L28.5 34.5 Z" />
+        <path class="plate-blue" d="M13.2 0 L37.5 0 L36.15 13.5 L11.85 34.5 L19.5 13.5 L2.4 13.5 Z" />
+        <path class="plate-blue-fold" d="M36.15 13.5 L11.85 34.5 L19.5 13.5 Z" />
+        <path class="seam" d="M36.15 13.5 L11.85 34.5" stroke-width="1.3" />
       </svg>
       <span class="word">Zenkai</span>
+      <span class="betatag">beta</span>
     </a>
     <span class="navright">
       <a href="#/t/" id="nav-live" aria-live="polite"><span class="pulse"></span>session live</a>
       <a href="#" id="nav-kill" title="end the running session without grading">end session</a>
-      <a href="#/new" id="nav-new">+ new plan</a>
+      <a href="#/" id="nav-practice">practice</a>
+      <a href="#/plans" id="nav-plans">plans</a>
+      <a href="#/history" id="nav-history">history</a>
     </span>
   </nav>
   <div id="banner" aria-live="polite"></div>
@@ -523,35 +1207,35 @@ export function appPage(): string {
   <section id="index" hidden></section>
 
   <section id="entry" hidden>
-    <div id="entry-form">
-      <h2><label for="e-desc" style="margin:0">What are you interviewing for?</label></h2>
-      <textarea id="e-desc" placeholder="Palantir new grad. Recruiter email says 90 min HackerRank. The assessment preview showed class stubs to implement — so LLD-style, not just algorithms."></textarea>
-      <div class="optrow">
-        <div>
-          <label for="e-date">Interview date <span class="meta">(optional)</span></label>
-          <input id="e-date" placeholder="2026-09-15" />
-        </div>
-        <div>
-          <label for="e-company">Company <span class="meta">(optional)</span></label>
-          <input id="e-company" placeholder="Palantir" />
-        </div>
-      </div>
-      <div id="refbox">
-        <label for="e-link" style="margin-top:0">Reference material</label>
-        <p class="help">a question from this round, a repo, a thread — this is what makes the generated problems feel real</p>
-        <div class="linkrow">
-          <input id="e-link" placeholder="paste a link — github.com/user/repo, a Blind thread, a writeup" />
-          <button id="e-addlink" type="button">add</button>
-          <button id="e-browse" type="button">browse files</button>
-          <input id="e-file" type="file" multiple hidden aria-hidden="true" />
-        </div>
-        <div id="e-attachlist"></div>
-      </div>
-      <button id="e-build" class="primary" type="button">Build my plan</button>
-      <p class="err" id="e-err" aria-live="polite"></p>
-      <p class="closing">Everything you paste shapes the plan — and you confirm every round before anything gets built.</p>
-    </div>
-    <div id="entry-flow" hidden aria-live="polite"></div>
+    <!-- Cowork grammar (design D1, 2026-08-07): the chat contains nothing
+         but prose; ALL structure lives in the plan panel. The client renders
+         the whole surface — composer, chat, panel — into entry-flow. -->
+    <div id="entry-flow" aria-live="polite"></div>
+    <input id="e-file" type="file" multiple hidden aria-hidden="true" />
+  </section>
+
+  <section id="practice" hidden>
+    <!-- The front door (CEO review 2026-08-10, composer-first): paste what
+         you gathered, confirm the inferred shape, one rep — no target, no
+         queue, no pace. Rendered whole by the client, same contract as
+         entry-flow. -->
+    <!-- The live region is a dedicated sr-only sibling, NOT the container:
+         renderPractice replaces the container's whole innerHTML, and with
+         the gap screen that now happens on every shape answer — a container
+         live region would re-read the entire panel each time (decision 6A,
+         2026-08-12). announce() writes only the delta. -->
+    <div id="practice-flow"></div>
+    <div id="rep-live" aria-live="polite" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)"></div>
+    <!-- The one status line beneath the composer — a SIBLING of the flow so
+         renderPractice's innerHTML wipes never touch it, repainted on every
+         poll from render() (outside the typing-protection guard). No
+         aria-live: the genclock rewrites its text every second. -->
+    <div id="home-status"></div>
+  </section>
+
+  <section id="history" hidden>
+    <!-- Practice history: the reps strip + judged cards. Reps and seasons
+         never share a page (design review 2026-08-10). -->
   </section>
 
   <section id="timeline" hidden></section>
@@ -561,6 +1245,102 @@ export function appPage(): string {
 }
 
 export function runApp(cfg: AppConfig): http.Server {
+  // In-process auth (WU3). The HTML shell and client scripts stay open (no
+  // data lives in them); every /api/* route requires a resolved user. When
+  // auth is off (no supabase config) resolve() always returns the local
+  // admin, so the gate below never fires — pre-beta behavior, byte-identical.
+  const auth = makeAuth(authConfigFromPublic(cfg.pub.supabase, cfg.pub.adminEmails, cfg.userId));
+  internalHeaders = auth.internalToken ? { 'x-ip-internal': auth.internalToken } : {};
+  legacyUserId = cfg.userId;
+
+  /** Multi-session launch (WU-D): verdict → allocate → spawn → append+persist,
+   *  serialized behind launchChain with no awaits inside the critical block —
+   *  concurrent launches can't share a slot, and the registry entry exists
+   *  before the container it names. Returns the HTTP response to send. */
+  const multiLaunch = async (
+    who: { id: string; admin: boolean },
+    problemDirArg: string,
+  ): Promise<{ code: number; body: Record<string, unknown> }> => {
+    await reconcileRegistryNow();
+    let result: { code: number; body: Record<string, unknown> } = {
+      code: 500, body: { error: 'launch did not run' },
+    };
+    const busy = {
+      code: 409,
+      body: { error: `all ${cfg.pub.sessions.maxConcurrentSessions} interview rooms are busy — try again in ~45 minutes` },
+    };
+    await (launchChain = launchChain.then(() => {
+      const reg = loadRegistry(repoRoot);
+      const verdict = launchVerdict2(reg.entries, who.id, who.admin, problemDirArg, cfg.pub.sessions);
+      if (verdict === 'your-session-live') {
+        result = { code: 409, body: { error: 'your session is live — finish or end it first' } };
+        return;
+      }
+      if (verdict === 'already-launching') {
+        result = { code: 409, body: { error: 'that problem is already starting — give it a moment' } };
+        return;
+      }
+      if (verdict === 'all-slots-busy') { result = busy; return; }
+      const slot = allocateSlot(reg.entries, cfg.pub.sessions.maxConcurrentSessions);
+      if (!slot) { result = busy; return; }
+      const sid = newSessionId(Date.now());
+      const pid = spawnDetached(['session', problemDirArg], {
+        IP_SESSION_ID: sid,
+        IP_USER_ID: who.id,
+        IP_PREPARE_NEXT: '0',
+        IP_APP_URL: cfg.pub.appPublicUrl,
+        IP_MULTI_SESSION: '1',
+        IP_SESSION_PORT: String(slot.port),
+        IP_IDE_PORT: String(slot.idePort),
+        ...(internalHeaders['x-ip-internal']
+          ? { IP_INTERNAL_TOKEN: internalHeaders['x-ip-internal'] }
+          : {}),
+      });
+      reg.entries.push({
+        sid, user_id: who.id, port: slot.port, ide_port: slot.idePort,
+        pid: pid ?? -1, problem_dir: problemDirArg, started_at: Date.now(),
+      });
+      saveRegistry(repoRoot, reg);
+      result = {
+        code: 200,
+        body: { session_id: sid, url: `${cfg.pub.sessionPublicUrl}/session?sid=${encodeURIComponent(sid)}` },
+      };
+    }));
+    return result;
+  };
+
+  // WU7: the Postgres mirror — records only, disk stays truth. Sessions are
+  // swept from feedback/ by mtime watermark (starts at 0 = one-time backfill
+  // of pre-beta history; upserts make re-mirroring harmless).
+  const db = makeDb(cfg.pub.supabase);
+  const mirroredUsers = new Set<string>();
+  let feedbackWatermark = 0;
+  const sweepSessionsToDb = (): void => {
+    if (!db.enabled) return;
+    try {
+      const dir = path.join(repoRoot, 'feedback');
+      if (!existsSync(dir)) return;
+      const rows: SessionRow[] = [];
+      let maxSeen = feedbackWatermark;
+      for (const f of readdirSync(dir)) {
+        const m = /^(sess-[\w-]+)\.json$/.exec(f);
+        if (!m) continue;
+        const mtime = statSync(path.join(dir, f)).mtimeMs;
+        if (mtime <= feedbackWatermark) continue;
+        maxSeen = Math.max(maxSeen, mtime);
+        try {
+          const fb = JSON.parse(readFileSync(path.join(dir, f), 'utf8')) as { user_id?: string; card?: { solved?: boolean } };
+          let assessment: unknown = null;
+          const aFile = path.join(repoRoot, 'assessments', `${m[1]}.json`);
+          if (existsSync(aFile)) assessment = JSON.parse(readFileSync(aFile, 'utf8'));
+          rows.push(sessionRow(m[1]!, fb, assessment, cfg.userId, mtime));
+        } catch { /* half-written or legacy-shaped file: next sweep retries nothing — it's below the new watermark, and that's fine for a record */ }
+      }
+      feedbackWatermark = maxSeen;
+      db.mirrorSessions(rows);
+    } catch { /* mirror is best-effort by design */ }
+  };
+
   const server = http.createServer(async (req, res) => {
     const url = req.url ?? '/';
     const json = (code: number, body: unknown) => {
@@ -569,7 +1349,11 @@ export function runApp(cfg: AppConfig): http.Server {
     };
     try {
       if (url === '/') {
-        res.writeHead(200, { 'content-type': 'text/html' });
+        // no-store for the same reason /client/ has it: no build step and no
+        // content hash, and this page inlines the WHOLE stylesheet and section
+        // markup. A cached copy outlives a deploy exactly like a stale app.js
+        // does — and pairs it with fresh JS, which is worse than either alone.
+        res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
         return res.end(appPage());
       }
       if (url.startsWith('/client/')) {
@@ -585,6 +1369,94 @@ export function runApp(cfg: AppConfig): http.Server {
         res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'no-store' });
         return res.end(body);
       }
+      if (url === '/api/auth-config' && req.method === 'GET') {
+        // The one unauthenticated API route: the login screen needs to know
+        // whether auth is on and where to send the OTP/OAuth calls. Anon key
+        // only — it is designed to live in the browser.
+        return json(200, {
+          enabled: auth.enabled,
+          ...(cfg.pub.supabase
+            ? { supabase_url: cfg.pub.supabase.url, anon_key: cfg.pub.supabase.anonKey }
+            : {}),
+        });
+      }
+      const user = await auth.resolve(req);
+      if (url.startsWith('/api/') && !user) {
+        return json(401, { error: 'sign in required' });
+      }
+      // WU5 ownership rules. Absent user_id = pre-beta record = the local
+      // user's (the founder). Admins see and touch everything.
+      const ownsTarget = (t: Target | null | undefined): boolean =>
+        Boolean(t && (user!.admin || (t.user_id ?? cfg.userId) === user!.id));
+      const ownsRep = (r: { user_id?: string }): boolean =>
+        user!.admin || repOwnedBy(r, user!.id, cfg.userId);
+      if (url === '/api/memory' && req.method === 'GET') {
+        // The Gaps band's data: every assessed session the caller owns, full
+        // verdict rows, trend, per-dimension states — read fresh from disk
+        // each call (fetched once per history open, never on the poll).
+        // Failure honesty: expected per-file skips are COUNTED in the
+        // payload; an unexpected reader throw sets `degraded` — a server bug
+        // must never masquerade as "no rounds yet".
+        try {
+          const asmDir = path.join(repoRoot, 'assessments');
+          const assessments: import('./judge.js').JudgeResult[] = [];
+          let skipped = 0;
+          const sids: string[] = [];
+          if (existsSync(asmDir)) {
+            const { isMemorableSessionId } = await import('./gap-graph.js');
+            for (const f of readdirSync(asmDir)) {
+              // Filename regex drops sidecars (.confirm/.cause); the
+              // mint-shape boundary drops harness sessions — including the
+              // sess-qa814-* ids that beat a bare prefix check.
+              const m = /^(sess-[\w-]+)\.json$/.exec(f);
+              if (!m || !isMemorableSessionId(m[1]!)) continue;
+              try {
+                assessments.push(JSON.parse(readFileSync(path.join(asmDir, f), 'utf8')) as import('./judge.js').JudgeResult);
+                sids.push(m[1]!);
+              } catch {
+                skipped += 1;
+              }
+            }
+          }
+          const owners: Record<string, string | undefined> = {};
+          const presentFeedback = new Set<string>();
+          for (const sid of sids) {
+            try {
+              const fb = JSON.parse(
+                readFileSync(path.join(repoRoot, 'feedback', `${sid}.json`), 'utf8'),
+              ) as { user_id?: string };
+              presentFeedback.add(sid);
+              owners[sid] = fb.user_id;
+            } catch { /* absent → unattributable, counted by the reader */ }
+          }
+          const archivedIds = new Set<string>();
+          try {
+            for (const f of readdirSync(path.join(repoRoot, 'gaps', 'archive'))) {
+              try {
+                const arch = JSON.parse(readFileSync(path.join(repoRoot, 'gaps', 'archive', f), 'utf8')) as {
+                  sessions?: { session_id?: string }[];
+                };
+                for (const s of arch.sessions ?? []) if (s.session_id) archivedIds.add(s.session_id);
+              } catch { /* unreadable archive file proves nothing */ }
+            }
+          } catch { /* no archive dir */ }
+          const { buildVerdictHistory } = await import('./verdict-history.js');
+          const { PATTERN_MIN_SESSIONS } = await import('./gap-graph.js');
+          const h = buildVerdictHistory({
+            assessments, owners, presentFeedback, archivedIds,
+            userId: user!.id, legacyOwnerId: cfg.userId, isAdmin: user!.admin,
+            nowMs: Date.now(),
+          });
+          return json(200, {
+            ...h,
+            mode: h.sessions.length < PATTERN_MIN_SESSIONS ? 'observations' : 'patterns',
+            sessions_until_patterns: Math.max(0, PATTERN_MIN_SESSIONS - h.sessions.length),
+            skipped,
+          });
+        } catch (e) {
+          return json(200, { degraded: String(e).slice(0, 200) });
+        }
+      }
       if (url.startsWith('/api/feedback') && req.method === 'GET') {
         // A finished round's judged card, read from the file finalize (and
         // rejudge --record) writes. The planning page is where feedback
@@ -595,29 +1467,90 @@ export function runApp(cfg: AppConfig): http.Server {
         try {
           const fb = JSON.parse(
             readFileSync(path.join(repoRoot, 'feedback', `${sid}.json`), 'utf8'),
-          ) as { card?: unknown };
+          ) as { card?: unknown; user_id?: string };
           if (!fb.card) return json(404, { error: 'no card for this session' });
-          return json(200, { card: fb.card });
+          // WU5: cards are the owner's. Legacy files (no user_id) are the
+          // founder's — same absent-means-local rule as reps and targets.
+          if (!user!.admin && (fb.user_id ?? cfg.userId) !== user!.id) {
+            return json(404, { error: 'no feedback recorded for this session' });
+          }
+          // WU-C: hydrate confirm state so the history card can render
+          // noted/unanswered rows — the response is a snapshot, and a
+          // confirm written later must show up on the next open.
+          let confirms: Record<string, boolean> = {};
+          try {
+            confirms = JSON.parse(
+              readFileSync(path.join(repoRoot, 'assessments', `${sid}.confirm.json`), 'utf8'),
+            ) as Record<string, boolean>;
+          } catch { /* none yet */ }
+          return json(200, { card: fb.card, confirms });
         } catch {
           return json(404, { error: 'no feedback recorded for this session' });
         }
       }
+      if (url === '/api/card-feedback' && req.method === 'POST') {
+        // WU-C: the durable home of "did this match?". The session-card
+        // control dies with its tab (and, in multi-session, with the 30-min
+        // ended-session reap) — the history card is where confirms actually
+        // get given. Feeds promote-fixture; same file, same shape.
+        const b = JSON.parse((await readBody(req)) || '{}') as {
+          session?: string; dimension?: string; agree?: boolean;
+        };
+        const sid = b.session ?? '';
+        if (!/^sess-[\w-]+$/.test(sid)) return json(400, { error: 'bad session id' });
+        if (typeof b.dimension !== 'string' || !isDimensionKey(b.dimension)) {
+          return json(400, { error: 'bad dimension' });
+        }
+        let fbOwner: string | undefined;
+        try {
+          fbOwner = (JSON.parse(
+            readFileSync(path.join(repoRoot, 'feedback', `${sid}.json`), 'utf8'),
+          ) as { user_id?: string }).user_id;
+        } catch {
+          return json(404, { error: 'no feedback recorded for this session' });
+        }
+        if (!user!.admin && (fbOwner ?? cfg.userId) !== user!.id) {
+          return json(404, { error: 'no feedback recorded for this session' });
+        }
+        const file = path.join(repoRoot, 'assessments', `${sid}.confirm.json`);
+        let confirms: Record<string, boolean> = {};
+        try {
+          confirms = JSON.parse(readFileSync(file, 'utf8')) as Record<string, boolean>;
+        } catch { /* first confirmation */ }
+        confirms = mergeConfirm(confirms, b.dimension, Boolean(b.agree));
+        mkdirSync(path.join(repoRoot, 'assessments'), { recursive: true });
+        writeFileSync(file, JSON.stringify(confirms, null, 2));
+        return json(200, { ok: true });
+      }
       if (url === '/api/state') {
         const now = Date.now();
-        const live = await sessionLive(cfg.sessionPort);
+        // Multi mode: liveness and the session link are the CALLER's — the
+        // URL carries ?sid so a browser restart (no ip_sid cookie) still
+        // resumes into the right room through the router.
+        let live: boolean;
+        let sessionUrl = `${cfg.pub.sessionPublicUrl}/session`;
+        if (cfg.pub.multiSession) {
+          const reg = await reconcileRegistryNow();
+          const mine = reg.entries.find((e) => e.user_id === user!.id && e.ended_at === undefined);
+          live = Boolean(mine);
+          if (mine) sessionUrl = `${cfg.pub.sessionPublicUrl}/session?sid=${encodeURIComponent(mine.sid)}`;
+        } else {
+          live = await sessionLive(cfg.sessionPort);
+        }
         // The candidate's active gap, as a sentence — TODAY's "aimed at:"
         // line. The raw key ("clarify") explained nothing on the old page.
         const focus = (() => {
           try {
-            const view = buildGraphView(loadStore(path.join(repoRoot, 'gaps'), cfg.userId));
+            const view = buildGraphView(loadStore(path.join(repoRoot, 'gaps'), user!.id));
             return view.focus ? { key: view.focus, description: gapDescription(view.focus) } : null;
           } catch {
             return null;
           }
         })();
         const targets = listTargets(repoRoot)
+          .filter((t) => user!.admin || (t.user_id ?? cfg.userId) === user!.id)
           .map((t) => {
-            const queue = refreshQueue(t, cfg.userId, now);
+            const queue = refreshQueue(t, t.user_id ?? cfg.userId, now);
             const withTitles = queue
               ? {
                   ...queue,
@@ -639,13 +1572,25 @@ export function runApp(cfg: AppConfig): http.Server {
                   }),
                 }
               : null;
+            // Season-topic coverage for the plan page's band: the frozen
+            // list joined with topic-log outcomes. Derived per poll — the
+            // log is one tiny file read in a loop that already does disk
+            // work per target; corrupt/missing degrades to no band.
+            let topicRollup: import('./topic-log.js').TopicRollup[] | null = null;
+            if (t.topics?.length) {
+              try {
+                topicRollup = rollupTopics(t.topics, loadTopicLog(repoRoot, t.id));
+              } catch { /* unreadable log — band absent, plan unaffected */ }
+            }
             return {
               target: {
                 id: t.id,
                 label: t.label,
                 interview_date: t.interview_date ?? null,
-                specs: t.specs.map((s) => ({ id: s.id, label: s.label, capabilities: s.capabilities })),
+                specs: t.specs.map((s) => ({ id: s.id, label: s.label, capabilities: s.capabilities, date: s.date ?? null, evidence_tier: s.evidence_tier ?? null })),
+                topics: t.topics ?? null,
               },
+              topic_rollup: topicRollup,
               queue: withTitles,
               // Latest adaptation only — the timeline explains why rounds
               // changed with one line, not the whole history.
@@ -660,18 +1605,38 @@ export function runApp(cfg: AppConfig): http.Server {
                 : null,
             };
           })
-          // Nearest interview first; undated targets last.
-          .sort((a, b) => (a.target.interview_date ?? '9999') < (b.target.interview_date ?? '9999') ? -1 : 1);
+          // Nearest ROUND first (a loop's rounds carry their own dates);
+          // the target date stands in for undated specs; undated targets last.
+          .sort((a, b) => (nearestDeadline(a.target) ?? '9999') < (nearestDeadline(b.target) ?? '9999') ? -1 : 1);
+        // The practice door's rows — reconciled + phase-derived on every
+        // poll, same one-poll-drives-everything contract as targets, same
+        // save-if-changed discipline as refreshQueue.
+        const repsStored = loadReps(repoRoot);
+        const repsFresh = reconcileWithDisk(repoRoot, repsStored) as typeof repsStored;
+        if (JSON.stringify(repsFresh) !== JSON.stringify(repsStored)) {
+          saveReps(repoRoot, repsFresh);
+          db.mirrorReps(repsFresh.items.map((r) => repRow(r, cfg.userId, now)));
+        }
+        if (user!.email && !mirroredUsers.has(user!.id)) {
+          mirroredUsers.add(user!.id);
+          db.upsertUsers([{ id: user!.id, email: user!.email, is_admin: user!.admin }]);
+        }
+        sweepSessionsToDb();
         return json(200, {
           targets,
+          reps: repsVisibleTo(repStateView(repoRoot, repsFresh), user!, cfg.userId),
           focus,
           today: new Date(now).toISOString(),
           session_live: live,
-          session_url: `http://localhost:${cfg.sessionPort}/session`,
+          session_url: sessionUrl,
+          user: { id: user!.id, email: user!.email, admin: user!.admin },
         });
       }
       if (url === '/api/target' && req.method === 'POST') {
-        const b = JSON.parse((await readBody(req)) || '{}') as { label?: string; date?: string; description?: string; context?: string };
+        const b = JSON.parse((await readBody(req)) || '{}') as {
+          label?: string; date?: string; description?: string; context?: string;
+          attachments?: { name?: string; media_type?: string; data?: string }[];
+        };
         if (!b.label?.trim()) return json(400, { error: 'label required' });
         // "AUg 20" stored verbatim rendered as "NaN days to Palantir". The
         // date is optional; a garbled one is an error, never silent data.
@@ -679,16 +1644,34 @@ export function runApp(cfg: AppConfig): http.Server {
         if (date && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00`)))) {
           return json(400, { error: `couldn't read that date — write it like 2026-08-20 (got "${date}")` });
         }
+        // Binary attachments: media-type allowlist + size caps, decoded and
+        // written under the target dir. Rejecting BEFORE the target exists
+        // keeps a bad upload from leaving a half-made plan behind.
+        const att = decodeAttachments(b.attachments ?? []);
+        if ('error' in att) return json(400, { error: att.error });
+        const decoded = att.decoded;
         const t: Target = {
           id: `${slugify(b.label)}-${Date.now().toString(36)}`,
           label: b.label.trim(),
+          user_id: user!.id,
           ...(date ? { interview_date: date } : {}),
           description: b.description?.trim() ?? '',
           ...(b.context?.trim() ? { context: b.context.trim() } : {}),
           specs: [],
           created: new Date().toISOString(),
         };
+        if (decoded.length > 0) {
+          const dir = path.join(targetDir(repoRoot, t.id), 'attachments');
+          mkdirSync(dir, { recursive: true });
+          t.attachments = decoded.map((d, i) => {
+            // basename + strip traversal: the name is client input.
+            const safe = `${i + 1}-${path.basename(d.name).replace(/[^\w.\-]+/g, '_')}`;
+            writeFileSync(path.join(dir, safe), d.bytes);
+            return { name: d.name, media_type: d.media_type, file: path.join('attachments', safe) };
+          });
+        }
         saveTarget(repoRoot, t);
+        db.mirrorTargets([targetRow(t, cfg.userId)]);
         return json(200, { id: t.id });
       }
       if (url === '/api/clarify' && req.method === 'POST') {
@@ -701,14 +1684,17 @@ export function runApp(cfg: AppConfig): http.Server {
           answers?: { question: string; answer: string }[];
         };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         if (!t) return json(404, { error: 'no such target' });
         if (!t.description) return json(400, { error: 'describe the round first' });
         const { pickClarifier } = await import('./clarify.js');
+        const { attachmentBlocks } = await import('./intake.js');
         try {
           const result = await pickClarifier(path.join(repoRoot, 'prompts', 'clarify-intake.md'))({
             description: t.description,
             context: t.context ?? '',
             answers: b.answers,
+            attachments: attachmentBlocks(repoRoot, t),
           });
           return json(200, result);
         } catch (e) {
@@ -724,13 +1710,449 @@ export function runApp(cfg: AppConfig): http.Server {
           }
         }
       }
+      if (url === '/api/practice/clarify' && req.method === 'POST') {
+        // The practice door's inference: the gap-deriving clarifier (design
+        // review 2026-08-12) — material arrives INLINE, a rep has no target
+        // to read from. Same fallback ladder shape as /api/clarify; failures
+        // reach the candidate as actionable copy, never gate internals.
+        // DEGRADATION INVARIANT: every 200 carries >=1 draft and a gaps
+        // array, so the client renders ONE confirm screen on every path.
+        const b = JSON.parse((await readBody(req)) || '{}') as {
+          description?: string;
+          context?: string;
+          answers?: { id?: string; question?: string; answer?: string }[];
+          attachments?: { name?: string; media_type?: string; data?: string }[];
+        };
+        const { clarifyFailureMessage } = await import('./clarify.js');
+        const { deriveRuntimeGaps, pickPracticeClarifier } = await import('./practice-clarify.js');
+        const { deriveTaskFromSpec } = await import('./blueprint.js');
+        let input: { description: string; context: string };
+        try {
+          input = gateRepInput(b);
+        } catch (e) {
+          return json(400, { error: String(e instanceof Error ? e.message : e) });
+        }
+        // Caps are checked HERE, not only at Start (T11, 2026-08-12 review):
+        // "come back tomorrow" must land before the candidate co-authors a
+        // round, not after. Same copy as /api/practice.
+        const admission = admissionVerdict(
+          loadReps(repoRoot).items, user!.id, cfg.userId, Date.now(), cfg.pub.caps,
+        );
+        if (admission === 'daily-cap') {
+          return json(429, { error: "that's your practice budget for today — the beta caps rounds per day; come back tomorrow" });
+        }
+        if (admission === 'pending-cap') {
+          return json(429, { error: 'you have unplayed rounds waiting — run or retry one of those before building another' });
+        }
+        if (admission === 'global-cap') {
+          return json(429, { error: "Zenkai hit its build budget for today — everyone's rounds run on the same meter. Come back tomorrow." });
+        }
+        const att = decodeAttachments(b.attachments ?? []);
+        if ('error' in att) return json(400, { error: att.error });
+        const answers = (b.answers ?? [])
+          .filter((a) => a.id?.trim() && a.answer?.trim())
+          .map((a) => ({ id: a.id!.trim(), question: a.question?.trim() || a.id!.trim(), answer: a.answer!.trim() }));
+        // Declines are decision 2B: never block, always visible, ALWAYS
+        // counted — this warn is the only frequency data 2B's "revisit with
+        // data" clause has.
+        const warnUnsupported = (drafts: { spec: { label: string }; unsupported?: string }[]) => {
+          for (const d of drafts) {
+            if (d.unsupported) console.warn(`[practice] unsupported round "${d.spec.label}": ${d.unsupported}`);
+          }
+        };
+        try {
+          const result = await pickPracticeClarifier(path.join(repoRoot, 'prompts', 'practice-clarify.md'))({
+            description: input.description,
+            context: input.context,
+            answers,
+            attachments: attachmentBlocksFromDecoded(att.decoded),
+          });
+          warnUnsupported(result.drafts);
+          // Real-set sourcing (2026-08-13, "source by default"): every
+          // algorithmic draft gets a binding — a NAMED problem resolved
+          // mechanically, else a memory-blind diverse pick. This whole
+          // step is decoration: any failure (dataset absent, pool dry)
+          // just means the draft invents, exactly the pre-sourcing path.
+          try {
+            const lc = await import('./lc-source.js');
+            if (lc.lcReady(repoRoot).ok) {
+              const { resolveProblemRef } = await import('./lc-refs.js');
+              const { buildSourceSet } = await import('./lc-pick.js');
+              const { recentlyAttemptedSlugs } = await import('./topic-graph.js');
+              const { namedProblemGap } = await import('./practice-clarify.js');
+              const index = lc.loadLcIndex(repoRoot);
+              const blocked = lc.blocklistedSlugs(repoRoot);
+              // A row the candidate already ANSWERED outranks everything a
+              // re-inference produced — their edit must not be undone by
+              // the model's next turn (the answered-gaps rule, applied to
+              // sourcing). "invent" opts the whole screen out of binding.
+              const srcAnswer = answers.find((a) => a.id === 'named-problem')?.answer.trim() ?? null;
+              const srcInvent = srcAnswer !== null && /^invent/i.test(srcAnswer);
+              for (const d of result.drafts) {
+                const task = d.task ?? deriveTaskFromSpec(d.spec);
+                if (task !== 'algorithmic_set' || srcInvent) continue;
+                // Named refs resolve mechanically; the recency window does
+                // NOT apply to them (re-doing a problem you asked for is
+                // fine) — blocklist and eligibility always do. An answered
+                // row is the strongest ref and must not be silently
+                // substituted when it fails to resolve.
+                const named: import('./lc-source.js').LcIndexEntry[] = [];
+                if (srcAnswer) {
+                  const hit = resolveProblemRef(srcAnswer, index);
+                  if (!hit || blocked.has(hit.slug) || !lc.eligibleForSourcing(hit)) continue;
+                  named.push(hit);
+                }
+                for (const ref of d.named_problems ?? []) {
+                  const hit = resolveProblemRef(ref, index);
+                  if (hit && !blocked.has(hit.slug) && lc.eligibleForSourcing(hit)) named.push(hit);
+                }
+                // Set size: the stated part count, never below what was
+                // named, capped by the enforceable size knob and 4.
+                const count = Math.min(
+                  Math.max(d.part_count ?? named.length, named.length, 1),
+                  d.spec.check.max_source_files ?? 4,
+                  4,
+                );
+                const set = buildSourceSet({
+                  index,
+                  named,
+                  count,
+                  excludeSlugs: new Set([
+                    ...recentlyAttemptedSlugs(repoRoot, user!.id, Date.now()),
+                    ...blocked,
+                  ]),
+                  // Seeded on user+spec: re-clarifying the same round deals
+                  // the same set (stable confirm screen).
+                  seed: `${user!.id}:${d.spec.id}`,
+                });
+                if (set.length === 0) continue;
+                const toPart = (x: (typeof set)[number]) => ({
+                  slug: x.entry.slug, title: x.entry.title, difficulty: x.entry.difficulty, picked_by: x.picked_by,
+                });
+                d.source = {
+                  ...toPart(set[0]!),
+                  ...(set.length > 1 ? { parts: set.map(toPart) } : {}),
+                };
+                result.gaps.push(namedProblemGap(set.map((x) => ({ title: x.entry.title, difficulty: x.entry.difficulty, picked_by: x.picked_by }))));
+              }
+            }
+          } catch (e) {
+            console.warn(`[practice] source decoration skipped: ${String(e).slice(0, 160)}`);
+          }
+          return json(200, result);
+        } catch (e) {
+          console.warn(`[app] practice clarify failed, falling back to infer: ${String(e).slice(0, 200)}`);
+          try {
+            const infer = pickSpecInferrer(path.join(repoRoot, 'prompts', 'infer-round-spec.md'));
+            const draft = await infer(input.description, input.context);
+            warnUnsupported([draft]);
+            // The blind read: single-spec inference reports no evidence, so
+            // time is a gap unless the draft carries a limit. `degraded`
+            // tells the client to say "check the facts" instead of nothing.
+            const ms = draft.spec.capabilities.time_limit_ms;
+            return json(200, {
+              drafts: [draft],
+              // Single-spec inference reports no provenance at all, so BOTH
+              // floors fire: a blind read is exactly when the candidate must
+              // be asked rather than guessed at.
+              gaps: deriveRuntimeGaps({
+                timeEvidence: ms === null ? 'unknown' : 'stated_timed',
+                timeLimitMs: ms,
+                languageEvidence: 'unknown',
+                language: '',
+                languageOptions: [],
+                // The blind read has no hypothesis; capability facts stand in
+                // and the rail says GUESSED, which is the honest chip here.
+                task: deriveTaskFromSpec(draft.spec),
+                taskEvidence: 'inferred',
+                answeredIds: new Set(answers.map((a) => a.id)),
+                answers,
+              }),
+              brief: '',
+              degraded: true,
+            });
+          } catch (e2) {
+            return json(502, { error: clarifyFailureMessage(e2) });
+          }
+        }
+      }
+      if (url === '/api/practice' && req.method === 'POST') {
+        // Start a rep build. Gate order matters: identity, vocabulary,
+        // size, THEN the lock — nothing is created until every check holds,
+        // and the mkdir lock is what makes a double-click spawn exactly one
+        // detached agent (both clicks carry the same client-generated id).
+        const b = JSON.parse((await readBody(req)) || '{}') as {
+          rep_id?: string; spec?: unknown; description?: string; context?: string; task?: string;
+          source_ref?: string; source_auto?: boolean;
+          /** Set form: refs in part order + which were auto picks. */
+          source_refs?: string[]; source_autos?: boolean[];
+        };
+        if (typeof b.rep_id !== 'string' || !REP_ID_RE.test(b.rep_id)) {
+          return json(400, { error: 'bad rep id' });
+        }
+        const specErrors = validateRoundSpec(b.spec);
+        if (specErrors.length > 0) {
+          // The server re-proves the spec no matter what the client edited —
+          // the accept-spec discipline.
+          return json(400, { error: `spec failed the gate: ${specErrors.join('; ')}` });
+        }
+        let input: { description: string; context: string };
+        try {
+          input = gateRepInput(b);
+        } catch (e) {
+          return json(400, { error: String(e instanceof Error ? e.message : e) });
+        }
+        // Beta caps (WU6). Per-user admission first (cheap, pure), then the
+        // global build slot — each opus build is real money and the beta
+        // runs them one at a time.
+        const admission = admissionVerdict(
+          loadReps(repoRoot).items, user!.id, cfg.userId, Date.now(), cfg.pub.caps,
+        );
+        if (admission === 'daily-cap') {
+          return json(429, { error: "that's your practice budget for today — the beta caps rounds per day; come back tomorrow" });
+        }
+        if (admission === 'pending-cap') {
+          return json(429, { error: 'you have unplayed rounds waiting — run or retry one of those before building another' });
+        }
+        if (admission === 'global-cap') {
+          // The only cap that bounds spend while signup is open: per-user
+          // limits reset for the price of a new email address.
+          return json(429, { error: "Zenkai hit its build budget for today — everyone's rounds run on the same meter. Come back tomorrow." });
+        }
+        if (countLiveBuilds() >= cfg.pub.caps.maxConcurrentBuilds) {
+          return json(409, { error: "someone else's round is generating — builds run one at a time in the beta; try again in ~5 minutes" });
+        }
+        try {
+          acquireRepLock(repoRoot, b.rep_id);
+        } catch (e) {
+          return json(409, { error: String(e instanceof Error ? e.message : e) });
+        }
+        // The task hypothesis rides only when it names a real task — an
+        // absent/garbled value falls back to capability derivation in
+        // rep-build, never an error (recipe-side, not vocabulary).
+        const { ROUND_TASKS } = await import('./blueprint.js');
+        const task = typeof b.task === 'string' && (ROUND_TASKS as readonly string[]).includes(b.task)
+          ? b.task : undefined;
+        // The source binding rides only after the SERVER re-proves it —
+        // resolve the ref, run the one ladder. "invent", an unresolvable
+        // ref, or a refused slug all mean the same thing: no binding, the
+        // build invents. Never an error: a vanished dataset must not block
+        // a round the pre-sourcing product could build.
+        let source: QueueItem['source'];
+        // Set form wins; the single-ref form stays for compatibility. Every
+        // ref is re-resolved and re-verdicted server-side; "invent" (any
+        // ref) opts out entirely; a failed ref DROPS with a warn — the set
+        // that binds is the set that resolves.
+        const rawRefs = Array.isArray(b.source_refs) && b.source_refs.length
+          ? b.source_refs.map((r, i) => ({ ref: String(r ?? '').trim(), auto: b.source_autos?.[i] === true }))
+          : (typeof b.source_ref === 'string' && b.source_ref.trim()
+              ? [{ ref: b.source_ref.trim(), auto: b.source_auto === true }]
+              : []);
+        const optedOut = rawRefs.some(({ ref }) => /^invent/i.test(ref));
+        if (rawRefs.length && !optedOut) {
+          try {
+            const lc = await import('./lc-source.js');
+            const { resolveProblemRef } = await import('./lc-refs.js');
+            if (lc.lcReady(repoRoot).ok) {
+              const index = lc.loadLcIndex(repoRoot);
+              const parts: NonNullable<NonNullable<QueueItem['source']>['parts']> = [];
+              for (const { ref, auto } of rawRefs.slice(0, 4)) {
+                if (!ref) continue;
+                const hit = resolveProblemRef(ref, index);
+                const verdict = hit ? lc.sourceBindingVerdict(repoRoot, hit.slug) : null;
+                if (hit && verdict?.ok && !parts.some((x) => x.slug === hit.slug)) {
+                  parts.push({ slug: hit.slug, title: hit.title, difficulty: hit.difficulty, picked_by: auto ? 'auto' : 'user' });
+                } else {
+                  console.warn(`[practice] source ref not bound ("${ref.slice(0, 60)}"): ${verdict && !verdict.ok ? verdict.reason : 'unresolved'}`);
+                }
+              }
+              if (parts.length) {
+                source = {
+                  kind: 'leetcode',
+                  ...parts[0]!,
+                  ...(parts.length > 1 ? { parts } : {}),
+                };
+              }
+            }
+          } catch (e) {
+            console.warn(`[practice] source binding skipped: ${String(e).slice(0, 160)}`);
+          }
+        }
+        const rep = createRepRecord({
+          userId: user!.id,
+          id: b.rep_id,
+          spec: b.spec as RoundSpec,
+          description: input.description,
+          ...(input.context ? { context: input.context } : {}),
+          ...(task ? { task } : {}),
+          ...(source ? { source } : {}),
+        });
+        const file = loadReps(repoRoot);
+        file.items.push(rep);
+        if (!file.created) file.created = rep.created;
+        saveReps(repoRoot, file);
+        db.mirrorReps([repRow(rep, cfg.userId, Date.now())]);
+        console.log(`[app] rep ${rep.id} requested (${rep.spec.label})`);
+        spawnRepBuild(rep);
+        return json(200, { ok: true, rep_id: rep.id });
+      }
+      if (url === '/api/practice/launch' && req.method === 'POST') {
+        const b = JSON.parse((await readBody(req)) || '{}') as { rep_id?: string; origin?: string };
+        if (typeof b.rep_id !== 'string' || !REP_ID_RE.test(b.rep_id)) {
+          return json(400, { error: 'bad rep id' });
+        }
+        const views = repStateView(repoRoot, loadReps(repoRoot));
+        const rep = views.find((r) => r.id === b.rep_id);
+        if (!rep) return json(404, { error: 'no such rep' });
+        if (!ownsRep(rep)) return json(403, { error: 'not your rep' });
+        const dir = repProblemDir(repoRoot, rep.id);
+        if (cfg.pub.multiSession) {
+          // Ready/used checks still apply; liveness verdicts live in the
+          // registry. NEVER probe cfg.sessionPort here — that's the router.
+          const pre = launchVerdict(rep, {
+            usedExists: existsSync(path.join(dir, '.used')),
+            sessionLive: false,
+          });
+          if (pre === 'not-ready') return json(400, { error: 'rep is not ready' });
+          if (pre === 'already-used') return json(409, { error: 'that rep already ran — its card is under history' });
+          const out = await multiLaunch({ id: user!.id, admin: user!.admin }, dir);
+          if (out.code === 200) {
+            logLaunch(b.origin, String(out.body.session_id));
+            console.log(`[app] rep ${rep.id} launching as ${String(out.body.session_id)}`);
+          }
+          return json(out.code, out.body);
+        }
+        const probe = await probeSession(cfg.sessionPort);
+        const verdict = launchVerdict(rep, {
+          usedExists: existsSync(path.join(dir, '.used')),
+          sessionLive: probe.reachable && !probe.ended,
+        });
+        if (verdict === 'not-ready') return json(400, { error: 'rep is not ready' });
+        if (verdict === 'already-used') return json(409, { error: 'that rep already ran — its card is under history' });
+        if (verdict === 'session-live') {
+          const owner = await probeSessionOwner(cfg.sessionPort);
+          return json(409, {
+            error: owner === null || owner === user!.id || user!.admin
+              ? 'a session is already running — finish or end it first'
+              : 'someone is mid-round — sessions run one at a time in the beta; check back in ~45 minutes',
+          });
+        }
+        if (probe.reachable && probe.ended) {
+          // Reap a graded session's lingering card server (the /api/launch
+          // pattern, verbatim) so port 3200 frees up for the new session.
+          await postSession(cfg.sessionPort, '/api/shutdown');
+          for (let i = 0; i < 10; i++) {
+            if (!(await probeSession(cfg.sessionPort)).reachable) break;
+            await new Promise((r) => setTimeout(r, 500));
+          }
+        }
+        const sessionId = `sess-${Date.now()}`;
+        logLaunch(b.origin, sessionId);
+        spawnDetached(['session', dir], {
+          IP_SESSION_ID: sessionId,
+          // The person at the keyboard is whose gap graph gets written.
+          IP_USER_ID: user!.id,
+          IP_PREPARE_NEXT: '0',
+          IP_APP_URL: cfg.pub.appPublicUrl,
+          ...(internalHeaders['x-ip-internal']
+            ? { IP_INTERNAL_TOKEN: internalHeaders['x-ip-internal'] }
+            : {}),
+        });
+        console.log(`[app] rep ${rep.id} launching as ${sessionId}`);
+        return json(200, { session_id: sessionId, url: `${cfg.pub.sessionPublicUrl}/session` });
+      }
+      if (url === '/api/practice/retry' && req.method === 'POST') {
+        const b = JSON.parse((await readBody(req)) || '{}') as { rep_id?: string };
+        if (typeof b.rep_id !== 'string' || !REP_ID_RE.test(b.rep_id)) {
+          return json(400, { error: 'bad rep id' });
+        }
+        const views = repStateView(repoRoot, loadReps(repoRoot));
+        const rep = views.find((r) => r.id === b.rep_id);
+        if (!rep) return json(404, { error: 'no such rep' });
+        if (!ownsRep(rep)) return json(403, { error: 'not your rep' });
+        const dir = repProblemDir(repoRoot, rep.id);
+        const gm = readGeneratingMarker(dir);
+        const verdict = retryVerdict(rep, { markerAlive: Boolean(gm && pidAlive(gm.pid)) });
+        if (verdict === 'not-failed') return json(400, { error: 'rep is not in a failed state' });
+        if (verdict === 'still-running') return json(409, { error: 'that build is actually still running — give it a minute' });
+        rmSync(path.join(dir, '.failed'), { force: true });
+        console.log(`[app] rep ${rep.id} retrying`);
+        spawnRepBuild(rep);
+        return json(200, { ok: true });
+      }
+      if (url === '/api/plan/turn' && req.method === 'POST') {
+        // One planner conversation turn, awaited inline (the repo's pattern
+        // for model calls — /api/clarify does the same). Research turns can
+        // run 30-60s; the client shows determinate progress. Turns persist
+        // only AFTER the model+gate succeed, so a 502 retry is idempotent.
+        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; message?: string };
+        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
+        if (!t) return json(404, { error: 'no such target' });
+        if (!process.env.ANTHROPIC_API_KEY) {
+          // The conversational planner needs typed content blocks + server
+          // tools, which the claude -p path cannot carry. 501 tells the
+          // client to fall back to the classic wizard.
+          return json(501, { error: 'the conversational planner needs ANTHROPIC_API_KEY — falling back to the classic intake' });
+        }
+        // A chip-only intake is valid: pasted material lands in context and
+        // attachments, not description. Empty-of-everything is the real error.
+        if (!t.description && !t.context && !(t.attachments?.length) && !b.message?.trim()) {
+          return json(400, { error: 'describe the round first — type or paste something' });
+        }
+        if ((b.message ?? '').length > 32 * 1024) return json(400, { error: 'message too long — trim it to the relevant part' });
+        const { runPlannerTurn } = await import('./planner.js');
+        try {
+          const result = await runPlannerTurn({
+            root: repoRoot,
+            target: t,
+            templatePath: path.join(repoRoot, 'prompts', 'planner.md'),
+            userMessage: b.message,
+          });
+          return json(200, { turns: result.turns, done: t.specs.length > 0 });
+        } catch (e) {
+          return json(502, { error: `planner turn failed: ${String(e).slice(0, 300)}` });
+        }
+      }
+      if (url.startsWith('/api/plan/conversation')) {
+        // Replay for resume — the fix for the orphan-target litter: a
+        // target with a conversation and no specs picks up where it left
+        // off instead of rotting as "finish setting up".
+        const tid = new URL(url, 'http://x').searchParams.get('target') ?? '';
+        const t = tid ? loadTarget(repoRoot, tid) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
+        if (!t) return json(404, { error: 'no such target' });
+        const { loadConversation, renderConversation, latestProposal } = await import('./planner.js');
+        const turns = loadConversation(repoRoot, tid);
+        return json(200, {
+          turns: renderConversation(turns),
+          proposal: latestProposal(turns),
+          planner_available: Boolean(process.env.ANTHROPIC_API_KEY),
+        });
+      }
+      if (url === '/api/target/delete' && req.method === 'POST') {
+        // The other half of the abandoned-plan fix: an explicit way OUT.
+        // Deleting removes the whole target dir — conversation, attachments,
+        // generated problems. The candidate confirmed in the UI; traces and
+        // assessments live outside the target dir and are untouched.
+        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string };
+        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
+        if (!t) return json(404, { error: 'no such target' });
+        rmSync(targetDir(repoRoot, t.id), { recursive: true, force: true });
+        return json(200, { ok: true });
+      }
       if (url === '/api/accept-spec' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as {
           target_id?: string;
           spec?: RoundSpec;          // legacy single-spec shape
           specs?: RoundSpec[];       // multi-round accept
+          /** Conversational pace override (1-7); falls back to the latest
+           *  proposal's value, then the default. */
+          pace_per_week?: number;
         };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         const incoming = b.specs ?? (b.spec ? [b.spec] : []);
         if (!t || incoming.length === 0) return json(400, { error: 'target_id and spec(s) required' });
         // The confirm gate re-proves the vocabulary server-side — the client
@@ -742,14 +2164,116 @@ export function runApp(cfg: AppConfig): http.Server {
         const ids = new Set(incoming.map((x) => x.id));
         t.specs = [...t.specs.filter((x) => !ids.has(x.id)), ...incoming];
         saveTarget(repoRoot, t);
+        // Planner-settled facts feed generation: persist the summary the
+        // model wrote at proposal time so the blueprint drafter reads it
+        // (composeRoundBrief deliberately drops description/context once a
+        // blueprint exists — this is the door conversation content takes).
+        // The conversational pace ("about an hour a day" → 4/week) sizes the
+        // queue; an explicit client value wins over the stored proposal.
+        let pace: number | undefined =
+          typeof b.pace_per_week === 'number' && Number.isFinite(b.pace_per_week)
+            ? Math.min(7, Math.max(1, Math.round(b.pace_per_week)))
+            : undefined;
+        // Named problems ride the STORED proposal, never the client body —
+        // the same server-side re-read the summary uses, so nothing the
+        // browser edited can invent a binding.
+        const namedBySpec = new Map<string, string[]>();
+        const partCountBySpec = new Map<string, number>();
+        try {
+          const { loadConversation, latestProposal } = await import('./planner.js');
+          const prop = latestProposal(loadConversation(repoRoot, t.id));
+          if (prop?.summary) {
+            writeFileSync(path.join(targetDir(repoRoot, t.id), 'planner-summary.md'), prop.summary + '\n');
+          }
+          if (pace === undefined && prop?.pace_per_week) pace = prop.pace_per_week;
+          // Season topics FREEZE here, once: already gated at proposal time
+          // (gateConceptTopics), re-read from the STORED proposal like the
+          // summary and named_problems — never the client body — and never
+          // overwritten on a later accept (append-only, the specs
+          // discipline: topic-log.json counts over this list, so history
+          // must keep pointing at the list it ran under).
+          if (!t.topics?.length && prop?.topics?.length) {
+            t.topics = prop.topics;
+            saveTarget(repoRoot, t);
+          }
+          for (const d of prop?.drafts ?? []) {
+            if (d.named_problems?.length) namedBySpec.set(d.spec.id, d.named_problems);
+            if (d.part_count && d.part_count >= 2) partCountBySpec.set(d.spec.id, d.part_count);
+          }
+        } catch { /* no conversation — CLI or legacy path */ }
         if (!loadQueue(repoRoot, t.id)) {
-          const queue = proposeQueue(t, Date.now());
+          const queue = proposeQueue(t, Date.now(), pace);
+          // Real-set sourcing (2026-08-13, "source by default"): algorithmic
+          // specs get bindings BEFORE naming — named problems land on the
+          // spec's items in order, memory-blind diverse picks cover the
+          // rest. Any failure (dataset absent, pool dry) leaves items
+          // unbound and they invent, the pre-sourcing path — never an error.
+          try {
+            const lc = await import('./lc-source.js');
+            const { deriveTaskFromSpec } = await import('./blueprint.js');
+            if (lc.lcReady(repoRoot).ok) {
+              const { resolveProblemRef } = await import('./lc-refs.js');
+              const { buildSourceSet } = await import('./lc-pick.js');
+              const { recentlyAttemptedSlugs } = await import('./topic-graph.js');
+              const index = lc.loadLcIndex(repoRoot);
+              const blocked = lc.blocklistedSlugs(repoRoot);
+              const bound = new Set<string>();
+              const owner = t.user_id ?? legacyUserId;
+              for (const spec of t.specs) {
+                if (deriveTaskFromSpec(spec) !== 'algorithmic_set') continue;
+                const mine = queue.items.filter((i) => i.spec_id === spec.id);
+                if (mine.length === 0) continue;
+                // EVERY item of this spec is one full session of the round,
+                // so a 3-part OA spec means a 3-part SET per item. Named
+                // problems land in the FIRST item's set; later items are
+                // all-auto. `bound` accumulates so no slug repeats across
+                // the queue.
+                const named: import('./lc-source.js').LcIndexEntry[] = [];
+                for (const ref of namedBySpec.get(spec.id) ?? []) {
+                  const hit = resolveProblemRef(ref, index);
+                  if (hit && !blocked.has(hit.slug) && !bound.has(hit.slug) && lc.eligibleForSourcing(hit)) named.push(hit);
+                }
+                const count = Math.min(
+                  Math.max(partCountBySpec.get(spec.id) ?? named.length, named.length, 1),
+                  spec.check.max_source_files ?? 4,
+                  4,
+                );
+                mine.forEach((item, itemIdx) => {
+                  const set = buildSourceSet({
+                    index,
+                    named: itemIdx === 0 ? named : [],
+                    count,
+                    excludeSlugs: new Set([
+                      ...recentlyAttemptedSlugs(repoRoot, owner, Date.now()),
+                      ...blocked,
+                      ...bound,
+                    ]),
+                    seed: `${t.id}:${spec.id}:${item.id}`,
+                  });
+                  if (set.length === 0) return;
+                  for (const x of set) bound.add(x.entry.slug);
+                  const toPart = (x: (typeof set)[number]) => ({
+                    slug: x.entry.slug, title: x.entry.title, difficulty: x.entry.difficulty, picked_by: x.picked_by,
+                  });
+                  item.source = {
+                    kind: 'leetcode',
+                    ...toPart(set[0]!),
+                    ...(set.length > 1 ? { parts: set.map(toPart) } : {}),
+                  };
+                });
+              }
+            }
+          } catch (e) {
+            console.warn(`[app] sourcing skipped at accept: ${String(e).slice(0, 160)}`);
+          }
           // Name every planned round now (D-impl): one call PER SPEC so a
           // multi-round queue gets titles that fit each round's shape.
           // Failure degrades to quiet rows — naming never blocks the plan.
+          // Sourced items are EXCLUDED: a bound item needs no invented
+          // title (and the LC title must never become one).
           const namer = pickTopicNamer(path.join(repoRoot, 'prompts', 'plan-topics.md'));
           for (const spec of t.specs) {
-            const mine = queue.items.filter((i) => i.spec_id === spec.id);
+            const mine = queue.items.filter((i) => i.spec_id === spec.id && !i.source);
             if (mine.length === 0) continue;
             try {
               const brief = [
@@ -757,8 +2281,10 @@ export function runApp(cfg: AppConfig): http.Server {
                 spec.emphasis ? `Emphasis: ${spec.emphasis}.` : '',
                 t.description ? `The candidate describes it as: ${t.description}` : '',
               ].filter(Boolean).join('\n');
-              const titles = await namer(brief, mine.length);
-              mine.forEach((item, i) => (item.planned_title = titles[i]));
+              const titles = await stripSpoilerTitles(await namer(brief, mine.length));
+              mine.forEach((item, i) => {
+                if (titles[i]) item.planned_title = titles[i];
+              });
             } catch (e) {
               console.warn(`[app] topic naming failed for ${spec.id} (quiet rows): ${String(e).slice(0, 200)}`);
             }
@@ -782,6 +2308,7 @@ export function runApp(cfg: AppConfig): http.Server {
         // diff (D5); /api/adapt/apply is the only writer.
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; material?: string };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         if (!t) return json(404, { error: 'no such target' });
         const material = (b.material ?? '').trim();
         if (!material) return json(400, { error: 'paste what you learned — an email, problem titles, a message' });
@@ -826,8 +2353,10 @@ export function runApp(cfg: AppConfig): http.Server {
                 spec.emphasis ? `Emphasis: ${spec.emphasis}.` : '',
                 `The candidate just learned: ${material.slice(0, 2000)}`,
               ].filter(Boolean).join('\n');
-              const titles = await namer(brief, rows.length);
-              rows.forEach((r, i) => (r.new_title = titles[i]));
+              const titles = await stripSpoilerTitles(await namer(brief, rows.length));
+              rows.forEach((r, i) => {
+                if (titles[i]) r.new_title = titles[i];
+              });
             } catch (e) {
               console.warn(`[app] adapt naming failed for ${specId} (quiet rows): ${String(e).slice(0, 200)}`);
             }
@@ -863,6 +2392,7 @@ export function runApp(cfg: AppConfig): http.Server {
           return json(400, { error: 'target_id and a complete diff required' });
         }
         const t = loadTarget(repoRoot, b.target_id);
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         const q = t ? loadQueue(repoRoot, t.id) : null;
         if (!t || !q) return json(404, { error: 'no such target or plan' });
         for (const spec of diff.new_specs) {
@@ -912,6 +2442,7 @@ export function runApp(cfg: AppConfig): http.Server {
         // can't flip the item back to ready before generation runs.
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         const q = t ? loadQueue(repoRoot, t.id) : null;
         const item = q?.items.find((i) => i.id === b.item_id);
         if (!t || !q || !item?.problem_dir || item.status !== 'ready' || !item.stale) {
@@ -927,6 +2458,9 @@ export function runApp(cfg: AppConfig): http.Server {
         if (q.items.some((i) => i.status === 'generating')) {
           return json(409, { error: 'a problem is already generating — one at a time' });
         }
+        if (countLiveBuilds() >= cfg.pub.caps.maxConcurrentBuilds) {
+          return json(409, { error: "someone else's round is generating — builds run one at a time in the beta; try again in ~5 minutes" });
+        }
         const dir = path.isAbsolute(item.problem_dir) ? item.problem_dir : path.join(repoRoot, item.problem_dir);
         rmSync(dir, { recursive: true, force: true });
         delete item.stale;
@@ -939,6 +2473,7 @@ export function runApp(cfg: AppConfig): http.Server {
       if (url === '/api/generate' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         const q = t ? loadQueue(repoRoot, t.id) : null;
         const item = q?.items.find((i) => i.id === b.item_id);
         if (!t || !q || !item || item.status !== 'pending') {
@@ -946,6 +2481,9 @@ export function runApp(cfg: AppConfig): http.Server {
         }
         if (q.items.some((i) => i.status === 'generating')) {
           return json(409, { error: 'a problem is already generating — one at a time' });
+        }
+        if (countLiveBuilds() >= cfg.pub.caps.maxConcurrentBuilds) {
+          return json(409, { error: "someone else's round is generating — builds run one at a time in the beta; try again in ~5 minutes" });
         }
         const dir = path.join(targetDir(repoRoot, t.id), 'problems', item.id);
         item.status = 'generating';
@@ -958,6 +2496,7 @@ export function runApp(cfg: AppConfig): http.Server {
       if (url === '/api/retry' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         const q = t ? loadQueue(repoRoot, t.id) : null;
         const item = q?.items.find((i) => i.id === b.item_id);
         if (!t || !q || !item?.problem_dir || item.status !== 'failed') {
@@ -988,15 +2527,25 @@ export function runApp(cfg: AppConfig): http.Server {
         return json(200, { ok: true });
       }
       if (url === '/api/launch' && req.method === 'POST') {
-        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
+        const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string; origin?: string };
         const q = b.target_id ? loadQueue(repoRoot, b.target_id) : null;
         const item = q?.items.find((i) => i.id === b.item_id);
         if (!q || !item?.problem_dir || item.status !== 'ready') {
           return json(400, { error: 'item is not ready' });
         }
+        if (cfg.pub.multiSession) {
+          const out = await multiLaunch({ id: user!.id, admin: user!.admin }, item.problem_dir);
+          if (out.code === 200) logLaunch(b.origin, String(out.body.session_id));
+          return json(out.code, out.body);
+        }
         const probe = await probeSession(cfg.sessionPort);
         if (probe.reachable && !probe.ended) {
-          return json(409, { error: 'a session is already running — finish or end it first' });
+          const owner = await probeSessionOwner(cfg.sessionPort);
+          return json(409, {
+            error: owner === null || owner === user!.id || user!.admin
+              ? 'a session is already running — finish or end it first'
+              : 'someone is mid-round — sessions run one at a time in the beta; check back in ~45 minutes',
+          });
         }
         if (probe.reachable && probe.ended) {
           // A graded session's server lingers to serve its card; reap it so
@@ -1008,24 +2557,56 @@ export function runApp(cfg: AppConfig): http.Server {
           }
         }
         const sessionId = `sess-${Date.now()}`;
+        logLaunch(b.origin, sessionId);
         // IP_PREPARE_NEXT=0: the queue drives generation now; the legacy
         // post-session prepare would write into the generic pool nobody is
         // drawing from in queue mode.
         spawnDetached(['session', item.problem_dir], {
           IP_SESSION_ID: sessionId,
-          IP_USER_ID: cfg.userId,
+          // The person at the keyboard is whose gap graph gets written.
+          IP_USER_ID: user!.id,
           IP_PREPARE_NEXT: '0',
-          IP_APP_URL: `http://localhost:${cfg.port}`,
+          IP_APP_URL: cfg.pub.appPublicUrl,
+          ...(internalHeaders['x-ip-internal']
+            ? { IP_INTERNAL_TOKEN: internalHeaders['x-ip-internal'] }
+            : {}),
         });
-        return json(200, { session_id: sessionId, url: `http://localhost:${cfg.sessionPort}/session` });
+        return json(200, { session_id: sessionId, url: `${cfg.pub.sessionPublicUrl}/session` });
       }
-      if (url === '/api/session-live') {
+      if (url === '/api/session-live' || url.startsWith('/api/session-live?')) {
+        if (cfg.pub.multiSession) {
+          const sidQ = new URL(url, 'http://x').searchParams.get('sid');
+          const reg = await reconcileRegistryNow();
+          const entry = sidQ
+            ? reg.entries.find((e) => e.sid === sidQ)
+            : reg.entries.find((e) => e.user_id === user!.id && e.ended_at === undefined);
+          if (!entry) return json(200, { live: false, gone: true });
+          const p = await probeSession(entry.port);
+          return json(200, { live: p.reachable && !p.ended });
+        }
         return json(200, { live: await sessionLive(cfg.sessionPort) });
       }
       if (url === '/api/session-kill' && req.method === 'POST') {
         // The masthead's "end session" (QA D1): abandon = discard, never
         // grade. The session server tears down its container and exits;
         // the trace stays on disk for a CLI rejudge.
+        // WU5: only the session's owner (or an admin) may kill it — the
+        // session reports its user_id on /api/status.
+        if (cfg.pub.multiSession) {
+          const kb = JSON.parse((await readBody(req)) || '{}') as { sid?: string };
+          const reg = await reconcileRegistryNow();
+          const mine = kb.sid && user!.admin
+            ? reg.entries.find((e) => e.sid === kb.sid)
+            : reg.entries.find((e) => e.user_id === user!.id && e.ended_at === undefined);
+          if (!mine) return json(404, { error: 'no live session of yours to end' });
+          const rr = await postSession(mine.port, '/api/abandon');
+          if (!rr.ok) return json(502, { error: 'the session did not respond — it may already be gone' });
+          return json(200, { ok: true });
+        }
+        const owner = await probeSessionOwner(cfg.sessionPort);
+        if (!user!.admin && owner !== null && owner !== user!.id) {
+          return json(403, { error: "someone else is mid-round — that session isn't yours to end" });
+        }
         const r = await postSession(cfg.sessionPort, '/api/abandon');
         if (!r.ok) return json(502, { error: 'no session responded — it may already be gone' });
         return json(200, { ok: true });
@@ -1036,9 +2617,91 @@ export function runApp(cfg: AppConfig): http.Server {
       return json(500, { error: String(e).slice(0, 300) });
     }
   });
-  sweepOrphanedGenerations();
-  server.listen(cfg.port, () => {
-    console.log(`[app] open http://localhost:${cfg.port}/`);
-  });
+  // Boot-only sweeps were fine when the founder was the only watcher; with
+  // strangers, a detached build that dies mid-beta must not show "building"
+  // until a restart, and the reaper needs a heartbeat. 10 min, unref'd.
+  const sweep = () => {
+    sweepOrphanedGenerations();
+    if (cfg.pub.multiSession) {
+      // Session lifecycle (WU-G): reconcile, reap ended card servers after
+      // their 30-min window, clean up after crashed sessions and orphaned
+      // containers. Async probes feed a pure plan; failures never throw.
+      void (async () => {
+        try {
+          const reg = loadRegistry(repoRoot);
+          const probes = new Map<string, import('./session-registry.js').ProbeResult>();
+          await Promise.all(reg.entries.map(async (e) => {
+            const pr = await probeSession(e.port);
+            probes.set(e.sid, { reachable: pr.reachable, ended: pr.ended, session_id: pr.session_id });
+          }));
+          applySessionSweep(
+            planSessionSweep(reg.entries, probes, pidAlive, listSessionContainers(), Date.now()),
+            {
+              root: repoRoot,
+              save: (entries) => saveRegistry(repoRoot, { entries }),
+              postShutdown: (port) => postSession(port, '/api/shutdown'),
+            },
+          );
+        } catch (e) {
+          console.warn(`[sweep] session sweep failed: ${String(e).slice(0, 160)}`);
+        }
+      })();
+    }
+    if (cfg.pub.retention.days !== null || cfg.pub.retention.reapNodeModules) {
+      try {
+        applyReaping(
+          planReaping(gatherRepDiskFacts(repoRoot), Date.now(), {
+            days: cfg.pub.retention.days,
+            reapNodeModules: cfg.pub.retention.reapNodeModules,
+          }),
+        );
+      } catch (e) {
+        console.warn(`[retention] sweep failed: ${String(e).slice(0, 160)}`);
+      }
+    }
+  };
+  sweep();
+  setInterval(sweep, 10 * 60_000).unref();
+  // IP_APP_BIND=127.0.0.1 in the beta: the tunnel is the only ingress to the
+  // app. (The SESSION server must stay on all interfaces — the container's
+  // trace WS dials the docker gateway IP, never loopback.)
+  const announce = () => {
+    console.log(`[app] open ${cfg.pub.appPublicUrl}/`);
+  };
+  if (cfg.pub.appBindHost) server.listen(cfg.port, cfg.pub.appBindHost, announce);
+  else server.listen(cfg.port, announce);
+
+  // Multi mode: the app owns the public session port as a ROUTER — spawned
+  // sessions live on dynamic ports behind it. Legacy mode leaves the port
+  // alone (a directly-run `cli.ts session` binds it, exactly as always).
+  if (cfg.pub.multiSession) {
+    const router = makeSessionRouter({
+      resolveEntry: (sid) => loadRegistry(repoRoot).entries.find((e) => e.sid === sid) ?? null,
+      liveEntries: () => loadRegistry(repoRoot).entries.filter((e) => e.ended_at === undefined),
+      authEnabled: auth.enabled,
+      publicIsHttps: cfg.pub.sessionPublicUrl.startsWith('https:'),
+    });
+    // Cutover hazard (found in the local smoke): a LEGACY session's ended
+    // card server can still be squatting this port the first time multi
+    // mode boots. Reap it and retry once; and a router bind failure must
+    // degrade (launches keep working on direct ports), never crash the app.
+    const bindRouter = async (attempt: number): Promise<void> => {
+      router.once('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EADDRINUSE' && attempt === 0) {
+          console.warn(`[app] :${cfg.sessionPort} busy — reaping a lingering legacy session server`);
+          void postSession(cfg.sessionPort, '/api/shutdown').then(() => {
+            setTimeout(() => void bindRouter(1), 1_500);
+          });
+        } else {
+          console.error(`[app] session router could not bind :${cfg.sessionPort} — ${String(err)}. ` +
+            'Multi-session links will not route until this is freed and the app restarts.');
+        }
+      });
+      router.listen(cfg.sessionPort, () => {
+        console.log(`[app] session router on :${cfg.sessionPort} (multi-session)`);
+      });
+    };
+    void bindRouter(0);
+  }
   return server;
 }

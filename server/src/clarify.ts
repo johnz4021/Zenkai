@@ -40,6 +40,9 @@ export type IntakeClarifier = (input: {
   description: string;
   context: string;
   answers?: { question: string; answer: string }[];
+  /** Pre-built typed content blocks (images/PDFs) from attachmentBlocks() —
+   *  firsthand evidence the model reads directly instead of as mojibake. */
+  attachments?: Record<string, unknown>[];
 }) => Promise<ClarifyResult>;
 
 /** Shared with the adapt reasoner — one vocabulary, two prompts. */
@@ -55,6 +58,17 @@ export const ROUND_FIELDS = {
   check_kind: { type: 'string', enum: ['one_failing_test', 'all_failing', 'all_passing', 'diff_present'] },
   max_source_files: { type: 'number' },
   emphasis: { type: 'string' },
+  date: {
+    type: 'string',
+    description:
+      'YYYY-MM-DD — ONLY when the material states when THIS round happens. Omit otherwise; never guess a date.',
+  },
+  evidence_tier: {
+    type: 'string',
+    enum: ['firsthand', 'secondhand', 'public_prior'],
+    description:
+      "How this round's FORM is evidenced: firsthand = an artifact the candidate SAW (email/preview naming the form); secondhand = someone told them; public_prior = web sources or your priors. Never rate upward from what the material supports.",
+  },
   rationale: { type: 'string' },
   unsupported: { type: 'string' },
 };
@@ -184,10 +198,18 @@ export function apiClarifier(templatePath: string, model = 'claude-sonnet-5'): I
   return async (input) => {
     const { default: Anthropic } = await import('@anthropic-ai/sdk');
     const client = new Anthropic({ timeout: 90_000 });
+    // Attachments lead as typed blocks (the model SEES the screenshot /
+    // reads the PDF with citations enabled); the interpolated template
+    // follows as the text block. Order matters for prompt caching: the
+    // stable evidence sits before the varying answers.
+    const content = [
+      ...(input.attachments ?? []),
+      { type: 'text' as const, text: buildPrompt(templatePath, input) },
+    ] as unknown as import('@anthropic-ai/sdk/resources/messages').ContentBlockParam[];
     const msg = await client.messages.create({
       model,
       max_tokens: 3_000,
-      messages: [{ role: 'user', content: buildPrompt(templatePath, input) }],
+      messages: [{ role: 'user', content }],
       tools: [CLARIFY_TOOL],
       tool_choice: { type: 'tool', name: CLARIFY_TOOL.name },
     });
@@ -202,8 +224,13 @@ export function apiClarifier(templatePath: string, model = 'claude-sonnet-5'): I
 export function claudePClarifier(templatePath: string, model = 'sonnet'): IntakeClarifier {
   return (input) =>
     new Promise<ClarifyResult>((resolve, reject) => {
+      // The -p path cannot carry typed blocks; name what it cannot see so
+      // the model doesn't hallucinate attachment contents.
+      const attachNote = input.attachments?.length
+        ? `\n\n(${input.attachments.length} binary attachment(s) exist but are not readable in fallback mode — do not guess their contents.)`
+        : '';
       const prompt =
-        buildPrompt(templatePath, input) +
+        buildPrompt(templatePath, input) + attachNote +
         '\n\nReply with ONLY a JSON object: {"questions": [{id, question, options: [{label, detail}], recommended, why}], "rounds": [{id, label, interviewer, can_run_tests, time_limit_minutes, starts_from, submit, check_kind, emphasis, rationale, unsupported}]}';
       const child = spawn('claude', ['-p', prompt, '--output-format', 'text', '--model', model], {
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -233,4 +260,47 @@ export function claudePClarifier(templatePath: string, model = 'sonnet'): Intake
 
 export function pickClarifier(templatePath: string): IntakeClarifier {
   return process.env.ANTHROPIC_API_KEY ? apiClarifier(templatePath) : claudePClarifier(templatePath);
+}
+
+/**
+ * A clarify/infer failure the CANDIDATE can act on. Uncaught, these throws
+ * become json(500, String(e)) — raw gate internals as UI copy. The practice
+ * door is the first surface where a stranger meets them, so each failure
+ * class gets a sentence that names the fix, not the plumbing.
+ */
+export function clarifyFailureMessage(e: unknown): string {
+  const msg = String(e instanceof Error ? e.message : e);
+  if (msg.includes('every draft failed the gate') || msg.includes('no rounds')) {
+    return "couldn't turn that into a round shape — add a sentence about the format (live or async? timed? build or debug?)";
+  }
+  if (msg.includes('no tool call') || msg.includes('no JSON in output')) {
+    return "the model didn't return a usable answer — try again";
+  }
+  if (msg.includes('ENOENT') || msg.includes('spawn claude')) {
+    return 'no ANTHROPIC_API_KEY in .env and no claude CLI on PATH — set one up first';
+  }
+  if (msg.includes('timed out')) {
+    return 'inference timed out — try again';
+  }
+  // API transport failures. Without these the raw SDK error — a JSON envelope
+  // carrying `authentication_error` / `rate_limit_error` — reached the
+  // candidate verbatim through the slice() below, which is exactly the
+  // plumbing-as-copy leak this function exists to stop (QA 2026-08-12,
+  // ISSUE-001; DESIGN.md rule 10). The candidate can act on none of it, so
+  // each class gets the operator-facing fact in candidate-facing words.
+  if (/authentication_error|401|API key/i.test(msg)) {
+    return "the model API rejected our key — that's on us, not you; try again in a bit";
+  }
+  if (/rate_limit|429|overloaded|529/i.test(msg)) {
+    return 'the model is rate-limited right now — try again in a minute';
+  }
+  if (/\b5\d\d\b|internal_server_error|api_error|ECONNREFUSED|ENOTFOUND|fetch failed/i.test(msg)) {
+    return 'the model service is having trouble — try again in a minute';
+  }
+  // Anything still carrying a JSON envelope is plumbing by definition; never
+  // let a brace-shaped payload render as copy.
+  if (msg.includes('{') && msg.includes('"')) {
+    return "inference failed for a reason we didn't anticipate — try again, and tell us if it sticks";
+  }
+  return msg.slice(0, 200);
 }

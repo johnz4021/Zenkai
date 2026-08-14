@@ -21,8 +21,22 @@
 
 import type { TraceEvent, Verdict } from '@interview-prep/shared';
 import { isCandidateEvent, type Assessment, type JudgeResult } from './judge.js';
-import { eventAtOffset } from './timeline.js';
+import { eventAtOffset, isPhantomUtterance, sensorDownIntervals } from './timeline.js';
 import { PATTERN_MIN_SESSIONS, gapDescription, type GraphView } from './gap-graph.js';
+
+/**
+ * Confirm-file semantics shared by BOTH servers (WU-C): the session card and
+ * the app history card write the same assessments/<sid>.confirm.json, and
+ * promote-fixture depends on this exact Record<string, boolean> shape —
+ * never widen it.
+ */
+export function mergeConfirm(
+  existing: Record<string, boolean>,
+  dimension: string,
+  agree: boolean,
+): Record<string, boolean> {
+  return { ...existing, [dimension]: agree };
+}
 
 export interface Quote {
   clock: string; // +M:SS offset
@@ -59,10 +73,20 @@ const fmtOffset = (seconds: number): string =>
   `+${Math.floor(seconds / 60)}:${String(Math.round(seconds % 60)).padStart(2, '0')}`;
 
 /** Verbatim text for a cited trace event. */
-function quoteFor(events: TraceEvent[], offsetSeconds: number): Quote | null {
-  // Same candidate-only resolution as the verifier, so the quote shown is
-  // the event the citation was verified against.
-  const e = eventAtOffset(events, offsetSeconds, 2_000, isCandidateEvent);
+function quoteFor(
+  events: TraceEvent[],
+  offsetSeconds: number,
+  sttDown: { start: number; end: number }[],
+): Quote | null {
+  // Same candidate-only, phantom-free resolution as the verifier, so the
+  // quote shown is the event the citation was verified against. Without the
+  // phantom exclusion, a gate-noise empty 0.1s nearer than the real cited
+  // utterance would render "[spoke — transcription unavailable]" as the
+  // receipt for words that were actually said.
+  const e = eventAtOffset(
+    events, offsetSeconds, 2_000,
+    (x) => isCandidateEvent(x) && !isPhantomUtterance(x, sttDown),
+  );
   if (!e) return null;
   const p = (e.payload ?? {}) as Record<string, unknown>;
   const clock = fmtOffset(offsetSeconds);
@@ -112,21 +136,29 @@ export function buildAssessmentCard(
   bugDescription?: string,
 ): AssessmentCard {
   if (result.status === 'unassessed') {
+    // The stored reason can carry a raw provider error blob (QA 2026-08-14:
+    // a full 401 JSON body rendered verbatim on the candidate's card). Keep
+    // the human-readable head; the full text stays in assessments/<sid>.json.
+    const why = String(result.reason ?? '').split('{')[0]!.replace(/[\s:—-]+$/, '').trim() || 'judge failure';
     return {
       session_id: result.session_id,
       state: 'unassessed',
-      reason: `Couldn't assess this session (${result.reason}). Your trace is saved — rejudge anytime.`,
+      // Failure copy names what the USER can do (DESIGN.md rule 10) — the
+      // old "rejudge anytime" promised a CLI only the founder can run. The
+      // scrubbed `why` keeps provider error blobs off the card (QA 2026-08-14).
+      reason: `Couldn't assess this session (${why}). Your work is saved and doesn't count against you — this round can be scored later.`,
       ...graphBits(graph),
     };
   }
 
   const a: Assessment = result;
+  const sttDown = sensorDownIntervals(events, 'stt');
   const rows: DimensionRow[] = a.dimensions.map((d) => ({
     dimension: d.dimension,
     verdict: d.verdict,
     analysis: d.analysis,
     quotes: d.evidence
-      .map((offset) => quoteFor(events, offset))
+      .map((offset) => quoteFor(events, offset, sttDown))
       .filter((q): q is Quote => q !== null),
     ...(d.evidence_stripped ? { unreceipted: true } : {}),
   }));

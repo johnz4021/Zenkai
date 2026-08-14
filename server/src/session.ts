@@ -16,26 +16,39 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import httpProxy from 'http-proxy';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
 import { isFailingRun, resolveRoundSpec, resolveSurface } from '@interview-prep/shared';
+import { makeAuth } from './auth.js';
+import { childEnv } from './child-env.js';
 import { judgeSession } from './judge.js';
-import { buildAssessmentCard } from './feedback.js';
-import { buildGraphView, buildTargetNote, loadStore, recordAssessment, saveStore } from './gap-graph.js';
+import { buildAssessmentCard, mergeConfirm } from './feedback.js';
+import { buildGraphView, buildTargetNote, isMemorableSessionId, loadStore, recordAssessment, saveStore } from './gap-graph.js';
+import { attemptsFromSession, recordTopicAttempts } from './topic-graph.js';
 import { clientScript, sessionPage } from './chrome.js';
 import { injectWorkbenchDefaults } from './workbench-inject.js';
 import { describeStuck, detectStuck, type StuckState } from './stuck.js';
-import { isModelPath, listWorkspaceFiles, runGuard, safeWorkspacePath, summarizeTail } from './panes.js';
+import { describeAdrift, describeWarm, detectAdrift, regionContainsAnswer } from './adrift.js';
+import { assessAgenda, renderAgenda } from './agenda.js';
+import { CLOSING_TOPIC, WRAP_UP_QUESTIONS, detectWrapSignal, renderWrapState, selectWrapTopic } from './wrapup.js';
+import { isModelPath, listWorkspaceFiles, parseRunCounts, runGuard, safeWorkspacePath, shadowsTestRunner, summarizeTail } from './panes.js';
 import { isCorrectionFollowUp, isExplicitAsk } from './addressing.js';
 import { decideAck } from './ack.js';
+import { renderWorkspaceView, selectRecentlyEdited, snapshotWorkspace } from './workspace-view.js';
+import { codebaseViewOf, focusViewOf, namedOutOfContextFiles, toRel } from './problem-view.js';
+import { detectMoment } from './moments.js';
+import { extractSection, loadBlueprint } from './blueprint.js';
 import { TraceStore } from './trace-store.js';
 import {
   TurnQueue,
   bugContext,
+  buildTranscript,
+  candidateVisitedBugFile,
   pickIntentCheck,
   pickInterviewer,
   renderActivity,
@@ -52,6 +65,13 @@ export interface SessionConfig {
   port: number;
   idePort: number;
   autorunTests: boolean;
+  /** Multi-session mode (WU-A): per-session container name + ide-data dir.
+   *  Unset/false = legacy single-session, byte-identical. */
+  multiSession?: boolean;
+  /** Beta auth (WU3). Omitted/enabled:false = local dev, everything open.
+   *  The session verifies JWTs itself — it must, since it listens on all
+   *  interfaces for the container's trace WS and the LAN can reach it. */
+  auth?: import('./auth.js').AuthConfig;
   /** Generate the next (gap-targeted) problem when this session ends. */
   prepareNext: boolean;
   /** Injectable; omit for the real agent, null to run without one. */
@@ -73,21 +93,49 @@ export interface SessionConfig {
 
 /** Nominal round length — what the interviewer's time pressure counts down. */
 const SESSION_LENGTH_MS = 45 * 60_000;
-/** Floor between unprompted pressure beats. An interviewer that talks every
- *  minute stops being pressure and starts being noise. */
-const PRESSURE_INTERVAL_MS = 4 * 60_000;
+/**
+ * Initiative clocks (sess-1786220758002 redesign). The old single clock —
+ * "5 minutes since ANY spoken turn" — meant every reply reset the initiative
+ * budget: the more the candidate talked to the interviewer, the quieter it
+ * got, and a 26-minute session with 8 candidate questions produced ZERO
+ * unprompted-lane turns after the opening. Now:
+ *   - the ANY-turn guard is only anti-stacking (don't talk on top of a
+ *     reply just delivered);
+ *   - the lanes pace themselves on time since the last UNPROMPTED turn.
+ */
+/** No unprompted turn within this of ANY spoken turn (anti-stacking). */
+const ANY_TURN_GUARD_MS = 60_000;
+/** Scaffolding (stuck/adrift) fires this soon after the last exchange —
+ *  help is paced by need, not by the metronome. */
+const SCAFFOLD_FLOOR_MS = 90_000;
+/** Floor between warm-adrift encouragements. Uncapped per session (unlike
+ *  the redirect), but "keep pulling on that" every 90 seconds is nagging —
+ *  replayed sess-1786220758002 showed back-to-back warms without this. */
+const WARM_COOLDOWN_MS = 3 * 60_000;
+/** Floor between unprompted pressure beats, on the UNPROMPTED clock. */
+const PRESSURE_INTERVAL_MS = 5 * 60_000;
+/** Floor for event-anchored moment probes — shorter than pressure: a probe
+ *  about something that JUST happened tolerates less staleness. */
+const MOMENT_INTERVAL_MS = 2.5 * 60_000;
 const PRESSURE_TICK_MS = 30_000;
 
 const IDE_IMAGE = 'gitpod/openvscode-server:latest';
-const CONTAINER = 'ip-session';
 const BUNDLED_NODE = '/home/.openvscode-server/node';
+
+/** Container identity (multi-session WU-A). Legacy single-session keeps the
+ *  historic fixed name; multi mode names per session so launch B can never
+ *  `docker rm -f` session A's container — the exact incident assertPortFree's
+ *  header documents. Pure; unit-tested. */
+export function containerNameFor(sessionId: string, multiSession: boolean): string {
+  return multiSession ? `ip-session-${sessionId}` : 'ip-session';
+}
 
 /** The one way the IDE container dies. Called after grading, on abandon, on
  *  shutdown, and from the signal handlers — a session that ends by ANY path
  *  must not leave a live container behind (QA ISSUE-001: it did, and every
  *  finished round soft-locked the product until a terminal intervened). */
-function teardownContainer(): void {
-  spawnSync('docker', ['rm', '-f', CONTAINER], { encoding: 'utf8' });
+function teardownContainerByName(name: string): void {
+  spawnSync('docker', ['rm', '-f', name], { encoding: 'utf8' });
 }
 
 function sh(cmd: string, args: string[], opts: { cwd?: string } = {}): string {
@@ -154,6 +202,12 @@ function ensureRuntimeImage(runtime: 'node' | 'python'): string {
   return image;
 }
 
+/** Ops hook (WU-H): provision.sh pre-builds the python image so two
+ *  simultaneous cold python launches on the VPS never race the build. */
+export function prebuildPythonImage(): void {
+  ensureRuntimeImage('python');
+}
+
 /**
  * Materialize the IDE user-data dir with our seeded settings.
  *
@@ -178,8 +232,18 @@ function loadIdeSettings(repoRoot: string): Record<string, unknown> {
   return settings;
 }
 
-function ensureIdeDataDir(repoRoot: string): string {
-  const dataDir = path.join(repoRoot, '.ide-data');
+/** Multi mode gives each session its own dir: the legacy shared path holds
+ *  VS Code's SQLite globalStorage, and two concurrent containers on one
+ *  bind-mounted SQLite file is a corruption class, not a race. Pure path
+ *  derivation exported for tests. */
+export function ideDataDirFor(repoRoot: string, sessionId: string | null): string {
+  return sessionId
+    ? path.join(repoRoot, '.ide-data', sessionId)
+    : path.join(repoRoot, '.ide-data');
+}
+
+function ensureIdeDataDir(repoRoot: string, sessionId: string | null): string {
+  const dataDir = ideDataDirFor(repoRoot, sessionId);
   const userDir = path.join(dataDir, 'User');
   const machineDir = path.join(dataDir, 'Machine');
   mkdirSync(userDir, { recursive: true });
@@ -223,10 +287,30 @@ function fetchIdeHtml(port: number, urlPath: string): Promise<string> {
 }
 
 function ensureExtensionBuilt(repoRoot: string): string {
-  const dist = path.join(repoRoot, 'extension', 'dist');
-  if (!existsSync(path.join(dist, 'trace-emitter-0.0.1', 'extension.js'))) {
-    console.log('[session] building extension...');
-    sh('node', ['build.mjs'], { cwd: path.join(repoRoot, 'extension') });
+  const extRoot = path.join(repoRoot, 'extension');
+  const dist = path.join(extRoot, 'dist');
+  const bundle = path.join(dist, 'trace-emitter-0.0.1', 'extension.js');
+  // Staleness by mtime, not existence. The existence-only check shipped a
+  // two-day-old bundle while src had moved on (output_tail never reached a
+  // session), and nothing anywhere said so. esbuild is ~100ms — rebuilding
+  // on a newer source is cheaper than one silently stale session.
+  const newestSource = [
+    ...readdirSync(path.join(extRoot, 'src'))
+      .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
+      .map((f) => path.join(extRoot, 'src', f)),
+    path.join(extRoot, 'build.mjs'),
+    path.join(extRoot, 'manifest.mjs'),
+  ].reduce((newest, p) => {
+    try {
+      return Math.max(newest, statSync(p).mtimeMs);
+    } catch {
+      return newest;
+    }
+  }, 0);
+  const bundledAt = existsSync(bundle) ? statSync(bundle).mtimeMs : 0;
+  if (bundledAt < newestSource) {
+    console.log(`[session] ${bundledAt === 0 ? 'building' : 'rebuilding'} extension (source newer than bundle)...`);
+    sh('node', ['build.mjs'], { cwd: extRoot });
   }
   return dist;
 }
@@ -257,10 +341,39 @@ export function assertPortFree(port: number): void {
   );
 }
 
+/**
+ * /trace upgrade gate (beta WU2). The trace-emitter extension runs inside the
+ * container and dials host.docker.internal — the docker GATEWAY IP — so the
+ * session server must listen on all interfaces and cannot rely on network
+ * binding to keep the trace channel private. The extension carries no auth
+ * header either (DurableEmitter uses IP_WS_URL verbatim), so the session
+ * mints a random token at boot and delivers it inside IP_WS_URL itself.
+ * Pure; timing-safe via hash-then-compare (lengths differ on raw compare).
+ */
+export function traceUpgradeAllowed(reqUrl: string | undefined, expectedToken: string): boolean {
+  const got = new URL(reqUrl ?? '', 'http://x').searchParams.get('token') ?? '';
+  const a = createHash('sha256').update(got).digest();
+  const b = createHash('sha256').update(expectedToken).digest();
+  return timingSafeEqual(a, b);
+}
+
 export async function runSession(cfg: SessionConfig): Promise<void> {
   // First statement in the function, on purpose: everything below this line
   // mutates state the running session owns.
   assertPortFree(cfg.port);
+
+  // Per-session /trace credential — minted here, delivered to the container
+  // via IP_WS_URL, checked at the WS upgrade. See traceUpgradeAllowed.
+  const traceToken = randomBytes(16).toString('hex');
+
+  // Per-session identities (WU-A): legacy mode keeps the historic values.
+  const containerName = containerNameFor(cfg.sessionId, Boolean(cfg.multiSession));
+  const teardownContainer = (): void => teardownContainerByName(containerName);
+
+  // Browser + server-to-server auth (WU3). Auth off → local admin always.
+  const auth = makeAuth(
+    cfg.auth ?? { supabaseUrl: null, adminEmails: [], localUserId: cfg.userId },
+  );
 
   const problem = JSON.parse(
     readFileSync(path.join(cfg.problemDir, 'problem.json'), 'utf8'),
@@ -289,11 +402,16 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   const ideImage = ensureRuntimeImage(runtime);
   if (runtime === 'node') ensureLinuxDeps(cfg.problemDir);
   const extDist = ensureExtensionBuilt(cfg.repoRoot);
-  const ideDataDir = ensureIdeDataDir(cfg.repoRoot);
+  const ideDataDir = ensureIdeDataDir(cfg.repoRoot, cfg.multiSession ? cfg.sessionId : null);
 
   const tracesDir = path.join(cfg.repoRoot, 'traces');
   const gapsDir = path.join(cfg.repoRoot, 'gaps');
   const store = new TraceStore(tracesDir, cfg.sessionId, cfg.userId);
+
+  // Session-start baseline for the interviewer's workspace eyes: every turn
+  // diffs the candidate's current files against this. Overwrites any prior
+  // snapshot — a rebuilt problem must never diff a stale baseline.
+  snapshotWorkspace(cfg.problemDir);
 
   // ---- IDE container ----
   // Panes rounds launch the SAME container: /api/run needs docker exec, and
@@ -301,7 +419,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // docker). The openvscode process inside simply idles unused — nobody
   // loads the workbench, so the extension never activates. Accepted idle
   // cost over a second launch path.
-  spawnSync('docker', ['rm', '-f', CONTAINER], { encoding: 'utf8' });
+  spawnSync('docker', ['rm', '-f', containerName], { encoding: 'utf8' });
   // Per-session workspace path (QA ISSUE-005): VS Code Web keys workbench
   // state (open tabs, layout) by folder URI in BROWSER IndexedDB — a
   // constant path meant every round opened on the previous round's tabs.
@@ -313,12 +431,15 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     problem.test_command ??
     `${BUNDLED_NODE} ${workspacePath}/node_modules/vitest/vitest.mjs run`;
   sh('docker', [
-    'run', '-d', '--name', CONTAINER,
-    '-p', `${cfg.idePort}:3000`,
+    'run', '-d', '--name', containerName,
+    // Loopback publish: the only consumer of the IDE port is the host-side
+    // proxy (target 127.0.0.1). Publishing on 0.0.0.0 exposed a TOKENLESS
+    // remote IDE to the LAN, beside whatever auth the servers enforce.
+    '-p', `127.0.0.1:${cfg.idePort}:3000`,
     '--add-host=host.docker.internal:host-gateway',
     '-e', `IP_SESSION_ID=${cfg.sessionId}`,
     '-e', `IP_USER_ID=${cfg.userId}`,
-    '-e', `IP_WS_URL=ws://host.docker.internal:${cfg.port}/trace`,
+    '-e', `IP_WS_URL=ws://host.docker.internal:${cfg.port}/trace?token=${traceToken}`,
     '-e', `IP_TEST_CMD=${testCmd}`,
     // Kickoff run is the DEFAULT for failure-triggered rounds: the debugging
     // trigger must not depend on the candidate finding the status-bar button
@@ -348,6 +469,29 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       ? 'This round does not allow running the suite at all. There is no run command — say so plainly if asked.'
       : `They press the **Run Tests** button in the session header (top right, above the editor). It runs \`${testCmd}\` in the workspace and shows the output in the ${surface === 'panes' ? 'test results panel below the editor' : "editor's Test Results panel"}. That is the intended path. No other test runner is installed.`;
 
+  // What a strong candidate does in THIS round — the judge's own grading
+  // dimensions, finally shared with the interviewer (the rubric-blind
+  // finding: one dimension graded a question "to the interviewer" the
+  // interviewer never knew to expect). Per-session constant → cached half.
+  const rubricText = Object.entries(problem.rubric?.dimensions ?? {})
+    .map(([k, v]) => `- ${k}: ${String(v)}`)
+    .join('\n');
+  // Engagement style from the round's blueprint (optional section; pool
+  // problems and pre-section blueprints fall back to a per-check default).
+  const ENGAGEMENT_DEFAULTS: Record<string, string> = {
+    one_failing_test:
+      'Restrained: frame the round at the open, probe method at flagged moments, let them drive.',
+    all_failing:
+      'Moderately led: probe design decisions before code exists; reward incremental suite progress.',
+    all_passing: 'Balanced: probe intent behind changes.',
+    diff_present: 'Balanced: probe what they would flag and why.',
+  };
+  const blueprintText = cfg.targetId ? loadBlueprint(cfg.repoRoot, cfg.targetId, roundSpec.id) : null;
+  const engagement =
+    (blueprintText ? extractSection(blueprintText, '## Interviewer engagement') : null) ??
+    ENGAGEMENT_DEFAULTS[roundSpec.check.kind] ??
+    'Balanced: probe at the flagged moments, otherwise let them work.';
+
   const ideSettings = loadIdeSettings(cfg.repoRoot);
   // Hoisted install: the workspace root owns node_modules (same assumption
   // the vitest testCmd default makes about problem dirs).
@@ -370,6 +514,21 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // One suite run at a time through /api/run (panes surface); the docker
   // exec is not reentrant-safe against itself on a shared workspace.
   let paneRunning = false;
+  // Moment probes fire once each per session (restart forgets at most one —
+  // the stuckRedactions precedent).
+  const firedMoments = new Set<string>();
+  // The adrift REDIRECT is once per session: "the region you're in is spent"
+  // is a location signal, and repeating it turns the round into a guided
+  // tour. The warm inversion (they are already in the right place) carries
+  // no location content and is deliberately not capped by this.
+  let adriftFired = false;
+  // Wrap-up phase state (I3): set once by detectWrapSignal; questions are
+  // counted by wrap turns that actually SPOKE, and after the closing the
+  // interviewer goes quiet for good. All verbal — /api/end is untouched.
+  let wrapUpAt: number | null = null;
+  let wrapQuestionsAsked = 0;
+  let wrapClosed = false;
+  let lastWarmTs = 0;
   // The live extension socket, so the chrome's Run Tests button can reach
   // the IDE's own runner (see /api/ide-run).
   let traceSocket: WebSocket | null = null;
@@ -379,6 +538,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
   // ---- interviewer ----
   const { bug, bugFile } = bugContext(problem);
+  // The stable code context (repo map + the failing test verbatim), computed
+  // ONCE: it describes the problem as handed out, so the cached system block
+  // stays byte-identical across turns.
+  const codebaseView = codebaseViewOf(cfg.problemDir, problem.planted_bug?.failing_test ?? null);
+  const workspaceFileList = listWorkspaceFiles(cfg.problemDir);
   // The spec's interviewer:false (an OA) wins over everything: nobody
   // replies, so the intent check has nothing to route to either. The mic
   // stays live — think-aloud is still judge signal.
@@ -399,11 +563,29 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // contact; the pressure timer stays quiet until then.
   let sessionStartedAt: number | null = null;
   let lastInterviewerTs = 0;
+  // The initiative clock: reset ONLY by unprompted turns, so replying to the
+  // candidate never buys the interviewer silence (see the clock comment at
+  // the constants).
+  let lastUnpromptedTs = 0;
   const markCandidateContact = () => {
     if (sessionStartedAt === null) {
       sessionStartedAt = Date.now();
       lastInterviewerTs = sessionStartedAt;
+      lastUnpromptedTs = sessionStartedAt;
       console.log('[session] candidate arrived — clock started');
+      // OPENING: a real interviewer runs the room from the first second —
+      // the round used to begin in dead silence. Fires exactly once, on
+      // arrival, without waiting for a failing run. setImmediate so the
+      // contact-triggering request finishes first.
+      if (interviewer) {
+        setImmediate(() =>
+          void runInterviewer(null, null, {
+            kind: 'opening',
+            observation:
+              'The candidate just arrived. Open the round: greet, frame the task from the spec, say how it runs, invite them to begin.',
+          }),
+        );
+      }
     }
   };
   let interviewerBusy = false;
@@ -467,10 +649,35 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       )
     : null;
 
+  /**
+   * Settling window before a turn starts composing.
+   *
+   * One spoken question is often TWO utterances: the browser endpoints on a
+   * 1s pause (presence.js), so "Can you tell me — / — if a Future can be a
+   * dict key?" commits as two segments. The first started a turn, the second
+   * queued behind `interviewerBusy`, and the `finally` pump drained it as a
+   * SECOND turn — measured live at 12:01 and 12:05, two near-identical
+   * probes 3.6s apart answering one question.
+   *
+   * Waiting a beat lets the second half land in the same drain, where
+   * TurnQueue already joins them into one breath. The cost is ~600ms on a
+   * single-segment ask; the benefit is never talking over yourself.
+   */
+  const SETTLE_MS = 600;
+  let settleTimer: NodeJS.Timeout | null = null;
+  const settlePending = (): boolean => settleTimer !== null;
+
   const pump = (): void => {
     if (ended || interviewerBusy) return;
-    const merged = turnQueue.drain();
-    if (merged !== null) void runInterviewer(merged);
+    if (settleTimer) return; // already waiting for stragglers
+    if (turnQueue.size === 0) return;
+    settleTimer = setTimeout(() => {
+      settleTimer = null;
+      if (ended || interviewerBusy) return; // a turn started meanwhile; its finally re-pumps
+      const merged = turnQueue.drain();
+      if (merged !== null) void runInterviewer(merged);
+    }, SETTLE_MS);
+    settleTimer.unref?.();
   };
 
   const routeUtterance = (text: string): void => {
@@ -481,6 +688,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     if (isExplicitAsk(text) || isCorrectionFollowUp(text, store.readAll(), Date.now())) {
       console.log(`[intent] fast-path ADDRESSED: ${text.slice(0, 80)}`);
       turnQueue.push(text);
+      notifyTurn(); // ring the doorbell now so the "…" appears immediately
       pump();
       return;
     }
@@ -508,6 +716,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         console.log(`[intent] ${addressed ? 'ADDRESSED' : 'narration'}: ${text.slice(0, 80)}`);
         if (!addressed) return; // narration: traced, agent stays silent
         turnQueue.push(text);
+        notifyTurn();
         pump();
       })
       .catch((e) => {
@@ -521,16 +730,53 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // the model can't phrase this one safely, and pressure resumes.
   const stuckRedactions = new Map<number, number>();
 
-  /** One interviewer turn. `null` message = unprompted (pressure or stuck). */
+  /** One interviewer turn. `null` message = unprompted (pressure, stuck,
+   *  adrift, or moment). */
   const runInterviewer = async (
     candidateMessage: string | null,
     stuck: StuckState | null = null,
+    moment: { kind: string; observation: string } | null = null,
+    adriftObservation: string | null = null,
+    /** Set on wrap-lane turns: this turn asks the next evaluation question
+     *  (or delivers the closing). Bookkeeping happens only if it speaks. */
+    wrapTopic: string | null = null,
   ): Promise<void> => {
-    if (!interviewer || ended || interviewerBusy) return;
+    if (!interviewer || ended) return;
+    if (interviewerBusy) {
+      // An unprompted beat that lands mid-reply used to VANISH here without
+      // a trace — including the opening turn. The tick retries on its next
+      // pass, so the loss is recoverable; the silence about it was not.
+      if (candidateMessage === null) {
+        console.log('[interviewer] unprompted turn skipped — a reply was in flight (tick will retry)');
+      }
+      return;
+    }
     interviewerBusy = true;
     try {
       const events = store.readAll();
       const now = Date.now();
+      // The eyes, per turn: the file under their eyes first (focus sensor),
+      // then real diffs + test output. Cheap — a handful of reads.
+      const focusView = focusViewOf(cfg.problemDir, events, now);
+      const workspaceView = [focusView, renderWorkspaceView(cfg.problemDir, events)]
+        .filter(Boolean)
+        .join('\n\n');
+      // read_file instrumentation (decides the deferred-tool question with
+      // data): a candidate naming a file whose CONTENT the interviewer does
+      // not have is the one situation a tool would have served.
+      if (candidateMessage) {
+        const focusRel = focusView.match(/^── currently viewing: (\S+)/)?.[1];
+        const inContext = [
+          focusRel,
+          // Diffed files ride in the workspace view — their content is
+          // (partially) in front of the interviewer too.
+          ...selectRecentlyEdited(events).map((p) => toRel(p)),
+        ].filter((f): f is string => Boolean(f));
+        const named = namedOutOfContextFiles(candidateMessage, workspaceFileList, inContext);
+        if (named.length > 0) {
+          console.log(`[context] candidate named ${named.join(', ')} — content not in interviewer context`);
+        }
+      }
       const turn = await interviewer({
         spec: problem.spec,
         bug,
@@ -540,18 +786,35 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         elapsedMs: now - (sessionStartedAt ?? now),
         remainingMs: sessionLengthMs - (now - (sessionStartedAt ?? now)),
         recentActivity: renderActivity(events, now),
-        transcript: events
-          .filter((e) => e.type === 'utterance' || e.type === 'interviewer')
-          .slice(-10)
-          .map((e) => ({
-            who: e.type === 'utterance' ? ('candidate' as const) : ('interviewer' as const),
-            text: String((e.payload as { text?: string })?.text ?? ''),
-          })),
+        // Real lines only; unheard voice segments collapse to a count line
+        // instead of eating window slots as empty candidate turns.
+        transcript: buildTranscript(events),
         candidateMessage,
         // The scaffolding move (one step when stuck): the observation is
         // aliased by describeStuck — identity, never file names.
         stuckObservation: stuck ? describeStuck(stuck, now) : null,
+        adriftObservation,
         allowedExtra: problem.planted_bug?.failing_test ?? '',
+        workspaceView,
+        bugFileVisited: candidateVisitedBugFile(events, bugFile),
+        rubric: rubricText,
+        engagement,
+        momentObservation: moment ? moment.observation : null,
+        checkKind: roundSpec.check.kind,
+        codebase: codebaseView,
+        // The evaluation agenda rides on EVERY turn (replies included) so
+        // even a reply can be aimed at an uncovered dimension.
+        agenda: renderAgenda(assessAgenda(events, now)),
+        // During wrap-up every turn sees the phase state; the wrap-lane turn
+        // additionally carries its assigned topic.
+        wrapState:
+          wrapTopic !== null
+            ? renderWrapState(wrapQuestionsAsked, wrapTopic)
+            : wrapUpAt !== null
+              ? wrapClosed
+                ? 'WRAP-UP is over — you have signed off. Stay silent unless directly asked.'
+                : `WRAP-UP phase is active (${wrapQuestionsAsked} of ${WRAP_UP_QUESTIONS} questions asked). This turn is a reply — answer, then you may segue into your next evaluation question if it flows.`
+              : undefined,
       });
       if (turn.redacted) {
         console.warn('[interviewer] leak guard fired — reply replaced');
@@ -567,11 +830,26 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // model-silent carries the model's own reason; anything else here
         // means the parse failed or the call errored (logged upstream).
         console.log(
-          `[interviewer] silent turn${candidateMessage !== null ? ' (was a reply!)' : ''}: ${turn.reason ?? '(no reason — parse failure or error, see warnings above)'}`,
+          `[interviewer] silent turn${candidateMessage !== null ? ' (was a reply!)' : ''}: ${
+            turn.redacted
+              ? 'REDACTED by the leak guard (unprompted leak → silence)'
+              : (turn.reason ?? '(no reason — parse failure or error, see warnings above)')
+          }`,
         );
         return;
       }
       lastInterviewerTs = Date.now();
+      if (candidateMessage === null) lastUnpromptedTs = lastInterviewerTs;
+      if (wrapTopic !== null) {
+        // Count only turns that actually spoke; a silent wrap turn retries.
+        if (wrapTopic === CLOSING_TOPIC) {
+          wrapClosed = true;
+          console.log('[wrapup] closed — interviewer signed off');
+        } else {
+          wrapQuestionsAsked++;
+          console.log(`[wrapup] question ${wrapQuestionsAsked}/${WRAP_UP_QUESTIONS} asked`);
+        }
+      }
       store.emitChrome('interviewer', {
         text: turn.say,
         kind: turn.kind,
@@ -581,6 +859,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // Marked so replays can tell scaffolding from pressure — this is
         // how the K=3 threshold gets tuned from real sessions.
         ...(stuck ? { stuck: true } : {}),
+        ...(wrapTopic !== null ? { wrap: true } : {}),
       });
       notifyTurn();
     } catch (e) {
@@ -612,12 +891,17 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     // One-shot rounds are graded HERE, server-side: the suite runs once, at
     // submit, via docker exec — the extension's Run button never existed for
     // this round, so there is no other path to a test_run in the trace.
-    if (caps.submit === 'one_shot') {
+    // can_run_tests:false rounds (review_diff — the coherence gate in
+    // round-spec.ts makes that the only shape) have NO graded suite: the
+    // deliverable is the written review, and QA 2026-08-14 showed the
+    // unconditional run injecting a green 31/31 test_run into the trace,
+    // which the judge then narrated as the candidate's result.
+    if (caps.submit === 'one_shot' && caps.can_run_tests) {
       console.log('[session] one-shot submit — running the grading suite');
       const t0 = Date.now();
       const run = spawnSync(
         'docker',
-        ['exec', CONTAINER, 'bash', '-lc', `cd ${workspacePath} && ${testCmd}`],
+        ['exec', containerName, 'bash', '-lc', `cd ${workspacePath} && ${testCmd}`],
         { encoding: 'utf8', timeout: 180_000 },
       );
       const tail = `${run.stdout ?? ''}\n${run.stderr ?? ''}`.slice(-4_000);
@@ -626,6 +910,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         exit_code: run.status,
         duration_ms: Date.now() - t0,
         summary: summarizeTail(tail),
+        output_tail: tail,
+        // Pass counts when the summary lines parse — the graded run is the
+        // ONLY signal on a one-shot round, and without counts the judge
+        // cannot tell 15/16 from 0/16 (timeline renderer v3).
+        ...(parseRunCounts(tail) ?? {}),
       });
     }
 
@@ -638,6 +927,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       sessionId: cfg.sessionId,
       events,
       problem,
+      problemDir: cfg.problemDir,
       templatePath: path.join(cfg.repoRoot, 'prompts', 'judge-session.md'),
     });
 
@@ -648,11 +938,43 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     );
 
     let gapStore = loadStore(gapsDir, cfg.userId);
-    if (result.status === 'assessed') {
+    // QA harness sessions run this same finalize with fabricated ids and
+    // polluted the founder's memory twice (qa-lc-*, then sess-qa814-* which
+    // beat a prefix guard). Only ids shaped like a real mint deposit —
+    // see isMemorableSessionId for the arms-race record.
+    const realSession = isMemorableSessionId(cfg.sessionId);
+    if (result.status === 'assessed' && realSession) {
       // Unassessed writes NOTHING — a judge failure must not become history.
       const spec = resolveRoundSpec(problem);
-      gapStore = recordAssessment(gapStore, result, spec.label, spec.memory_tags);
+      gapStore = recordAssessment(gapStore, result, spec.label, spec.memory_tags, cfg.targetId);
       saveStore(gapsDir, gapStore);
+      // Second graph: an LC-sourced round deposits topic-ledger rows —
+      // one per part for a set (attemptsFromSession returns [] for
+      // everything else). Same assessed-only gate; never fatal — finalize
+      // must not crash on memory bookkeeping.
+      try {
+        recordTopicAttempts(cfg.repoRoot, cfg.userId, attemptsFromSession({
+          assessment: result, problem, spec, events, origin: 'session',
+        }));
+      } catch (e) {
+        console.warn(`[session] topic record skipped: ${String(e)}`);
+      }
+      // Third graph: a plan round whose manifest carries topics_exercised
+      // (already subset-filtered against the plan's frozen list at build
+      // time) deposits one row into the plan's topic-log. Same gates.
+      if (cfg.targetId && Array.isArray(problem.topics_exercised) && problem.topics_exercised.length) {
+        try {
+          const { recordTopicLogRow } = await import('./topic-log.js');
+          recordTopicLogRow(cfg.repoRoot, cfg.targetId, {
+            session_id: cfg.sessionId,
+            ts: result.judged_at,
+            topics: problem.topics_exercised,
+            solved: result.solved ?? null,
+          });
+        } catch (e) {
+          console.warn(`[session] plan-topic record skipped: ${String(e)}`);
+        }
+      }
     }
 
     const view = buildGraphView(gapStore, cfg.sessionId);
@@ -664,6 +986,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         {
           card,
           view,
+          // WU5: the card's owner. The app's /api/feedback scopes on this;
+          // legacy files without it read as the founder's.
+          user_id: cfg.userId,
           // Voice health belongs in the record you open when a session felt
           // wrong: "the mic seemed off" must be checkable after the fact.
           // speech_starts vs transcripts is the gate-quality ratio — if it
@@ -688,7 +1013,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           cwd: cfg.repoRoot,
           detached: true,
           stdio: 'ignore',
-          env: { ...process.env, IP_TARGET_NOTE: note ?? '', IP_USER_ID: cfg.userId },
+          env: childEnv('generator', process.env, { IP_TARGET_NOTE: note ?? '', IP_USER_ID: cfg.userId }),
         },
       );
       child.unref();
@@ -700,6 +1025,27 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
   const server = http.createServer(async (req, res) => {
     const url = req.url ?? '/';
+    // WU3 gate. Open: the chrome shell + its statics (no data in them — the
+    // shell reads everything through /api/*). Everything else, including the
+    // IDE proxy fall-through and the TTS stream, needs a user. The app's
+    // server-to-server probes authenticate via x-ip-internal.
+    {
+      const openPath =
+        url === '/session' || url.startsWith('/client/') || url.startsWith('/vendor/monaco/');
+      if (!openPath) {
+        const viewer = await auth.resolve(req);
+        if (!viewer) {
+          res.writeHead(401, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'sign in required' }));
+        }
+        // WU5: a live round is the CANDIDATE's room. Another invited user
+        // reaching this origin must not see their workspace or chat.
+        if (!viewer.admin && !viewer.internal && viewer.id !== cfg.userId) {
+          res.writeHead(403, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'someone else is mid-round on this server' }));
+        }
+      }
+    }
     if (url === '/session') {
       markCandidateContact();
       const backUrl = cfg.appUrl
@@ -719,6 +1065,8 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           statement: problem.spec,
           back_url: backUrl,
           workspace_path: workspacePath,
+          elapsed_ms: sessionStartedAt ? Date.now() - sessionStartedAt : 0,
+          voice: Boolean(voice),
         }),
       );
     }
@@ -741,6 +1089,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       return res.end(
         JSON.stringify({
           session_id: cfg.sessionId,
+          // WU5: whose round this is — the app's session-kill ownership
+          // check and the launch 409 copy both read it.
+          user_id: cfg.userId,
           // A graded/abandoned session answering 200 is NOT a live session.
           // The app reads this to decide whether Start is available (QA
           // ISSUE-001: without it, one finished round soft-locked every
@@ -753,6 +1104,36 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
             : { enabled: false, reason: voiceOffReason },
         }),
       );
+    }
+    // A page from an earlier session keeps polling and writing after its
+    // server dies; once the next session binds :3200 those writes would land
+    // in the NEW session's trace (QA 2026-08-14: a second stale client
+    // contaminated a live run). Pages stamp their session id on every write;
+    // a mismatch is refused, never recorded. Header absent (old pages, the
+    // IDE extension's WS path) ⇒ no check — this is trace hygiene, not auth.
+    {
+      const claimed = req.headers['x-ip-session'];
+      const writeRoute =
+        req.method !== 'GET' &&
+        (url === '/api/utterance' || url === '/api/file' || url === '/api/panes-event' ||
+          url === '/api/run' || url === '/api/ide-run' || url === '/api/end' || url === '/api/card-feedback');
+      if (writeRoute && typeof claimed === 'string' && claimed !== '' && claimed !== cfg.sessionId) {
+        res.writeHead(409, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'stale_session_page', live_session: cfg.sessionId }));
+      }
+      // Same trace-hygiene rule in the time dimension: once the round has
+      // ended the judge has ALREADY read the trace and the assessment is on
+      // disk, so a later append silently makes the record disagree with what
+      // was graded. QA 2026-08-14 fix-verification: a reloaded ended page
+      // still posted edits/saves/utterances into the closed trace. /api/end
+      // and /api/card-feedback stay open — ending twice is idempotent and the
+      // card's confirm buttons live on the ended page by design.
+      const appendRoute =
+        url === '/api/utterance' || url === '/api/file' || url === '/api/panes-event';
+      if (ended && appendRoute && req.method !== 'GET') {
+        res.writeHead(409, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'session_ended' }));
+      }
     }
     if (url === '/api/utterance' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)) || '{}') as { text?: string };
@@ -817,7 +1198,16 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         }));
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(
-        JSON.stringify({ messages, heard, thinking: interviewerBusy, time_up: timeUpAt !== null }),
+        // "Thinking" starts the moment a question is ACCEPTED, not when the
+        // model call begins — the settling window and queue wait are dead air
+        // to the candidate otherwise, and dead air with no indicator is
+        // indistinguishable from a broken interviewer.
+        JSON.stringify({
+          messages,
+          heard,
+          thinking: interviewerBusy || turnQueue.size > 0 || settlePending(),
+          time_up: timeUpAt !== null,
+        }),
       );
     }
     if (url === '/api/card-feedback' && req.method === 'POST') {
@@ -837,7 +1227,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       } catch {
         /* first confirmation */
       }
-      if (body.dimension) confirms[body.dimension] = Boolean(body.agree);
+      if (body.dimension) confirms = mergeConfirm(confirms, body.dimension, Boolean(body.agree));
       mkdirSync(path.join(cfg.repoRoot, 'assessments'), { recursive: true });
       writeFileSync(file, JSON.stringify(confirms, null, 2));
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -908,6 +1298,22 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         res.writeHead(400);
         return res.end('bad path or content');
       }
+      // One-shot rounds extend the block to the grading contract itself:
+      // tests/ and the cases files are exactly what the submit run executes
+      // (QA 2026-08-14 — test_partN.py was editable in-session, so a
+      // candidate could grade their own round green). Iterate rounds keep
+      // test-editing freedom; their runs are formative, not graded.
+      const relPath = path.relative(cfg.problemDir, abs);
+      if (
+        caps.submit === 'one_shot' &&
+        (relPath === 'tests' ||
+          relPath.startsWith(`tests${path.sep}`) ||
+          /^cases.*\.json$/i.test(path.basename(abs)) ||
+          shadowsTestRunner(relPath))
+      ) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'the grading suite is read-only on a one-shot round' }));
+      }
       markCandidateContact();
       mkdirSync(path.dirname(abs), { recursive: true }); // blank scaffolds invite new files
       writeFileSync(abs, body.content);
@@ -965,7 +1371,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       const t0 = Date.now();
       // spawn, not spawnSync: a suite can take minutes and the status /
       // message polls must keep answering while it runs.
-      const child = spawn('docker', ['exec', CONTAINER, 'bash', '-lc', `cd ${workspacePath} && ${testCmd}`]);
+      const child = spawn('docker', ['exec', containerName, 'bash', '-lc', `cd ${workspacePath} && ${testCmd}`]);
       let tail = '';
       const keep = (chunk: Buffer) => {
         tail = (tail + chunk.toString()).slice(-4_000);
@@ -977,6 +1383,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         clearTimeout(killer);
         paneRunning = false;
         const summary = summarizeTail(tail);
+        const counts = parseRunCounts(tail);
         // Teardown race: if the session ended mid-run, docker rm killed the
         // exec — a post-session_end test_run would corrupt the trace's story.
         if (!ended) {
@@ -985,10 +1392,12 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
             exit_code: code,
             duration_ms: Date.now() - t0,
             summary,
+            output_tail: tail,
+            ...(counts ?? {}),
           });
         }
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ exit_code: code, summary, tail }));
+        res.end(JSON.stringify({ exit_code: code, summary, tail, ...(counts ?? {}) }));
       });
       child.on('error', (e) => {
         clearTimeout(killer);
@@ -1117,15 +1526,37 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   };
 
   server.on('upgrade', (req, socket, head) => {
-    if (req.url === '/trace') {
+    // Route on pathname: /trace now carries ?token=…, and the emitter uses
+    // IP_WS_URL verbatim, so the exact-match routing would silently proxy
+    // the trace socket into openvscode and tracing would die.
+    const upgradePath = new URL(req.url ?? '', 'http://x').pathname;
+    if (upgradePath === '/trace') {
+      // Token-gated, NOT JWT-gated: the emitter dials from inside the
+      // container with no cookie. See traceUpgradeAllowed.
+      if (!traceUpgradeAllowed(req.url, traceToken)) {
+        socket.destroy();
+        return;
+      }
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
-    } else if (req.url === '/voice') {
-      voiceWss.handleUpgrade(req, socket, head, (ws) => voiceWss.emit('connection', ws, req));
-    } else if (req.url === '/events') {
-      eventsWss.handleUpgrade(req, socket, head, (ws) => eventsWss.emit('connection', ws, req));
-    } else {
-      proxy.ws(req, socket, head);
+      return;
     }
+    // Everything else — /voice, /events, and the openvscode workbench WS
+    // through the proxy — carries the browser's auth cookie.
+    void auth.resolve(req).then((user) => {
+      // Same viewer-ownership rule as the HTTP gate: the room belongs to
+      // the candidate whose round this is.
+      if (!user || (!user.admin && !user.internal && user.id !== cfg.userId)) {
+        socket.destroy();
+        return;
+      }
+      if (upgradePath === '/voice') {
+        voiceWss.handleUpgrade(req, socket, head, (ws) => voiceWss.emit('connection', ws, req));
+      } else if (upgradePath === '/events') {
+        eventsWss.handleUpgrade(req, socket, head, (ws) => eventsWss.emit('connection', ws, req));
+      } else {
+        proxy.ws(req, socket, head);
+      }
+    });
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -1157,10 +1588,89 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       if (ended || interviewerBusy || sessionStartedAt === null) return;
       const events = store.readAll();
       if (!hasFailingRun(events)) return;
-      if (Date.now() - lastInterviewerTs < PRESSURE_INTERVAL_MS) return;
-      const stuck = detectStuck(events, Date.now(), sessionStartedAt);
-      const episodeSpent = stuck ? (stuckRedactions.get(stuck.since_ms) ?? 0) >= 2 : false;
-      void runInterviewer(null, stuck && !episodeSpent ? stuck : null);
+      const now = Date.now();
+
+      // Wrap signal: checked every tick regardless of clocks, set once.
+      if (wrapUpAt === null) {
+        const sig = detectWrapSignal(events, now);
+        if (sig !== null) {
+          wrapUpAt = now;
+          console.log('[wrapup] working phase over — evaluation questions begin');
+        }
+      }
+
+      // Anti-stacking guard only: never talk on top of a turn just
+      // delivered. Everything else paces on the UNPROMPTED clock — replies
+      // no longer buy the interviewer silence (the single-clock bug that
+      // produced ZERO unprompted turns in a 26-minute session).
+      if (now - lastInterviewerTs < ANY_TURN_GUARD_MS) return;
+
+      // Wrap-up lane: once active it OWNS initiative — no scaffolding, no
+      // moments, no pressure aimed at work that is already done.
+      if (wrapUpAt !== null) {
+        if (wrapClosed) return;
+        const topic =
+          wrapQuestionsAsked >= WRAP_UP_QUESTIONS
+            ? CLOSING_TOPIC
+            : selectWrapTopic(assessAgenda(events, now), wrapQuestionsAsked);
+        void runInterviewer(null, null, null, null, topic);
+        return;
+      }
+
+      // Priority unchanged: help > engagement > rhythm.
+      // Scaffolding lane — paced by NEED (the detectors), not the metronome.
+      if (now - lastInterviewerTs >= SCAFFOLD_FLOOR_MS) {
+        const stuck = detectStuck(events, now, sessionStartedAt);
+        const episodeSpent = stuck ? (stuckRedactions.get(stuck.since_ms) ?? 0) >= 2 : false;
+        if (stuck && !episodeSpent) {
+          void runInterviewer(null, stuck);
+          return;
+        }
+        // Nothing is being CHANGED — but is anything being read productively?
+        // detectStuck is blind to a candidate who only reads (its own doc
+        // says reading must never trip it), which left the wrong-file reader
+        // with no help at all for 35 minutes in sess-1786072934316.
+        const adrift = detectAdrift(events, now, sessionStartedAt);
+        // The once-per-session budget is spent on the REDIRECT only: "the
+        // region you are in is spent" is a location signal, and repeating it
+        // turns the round into a guided tour. The warm inversion carries no
+        // location content — it is pure "keep pulling on that" — so it stays
+        // available all session, which is the half the candidate actually
+        // asked for ("rarely making me feel like I was on to something").
+        if (adrift) {
+          const warm = regionContainsAnswer(adrift, bugFile, problem.planted_bug?.line);
+          const warmCooling = warm && now - lastWarmTs < WARM_COOLDOWN_MS;
+          if ((warm && !warmCooling) || (!warm && !adriftFired)) {
+            if (warm) lastWarmTs = now;
+            else adriftFired = true;
+            console.log(`[adrift] ${warm ? 'WARM — answer is in their region; encouraging, not redirecting' : 'REDIRECT'}`);
+            void runInterviewer(
+              null,
+              null,
+              null,
+              warm ? describeWarm(adrift, now) : describeAdrift(adrift, now),
+            );
+            return;
+          }
+        }
+      }
+
+      const sinceUnprompted = now - lastUnpromptedTs;
+      if (sinceUnprompted >= MOMENT_INTERVAL_MS) {
+        // Event-anchored probes: the first failure read, the first fix that
+        // ran, the pass after a struggle. Each fires ONCE — marked before
+        // dispatch so even a guard-silenced turn never re-fires it.
+        const moment = detectMoment(events, roundSpec.check.kind, firedMoments, now);
+        if (moment) {
+          firedMoments.add(moment.kind);
+          console.log(`[moment] ${moment.kind}`);
+          void runInterviewer(null, null, moment);
+          return;
+        }
+      }
+      if (sinceUnprompted >= PRESSURE_INTERVAL_MS) {
+        void runInterviewer(null, null);
+      }
     }, PRESSURE_TICK_MS);
     pressureTimer.unref();
 
@@ -1170,10 +1680,12 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     // deliberately do NOT touch lastInterviewerTs, so they never delay or
     // replace a real turn.
     ackTimer = setInterval(() => {
-      if (ended || interviewerBusy || sessionStartedAt === null || timeUpAt !== null) return;
+      // No "Mm-hm" during the wrap-up: the interviewer is actively leading
+      // the conversation there, and a canned continuer reads as checked-out.
+      if (ended || interviewerBusy || sessionStartedAt === null || timeUpAt !== null || wrapUpAt !== null) return;
       const events = store.readAll();
       if (!hasFailingRun(events)) return; // same "genuinely underway" gate as pressure
-      if (Date.now() - lastInterviewerTs >= PRESSURE_INTERVAL_MS) return; // a real turn is due — let it speak
+      if (Date.now() - lastUnpromptedTs >= PRESSURE_INTERVAL_MS) return; // a real turn is due — let it speak
       const ack = decideAck(events, Date.now(), { askPending: turnQueue.size > 0 });
       if (!ack) return;
       store.emitChrome('interviewer', { text: ack, kind: 'ack', nudge: false, unprompted: true });
@@ -1214,7 +1726,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       if (timeUpAt !== null && Date.now() - timeUpAt > 30_000 && !ended) {
         ended = true;
         console.log('[session] grace elapsed — finalizing server-side');
-        void finalize().catch((e) => console.error('[session] cap finalize failed:', e));
+        void finalize()
+          // The card never needs the container; in multi mode an idle
+          // openvscode container would burn ~1GB beside live rooms.
+          .then(() => setImmediate(teardownContainer))
+          .catch((e) => console.error('[session] cap finalize failed:', e));
       }
     }, 5_000);
     capTimer.unref();

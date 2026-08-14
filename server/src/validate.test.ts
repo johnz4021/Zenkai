@@ -9,6 +9,7 @@ import {
   parseVitestJson,
 } from './validate.js';
 import type { GeneratedProblem, RoundSpec } from '@interview-prep/shared';
+import { DEFAULT_DEBUGGING_SPEC } from '@interview-prep/shared';
 
 const report = (failures: { status: string; fullName: string }[][]) =>
   JSON.stringify({
@@ -323,6 +324,23 @@ describe('checkManifest spec dispatch', () => {
     expect(checkManifest(p, '/nonexistent')).toEqual([]);
   });
 
+  it('a diff_present MANIFEST requires non-empty files_changed — the generator names what changed', () => {
+    // The inference-side gate no longer requires the list (no problem exists
+    // there to name files from — QA 2026-08-13); the proof moved HERE, where
+    // the artifact exists. An empty declaration = nothing to review = a
+    // generation failure.
+    const p = minimal({
+      round_spec: {
+        id: 'rev',
+        label: 'Review',
+        capabilities: { interviewer: false, can_run_tests: false, time_limit_ms: 60_000, starts_from: 'diff', submit: 'one_shot' },
+        check: { kind: 'diff_present' },
+        memory_tags: ['review'],
+      },
+    });
+    expect(checkManifest(p, '/nonexistent').join('\n')).toMatch(/non-empty check\.files_changed/);
+  });
+
   it('a legacy manifest still requires its planted_bug', () => {
     const p = minimal({});
     expect(checkManifest(p, '/nonexistent').join()).toMatch(/planted_bug missing/);
@@ -341,5 +359,44 @@ describe('normalizeTestName — the third notation (live failure)', () => {
     const claimed = 'tests.test_dashboard.WatchlistTest.test_each_row_carries_the_snapshot_of_its_own_device';
     const observed = 'tests > test_dashboard > WatchlistTest > test_each_row_carries_the_snapshot_of_its_own_device';
     expect(normalizeTestName(claimed)).toBe(normalizeTestName(observed));
+  });
+});
+
+describe('checkExpectations vocabulary pool keeps identifiers whole (rep-e2e52324)', () => {
+  const base = (spec: string, reflect: string) => ({
+    round_type: 'debugging' as const,
+    repo_path: '.', model_paths: ['solution.py'], mutations: [],
+    round_spec: { ...DEFAULT_DEBUGGING_SPEC, check: { kind: 'all_failing' as const } },
+    spec,
+    rubric: {
+      round_type: 'debugging' as const,
+      dimensions: {
+        clarify: 'Pins down the chime duration bounds before writing any code at all here',
+        approach: 'Names the chime table fill mechanism before typing a single line of it',
+        communicate: 'Narrates the chime recurrence out loud while building it step by step',
+        implement: 'Builds the chime table in one pass without rewriting the whole thing',
+        verify: 'Dry-runs the chime examples by hand before submitting the final answer',
+        reflect,
+      },
+    },
+  });
+
+  it('a snake_case identifier shared with the spec ties the expectation', () => {
+    // The ONLY overlap is `min_ms` — story words (chime) live in the spec,
+    // algorithm words (modulus) in the expectation. Pre-fix this false-failed.
+    const p = base(
+      'A doorbell chime is presentable when its duration lands between `min_ms` and `max_ms` inclusive, and the composer appends pulses one at a time until it does.',
+      'Explains why the answer sums across the whole [min_ms, max_ms] range and why the modulus is applied throughout.',
+    );
+    const failures = checkExpectations(p as never);
+    expect(failures.filter((f) => f.includes('reflect'))).toEqual([]);
+  });
+
+  it('still rejects an expectation with genuinely no shared vocabulary', () => {
+    const p = base(
+      'A doorbell chime is presentable when its duration lands between `min_ms` and `max_ms` inclusive.',
+      'Explains the tradeoffs of their approach clearly and honestly to the interviewer at the end.',
+    );
+    expect(checkExpectations(p as never).some((f) => f.includes('reflect'))).toBe(true);
   });
 });

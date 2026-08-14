@@ -2,21 +2,27 @@
 
 <!-- Starter skeleton. The drafter rewrites every section for the specific
      round; the headings are load-bearing (gateBlueprint requires all of
-     them). Written as a filled example, not blanks — overwrite the prose. -->
+     them). Written as a filled example, not blanks — overwrite the prose.
+     Delivery facts (surface, clock, submit style, interviewer presence) are
+     injected by the drafter prompt from the spec — describe the TASK here
+     and stay consistent with those facts; never contradict them. -->
 
 ## What this round is
 
 A find-and-fix round: the candidate opens a working-looking codebase where
-exactly one behavior is broken and one test fails. The interviewer watches how
-they localize the fault — reading the failure before touching code, forming a
+exactly one behavior is broken and one test fails. What is graded is how the
+fault gets localized — reading the failure before touching code, forming a
 mechanism-level hypothesis, and verifying the fix — more than whether they
-finish fast. This is the classic on-site debugging screen.
+finish fast. The classic debugging screen, and the round the industry leans
+on hardest now precisely because it resists shortcutting: the code must be
+read and the discrepancy explained.
 
 ## Environment
 
-TypeScript with a vitest suite, in the nested IDE with a file tree and a Run
-Tests button. Repo scale: a small multi-module package, roughly 300-600 lines
-of source total. No network, no database — pure logic and in-memory state.
+TypeScript with a vitest suite (or the language the candidate's material
+pins), with a runnable suite. Repo scale: a small multi-module package,
+roughly 300-600 lines of source total. No network, no database — pure logic
+and in-memory state.
 
 ## Repo shape
 
@@ -44,6 +50,15 @@ one sitting.
 Stateful domains where a subtle quantity or ordering mistake produces a clean
 observable failure: inventory holds, schedulers, caches with expiry, retry
 queues, billing accumulators.
+
+## Interviewer engagement
+
+When present, restrained. Open by framing the broken-behavior premise, then
+let them drive. Probe method at the flagged moments — what the failure
+output said, what a change was meant to fix — and press for a mechanism when
+they name only a location. Reward reading before editing and stated
+hypotheses; do not reward speed. When the spec has no interviewer, say so
+plainly; the think-aloud trace carries the method signal.
 
 ## Learnings log
 

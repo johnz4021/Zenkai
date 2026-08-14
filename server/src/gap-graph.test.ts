@@ -287,3 +287,31 @@ describe('the full memory pipeline (deterministic: judge -> graph -> patterns)',
     expect(note).toContain('(dsa)');
   });
 });
+
+describe('isMemorableSessionId — the memory boundary', () => {
+  it('admits BOTH real mint shapes — single-session and multi-session', async () => {
+    const { isMemorableSessionId } = await import('./gap-graph.js');
+    const { newSessionId } = await import('./session-registry.js');
+    expect(isMemorableSessionId('sess-1786643587196')).toBe(true);
+    // Multi-session is the BETA config; its hex suffix is not optional in
+    // practice. A guard that rejected this recorded nothing for every real
+    // beta user while looking correct on legacy history (caught 2026-08-14).
+    expect(isMemorableSessionId('sess-1786722081844-a3f9')).toBe(true);
+    // The generator is the contract — not a hand-written sample.
+    expect(isMemorableSessionId(newSessionId(Date.now()))).toBe(true);
+  });
+
+  it('refuses harness ids — both pollution incidents, pinned', async () => {
+    const { isMemorableSessionId } = await import('./gap-graph.js');
+    expect(isMemorableSessionId('qa-lc-1786575866')).toBe(false);
+    expect(isMemorableSessionId('sess-qa814-lcset2')).toBe(false);
+    expect(isMemorableSessionId('sess-qa813-panesint-b')).toBe(false);
+    expect(isMemorableSessionId('sess-qa814-verify-ide')).toBe(false);
+    // Shape-adjacent near misses stay out: wrong suffix width, non-hex,
+    // trailing segment, short stamp.
+    expect(isMemorableSessionId('sess-1786643587196-b')).toBe(false);
+    expect(isMemorableSessionId('sess-1786643587196-zzzz')).toBe(false);
+    expect(isMemorableSessionId('sess-1786643587196-a3f9-x')).toBe(false);
+    expect(isMemorableSessionId('sess-123')).toBe(false);
+  });
+});

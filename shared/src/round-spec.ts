@@ -83,6 +83,17 @@ export interface RoundSpec {
   memory_tags: MemoryTag[];
   /** Open-vocabulary generation emphasis ("likely concurrency"). */
   emphasis?: string;
+  /** ISO date (YYYY-MM-DD) THIS round happens, when known. One loop's
+   *  rounds fall on different days (an OA this week, the onsite in three);
+   *  the queue paces each round's practice against its own date. Absent =
+   *  confirmed but unscheduled — paced against the loop end, never guessed. */
+  date?: string;
+  /** How this round's FORM is evidenced (CEO review 2026-08-07): a
+   *  firsthand artifact the candidate SAW > a secondhand account > public
+   *  sources or model priors. Classified by the planner, freely overridable
+   *  by the candidate at the confirm gate. Drives hedge allocation once the
+   *  portfolio backend lands; captured now so the data accumulates. */
+  evidence_tier?: 'firsthand' | 'secondhand' | 'public_prior';
 }
 
 /** What every manifest written before round_spec existed resolves to. */
@@ -175,8 +186,15 @@ export function validateRoundSpec(spec: unknown): string[] {
     if (typeof k.kind !== 'string' || !CHECK_KINDS.has(k.kind)) {
       failures.push(`check.kind out of vocabulary: ${String(k.kind)}`);
     }
-    if (k.kind === 'diff_present' && (!Array.isArray(k.files_changed) || k.files_changed.length === 0)) {
-      failures.push('check.kind diff_present requires non-empty files_changed');
+    // files_changed is a SHAPE check only when present. It used to be
+    // required non-empty for diff_present — but at inference time no problem
+    // exists yet, so no model-authored review-round spec could ever name its
+    // files, and every code-review round 502'd through every intake path
+    // (QA 2026-08-13). The non-empty requirement lives in checkManifest,
+    // where the generated artifact actually exists to prove it.
+    if (k.files_changed !== undefined
+      && (!Array.isArray(k.files_changed) || k.files_changed.some((f: unknown) => typeof f !== 'string' || !f))) {
+      failures.push('check.files_changed must be an array of non-empty strings when present');
     }
     if (k.min_tests !== undefined && (typeof k.min_tests !== 'number' || k.min_tests < 1)) {
       failures.push('check.min_tests must be a positive number when present');
@@ -187,6 +205,20 @@ export function validateRoundSpec(spec: unknown): string[] {
     ) {
       failures.push('check.max_source_files must be a positive integer when present');
     }
+  }
+
+  if (
+    s.date !== undefined &&
+    (typeof s.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s.date) || Number.isNaN(Date.parse(`${s.date}T00:00:00`)))
+  ) {
+    failures.push(`date must be YYYY-MM-DD when present: ${String(s.date)}`);
+  }
+
+  if (
+    s.evidence_tier !== undefined &&
+    s.evidence_tier !== 'firsthand' && s.evidence_tier !== 'secondhand' && s.evidence_tier !== 'public_prior'
+  ) {
+    failures.push(`evidence_tier out of vocabulary: ${String(s.evidence_tier)}`);
   }
 
   if (!Array.isArray(s.memory_tags)) {

@@ -1,11 +1,11 @@
 {
   "session_id": "sess-1785534051260",
   "status": "assessed",
-  "judged_at": 1785541688333,
-  "model": "sonnet (claude -p)",
+  "judged_at": 1786558511828,
+  "model": "claude-sonnet-5 (api)",
   "prompt_hash": "7111192943bf",
   "schema_version": 1,
-  "renderer_version": 1,
+  "renderer_version": 2,
   "expectations_used": {
     "clarify": "Settles the suite's ambiguous edges from the visible tests before coding — reads the back-to-back test to confirm that windows touching at a boundary do not overlap, and the sweep test to confirm a hold lapses at exactly holdExpiresAt rather than one minute later.",
     "approach": "States a mechanism before writing code — one occupancy predicate (an occupying state that is not a stale hold) shared by hold, isAvailable and scheduleFor, plus a private expire-stale pass run at the top of every mutating method — not merely 'a Map of bookings'.",
@@ -15,45 +15,50 @@
     "reflect": "Explains which invariant each rejection code protects — why HOLDER_CONFLICT needs a scan across assets while ASSET_UNAVAILABLE does not — and names which part of the design would strain first if a booking could cover several assets."
   },
   "solved": false,
-  "summary": "The candidate opened the problem's package.json twice in the first 30 seconds of a 94-minute session, then the timeline shows no further candidate activity at all until the interviewer's time warnings. The session auto-submitted at the deadline and the test run failed, with no visible reading of the spec, planning, editing, or verification in between.",
+  "summary": "The timeline shows almost no observable activity: two file opens at the very start, a long unexplained gap of over 90 minutes, a time's-up warning, and a single failing test run right before the candidate ended the session. There is no evidence of narrated reasoning, planning, or iterative implementation, and the suite was left failing at submission.",
   "dimensions": [
     {
       "dimension": "clarify",
       "verdict": "unassessable",
-      "analysis": "The only candidate actions before the deadline were opening package.json twice; there is no evidence they ever opened ledger.ts, ledger.test.ts, or engaged with the boundary/expiry ambiguities the problem calls out. No direction was ever committed to, so there is nothing to judge clarifying behavior against.",
+      "analysis": "There is no visible speech, question-asking, or narration in the timeline at all. Only file opens and a final test run are recorded, giving no evidence of any clarifying activity before committing to a direction.",
       "evidence": []
     },
     {
       "dimension": "approach",
       "verdict": "unassessable",
-      "analysis": "No plan, hypothesis, or even a stated intent appears anywhere in the timeline. Since no non-trivial decision point was ever reached in the visible record, there is no approach to assess.",
+      "analysis": "No stated plan, hypothesis, or mechanism appears anywhere in the timeline. The session shows only two file opens and then a large silent gap, so there is nothing to assess about how they framed the problem before executing.",
       "evidence": []
     },
     {
       "dimension": "communicate",
       "verdict": "weak",
-      "analysis": "After the two file opens in the first 30 seconds, there is no further candidate speech or action logged for roughly 75 minutes, and no narration appears anywhere in the session. An interviewer following only the candidate's own actions would have had no way to know what, if anything, they were doing during almost the entire session.",
+      "analysis": "Across roughly 93 minutes there is no recorded narration, explanation, or commentary at all — just two file opens near the very start and a final failing test run at the end. Even accounting for possible evidence gaps, the near-total absence of any observable communication over such a long session indicates the interviewer would have had no way to follow their thinking.",
       "evidence": [
+        5,
         29,
         5616
       ]
     },
     {
       "dimension": "implement",
-      "verdict": "unassessable",
-      "analysis": "No edits or code changes are recorded anywhere in the timeline, so there is no implementation to evaluate against a stated plan that also never appeared.",
-      "evidence": []
+      "verdict": "weak",
+      "analysis": "No edits, saves, or intermediate test runs are recorded during the entire session; the only concrete artifact is a single test run at the very end, after the time-limit warning, which failed. There is no evidence of code changes being made to src/ledger.ts at all in the observable timeline, suggesting little to no implementation was completed or captured.",
+      "evidence": [
+        5616
+      ]
     },
     {
       "dimension": "verify",
-      "verdict": "unassessable",
-      "analysis": "The only test run in the record happens at +5616s immediately after the interviewer's forced end-of-time submission, not as a candidate-initiated check of their own work. With no implementation ever visible, there was nothing for the candidate to verify.",
-      "evidence": []
+      "verdict": "weak",
+      "analysis": "The only test run occurs at +5616s, after the interviewer's time's-up message, and it failed — meaning verification happened, if at all, only once and too late to act on, and the session ended immediately after with a failing suite.",
+      "evidence": [
+        5616
+      ]
     },
     {
       "dimension": "reflect",
       "verdict": "unassessable",
-      "analysis": "The session ends at the same moment the failing test result appears, with the candidate immediately clicking End Session. No resolution point was reached and no reflection on cause or fix is present in the record.",
+      "analysis": "The session ended immediately after the failing test run with the candidate clicking End Session, leaving no time or recorded speech for any explanation of what was done or why it did or didn't work.",
       "evidence": []
     }
   ]

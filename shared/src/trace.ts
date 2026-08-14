@@ -28,6 +28,7 @@ export type TraceEventType =
   | 'spec_mutation' // scripted spec swap fired by the chrome (never LLM-timed)
   | 'pause'         // LEGACY: extension-emitted verdict; readable, ignored
   | 'sensor'        // voice sensor state change (see SensorPayload)
+  | 'view_range'    // which lines are on the candidate's screen (coalesced)
   | 'session_start'
   | 'session_end';
 
@@ -59,6 +60,11 @@ export interface TestRunPayload {
    *  it; declaring it lets the stuck detector read outcomes without casting.
    *  Per-test NAMES are not available — only this summary line. */
   summary?: string;
+  /** The run's actual output tail (≤4k chars). The extension always
+   *  captured it and shipped only the summary — which left the interviewer
+   *  able to say "the test failed" but never WHY. Absent on
+   *  terminal-observed runs (the shell API exposes no output). */
+  output_tail?: string;
   /** Present instead of a summary when the runner failed to spawn. */
   error?: string;
 }
@@ -77,6 +83,24 @@ export interface EditPayload {
 
 export interface FileOpenPayload {
   path: string;
+  /** 'focus' = the editor SWITCHED to an already-open document (tab click,
+   *  split focus). Plain opens omit it. Both mean the same downstream thing —
+   *  this file has the candidate's attention — which is why focus reuses
+   *  file_open instead of minting a type every consumer would have to learn. */
+  via?: 'focus';
+}
+
+/**
+ * The visible line range of a file on the candidate's screen. Emitted by the
+ * extension on scroll, coalesced hard (one per file per 15s, only after a
+ * >25-line move) — attention signal, not a keylogger. This is the one fact
+ * no tool could recover from disk: WHERE the candidate is looking. Lines are
+ * 1-indexed.
+ */
+export interface ViewRangePayload {
+  path: string;
+  start: number;
+  end: number;
 }
 
 export interface SpecMutationPayload {
@@ -137,6 +161,10 @@ export interface InterviewerPayload {
   nudge: boolean;
   /** True when the turn was unprompted (a pressure beat, not a reply). */
   unprompted: boolean;
+  /** True on wrap-up phase turns (post-work evaluation questions and the
+   *  closing) — the timeline labels these so the judge reads the answers as
+   *  reflection under questioning, not mid-work narration. */
+  wrap?: boolean;
 }
 
 /**
@@ -167,6 +195,9 @@ export const CANDIDATE_ACTIVITY_TYPES: readonly TraceEventType[] = [
   'command',
   'test_run',
   'utterance',
+  // Scrolling is reading, and reading is activity — the pause lesson again:
+  // a candidate silently working through a file must never score as absent.
+  'view_range',
 ];
 
 export function isCandidateActivity(e: TraceEvent): boolean {

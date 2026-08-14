@@ -17,13 +17,17 @@
   const editorHost = $('editor');
   if (!editorHost) return; // not a panes page
 
-  const postEvent = (type, payload) => {
+  // Writes carry the page's session id so a stale page whose server died is
+  // refused by whichever session binds :3200 next (QA 2026-08-14).
+  const SID = ((document.getElementById('sid') || {}).textContent || '');
+  const sidHeaders = (h) => Object.assign({ 'x-ip-session': SID }, h || {});
+
+  const postEvent = (type, payload) =>
     fetch('/api/panes-event', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: sidHeaders({ 'content-type': 'application/json' }),
       body: JSON.stringify({ type, payload }),
     }).catch(() => {}); // trace loss is the server's problem to notice, not a UI error
-  };
 
   const LANG = { py: 'python', js: 'javascript', mjs: 'javascript', cjs: 'javascript', ts: 'typescript', json: 'json', md: 'markdown' };
   const langOf = (p) => LANG[p.split('.').pop()] || 'plaintext';
@@ -33,7 +37,7 @@
   const editCounts = new Map(); // path -> changes since last edit event
   const editTimers = new Map(); // path -> 1s coalescing timer
   const saveTimers = new Map(); // path -> autosave debounce timer
-  const inflightSaves = new Set(); // promises; Run flushes these first
+  const inflight = new Set(); // in-flight save PUTs and edit posts; every flush awaits these
   let editor = null;
   let activePath = null;
 
@@ -42,23 +46,48 @@
     if (!m) return;
     const p = fetch('/api/file', {
       method: 'PUT',
-      headers: { 'content-type': 'application/json' },
+      headers: sidHeaders({ 'content-type': 'application/json' }),
       body: JSON.stringify({ path, content: m.getValue() }),
     })
       .then(() => postEvent('file_save', { path }))
       .catch(() => {})
-      .finally(() => inflightSaves.delete(p));
-    inflightSaves.add(p);
+      .finally(() => inflight.delete(p));
+    inflight.add(p);
+  };
+
+  /** Emit any edit events still sitting in their 1s coalescing window.
+   *  Without this the LAST edits before a fast submit land after
+   *  session_end — the judge reads the trace snapshot taken at
+   *  session_end, so they are invisible to it and it writes "made unseen
+   *  edits" about work it cannot see. Same class as the save flush below,
+   *  found by /qa 2026-08-12 on a one-shot LC round. */
+  const flushEdits = () => {
+    for (const [path, t] of editTimers) {
+      clearTimeout(t);
+      editTimers.delete(path);
+      const n = editCounts.get(path) || 0;
+      editCounts.delete(path);
+      if (n <= 0) continue;
+      // Tracked so the flush AWAITS the post: a fire-and-forget edit would
+      // still race /api/end and land after the judge's snapshot.
+      const p = postEvent('edit', { path, changes: n }).finally(() => inflight.delete(p));
+      inflight.add(p);
+    }
   };
 
   const flushSaves = () => {
+    flushEdits();
     for (const [path, t] of saveTimers) {
       clearTimeout(t);
       saveTimers.delete(path);
       save(path);
     }
-    return Promise.all([...inflightSaves]);
+    return Promise.all([...inflight]);
   };
+  // Submit path (session.js endSession) must flush too: on a one_shot round
+  // the Run button doesn't exist, so without this hook nothing ever flushed
+  // and the last <800ms of typing was graded away by the submit run.
+  window.ipPanesFlush = flushSaves;
 
   const renderTabs = (files) => {
     const tabs = $('tabs');
@@ -104,6 +133,10 @@
     }
     activePath = path;
     editor.setModel(models.get(path));
+    // Prose wraps; code scrolls. Review rounds' whole deliverable is a
+    // markdown write-up — without wrap it edited as one endless line
+    // (QA 2026-08-14).
+    editor.updateOptions({ wordWrap: langOf(path) === 'markdown' ? 'on' : 'off' });
     markActive();
     postEvent('file_open', { path });
     editor.focus();
@@ -112,8 +145,24 @@
   const boot = async () => {
     const r = await fetch('/api/files');
     const { files } = await r.json();
+    // Graphite Steel: sink the editor ground to the shell's --sunk tone so the
+    // pane reads as one instrument; syntax colors inherit from vs-dark.
+    monaco.editor.defineTheme('zenkai-graphite', {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [],
+      colors: {
+        'editor.background': '#131314',
+        'editorLineNumber.foreground': '#66676b',
+        'editorLineNumber.activeForeground': '#96979b',
+        'editorCursor.foreground': '#f4f4f5',
+        'editor.selectionBackground': '#35708f55',
+        'editor.inactiveSelectionBackground': '#35708f2e',
+        'focusBorder': '#35708f',
+      },
+    });
     editor = monaco.editor.create(editorHost, {
-      theme: 'vs-dark',
+      theme: 'zenkai-graphite',
       automaticLayout: true,
       minimap: { enabled: false },
       fontSize: 13,
@@ -134,12 +183,19 @@
       await flushSaves();
       $('runstate').textContent = 'running…';
       try {
-        const r = await fetch('/api/run', { method: 'POST' });
+        const r = await fetch('/api/run', { method: 'POST', headers: sidHeaders() });
         const out = await r.json();
         if (out.error) {
           $('runstate').textContent = out.error === 'busy' ? 'a run is already in progress' : 'run refused: ' + out.error;
         } else {
-          $('runstate').textContent = out.exit_code === 0 ? 'passed' : 'failed';
+          // Say what the fraction IS: "failed 0/17" read as its own opposite
+          // when all 17 failed (QA 2026-08-14) — the number beside "failed"
+          // is the PASS count.
+          const counts = typeof out.passed === 'number' && typeof out.total === 'number'
+            ? out.passed + '/' + out.total + ' passing' : '';
+          $('runstate').textContent = (out.exit_code === 0 ? 'passed' : 'failed') + (counts ? ' — ' + counts : '');
+          // Presentation hook only: lets the stylesheet color the verdict.
+          $('runstate').className = out.exit_code === 0 ? 'pass' : 'fail';
           $('runout').textContent = out.tail || out.summary || '';
           $('runout').scrollTop = $('runout').scrollHeight;
         }

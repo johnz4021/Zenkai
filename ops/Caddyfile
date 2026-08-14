@@ -1,0 +1,36 @@
+# Zenkai beta TLS + reverse proxy. Copy to /etc/caddy/Caddyfile.
+#
+# Caddy fetches and renews Let's Encrypt certs automatically (needs 80 and
+# 443 open and the A records pointing here). HTTPS matters beyond trust:
+# getUserMedia — the microphone — refuses to run on plain HTTP off localhost,
+# so the voice interviewer is silently dead without it.
+#
+# Replace the email before first run; it is where expiry warnings go.
+{
+	email zhang4021@gmail.com
+}
+
+zenkai.run {
+	reverse_proxy 127.0.0.1:3300 {
+		# The planner turn and the intake clarifier await a model call INLINE
+		# (30-60s, longer when the planner runs web search). Cloudflare's
+		# fixed 100s ceiling is exactly why this proxy is not Cloudflare —
+		# do not lower these.
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+	}
+}
+
+session.zenkai.run {
+	# The session router: WebSockets (voice, events, the openvscode
+	# workbench) are proxied natively by Caddy — no extra config. Long
+	# timeouts matter more here: a round runs for an hour.
+	reverse_proxy 127.0.0.1:3200 {
+		transport http {
+			read_timeout 3600s
+			write_timeout 3600s
+		}
+	}
+}

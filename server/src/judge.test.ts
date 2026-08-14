@@ -6,6 +6,7 @@ import type { TraceEvent } from '@interview-prep/shared';
 import {
   JudgeTimeoutError,
   buildJudgePrompt,
+  groundTruth,
   judgeSession,
   parseAssessmentOutput,
   promptHash,
@@ -155,6 +156,33 @@ describe('verifyCitations (attribution is the likely failure)', () => {
     expect(out[0]!.evidence_stripped).toBe(true);
   });
 
+  it('a phantom empty cannot satisfy a citation — the judge never saw it', () => {
+    // Renderer v2 drops gate-noise empties from the judge's timeline. A
+    // citation that only resolves to one is therefore a citation of nothing
+    // the judge read, and must strip rather than count a noise burst as the
+    // receipt for a verdict.
+    const events = [
+      ev('session_start', 0),
+      ev('sensor', 1, { sensor: 'stt', state: 'up', reason: 'connected' }, 'chrome'),
+      ev('utterance', 30, { text: '', via: 'voice', untranscribed: true }, 'chrome'),
+      ev('utterance', 80, { text: 'the sweep frees the wrong count' }, 'chrome'),
+    ];
+    const out = verifyCitations(dims([30]), events);
+    expect(out[0]!.evidence).toEqual([]);
+    expect(out[0]!.evidence_stripped).toBe(true);
+  });
+
+  it('a genuinely lost segment (STT down) still satisfies a citation', () => {
+    const events = [
+      ev('session_start', 0),
+      ev('sensor', 40, { sensor: 'stt', state: 'down', reason: 'socket' }, 'chrome'),
+      ev('utterance', 45, { text: '', via: 'voice', untranscribed: true }, 'chrome'),
+      ev('sensor', 60, { sensor: 'stt', state: 'up', reason: 'reconnected' }, 'chrome'),
+    ];
+    const out = verifyCitations(dims([45]), events);
+    expect(out[0]!.evidence).toEqual([45]);
+  });
+
   it('unassessable needs no evidence by definition', () => {
     const out = verifyCitations(
       [{ dimension: 'reflect', verdict: 'unassessable', analysis: 'nothing to see', evidence: [999] }],
@@ -278,5 +306,36 @@ describe('prompt assembly', () => {
   it('prompt hash covers the anchors too — an anchor change invalidates comparability', () => {
     expect(promptHash(template)).toHaveLength(12);
     expect(promptHash(template)).not.toBe(promptHash(template + ' '));
+  });
+});
+
+describe('groundTruth — the {{BUG}} slot per round shape', () => {
+  it('debugging rounds keep the planted-bug text verbatim', () => {
+    const out = groundTruth(PROBLEM, EVENTS);
+    expect(out).toContain('src/sweep.ts');
+    expect(out).toContain('releases the original unit count');
+  });
+
+  it('build rounds cite the submit run with counts when the payload has them', () => {
+    const events = [
+      ev('session_start', 0),
+      ev('test_run', 30, { exit_code: 1, via: 'panes', passed: 2, total: 16 }),
+      ev('test_run', 900, { exit_code: 1, via: 'submit', passed: 14, total: 16 }),
+    ];
+    const out = groundTruth({ planted_bug: undefined }, events);
+    expect(out).toContain('Final graded run (at submit)');
+    expect(out).toContain('14/16 tests passed');
+    expect(out).toContain('NOT green');
+  });
+
+  it('build rounds without counts fall back to the exit code; no run says so', () => {
+    const out = groundTruth({ planted_bug: undefined }, [
+      ev('session_start', 0),
+      ev('test_run', 900, { exit_code: 0, via: 'submit' }),
+    ]);
+    expect(out).toContain('exit code 0');
+    expect(out).toContain('suite green');
+    expect(groundTruth({ planted_bug: undefined }, [ev('session_start', 0)]))
+      .toContain('never graded');
   });
 });

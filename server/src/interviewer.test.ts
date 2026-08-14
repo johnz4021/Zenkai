@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 import {
   REDACTED_REPLY,
   TurnQueue,
+  candidateVisitedBugFile,
+  specNamesBugFile,
   renderSplit,
   bugContext,
   guard,
@@ -14,6 +16,7 @@ import {
   parseTurn,
   render,
   renderActivity,
+  buildTranscript,
 } from './interviewer.js';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
 
@@ -109,31 +112,105 @@ describe('renderActivity', () => {
   const ev = (type: string, dtSec: number, payload: unknown = {}): TraceEvent =>
     ({ session_id: 's', user_id: 'u', source: 'extension', seq: 0, ts: now - dtSec * 1000, type, payload }) as TraceEvent;
 
-  it('summarizes editor activity with relative times', () => {
-    const out = renderActivity([ev('test_run', 90, { exit_code: 1 }), ev('edit', 10, { path: 'a.ts' })], now);
-    expect(out).toContain('-90s  test run FAILED');
-    expect(out).toContain('-10s  edit file A');
+  it('summarizes editor activity with relative times and run summaries', () => {
+    const out = renderActivity(
+      [ev('test_run', 90, { exit_code: 1, summary: 'FAILED (failures=1)' }), ev('edit', 10, { path: 'a.ts' })],
+      now,
+    );
+    expect(out).toContain('-90s  test run FAILED (FAILED (failures=1))');
+    expect(out).toContain('-10s  edit a.ts');
   });
 
-  it('never puts a real path in the prompt — the agent parroted one back', () => {
+  it('shows real basenames — the aliasing era ended with workspace eyes', () => {
+    // The old parroting risk is covered by the guard now: every path here is
+    // one the candidate themselves touched, and unvisited-bug-file mentions
+    // are still redacted by guard(). An interviewer that can see engine.py's
+    // diff but must call it "file A" is incoherent.
     const out = renderActivity(
       [
         ev('file_open', 60, { path: 'src/reservationService.ts' }),
-        ev('edit', 30, { path: 'src/reservationService.ts' }),
         ev('edit', 10, { path: 'src/expiryIndex.ts' }),
       ],
       now,
     );
-    expect(out).not.toContain('reservationService');
-    expect(out).not.toContain('expiryIndex');
-    // Identity survives: same file keeps the same alias, a new file gets a new one.
-    expect(out).toContain('file_open file A');
-    expect(out).toContain('edit file A');
-    expect(out).toContain('edit file B');
+    expect(out).toContain('opened reservationService.ts');
+    expect(out).toContain('edit expiryIndex.ts');
+  });
+
+  it('labels focus switches distinctly from first opens', () => {
+    const out = renderActivity([ev('file_open', 30, { path: 'src/engine.py', via: 'focus' })], now);
+    expect(out).toContain('switched to engine.py');
   });
 
   it('excludes chat so the transcript is not duplicated into the prompt', () => {
     expect(renderActivity([ev('utterance', 5, { text: 'hi' })], now)).toBe('(no editor activity yet)');
+  });
+
+  it('drops sensor noise — the 9-of-10-lines-said-"sensor" regression', () => {
+    // Measured live (sess-1786053559997): voice sensor flips flooded the
+    // 10-event window and evicted the candidate's file opens; the
+    // interviewer then asked which file they were in.
+    const events = [
+      ev('file_open', 120, { path: 'src/hydrator.py' }),
+      ...Array.from({ length: 12 }, (_, i) =>
+        ev('sensor', 100 - i, { sensor: 'stt', state: i % 2 ? 'down' : 'up', reason: 'x' }),
+      ),
+      ev('edit', 10, { path: 'src/hydrator.py' }),
+    ];
+    const out = renderActivity(events, now);
+    expect(out).not.toContain('sensor');
+    expect(out).toContain('opened hydrator.py');
+    expect(out).toContain('edit hydrator.py');
+  });
+
+  it('keeps view_range out of the feed — attention lives in the workspace view', () => {
+    const out = renderActivity(
+      [ev('edit', 20, { path: 'a.py' }), ev('view_range', 5, { path: 'a.py', start: 1, end: 40 })],
+      now,
+    );
+    expect(out).not.toContain('view_range');
+    expect(out).toContain('edit a.py');
+  });
+});
+
+describe('buildTranscript', () => {
+  const now = 1_000_000;
+  const utter = (dtSec: number, text: string): TraceEvent =>
+    ({ session_id: 's', user_id: 'u', source: 'chrome', seq: 0, ts: now - dtSec * 1000, type: 'utterance', payload: { text, via: 'voice' } }) as TraceEvent;
+  const agent = (dtSec: number, text: string): TraceEvent =>
+    ({ session_id: 's', user_id: 'u', source: 'chrome', seq: 0, ts: now - dtSec * 1000, type: 'interviewer', payload: { text } }) as TraceEvent;
+
+  it('drops empty utterances from the window but reports them as one count line', () => {
+    // 3 of 10 transcript slots were empty candidate: lines in a measured
+    // session — untranscribed segments must not evict real narration, and
+    // must not read as silence either.
+    const events = [
+      utter(100, 'I think the retry logic is off'),
+      utter(90, ''),
+      agent(80, 'What makes you say that?'),
+      utter(70, ''),
+      utter(60, 'the backoff doubles twice'),
+    ];
+    const out = buildTranscript(events);
+    expect(out.map((t) => t.text)).toEqual([
+      'I think the retry logic is off',
+      'What makes you say that?',
+      'the backoff doubles twice',
+      '(spoke 2 more times in this window, but the words could not be transcribed)',
+    ]);
+  });
+
+  it('empty-only speech still surfaces as the count line, never as blank turns', () => {
+    const out = buildTranscript([utter(30, ''), utter(20, '')]);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.text).toContain('2 more times');
+  });
+
+  it('keeps only the last N real lines', () => {
+    const events = Array.from({ length: 15 }, (_, i) => utter(150 - i, `line ${i}`));
+    const out = buildTranscript(events, 10);
+    expect(out).toHaveLength(10);
+    expect(out[0]!.text).toBe('line 5');
   });
 });
 
@@ -314,8 +391,255 @@ describe('renderSplit (prompt caching seam)', () => {
       ...ctx, elapsedMs: 20 * 60_000, remainingMs: 25 * 60_000,
       recentActivity: 'DIFFERENT', candidateMessage: 'another question',
       transcript: [{ who: 'candidate' as const, text: 'earlier' }],
+      // The eyes-and-arc per-turn fields must also stay below the marker.
+      workspaceView: '── engine.py\n+ changed', momentObservation: 'first fix just ran',
     }).system;
     expect(a).toBe(b);
+  });
+
+  it('rubric and engagement land in the CACHED half; workspace and moment in the turn half', () => {
+    const template = readFileSync(path.join(REPO, 'prompts/interviewer.md'), 'utf8');
+    const { system, turn } = renderSplit(template, {
+      ...ctx,
+      rubric: '- approach: RUBRIC-MARKER states the mechanism',
+      engagement: 'ENGAGEMENT-MARKER collaborative',
+      workspaceView: 'WORKSPACE-MARKER diff',
+      momentObservation: 'MOMENT-MARKER first fix ran',
+    });
+    expect(system).toContain('RUBRIC-MARKER');
+    expect(system).toContain('ENGAGEMENT-MARKER');
+    expect(system).not.toContain('WORKSPACE-MARKER');
+    expect(turn).toContain('WORKSPACE-MARKER');
+    expect(turn).toContain('MOMENT-MARKER');
+  });
+
+  it('the codebase view (repo map + failing test) lands in the CACHED half', () => {
+    const template = readFileSync(path.join(REPO, 'prompts/interviewer.md'), 'utf8');
+    const { system, turn } = renderSplit(template, {
+      ...ctx,
+      codebase: 'CODEBASE-MARKER hydrator.py — 378 lines',
+    });
+    expect(system).toContain('CODEBASE-MARKER');
+    expect(turn).not.toContain('CODEBASE-MARKER');
+  });
+});
+
+describe('round rules — one template, four kinds of round', () => {
+  // The template was hardcoded to debugging while bugContext degraded to
+  // "(no planted bug for this round type)" on other kinds: a build round's
+  // interviewer asserted knowledge of a bug that did not exist. Now the
+  // per-kind blocks come from round-rules.ts through one template.
+  const template = () => readFileSync(path.join(REPO, 'prompts/interviewer.md'), 'utf8');
+  const base = {
+    spec: 'THE SPEC', bug: 'THE BUG', bugFile: BUG_FILE,
+    elapsedMs: 60_000, remainingMs: 44 * 60_000, recentActivity: 'ACT',
+    transcript: [], candidateMessage: 'hello',
+  };
+
+  it.each(['one_failing_test', 'all_failing', 'all_passing', 'diff_present'])(
+    '%s renders with no unfilled slots',
+    (kind) => {
+      const out = render(template(), { ...base, checkKind: kind });
+      expect(out).not.toMatch(/\{\{[A-Z_]+\}\}/);
+    },
+  );
+
+  it('the debugging round keeps today’s hard rule verbatim', () => {
+    const out = render(template(), { ...base, checkKind: 'one_failing_test' });
+    expect(out).toContain('You know where the bug is. The candidate must find it themselves.');
+    expect(out).toContain('You are conducting a debugging round.');
+    expect(out).toContain('from your private bug knowledge');
+  });
+
+  it('an absent checkKind resolves to debugging — legacy manifests unchanged', () => {
+    const out = render(template(), base);
+    expect(out).toContain('You are conducting a debugging round.');
+  });
+
+  it.each(['one_failing_test', 'all_failing', 'all_passing', 'diff_present'])(
+    '%s carries the surrender rule — an explicit give-up ends coaching, not with another question',
+    (kind) => {
+      // sess-1786643587196 +28:01: "I give up. Could you check my
+      // implementation?" was answered with a Socratic question, because no
+      // rule covered surrender. Universal, like ANSWERABLE.
+      const out = render(template(), { ...base, checkKind: kind });
+      expect(out).toContain('When the candidate explicitly gives up, stop coaching.');
+      expect(out).toContain('do not reveal the solution in-session');
+    },
+  );
+
+  it('a build round says there is NO planted bug and never claims one', () => {
+    const out = render(template(), { ...base, checkKind: 'all_failing' });
+    expect(out).toContain('NO planted bug');
+    expect(out).not.toContain('You know where the bug is');
+    expect(out).not.toContain('conducting a debugging round');
+  });
+
+  it('a review round guards the planted defects, not a single bug location', () => {
+    const out = render(template(), { ...base, checkKind: 'diff_present' });
+    expect(out).toContain('code review round');
+    expect(out).toContain('planted defects');
+  });
+
+  it('round rules are per-session constant — the cached half stays identical across turns', () => {
+    const ctx = { ...base, checkKind: 'all_failing', codebase: 'FILES: a.py' };
+    const a = renderSplit(template(), ctx).system;
+    const b = renderSplit(template(), {
+      ...ctx,
+      elapsedMs: 20 * 60_000,
+      candidateMessage: 'another question',
+      workspaceView: 'diff',
+    }).system;
+    expect(a).toBe(b);
+  });
+
+  it.each(['one_failing_test', 'all_failing', 'all_passing', 'diff_present'])(
+    '%s renders an ADRIFT turn with no unfilled slots',
+    (kind) => {
+      const out = render(template(), {
+        ...base,
+        checkKind: kind,
+        adriftObservation: 'They have been reading one stretch for 6 minutes.',
+      });
+      expect(out).not.toMatch(/\{\{[A-Z_]+\}\}/);
+      expect(out).toContain('ADRIFT —');
+    },
+  );
+});
+
+describe('answerable questions and evidence feedback (the 14-minute refusal loop)', () => {
+  // sess-1786072934316: eight variants of "is this valid syntax" refused over
+  // fourteen minutes, because "questions about the SPEC" was the only
+  // answerable category the prompt named. And exactly one observation was
+  // ever confirmed ("Right — they're finished"), which is the turn the
+  // candidate finally made progress after.
+  const template = () => readFileSync(path.join(REPO, 'prompts/interviewer.md'), 'utf8');
+  const base = {
+    spec: 'THE SPEC', bug: 'THE BUG', bugFile: BUG_FILE,
+    elapsedMs: 60_000, remainingMs: 44 * 60_000, recentActivity: 'ACT',
+    transcript: [], candidateMessage: 'is this valid syntax?',
+  };
+
+  it('language and library questions are answerable, in the CACHED half', () => {
+    const { system, turn } = renderSplit(template(), base);
+    expect(system).toContain('Futures are hashable');
+    expect(system).toMatch(/threading, not asyncio/);
+    expect(system).toMatch(/default is to answer/i);
+    // Stable across turns → must live above the session-state marker.
+    expect(turn).not.toContain('Futures are hashable');
+  });
+
+  it('the observation/theory line is present and cached', () => {
+    const { system } = renderSplit(template(), base);
+    expect(system).toContain('An **OBSERVATION**');
+    expect(system).toMatch(/Confirm or correct\s+these freely/);
+    expect(system).toMatch(/A \*\*THEORY\*\* is a claim about the cause/);
+  });
+
+  it('every kind gets both, and a build round frames theories as design not bugs', () => {
+    for (const kind of ['one_failing_test', 'all_failing', 'all_passing', 'diff_present']) {
+      const out = render(template(), { ...base, checkKind: kind });
+      expect(out, kind).toContain('An **OBSERVATION**');
+      expect(out, kind).toContain('Futures are hashable');
+    }
+    expect(render(template(), { ...base, checkKind: 'all_failing' })).toContain(
+      'which approach will work',
+    );
+  });
+});
+
+describe('stuckVocabOf arms on adrift too', () => {
+  // An adrift turn names the candidate's own region back to them, so their
+  // vocabulary must be free while the private bug knowledge stays forbidden —
+  // the same composition a stuck turn uses.
+  const base = {
+    spec: 'shards hydrate concurrently', bug: 'holds the partition guard across the retried load',
+    bugFile: 'hydrator.py', elapsedMs: 0, remainingMs: 0, recentActivity: '',
+    transcript: [{ who: 'candidate' as const, text: 'we submit everything to the pool' }],
+    candidateMessage: null,
+  };
+
+  it('an ordinary turn is still unarmed', () => {
+    expect(stuckVocabOf(base)).toBeUndefined();
+  });
+
+  it('an adrift turn arms it, with the candidate\'s words allowed', () => {
+    const v = stuckVocabOf({ ...base, adriftObservation: 'circling one region' });
+    expect(v).toBeDefined();
+    expect(v!.forbidden).toContain('partition guard');
+    expect(v!.allowed).toContain('submit everything to the pool');
+  });
+
+  it('the redirect phrasing survives the guard; a mechanism word does not', () => {
+    const v = stuckVocabOf({ ...base, adriftObservation: 'circling one region' })!;
+    const ok = guard(
+      { say: 'You have spent a while on how the work gets handed to the pool, and that part looks sound. What else touches one of these on its way through?', kind: 'probe', nudge: true },
+      base.bugFile, false, false, v, true,
+    );
+    expect(ok.redacted).toBeUndefined();
+    const leak = guard(
+      { say: 'Think about the partition guard being held.', kind: 'probe', nudge: true },
+      base.bugFile, false, false, v, true,
+    );
+    expect(leak.redacted).toBe(true);
+  });
+});
+
+describe('guard relaxation — found territory may be discussed', () => {
+  // The eyes make this necessary: an interviewer who can see the candidate's
+  // own changes to sweep.ts but gets redacted for saying "your sweep change"
+  // is incoherent. Unvisited stays redacted exactly as before (the original
+  // parroting incident).
+  const turnNaming = { say: 'Walk me through your change in reservationService.ts.', kind: 'probe' as const, nudge: false };
+
+  it('unvisited bug file: mention still redacts (the original incident)', () => {
+    const out = guard(turnNaming, BUG_FILE, true, false, undefined, false);
+    expect(out.redacted).toBe(true);
+  });
+
+  it('visited bug file: discussing their own changes there passes clean', () => {
+    const out = guard(turnNaming, BUG_FILE, true, false, undefined, true);
+    expect(out).toEqual(turnNaming);
+  });
+});
+
+describe('specNamesBugFile — a name the spec published is not a secret', () => {
+  // Live failure: a single-file round's spec OPENED with "`hydrator.py` is
+  // what an analysis session runs…", the bug was in hydrator.py, and every
+  // opening turn that framed the task was silently redacted — the guard was
+  // protecting a secret the candidate could read in the statement.
+  it('true when the spec names the file or its stem', () => {
+    const spec = '`hydrator.py` is what an analysis session runs before it can answer anything.';
+    expect(specNamesBugFile(spec, 'hydrator.py')).toBe(true);
+    expect(specNamesBugFile('The hydrator pulls dataset shards into a cache.', 'hydrator.py')).toBe(true);
+  });
+
+  it('false when the spec keeps the location secret (the multi-file case)', () => {
+    // debugging-001-style: "find the root cause in src/" — no file named.
+    const spec = 'One behavior is broken: exactly one test fails. Find the root cause in src/ and fix it.';
+    expect(specNamesBugFile(spec, 'src/reservationService.ts')).toBe(false);
+  });
+
+  it('guard integration: a spec-public name passes; a secret one still redacts', () => {
+    const opening = { say: 'This round is about hydrator.py — it fills the session cache from the shard store.', kind: 'answer' as const, nudge: false };
+    // Spec-public → clean (this is the opening-turn fix).
+    expect(guard(opening, 'hydrator.py', false, false, undefined, true)).toEqual(opening);
+    // Secret → unprompted leak → silence, exactly as before.
+    const out = guard(opening, 'hydrator.py', false, false, undefined, false);
+    expect(out.say).toBe('');
+    expect(out.redacted).toBe(true);
+  });
+});
+
+describe('candidateVisitedBugFile', () => {
+  const ev = (type: string, p: string): TraceEvent =>
+    ({ session_id: 's', user_id: 'u', source: 'extension', seq: 0, ts: 1, type, payload: { path: p } }) as TraceEvent;
+
+  it('any edit/open/save on the bug file counts, container paths included', () => {
+    expect(candidateVisitedBugFile([ev('file_open', '/home/workspace/p-s/src/reservationService.ts')], BUG_FILE)).toBe(true);
+    expect(candidateVisitedBugFile([ev('edit', 'src/reservationService.ts')], BUG_FILE)).toBe(true);
+    expect(candidateVisitedBugFile([ev('edit', 'src/other.ts')], BUG_FILE)).toBe(false);
+    expect(candidateVisitedBugFile([], BUG_FILE)).toBe(false);
   });
 });
 

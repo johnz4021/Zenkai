@@ -38,6 +38,7 @@ export function injectWorkbenchDefaults(html: string, defaults: Record<string, u
   try {
     const cfg = JSON.parse(unescapeAttr(m[2]!)) as {
       productConfiguration?: { configurationDefaults?: Record<string, unknown> };
+      enableWorkspaceTrust?: boolean;
     };
     cfg.productConfiguration = {
       ...cfg.productConfiguration,
@@ -46,6 +47,15 @@ export function injectWorkbenchDefaults(html: string, defaults: Record<string, u
         ...defaults,
       },
     };
+    // Workspace trust is NOT a setting the workbench reads from
+    // configurationDefaults — `security.workspace.trust.enabled: false` in
+    // ide-settings.json provably never stopped the modal (QA 2026-08-14,
+    // three sessions), and openvscode-server 1.105 has no
+    // --disable-workspace-trust flag. The one lever the web workbench does
+    // honor is this top-level IWorkbenchConstructionOptions field in the
+    // boot config. Every workspace here is a problem repo we generated into
+    // a disposable container; there is no trust decision to make.
+    cfg.enableWorkspaceTrust = false;
     return html.replace(META_RE, `$1${escapeAttr(JSON.stringify(cfg))}$3`);
   } catch {
     return html;

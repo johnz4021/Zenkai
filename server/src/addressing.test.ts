@@ -28,6 +28,15 @@ describe('isExplicitAsk — the asks that were dropped must never drop again', (
     // presence checks — cheap to answer, brutal to ignore
     'Can you hear me? Okay.',
     'Okay. Uh, can you hear me? Hello? Can you hear me?',
+    // sess-1786072934316 — the language-validity loop. Eight variants over
+    // fourteen minutes; these three MISSED the fast path, paid a haiku round
+    // trip each, and left the gate deciding whether a question about the code
+    // in front of them was narration. They were always unambiguous asks.
+    'Is this valid syntax though, like for a dictionary?',
+    'is this valid syntax between pool.submits and running spec for spec and wanted here?',
+    'Do I need an await?',
+    'Just to clarify here, what is, um...',
+    'Can you tell me if you are allowed to set a future object as a key in a dictionary?',
   ];
   for (const text of mustMatch) {
     it(`matches: "${text.slice(0, 60)}…"`, () => {

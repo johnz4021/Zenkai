@@ -25,7 +25,21 @@
 
 import type { SensorPayload, TraceEvent } from '@interview-prep/shared';
 
-export const RENDERER_VERSION = 1;
+// v2: empty-text utterances render as "[spoke — transcription unavailable]"
+// ONLY inside an stt-down interval. Outside one, STT was up and returned no
+// words — that is the VAD gate streaming background noise, not speech (28% of
+// all gate activations across the first 17 sessions; 40%+ in noisy rooms).
+// v1 rendered every one as speech, so the judge read hundreds of phantom
+// "spoke" lines, cited "long stretches transcription-unavailable" in real
+// verdicts, and could never see genuine silence. Assessments are stamped with
+// this number, which is what keeps rejudge history comparable.
+//
+// v3: test_run lines carry pass counts when the event payload has them
+// ("submitted — 14/16 tests passed"). Before this, every run rendered as
+// binary PASSED/FAILED, so on a one-shot OA round 15/16 passing was
+// indistinguishable from 0/16 — the judge graded a near-solve and a
+// no-show identically. Old traces without counts keep the binary line.
+export const RENDERER_VERSION = 3;
 
 /** Rough ceiling before low-signal compression kicks in (~chars/4). */
 export const TOKEN_CEILING = 12_000;
@@ -59,6 +73,41 @@ export function sensorDownIntervals(
   return out;
 }
 
+/**
+ * An empty-text utterance is REAL lost speech only while transcription was
+ * down; with STT up, the recognizer ran and found no words — the VAD energy
+ * gate fired on background noise (voice.ts pins the language and blanks
+ * punctuation-junk for exactly this input, then records the segment anyway
+ * on the "presence proved sound" theory; live data disproved that theory —
+ * sessions with 40% empty segments and zero STT outages).
+ *
+ * Membership is by OVERLAP of [speech_start_ts, ts], not the event ts alone:
+ * a segment that began before the socket died is flushed after the down
+ * marker, and the watchdog path can hold one for seconds. Every genuine-loss
+ * flush in voice.ts emits its down marker first and reconnects after, so
+ * overlap keeps all of them (verified against all three flush paths,
+ * 2026-08-12).
+ *
+ * Shared with citation resolution (judge.ts, feedback.ts): a phantom that
+ * merely stopped rendering but stayed resolvable would photobomb nearest-
+ * match citation lookups — the exact failure eventAtOffset's filter exists
+ * to prevent — and put "[spoke — transcription unavailable]" receipts on
+ * words that were actually said.
+ */
+export function isPhantomUtterance(
+  e: TraceEvent,
+  sttDown: { start: number; end: number }[],
+): boolean {
+  if (e.type !== 'utterance') return false;
+  const p = (e.payload ?? {}) as { text?: unknown; speech_start_ts?: unknown };
+  if (String(p.text ?? '').trim()) return false;
+  const segStart =
+    typeof p.speech_start_ts === 'number' && p.speech_start_ts > 0
+      ? Math.min(p.speech_start_ts, e.ts)
+      : e.ts;
+  return !sttDown.some((iv) => segStart <= iv.end && e.ts >= iv.start);
+}
+
 interface Line {
   ts: number;
   text: string;
@@ -76,9 +125,13 @@ function eventLine(e: TraceEvent, t0: number): Line | null {
       return { ts: e.ts, text: `${at}  candidate clicked End Session` };
     case 'test_run': {
       const code = p.exit_code;
+      const verb = p.via === 'submit' ? 'submitted' : 'ran tests';
+      if (typeof p.passed === 'number' && typeof p.total === 'number' && p.total > 0) {
+        return { ts: e.ts, text: `${at}  ${verb} — ${p.passed}/${p.total} tests passed` };
+      }
       const verdictText =
         code === 0 ? 'tests PASSED' : code == null ? 'test run did not complete' : 'tests FAILED';
-      return { ts: e.ts, text: `${at}  ran tests — ${verdictText}` };
+      return { ts: e.ts, text: `${at}  ${verb} — ${verdictText}` };
     }
     case 'edit':
       return {
@@ -95,8 +148,9 @@ function eventLine(e: TraceEvent, t0: number): Line | null {
     case 'utterance': {
       const text = String(p.text ?? '').trim();
       if (!text) {
-        // Presence heard sound; STT produced no words. This is ACTIVITY
-        // (silence is disproven) with unknown content — say exactly that.
+        // Only reachable inside an stt-down interval — renderTimeline drops
+        // phantom (gate-noise) empties before this switch. Here transcription
+        // was genuinely down, so this IS speech with lost words.
         return { ts: e.ts, text: `${at}  candidate: [spoke — transcription unavailable]` };
       }
       return { ts: e.ts, text: `${at}  candidate: "${text}"` };
@@ -108,7 +162,11 @@ function eventLine(e: TraceEvent, t0: number): Line | null {
       // edit/save runs), so they are dropped like sensor events.
       if ((p as { kind?: string }).kind === 'ack') return null;
       const nudge = p.nudge === true ? ' [NUDGE — this narrowed the search; what follows was prompted, not self-directed]' : '';
-      return { ts: e.ts, text: `${at}  interviewer: "${String(p.text ?? '')}"${nudge}` };
+      // Wrap-up turns are the post-work evaluation phase — labeled so the
+      // judge reads the candidate's answers as reflection under questioning,
+      // not as thinking aloud mid-debug.
+      const wrap = (p as { wrap?: boolean }).wrap === true ? ' [wrap-up phase]' : '';
+      return { ts: e.ts, text: `${at}  interviewer: "${String(p.text ?? '')}"${nudge}${wrap}` };
     }
     case 'spec_mutation':
       return { ts: e.ts, text: `${at}  SPEC CHANGED: ${String(p.diff_summary ?? '')}` };
@@ -152,8 +210,10 @@ export function renderTimeline(events: TraceEvent[]): string {
   const t0 = sorted[0]!.ts;
   const tEnd = sorted[sorted.length - 1]!.ts;
 
+  const sttDown = sensorDownIntervals(sorted, 'stt');
   const lines: Line[] = [];
   for (const e of sorted) {
+    if (isPhantomUtterance(e, sttDown)) continue; // gate noise, not speech
     const line = eventLine(e, t0);
     if (line) lines.push(line);
   }
@@ -167,7 +227,7 @@ export function renderTimeline(events: TraceEvent[]): string {
       text: `[EVIDENCE GAP ${fmt(iv.start - t0)}–${end}: microphone was OFF or unavailable. Nothing about speech — presence OR content — is knowable here. Silence in this stretch proves nothing.]`,
     });
   }
-  for (const iv of sensorDownIntervals(sorted, 'stt')) {
+  for (const iv of sttDown) {
     const end = Number.isFinite(iv.end) ? fmt(iv.end - t0) : 'end of session';
     annotations.push({
       ts: iv.start,

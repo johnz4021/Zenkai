@@ -30,10 +30,18 @@
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import type { DimensionKey, GeneratedProblem, TraceEvent, Verdict } from '@interview-prep/shared';
-import { DIMENSIONS, DIMENSION_DEFS, isDimensionKey, isVerdict, resolveExpectations } from '@interview-prep/shared';
-import { RENDERER_VERSION, eventAtOffset, renderTimeline } from './timeline.js';
+import {
+  DIMENSIONS,
+  DIMENSION_DEFS,
+  isDimensionKey,
+  isVerdict,
+  resolveExpectations,
+  resolveRoundSpec,
+} from '@interview-prep/shared';
+import { RENDERER_VERSION, eventAtOffset, isPhantomUtterance, renderTimeline, sensorDownIntervals } from './timeline.js';
 
 export const SCHEMA_VERSION = 1;
 
@@ -192,6 +200,12 @@ export function parseAssessmentOutput(raw: string): {
   if (typeof o.summary !== 'string') throw new Error('missing/invalid summary');
   if (!Array.isArray(o.dimensions)) throw new Error('missing dimensions array');
 
+  // The claude -p transport sometimes glues tool-call scaffolding onto the
+  // end of string fields — QA 2026-08-14 found "</summary>\n</invoke>"
+  // persisted verbatim across six stored assessments and into the rendered
+  // feedback card. Prose never legitimately ends with a closing tag.
+  const stripScaffolding = (s: string) => s.replace(/(\s*<\/[a-z_]+>\s*)+$/gi, '').trim();
+
   const seen = new Set<string>();
   const dims = o.dimensions.map((d) => {
     const dim = d as { dimension?: unknown; verdict?: unknown; analysis?: unknown; evidence?: unknown };
@@ -205,12 +219,12 @@ export function parseAssessmentOutput(raw: string): {
       ? dim.evidence.filter((e): e is number => typeof e === 'number' && Number.isFinite(e))
       : [];
     seen.add(dim.dimension);
-    return { dimension: dim.dimension, verdict: dim.verdict, analysis: dim.analysis.trim(), evidence };
+    return { dimension: dim.dimension, verdict: dim.verdict, analysis: stripScaffolding(dim.analysis), evidence };
   });
   for (const k of DIMENSIONS) {
     if (!seen.has(k)) throw new Error(`missing dimension: ${k}`);
   }
-  return { solved: o.solved, summary: o.summary.trim(), dimensions: dims };
+  return { solved: o.solved, summary: stripScaffolding(o.summary), dimensions: dims };
 }
 
 // ---- citation verification ----
@@ -237,6 +251,12 @@ export function verifyCitations(
   dims: { dimension: DimensionKey; verdict: Verdict; analysis: string; evidence: number[] }[],
   events: TraceEvent[],
 ): DimensionAssessment[] {
+  // Phantom empties are excluded from resolution for the same reason sensor
+  // events are: the judge never saw them (renderTimeline drops them), so one
+  // sitting 0.1s nearer than the cited real utterance must not absorb — or
+  // strip — the citation.
+  const sttDown = sensorDownIntervals(events, 'stt');
+  const citable = (e: TraceEvent) => isCandidateEvent(e) && !isPhantomUtterance(e, sttDown);
   return dims.map((d) => {
     if (d.verdict === 'unassessable') {
       return { ...d, evidence: [] };
@@ -247,7 +267,7 @@ export function verifyCitations(
       // Resolve against candidate events ONLY: a bookkeeping event landing
       // nearer must not disqualify an honest citation, and an interviewer
       // line must never satisfy one.
-      const ev = eventAtOffset(events, offset, 2_000, isCandidateEvent);
+      const ev = eventAtOffset(events, offset, 2_000, citable);
       if (ev) kept.push(offset);
       else stripped.push(offset);
     }
@@ -321,7 +341,7 @@ const ASSESSMENT_TOOL = {
   input_schema: {
     type: 'object' as const,
     properties: {
-      solved: { type: 'boolean', description: 'Did the candidate fix the planted bug?' },
+      solved: { type: 'boolean', description: 'Did the candidate solve the round — bug rounds: fixed the planted bug; build rounds: the final graded run passed.' },
       summary: { type: 'string', description: "2-3 sentences: the session's shape in plain language." },
       dimensions: {
         type: 'array',
@@ -374,6 +394,22 @@ export function apiJudgeModel(model = 'claude-sonnet-5'): JudgeModel {
     if (res.truncated) {
       throw new Error(`judge output truncated at ${JUDGE_MAX_TOKENS * 3} max_tokens`);
     }
+    // A degenerate emission ({"params":{}}, {}) is a stochastic scaffolding
+    // failure, not the deterministic schema mismatch the no-retry rule was
+    // written for — QA 2026-08-14 saw it void a whole round with no
+    // recovery. One retry, same precedent as truncation.
+    const degenerate = (t: string) => {
+      try {
+        const o = JSON.parse(t) as Record<string, unknown> | null;
+        return !o || typeof o !== 'object' || !('dimensions' in o);
+      } catch {
+        return true;
+      }
+    };
+    if (res.text && degenerate(res.text)) {
+      console.warn('[judge] degenerate tool input (no dimensions) — one retry');
+      res = await call(JUDGE_MAX_TOKENS);
+    }
     if (!res.text) throw new Error('judge returned no tool call');
     return res.text;
   };
@@ -390,12 +426,77 @@ export function pickJudgeModel(): { model: JudgeModel; name: string } {
 export interface JudgeSessionOptions {
   sessionId: string;
   events: TraceEvent[];
-  problem: Pick<GeneratedProblem, 'round_type' | 'spec' | 'planted_bug' | 'rubric'>;
+  problem: Pick<GeneratedProblem, 'round_type' | 'spec' | 'planted_bug' | 'rubric'> &
+    Partial<Pick<GeneratedProblem, 'round_spec'>>;
   templatePath: string;
+  /** Host path of the round's problem dir. When set, review-shaped rounds
+   *  (check.kind 'diff_present' / can_run_tests false — or any round where
+   *  nothing was graded) get their written deliverable read from here and
+   *  appended to the ground truth — see deliverableText. */
+  problemDir?: string;
   /** Injectable; tests and the gauntlet pass fakes/instrumented models. */
   judgeModel?: JudgeModel;
   modelName?: string;
   now?: () => number;
+}
+
+/**
+ * The written deliverable of a round that has nothing runnable to grade —
+ * review_diff rounds, whose entire graded artifact is the candidate's
+ * write-up (the generated round's own copy: "It is the entire artifact that
+ * gets read"). QA 2026-08-14 (sess-1786722081844): a correct, correctly-
+ * ranked review was graded weak on every dimension because the judge only
+ * ever saw the timeline — the write-up itself was invisible to grading.
+ * REVIEW.md is the generation convention; any .md the candidate saved
+ * during the session is included as well in case a round names it
+ * differently. Exported for tests.
+ */
+export function deliverableText(problemDir: string, events: TraceEvent[]): string {
+  const candidates = new Set<string>(['REVIEW.md']);
+  for (const e of events) {
+    if (e.type === 'file_save' || e.type === 'edit') {
+      const p = String((e.payload as { path?: unknown })?.path ?? '');
+      if (p.toLowerCase().endsWith('.md')) candidates.add(p.replace(/^\/+/, ''));
+    }
+  }
+  const parts: string[] = [];
+  for (const rel of candidates) {
+    try {
+      const txt = readFileSync(path.join(problemDir, rel), 'utf8').trim();
+      if (txt) parts.push(`--- ${rel} ---\n${txt.slice(0, 12_000)}`);
+    } catch {
+      /* file not present — nothing submitted under that name */
+    }
+  }
+  return parts.join('\n\n');
+}
+
+/**
+ * The {{BUG}} slot's content — the round's ground truth, per shape. Pure;
+ * exported for tests. A debugging round's truth is the planted bug; a build
+ * round's truth is the final graded run, WITH counts when the emitter
+ * parsed them (renderer v3) — before this, build rounds got a bare "(no
+ * planted bug)" sentinel and the judge was asked whether a nonexistent bug
+ * was fixed.
+ */
+export function groundTruth(
+  problem: Pick<GeneratedProblem, 'planted_bug'>,
+  events: TraceEvent[],
+): string {
+  if (problem.planted_bug) {
+    return (
+      `File: ${problem.planted_bug.file} (line ${problem.planted_bug.line})\n` +
+      `${problem.planted_bug.description}\n` +
+      `It breaks exactly one test: "${problem.planted_bug.failing_test}".`
+    );
+  }
+  const runs = events.filter((e) => e.type === 'test_run');
+  const last = [...runs].reverse().find((e) => (e.payload as { via?: string })?.via === 'submit') ?? runs.at(-1);
+  if (!last) return '(no planted bug — build round) No test run occurred; the work was never graded.';
+  const p = (last.payload ?? {}) as { exit_code?: unknown; passed?: unknown; total?: unknown; via?: unknown };
+  const counts = typeof p.passed === 'number' && typeof p.total === 'number' ? ` ${p.passed}/${p.total} tests passed;` : '';
+  const verb = p.via === 'submit' ? 'Final graded run (at submit)' : 'Last test run';
+  return `(no planted bug — build round) ${verb}:${counts} exit code ${String(p.exit_code)}${p.exit_code === 0 ? ' (suite green)' : ' (suite NOT green)'}.`;
 }
 
 export async function judgeSession(opts: JudgeSessionOptions): Promise<JudgeResult> {
@@ -406,11 +507,33 @@ export async function judgeSession(opts: JudgeSessionOptions): Promise<JudgeResu
     : pickJudgeModel();
 
   const expectations = resolveExpectations(opts.problem.round_type, opts.problem.rubric?.dimensions);
-  const bug = opts.problem.planted_bug
-    ? `File: ${opts.problem.planted_bug.file} (line ${opts.problem.planted_bug.line})\n` +
-      `${opts.problem.planted_bug.description}\n` +
-      `It breaks exactly one test: "${opts.problem.planted_bug.failing_test}".`
-    : '(no planted bug for this round type)';
+  let bug = groundTruth(opts.problem, opts.events);
+  // Review-shaped rounds: the written deliverable IS the ground truth's
+  // other half. Dispatch on the CLOSED vocabulary (check.kind), never on
+  // trace shape — QA 2026-08-14 verification caught the first cut of this
+  // gate ("no planted bug and no test_run") never firing on a single real
+  // review round: the generator DOES plant bugs in the diff under review
+  // (rep-mst39p35 carries planted_bug api.py:77 alongside
+  // check.kind:'diff_present'), so the round it was written for excluded
+  // itself. RoundSpec is the ruler the judge dispatches on; a round that
+  // cannot run tests has nothing else to be graded on.
+  const spec = (() => {
+    try {
+      return resolveRoundSpec(opts.problem);
+    } catch {
+      return null; // legacy manifest — fall back to the trace-shape test below
+    }
+  })();
+  const reviewShaped =
+    spec?.check.kind === 'diff_present' || spec?.capabilities.can_run_tests === false;
+  const nothingGraded =
+    !opts.problem.planted_bug && !opts.events.some((e) => e.type === 'test_run');
+  if (opts.problemDir && (reviewShaped || nothingGraded)) {
+    const deliverable = deliverableText(opts.problemDir, opts.events);
+    if (deliverable) {
+      bug += `\n\nThe candidate's submitted written deliverable, verbatim:\n${deliverable}`;
+    }
+  }
 
   const prompt = buildJudgePrompt(template, {
     timeline: renderTimeline(opts.events),

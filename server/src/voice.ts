@@ -434,7 +434,18 @@ export class VoiceRuntime extends EventEmitter {
       const res = await f(TTS_URL(process.env.IP_TTS_VOICE ?? DEFAULT_VOICE_ID, TTS_MODEL), {
         method: 'POST',
         headers: { 'xi-api-key': this.cfg.apiKey, 'content-type': 'application/json' },
-        body: JSON.stringify({ text }),
+        // Default rate reads as slow over a 35-minute round — the candidate
+        // called it "a bit slow and annoying to sit through". ElevenLabs
+        // accepts 0.7-1.2; 1.1 is brisk without clipping. Env-tunable
+        // because the right number is a taste call, not a fact.
+        body: JSON.stringify({
+          text,
+          voice_settings: {
+            speed: Number(process.env.IP_TTS_SPEED ?? '1.1'),
+            stability: 0.4,
+            similarity_boost: 0.75,
+          },
+        }),
       });
       if (!res.ok || !res.body) {
         this.health.tts_failures += 1;

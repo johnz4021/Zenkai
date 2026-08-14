@@ -3,12 +3,12 @@
  * is the SEAM: flat draft → RoundSpec with derived tags, gated mechanically.
  * Model calls never happen here (repo convention).
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { deriveMemoryTags } from '@interview-prep/shared';
-import { draftToSpec, listTargets, loadTarget, saveTarget, slugify } from './intake.js';
+import { attachmentBlocks, draftToSpec, listTargets, loadTarget, saveTarget, slugify } from './intake.js';
 
 const dirs: string[] = [];
 const scratch = () => {
@@ -34,6 +34,31 @@ describe('draftToSpec', () => {
     rationale: 'Described as an autograded timed task built from scratch.',
     unsupported: '',
   };
+
+  it('a DECLINED round skips the coherence gate — the decline is the point', () => {
+    // Live failure 2026-08-08: the planner declined Datadog's behavioral
+    // session, the vocabulary gate sank the draft, and the panel silently
+    // lacked the row the model's prose said was there. A declined round is
+    // never generated, scheduled, or run.
+    const behavioral = {
+      ...oaDraft,
+      id: 'datadog-behavioral',
+      label: 'Datadog behavioral',
+      check_kind: 'diff_present' as const, // incoherent — nothing to check
+      unsupported: '45 minutes of conversation with no code to run',
+    };
+    const { spec, unsupported } = draftToSpec(behavioral);
+    expect(unsupported).toMatch(/no code/);
+    expect(spec.label).toBe('Datadog behavioral');
+    // An undeclined incoherent shape still fails loudly. (diff_present
+    // without files_changed stopped being the example: that requirement
+    // moved to checkManifest so inference can author review rounds at all —
+    // QA 2026-08-13. can_run_tests=false against a test-based kind remains
+    // genuinely incoherent at spec time.)
+    expect(() =>
+      draftToSpec({ ...behavioral, unsupported: '', check_kind: 'all_failing', can_run_tests: false }),
+    ).toThrow(/vocabulary gate/);
+  });
 
   it('converts minutes to ms, slugifies the id, derives the tags', () => {
     const { spec, rationale, unsupported } = draftToSpec(oaDraft);
@@ -113,5 +138,55 @@ describe('draftToSpec tolerates model-typed "optional strings" (live failure)', 
     expect(d.spec.capabilities.time_limit_ms).toBe(60 * 60_000);
     const d2 = draftToSpec({ ...base, unsupported: ['needs a canvas'] } as never);
     expect(d2.unsupported).toBe('needs a canvas');
+  });
+});
+
+describe('attachmentBlocks', () => {
+  it('maps images and PDFs to typed blocks, PDFs with citations enabled', () => {
+    const root = scratch();
+    const t = {
+      id: 't1', label: 'T', description: '', specs: [], created: '2026-08-06',
+      attachments: [
+        { name: 'preview.png', media_type: 'image/png', file: 'attachments/1-preview.png' },
+        { name: 'guide.pdf', media_type: 'application/pdf', file: 'attachments/2-guide.pdf' },
+      ],
+    };
+    saveTarget(root, t);
+    const dir = path.join(root, 'targets', 't1', 'attachments');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, '1-preview.png'), Buffer.from([0x89, 0x50]));
+    writeFileSync(path.join(dir, '2-guide.pdf'), Buffer.from('%PDF-1.4'));
+
+    const blocks = attachmentBlocks(root, t);
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toMatchObject({ type: 'image', source: { type: 'base64', media_type: 'image/png' } });
+    expect(blocks[1]).toMatchObject({
+      type: 'document',
+      title: 'guide.pdf',
+      citations: { enabled: true },
+      source: { type: 'base64', media_type: 'application/pdf' },
+    });
+    // Real bytes made the round trip, not a path or mojibake.
+    expect((blocks[0] as { source: { data: string } }).source.data).toBe(Buffer.from([0x89, 0x50]).toString('base64'));
+  });
+
+  it('a missing file degrades to a text note instead of sinking the call', () => {
+    const root = scratch();
+    const t = {
+      id: 't2', label: 'T', description: '', specs: [], created: '2026-08-06',
+      attachments: [{ name: 'gone.png', media_type: 'image/png', file: 'attachments/1-gone.png' }],
+    };
+    saveTarget(root, t);
+    const blocks = attachmentBlocks(root, t);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.type).toBe('text');
+    expect(String((blocks[0] as { text: string }).text)).toContain('gone.png');
+  });
+
+  it('a target with no attachments yields no blocks', () => {
+    const root = scratch();
+    const t = { id: 't3', label: 'T', description: '', specs: [], created: '2026-08-06' };
+    saveTarget(root, t);
+    expect(attachmentBlocks(root, t)).toEqual([]);
   });
 });

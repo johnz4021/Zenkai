@@ -1,0 +1,15 @@
+[Unit]
+Description=Zenkai off-box backup (gaps, topics, traces, feedback, targets)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=zenkai
+WorkingDirectory=/home/zenkai/Zenkai
+# cli.ts loads .env itself — never pass the Supabase key on a command line
+# or through a shell one-liner (docs/beta-runbook.md's key-mangling trap).
+ExecStart=/usr/bin/npx tsx server/src/cli.ts backup
+# A failed backup must be visible in `systemctl status`, never silent.
+StandardOutput=journal
+StandardError=journal

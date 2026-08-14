@@ -168,6 +168,7 @@ next generation with no further ceremony.
 
 | # | Artifact | Written by | Reaches generation? | How |
 |---|---|---|---|---|
+| 0 | **`QueueItem.source` / `Rep.source`** (LC slug binding) | intake extraction (both doors: practice clarifier `named_problems` → rail row; planner `named_problems` → accept-spec), `lc-pick.ts` auto-sourcing (DEFAULT for unnamed algorithmic rounds — memory-blind, 14-day dedup window), (multi-part sets bind N parts via `source.parts` — named fill first, diverse picks complete, easy→hard) | **yes — it OVERRIDES invention** | `spawnGeneration` → `--source lc:<slug>` → pre-emitted `tests/` + `sourceRequirements()` → `{{SOURCE_BLOCK}}`; on sourced items `--title` is deliberately NOT passed, and sourced items are excluded from the topic namer. Every binding path runs `sourceBindingVerdict` + `lc-refs.ts` resolution — the model notices names, code resolves them |
 | 1 | **Blueprint** (`targets/<id>/blueprints/<spec_id>.md`) | drafter at intake; adapt edits; hand-editable | **yes — it IS the round description** | `composeRoundBrief` → `{{ROUND_BRIEF}}` |
 | 2 | `QueueItem.planned_title` | plan-topics LLM | yes | title commitment line |
 | 3 | `check.max_source_files` | inference models or hand-set | yes + **enforced** | requirements block + validator count |
@@ -178,6 +179,28 @@ next generation with no further ceremony.
 | 8 | **`learnings.md`** | user, verbatim at adapt apply | indirectly | the adapt model folds entries into blueprints; the file itself is the loss-proof record |
 | 9 | `<spec_id>.prev.md` | blueprint writes | no | single-level undo |
 | 10 | `AdaptRecord` | apply | no | audit + crash repair |
+
+## Dataset-sourced rounds (2026-08-12)
+
+A queue item or rep carrying `source: {kind:'leetcode', slug}` builds by
+CONVERSION instead of invention. The flow inverts one assumption: the grading
+contract never passes through the model. `cli.ts` emits `tests/cases.json` +
+`tests/test_solution.py` deterministically from the vendored dataset's
+verified I/O (`lc-convert.ts`) BEFORE spawning the generator, hands the
+generator the real problem privately via `{{SOURCE_BLOCK}}` (statement and
+canonical solution fenced as data-not-instructions; skinned mode mandates a
+full surface rewrite with the algorithmic core preserved), then RE-EMITS the
+tests and patches `manifest.source` from the dataset record after the agent
+finishes — so whatever the agent did, the validated artifact grades on the
+deterministic contract and the manifest records mechanical truth. Sourced
+builds run sonnet/40-turns/5-min (a transform, not invention). `validateProblem`
+is unchanged: the emitted suite satisfies `all_failing` by construction
+(raising stub; None/`Error:`-expected cases filtered). `cli.ts lc verify`
+proves any slug's conversion against the canonical solution with no model
+call; the full `--all-eligible` sweep writes `datasets/leetcode/blocklist.json`,
+which source binding refuses. Assessed LC sessions additionally deposit a row
+in the per-user topic ledger (`topic-graph.ts`) — record-only for now, by
+decision: nothing reads it to steer future rounds yet.
 
 ## Standing limitations
 
@@ -190,6 +213,9 @@ next generation with no further ceremony.
 4. The drafter runs detached from accept-spec with no UI surfacing of a
    failed draft — the degrade path (legacy brief) is silent. A "(no blueprint
    yet)" indicator is a known deferrable.
-5. `checkExpectations`' vocabulary-overlap gate can in principle false-fail a
-   terse single-file problem whose manifest spec runs short — the 150-300-word
-   manifest spec requirement is the mitigation; watch early generations.
+5. ~~`checkExpectations`' vocabulary-overlap gate can in principle false-fail a
+   terse single-file problem whose manifest spec runs short.~~ **CLOSED
+   2026-08-13**: it did, on skinned LC builds, because the tokenizer split
+   `min_ms` into sub-floor fragments and identifiers are the only vocabulary a
+   story-skinned spec shares with algorithm-speaking expectations. Identifiers
+   now stay whole (`/[^a-z0-9_]+/`).

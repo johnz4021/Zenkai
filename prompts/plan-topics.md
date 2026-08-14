@@ -12,11 +12,17 @@ this round — never a vague theme.
 ## Rules
 
 1. Produce EXACTLY {{COUNT}} titles.
-2. Each title names a concrete system or task plus its core mechanism, 3 to 8 words:
-   "Rate limiter — sliding window", "Seat reservation — concurrent holds",
-   "Elevator dispatch — request queue".
-3. All titles pairwise distinct — different domains, not the same domain rephrased.
-4. Every title must fit the round described above (its format, its topic emphasis,
+2. Each title names a concrete SCENARIO and what must be built or found in it,
+   3 to 8 words: "Seat reservation — concurrent holds", "Warehouse pallet
+   pairing — batch audit", "Delivery window overlap report".
+3. Never name a well-known named problem ("Two sum", "LRU cache", "Merge
+   intervals") and never name the solving technique ("— sliding window",
+   "— hash table lookup"). The title is shown BEFORE the round and becomes a
+   build commitment: a famous name spoils the round and drags its difficulty
+   along; a technique name hands the candidate the answer. Name the situation,
+   not the solution.
+4. All titles pairwise distinct — different domains, not the same domain rephrased.
+5. Every title must fit the round described above (its format, its topic emphasis,
    its difficulty for a strong college senior in the stated time).
-5. Never use "round", "problem", "practice", "session", or numbering in a title.
-6. Order them easiest first — the plan meets the student where they start.
+6. Never use "round", "problem", "practice", "session", or numbering in a title.
+7. Order them easiest first — the plan meets the student where they start.

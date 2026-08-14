@@ -36,7 +36,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import type { RoundSpec } from '@interview-prep/shared';
 import { coerceArray, ROUND_FIELDS } from './clarify.js';
-import { gateBlueprint } from './blueprint.js';
+import { deriveTaskFromSpec, gateBlueprint } from './blueprint.js';
 import { draftToSpec, type DraftToolOutput, type SpecDraft, type Target } from './intake.js';
 import type { Queue, QueueItem } from './queue.js';
 
@@ -347,6 +347,15 @@ export function applyAdaptation(
     // worse than a quiet row.
     if (r.new_title) item.planned_title = r.new_title;
     else delete item.planned_title;
+    // A real-problem binding is the SAME class of stale promise: it was
+    // built for the old spec's task. If the new spec is not an algorithmic
+    // set, a problem-set binding under it is dead data — drop it and let
+    // the new shape's own machinery (or invention) take over. Kept when
+    // the new spec IS algorithmic: the problems still fit the task.
+    if (item.source) {
+      const toSpec = nextTarget.specs.find((sp) => sp.id === r.to_spec_id);
+      if (!toSpec || deriveTaskFromSpec(toSpec) !== 'algorithmic_set') delete item.source;
+    }
     applied.push({ item_id: r.item_id, from: r.from_spec_id, to: r.to_spec_id });
   }
   const flaggedApplied: string[] = [];
@@ -437,7 +446,7 @@ function specLine(s: RoundSpec): string {
   const c = s.capabilities;
   return `- id: ${s.id} · "${s.label}" · ${c.interviewer ? 'live interviewer' : 'no interviewer (OA)'} · ${
     c.time_limit_ms ? Math.round(c.time_limit_ms / 60_000) + ' min' : 'untimed'
-  } · starts from ${c.starts_from} · ${c.submit}${s.emphasis ? ` · emphasis: ${s.emphasis}` : ''}`;
+  } · starts from ${c.starts_from} · ${c.submit}${s.emphasis ? ` · emphasis: ${s.emphasis}` : ''}${s.date ? ` · on ${s.date}` : ' · date not set'}`;
 }
 
 function buildPrompt(templatePath: string, input: Parameters<Adapter>[0]): string {

@@ -29,17 +29,34 @@ import { deriveMemoryTags, validateRoundSpec } from '@interview-prep/shared';
 export interface Target {
   id: string;
   label: string;
+  /** Beta (WU5): who owns this plan. Absent = pre-beta = the local user
+   *  ('u1') — the founder's. Planning is a core beta feature, so targets are
+   *  SCOPED per user, never hidden behind an admin wall. */
+  user_id?: string;
   /** ISO date of the interview, when known — the queue paces against it. */
   interview_date?: string;
   /** What the candidate said about the round(s), verbatim. */
   description: string;
   /** Pasted reference material: recruiter email, a found question, notes. */
   context?: string;
+  /** Binary reference material (screenshots, PDFs) stored under the target
+   *  dir and sent to the model as typed content blocks — the firsthand
+   *  evidence class (an assessment preview the candidate SAW) that a
+   *  text-flattened context could never carry. `file` is relative to the
+   *  target dir. */
+  attachments?: { name: string; media_type: string; file: string }[];
   /** Confirmed round shapes. Only confirmed specs generate problems.
    *  APPEND-ONLY once items reference them: adaptation adds specs and
    *  re-points future items; it never edits or removes one, so history
    *  keeps describing what actually ran. */
   specs: RoundSpec[];
+  /** The season's concept vocabulary — planner-authored, mechanically gated
+   *  (concept-topics.ts), candidate-confirmed at the same gate as specs, and
+   *  FROZEN after (append-only, the specs discipline): rounds bind to this
+   *  list at generation and topic-log.json counts over it, so history must
+   *  keep pointing at the list it ran under. Absent on pre-topics plans and
+   *  on doors without a planner proposal. */
+  topics?: import('./concept-topics.js').ConceptTopic[];
   /** Applied adaptations, newest last — the audit trail the timeline
    *  renders ("Aug 5 — new: LLD round · 4 rounds re-shaped") and the
    *  recovery record reconcileAdaptation repairs from. See adapt.ts. */
@@ -61,6 +78,42 @@ export function loadTarget(root: string, id: string): Target | null {
   const file = path.join(targetDir(root, id), 'target.json');
   if (!existsSync(file)) return null;
   return JSON.parse(readFileSync(file, 'utf8')) as Target;
+}
+
+/** Media types the intake accepts as binary attachments. The allowlist is
+ *  the gate: anything else is rejected at /api/target, never written. */
+export const ATTACHMENT_MEDIA_TYPES = new Set([
+  'image/png', 'image/jpeg', 'image/webp', 'image/gif', 'application/pdf',
+]);
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+export const MAX_ATTACHMENTS = 5;
+
+/** A stored attachment → the typed content block a model call sends.
+ *  Images become image blocks; PDFs become document blocks with citations
+ *  enabled, so a claim like "your screenshot shows a 90:00 timer" is
+ *  auditable back to the page it came from. A missing or unreadable file
+ *  degrades to a text note — one bad attachment must not sink the call. */
+export function attachmentBlocks(
+  root: string,
+  target: Target,
+): Record<string, unknown>[] {
+  return (target.attachments ?? []).map((a) => {
+    let data: string;
+    try {
+      data = readFileSync(path.join(targetDir(root, target.id), a.file)).toString('base64');
+    } catch {
+      return { type: 'text', text: `(attachment "${a.name}" is missing on disk)` };
+    }
+    if (a.media_type === 'application/pdf') {
+      return {
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data },
+        title: a.name,
+        citations: { enabled: true },
+      };
+    }
+    return { type: 'image', source: { type: 'base64', media_type: a.media_type, data } };
+  });
 }
 
 export function listTargets(root: string): Target[] {
@@ -88,6 +141,25 @@ export interface SpecDraft {
   spec: RoundSpec;
   /** Why the model chose this shape — shown at confirm time. */
   rationale: string;
+  /** The task hypothesis (blueprint.ts ROUND_TASKS) — recipe-side routing
+   *  for skeleton choice, set by the practice clarifier's gate. Typed as
+   *  string here to keep intake free of a blueprint import; the practice
+   *  gate guarantees enum membership. */
+  task?: string;
+  /** Raw problem references the material NAMED ("two sum", "LC 146") —
+   *  the clarifier notices them, the ROUTE resolves them against the
+   *  dataset index (lc-refs.ts). Never model-resolved. */
+  named_problems?: string[];
+  /** Stated part count ("three coding problems", a part 1/2/3 ladder),
+   *  gate-clamped 2..4; absent = single. Explicit mentions only. */
+  part_count?: number;
+  /** Set by the route after mechanical resolution/auto-pick — the binding
+   *  the confirm screen displays and the start call commits. Top-level =
+   *  part 1; `parts` present only for sets of >=2. */
+  source?: {
+    slug: string; title: string; difficulty: 'easy' | 'medium' | 'hard'; picked_by: 'user' | 'auto';
+    parts?: { slug: string; title: string; difficulty: 'easy' | 'medium' | 'hard'; picked_by: 'user' | 'auto' }[];
+  };
   /** Non-empty when the round asks for something the environment lacks
    *  (e.g. a system-design canvas). Declining honestly beats a bad session. */
   unsupported?: string;
@@ -159,6 +231,10 @@ export interface DraftToolOutput {
   check_kind: RoundSpec['check']['kind'];
   max_source_files?: number;
   emphasis?: string;
+  /** ISO date this round happens, ONLY when the material states it. */
+  date?: string;
+  /** How the round's FORM is evidenced; drives hedge allocation later. */
+  evidence_tier?: string;
   rationale: string;
   unsupported: string;
 }
@@ -192,6 +268,7 @@ export function draftToSpec(out: DraftToolOutput): SpecDraft {
   };
   const emphasis = asText(out.emphasis);
   const maxFiles = Number(out.max_source_files);
+  const date = asText(out.date);
   const spec: RoundSpec = {
     id: slugify(asText(out.id) || asText(out.label)),
     label: asText(out.label),
@@ -202,12 +279,24 @@ export function draftToSpec(out: DraftToolOutput): SpecDraft {
     },
     memory_tags: deriveMemoryTags(capabilities),
     ...(emphasis ? { emphasis } : {}),
+    // The vocabulary gate below validates the format; a garbled date is an
+    // inference failure, never silent data (same rule as /api/target).
+    ...(date ? { date } : {}),
+    ...(asText(out.evidence_tier) ? { evidence_tier: asText(out.evidence_tier) as RoundSpec['evidence_tier'] } : {}),
   };
-  const failures = validateRoundSpec(spec);
-  if (failures.length > 0) {
-    throw new Error(`inferred spec failed the vocabulary gate: ${failures.join('; ')}`);
-  }
   const unsupported = asText(out.unsupported);
+  // A DECLINED round is never generated, scheduled, or run — holding it to
+  // the capability vocabulary sinks exactly the rounds the decline exists
+  // to name (a behavioral session has no honest check_kind at all). Live
+  // failure 2026-08-08: the model declined Datadog's behavioral round, the
+  // gate dropped it, and the panel silently lacked the row the model's
+  // prose promised was there.
+  if (!unsupported) {
+    const failures = validateRoundSpec(spec);
+    if (failures.length > 0) {
+      throw new Error(`inferred spec failed the vocabulary gate: ${failures.join('; ')}`);
+    }
+  }
   return {
     spec,
     rationale: asText(out.rationale),

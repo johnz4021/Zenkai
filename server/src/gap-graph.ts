@@ -73,6 +73,15 @@ export interface SessionRecord {
    * remediation streak.
    */
   contaminated_labels?: string[];
+  /**
+   * The plan this session's round belonged to (additive, forward-only —
+   * absent on pool problems, reps, and pre-stamp history). Storage stays
+   * GLOBAL: six dimensions score every session, and splitting them per plan
+   * would starve the remediation streak by construction. This stamp exists
+   * so a future "how is this prep going" view can be a FILTER over the one
+   * store, never a second store.
+   */
+  target_id?: string;
 }
 
 export interface GapStore {
@@ -101,6 +110,40 @@ export interface GraphView {
   /** D3: gaps that closed as a result of the MOST RECENT session — the event. */
   newly_closed: string[];
 }
+
+/**
+ * THE memory boundary: may this session id deposit into (or be read back
+ * from) the user's memory stores — the gap graph, the topic ledgers, the
+ * verdict history?
+ *
+ * Every real session is minted `sess-${Date.now()}` (app.ts launch paths,
+ * cli.ts session default) — `sess-` + digits, nothing else. Anything with a
+ * non-digit id segment came in through the IP_SESSION_ID override, which is
+ * the QA harness's door. History of this arms race, so it is not re-fought:
+ * qa-lc runs polluted the store first (2026-08-13, prefix guard added);
+ * the next harness pass minted sess-qa813 and sess-qa814 ids that PASSED
+ * the bare sess- prefix guard and deposited 10 more sessions plus an
+ * all-QA topic ledger (found at merge, 2026-08-14). Shape-of-mint is the
+ * boundary a harness cannot drift past without also colliding with real
+ * session semantics.
+ */
+export function isMemorableSessionId(sid: string): boolean {
+  return MINTED_SESSION_ID.test(sid);
+}
+
+/**
+ * The two shapes a real launch produces, and nothing else:
+ *   single-session  `sess-<ms>`                  (app.ts, cli.ts default)
+ *   multi-session   `sess-<ms>-<4 hex>`          (newSessionId, session-registry.ts)
+ *
+ * The hex suffix is NOT optional decoration — multi-session is the beta
+ * configuration, and concurrent launches can collide on a millisecond, so
+ * every beta session carries it. A guard that omitted it (first cut,
+ * 2026-08-14) would have silently recorded NOTHING for every real beta
+ * user while still looking correct on the founder's legacy single-session
+ * history. Keep this in sync with newSessionId.
+ */
+const MINTED_SESSION_ID = /^sess-\d{10,}(-[0-9a-f]{4})?$/;
 
 export const PATTERN_MIN_SESSIONS = 3;
 const HALF_LIFE_SESSIONS = 5;
@@ -184,6 +227,8 @@ export function recordAssessment(
   roundType: string,
   /** Closed-vocabulary tags from the round's spec (MEMORY_TAGS). */
   memoryTags?: string[],
+  /** The owning plan, when the round came from one (SessionRecord.target_id). */
+  targetId?: string,
 ): GapStore {
   const fired: string[] = [];
   const uninformative: string[] = [];
@@ -224,6 +269,7 @@ export function recordAssessment(
       trigger_occurred: anyAssessable,
       labels_fired: fired,
       contaminated_labels: uninformative,
+      ...(targetId ? { target_id: targetId } : {}),
     },
     evidenceByKey,
     metaByKey,

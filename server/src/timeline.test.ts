@@ -3,7 +3,7 @@
  * encode assumptions) and gets tested like one. The one thing it must never
  * do: render a verdict.
  */
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -31,10 +31,45 @@ describe('renderTimeline', () => {
     expect(out).toContain('+80s  interviewer: "From now."');
   });
 
-  it('renders untranscribed speech as speech, never as silence', () => {
+  it('untranscribed speech during an STT outage renders as speech, never as silence', () => {
     const out = renderTimeline([
       ev('session_start', 0),
+      ev('sensor', 20, { sensor: 'stt', state: 'down', reason: 'socket' }, 'chrome'),
       ev('utterance', 30, { text: '', via: 'voice', untranscribed: true }, 'chrome'),
+      ev('sensor', 40, { sensor: 'stt', state: 'up', reason: 'reconnected' }, 'chrome'),
+    ]);
+    expect(out).toContain('[spoke — transcription unavailable]');
+  });
+
+  it('empty utterances while STT is healthy are gate noise and never reach the judge', () => {
+    // The v1 renderer turned every empty-text utterance into a "spoke" line.
+    // Live data: 28% of all gate activations across the first 17 sessions
+    // returned no words with STT up the whole time — background noise, which
+    // the judge then cited as "long stretches transcription-unavailable" in
+    // real communicate verdicts. STT up + no words = the recognizer ran and
+    // heard nothing; that is not speech and must not render as it.
+    const out = renderTimeline([
+      ev('session_start', 0),
+      ev('sensor', 1, { sensor: 'stt', state: 'up', reason: 'connected' }, 'chrome'),
+      ev('utterance', 30, { text: '', via: 'voice', untranscribed: true }, 'chrome'),
+      ev('utterance', 60, { text: 'the real narration', via: 'voice' }, 'chrome'),
+    ]);
+    expect(out).not.toContain('transcription unavailable');
+    expect(out).toContain('"the real narration"');
+  });
+
+  it('a segment that STRADDLES the outage start is kept — membership is by overlap', () => {
+    // Watchdog flushes: speech begins, the socket dies mid-segment, the down
+    // marker lands, THEN the empty utterance is flushed with speech_start_ts
+    // pointing back before the outage. The event ts alone would also pass
+    // here, but speech_start_ts is the timestamp that carries the segment's
+    // true extent — this pins the overlap rule so a flush-path reorder can't
+    // silently start dropping genuine losses.
+    const out = renderTimeline([
+      ev('session_start', 0),
+      ev('sensor', 50, { sensor: 'stt', state: 'down', reason: 'unresponsive' }, 'chrome'),
+      ev('utterance', 55, { text: '', via: 'voice', untranscribed: true, speech_start_ts: T0 + 45_000 }, 'chrome'),
+      ev('sensor', 60, { sensor: 'stt', state: 'up', reason: 'reconnected' }, 'chrome'),
     ]);
     expect(out).toContain('[spoke — transcription unavailable]');
   });
@@ -176,8 +211,13 @@ describe('editor-down reliability annotation', () => {
 describe('real traces render sanely (no ground-truth claim — render check only)', () => {
   const tracesDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'traces');
   it('every stored trace renders without throwing and attributes speakers', () => {
+    // traces/ is gitignored local session data: absent in a fresh clone, a
+    // git worktree, or CI. Assert over whatever is here, and skip cleanly
+    // when there is nothing — a corpus check must not fail for lack of a
+    // corpus.
+    if (!existsSync(tracesDir)) return;
     const files = readdirSync(tracesDir).filter((f) => f.endsWith('.jsonl'));
-    expect(files.length).toBeGreaterThan(0);
+    if (files.length === 0) return;
     for (const f of files) {
       const events = readFileSync(path.join(tracesDir, f), 'utf8')
         .split('\n')
@@ -186,5 +226,23 @@ describe('real traces render sanely (no ground-truth claim — render check only
       const out = renderTimeline(events);
       expect(out).toContain('SESSION TIMELINE');
     }
+  });
+});
+
+describe('test_run pass counts (renderer v3)', () => {
+  it('renders X/Y when the payload carries counts, per via verb', () => {
+    const events: TraceEvent[] = [
+      ev('session_start', 0),
+      ev('test_run', 10, { exit_code: 1, via: 'panes', passed: 5, total: 8 }),
+      ev('test_run', 20, { exit_code: 1, via: 'submit', passed: 14, total: 16 }),
+    ];
+    const out = renderTimeline(events);
+    expect(out).toContain('ran tests — 5/8 tests passed');
+    expect(out).toContain('submitted — 14/16 tests passed');
+  });
+
+  it('falls back to the binary line for old traces without counts', () => {
+    const out = renderTimeline([ev('session_start', 0), ev('test_run', 5, { exit_code: 1 })]);
+    expect(out).toContain('ran tests — tests FAILED');
   });
 });

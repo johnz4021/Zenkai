@@ -18,15 +18,24 @@
 // Count up untimed, count DOWN when the round carries a limit (data-limit,
 // set by the server from the round spec). The server owns enforcement; this
 // clock is display only.
-const t0 = Date.now();
+// Every write carries this page's session id so a stale page (its server
+// died; a NEW session now owns :3200) is refused instead of writing into
+// someone else's trace (QA 2026-08-14).
+const SID = (document.getElementById('sid') || {}).textContent || '';
+const sidHeaders = (h) => Object.assign({ 'x-ip-session': SID }, h || {});
+
 const clockEl = document.getElementById('clock');
+// Seed from the server's elapsed time, not page load: a mid-round reload
+// used to restart the displayed countdown at the full limit while the
+// server kept enforcing the real deadline (QA 2026-08-14).
+const t0 = Date.now() - Number(clockEl.dataset.elapsed || 0);
 const limitMs = Number(clockEl.dataset.limit || 0);
 const clockTimer = setInterval(() => {
   const elapsed = Date.now() - t0;
   const shown = limitMs > 0 ? Math.max(0, Math.ceil((limitMs - elapsed) / 1000)) : Math.floor(elapsed / 1000);
   clockEl.textContent =
     String(Math.floor(shown / 60)).padStart(2, '0') + ':' + String(shown % 60).padStart(2, '0');
-  if (limitMs > 0 && limitMs - elapsed < 5 * 60_000) clockEl.style.color = '#e6a23c';
+  if (limitMs > 0 && limitMs - elapsed < 5 * 60_000) clockEl.style.color = '#ff6fae';
 }, 1000);
 
 async function pollStatus() {
@@ -35,10 +44,23 @@ async function pollStatus() {
     const s = await r.json();
     const c = s.counts || {};
     const n = (k) => c[k] || 0;
-    document.getElementById('status').textContent =
+    const el = document.getElementById('status');
+    // A one-shot round has no Run Tests button, so the debugging-round
+    // trigger ("first failing test run") can NEVER arm — the candidate
+    // would read a status describing an impossible event for the whole
+    // round. State the rule that actually governs their round instead.
+    // No-interviewer rounds get no trigger clause at all: "trigger armed"
+    // describes someone who is not there (QA 2026-08-14). No-run rounds
+    // have nothing to run, at submit or otherwise.
+    const trigger = el.dataset.oneShot === '1'
+      ? (el.dataset.noRun === '1' ? 'nothing runs this round' : 'suite runs once at submit')
+      : (el.dataset.interviewer === '1'
+          ? (s.trigger_armed ? 'trigger armed ✓' : 'waiting for first failing test run')
+          : '');
+    el.textContent =
       'observing: ' + n('edit') + ' edits · ' + n('file_save') + ' saves · ' +
-      n('test_run') + ' test runs · ' +
-      (s.trigger_armed ? 'trigger armed ✓' : 'waiting for first failing test run');
+      n('test_run') + ' test runs' + (trigger ? ' · ' + trigger : '');
+    if (s.ended && !ending) markEndedChrome();
   } catch {}
 }
 const statusTimer = setInterval(pollStatus, 3000);
@@ -59,8 +81,15 @@ function say(who, text, cls) {
 let thinkingEl = null;
 let lastHeardSeq = -1;
 let pollInFlight = false;
+// A poke that lands mid-fetch used to be a silent no-op, so that turn waited
+// out the full 2s interval — the exact dead air the doorbell exists to kill.
+// Remember it instead and re-poll on the way out.
+let pokeMissed = false;
 async function pollMessages() {
-  if (pollInFlight) return; // poke + interval can overlap; cursors make retries safe
+  if (pollInFlight) {
+    pokeMissed = true;
+    return;
+  }
   pollInFlight = true;
   try {
     const r = await fetch('/api/messages?since=' + lastSeq + '&vsince=' + lastHeardSeq);
@@ -84,7 +113,10 @@ async function pollMessages() {
       if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
       say('interviewer', m.text);
       // Voice: the turn's audio is fetched from the STORED (guarded) event.
-      if (window.ipVoice) window.ipVoice.speak(m.seq);
+      // Acks are content-free continuers, and they carry a seq like any other
+      // turn — which meant an ack could reassign the <audio> src and cut a
+      // real turn off mid-sentence. A courtesy noise never interrupts.
+      if (window.ipVoice) window.ipVoice.speak(m.seq, { skipIfBusy: m.kind === 'ack' });
     }
     if (s.thinking && !thinkingEl) thinkingEl = say('interviewer', '…', 'pending');
     if (!s.thinking && thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
@@ -94,6 +126,10 @@ async function pollMessages() {
     if (s.time_up) endSession();
   } catch {} finally {
     pollInFlight = false;
+    if (pokeMissed) {
+      pokeMissed = false;
+      void pollMessages();
+    }
   }
 }
 const messagesTimer = setInterval(pollMessages, 2000);
@@ -119,6 +155,22 @@ function stopSessionLoops() {
   if (eventsWs) { try { eventsWs.close(); } catch {} eventsWs = null; }
 }
 
+// Everything interactive goes quiet together. Reached from the end flow AND
+// from pollStatus on a reload: a page opened onto an already-ended session
+// used to render as a live round — ticking clock, enabled Run Tests and
+// Submit (QA 2026-08-14).
+function markEndedChrome() {
+  stopSessionLoops();
+  document.body.classList.add('ended');
+  const btn = document.getElementById('end');
+  btn.disabled = true;
+  btn.textContent = 'Session ended';
+  const run = document.getElementById('run');
+  if (run) run.disabled = true;
+  const mute = document.getElementById('mute');
+  if (mute) mute.disabled = true;
+}
+
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
   const input = document.getElementById('msg');
@@ -128,7 +180,7 @@ document.getElementById('f').addEventListener('submit', async (e) => {
   say('you', text);
   await fetch('/api/utterance', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: sidHeaders({ 'content-type': 'application/json' }),
     body: JSON.stringify({ text }),
   });
 });
@@ -144,7 +196,7 @@ if (runButton && runButton.dataset.endpoint === '/api/ide-run') {
     runButton.disabled = true;
     runButton.textContent = '▶ Running…';
     try {
-      const r = await fetch('/api/ide-run', { method: 'POST' });
+      const r = await fetch('/api/ide-run', { method: 'POST', headers: sidHeaders() });
       const out = await r.json();
       if (out.error) {
         say(
@@ -177,12 +229,18 @@ async function endSession() {
   // Release the mic FIRST — the session record closes with /api/end, and a
   // live mic past that point streams audio nobody will ever score.
   if (window.ipVoice) window.ipVoice.stop();
+  // Flush the panes editor's debounced saves BEFORE grading: on a one_shot
+  // round the Run button never existed, so this is the only flush — without
+  // it the last <800ms of typing is graded away by the submit run.
+  if (window.ipPanesFlush) {
+    try { await window.ipPanesFlush(); } catch { /* grade what's on disk */ }
+  }
   stopSessionLoops();
-  const res = await fetch('/api/end', { method: 'POST' });
-  if (res.status === 409) { btn.textContent = 'Session ended'; return; }
+  const res = await fetch('/api/end', { method: 'POST', headers: sidHeaders() });
+  if (res.status === 409) { markEndedChrome(); return; }
   const card = await res.json();
   render(card);
-  btn.textContent = 'Session ended';
+  markEndedChrome();
 }
 
 document.getElementById('end').addEventListener('click', endSession);
@@ -263,6 +321,11 @@ function render(card) {
   if (card.mode === 'observations') {
     html += '<p class="meta">Session ' + (3 - card.sessions_until_patterns) + ' of 3 before patterns emerge. These are single-session observations, not yet patterns.</p>';
   }
+  // Beta (WU9): the memory roadmap note sits BELOW the mechanical line, never
+  // replacing it — the claim with a number in it is the credible one. Kept
+  // off the landing on purpose: before a round it's a reason not to start;
+  // after one it's a reason to come back.
+  html += '<p class="meta">Zenkai is learning your patterns across rounds — this card already aims your next problem. Deeper memory is in development: why a gap happens, not just where it showed.</p>';
   html += backLink;
   el.innerHTML = html;
   const sb = document.getElementById('showbug');

@@ -28,3 +28,18 @@ shared/dist/
 .ide-data/
 targets/
 feedback/
+
+# target-less practice reps (same class of data as targets/ and problems/)
+reps/
+reps.json
+
+# launch-origin metric (the composer-landing falsifier)
+launches.jsonl
+sessions-live.json
+.ide-data/
+
+# vendored LeetCode dataset (~120MB; fetched by `cli.ts lc fetch`, pinned in lc-source.ts)
+datasets/
+
+# per-user topic ledgers (same class of data as gaps/)
+topics/

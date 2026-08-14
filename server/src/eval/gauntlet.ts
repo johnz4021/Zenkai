@@ -32,6 +32,7 @@ import {
   type Assessment,
   type JudgeModel,
 } from '../judge.js';
+import { RENDERER_VERSION } from '../timeline.js';
 import {
   contrastPairs,
   personaFixtures,
@@ -131,7 +132,15 @@ export async function runGauntlet(opts: GauntletOptions): Promise<Scorecard> {
     if (opts.resume && existsSync(runFile)) {
       try {
         const cached = JSON.parse(readFileSync(runFile, 'utf8')) as Assessment | { status: string };
-        if (cached.status === 'assessed' && (cached as Assessment).prompt_hash === currentHash) {
+        // Renderer version must match too: a timeline-renderer change (e.g.
+        // v2's phantom-speech drop) alters what the judge reads exactly like
+        // a prompt change does, and a cache keyed on prompt_hash alone would
+        // silently compare runs across that boundary.
+        if (
+          cached.status === 'assessed' &&
+          (cached as Assessment).prompt_hash === currentHash &&
+          (cached as Assessment).renderer_version === RENDERER_VERSION
+        ) {
           log(`  [${counter}] ${id} (cached)`);
           promptHash2 = (cached as Assessment).prompt_hash;
           const c = countCitations(cached as Assessment);

@@ -1,13 +1,12 @@
 /**
- * Home app client (design review 2026-07-31, approved mockups
- * firstrun-E-attach + variant-C/A).
+ * Home app client (Cowork-grammar redesign D1, 2026-08-07).
  *
  * Two views, server-driven from /api/state:
- *   entry   — first run: the screen IS the input. Build my plan runs
- *             clarify (0-3 questions, best-guess drafts) → spec confirm →
- *             the season appears immediately, before the first problem
- *             finishes. No research step: the plan is built from what the
- *             candidate knows and pastes (CEO review 2026-08-02).
+ *   entry   — a planning conversation. The composer IS the intake: the
+ *             first Send creates the target and kicks off the planner; the
+ *             chat holds nothing but prose while ALL structure lives in the
+ *             plan panel (the confirm gate), maintained by the model's
+ *             propose_rounds tool. Nothing is generated until confirm.
  *   seasons — the dated forward-only runway. TODAY holds the page's only
  *             primary action; the past is neutral history, never debt.
  *
@@ -23,111 +22,262 @@
 function esc(s) { return String(s).replace(/</g, '&lt;'); }
 function el(id) { return document.getElementById(id); }
 
+// ---- beta auth (WU4) ------------------------------------------------------
+// Server truth: every /api/* route 401s without a valid JWT (cookie ip_jwt).
+// This block only manages the token's lifecycle in the browser: acquire it
+// (Google OAuth redirect or email OTP, both plain GoTrue REST — no SDK, the
+// repo has a no-bundler rule), persist it (localStorage + cookie, the cookie
+// is what the server reads), hand it to the session origin (#token fragment
+// on session links), and clear it on 401. Auth off = this is all inert.
+let authCfg = null; // {enabled, supabase_url?, anon_key?}
+let loggedOut = false;
+// Which auth tab is showing. Module-level so a re-render (mode swap, or an
+// error path re-rendering the screen) does not bounce the user back to Sign in
+// and lose the mode they picked.
+let loginMode = 'in'; // 'in' | 'up'
+
+function jwt() { try { return window.localStorage.getItem('ip_jwt') || ''; } catch { return ''; } }
+function setJwt(t) {
+  try { window.localStorage.setItem('ip_jwt', t); } catch { /* private mode */ }
+  document.cookie = 'ip_jwt=' + t + '; path=/; SameSite=Lax; max-age=86400' +
+    (window.location.protocol === 'https:' ? '; Secure' : '');
+}
+function clearJwt() {
+  try { window.localStorage.removeItem('ip_jwt'); } catch { /* private mode */ }
+  document.cookie = 'ip_jwt=; path=/; max-age=0';
+}
+/** Session links carry the token as a fragment: the session origin is a
+ *  different host, so the cookie does not travel — the chrome sets its own. */
+function sessionHref(u) {
+  return authCfg && authCfg.enabled && jwt()
+    ? u + '#token=' + encodeURIComponent(jwt())
+    : u;
+}
+
+function renderLogin(msg) {
+  loggedOut = true;
+  // The shell's sections live in #page — there is no <main> in appPage(), and
+  // querying one returned null, so appendChild threw and killed initAuth: the
+  // boot skeleton sat there forever and NO login box ever rendered. It stayed
+  // invisible in local dev because auth is off without IP_SUPABASE_*, so
+  // initAuth returns early and this function never runs. Found on the live box
+  // (2026-08-12), the first time the logged-out path was ever exercised.
+  const page = el('page');
+  if (!page) return; // nothing sane to render into; leave the page as-is
+  for (const s of page.querySelectorAll(':scope > section')) s.hidden = true;
+  // render() is what normally removes the boot skeleton, and it never runs on
+  // this path — without this the placeholder bars sit above the login box.
+  const boot = el('boot');
+  if (boot) boot.remove();
+  let box = el('login');
+  if (!box) {
+    box = document.createElement('section');
+    box.id = 'login';
+    page.appendChild(box);
+  }
+  // The signed-out masthead keeps the mark only: practice/plans/history all
+  // route into surfaces that 401 until there is a token, so linking them is a
+  // broken affordance on the one screen that has to earn trust.
+  const navright = document.querySelector('nav .navright');
+  if (navright) navright.hidden = true;
+  document.body.classList.add('wide');
+  box.hidden = false;
+  const signUp = loginMode === 'up';
+  box.innerHTML =
+    '<div class="loginpane">' +
+    '<div class="loginsay">' +
+    '<h1>Practice the interview you actually have.</h1>' +
+    '<p class="desc">You describe the round you are facing. Zenkai generates a real repo with a real bug, ' +
+    'sits an interviewer beside you who listens while you work, then grades the trace and aims the next ' +
+    'one at what you missed.</p>' +
+    '<dl class="expect">' +
+    '<div><dt>The round</dt><dd>A real editor in your browser. About 45 minutes.</dd></div>' +
+    '<div><dt>The interviewer</dt><dd>Speaks and listens. Asks why, not just what.</dd></div>' +
+    '<div><dt>After</dt><dd>A graded card quoting what you actually said and did.</dd></div>' +
+    '</dl></div>' +
+    '<div class="loginbox">' +
+    '<div class="modes" role="tablist">' +
+    '<button class="mode" id="mode-in" type="button" role="tab" aria-selected="' + (signUp ? 'false' : 'true') + '">Sign in</button>' +
+    '<button class="mode" id="mode-up" type="button" role="tab" aria-selected="' + (signUp ? 'true' : 'false') + '">Sign up</button>' +
+    '</div>' +
+    '<p class="loginfine">' + (signUp
+      ? 'Free while in beta. Your first round can start right after.'
+      : 'Welcome back. Your plans and graded rounds are where you left them.') + '</p>' +
+    '<button id="login-google" class="primary" type="button">Continue with Google</button>' +
+    '<div class="loginsep">or</div>' +
+    '<div><label for="login-email">Email</label>' +
+    '<div class="loginrow"><input id="login-email" type="email" placeholder="you@school.edu" autocomplete="email">' +
+    '<button id="login-otp" type="button">Send code</button></div></div>' +
+    '<div id="login-code-row" hidden><label for="login-code">6-digit code</label>' +
+    '<div class="loginrow"><input id="login-code" inputmode="numeric" autocomplete="one-time-code" placeholder="000000">' +
+    '<button id="login-verify" class="primary" type="button">' + (signUp ? 'Create account' : 'Sign in') + '</button></div></div>' +
+    '<p id="login-msg">' + esc(msg || '') + '</p>' +
+    '<p class="loginfine">Free while in beta. Everyone shares one daily build budget, so rounds can run out before the day does.</p>' +
+    '</div></div>';
+  const say = (m, tone) => {
+    const n = el('login-msg');
+    n.textContent = m;
+    n.classList.toggle('bad', tone === 'bad');
+    n.classList.toggle('good', tone === 'good');
+  };
+  // Carry the typed address across the swap. Someone who types their email,
+  // then realises they need the other tab, should not have to type it twice.
+  const swap = (mode) => {
+    if (loginMode === mode) return;
+    const typed = el('login-email').value;
+    loginMode = mode;
+    renderLogin();
+    el('login-email').value = typed;
+  };
+  el('mode-in').addEventListener('click', () => swap('in'));
+  el('mode-up').addEventListener('click', () => swap('up'));
+  el('login-google').addEventListener('click', () => {
+    window.location.href = authCfg.supabase_url + '/auth/v1/authorize?provider=google&redirect_to=' +
+      encodeURIComponent(window.location.origin + '/');
+  });
+  const gotrue = (p, body) => fetch(authCfg.supabase_url + '/auth/v1/' + p, {
+    method: 'POST',
+    headers: { apikey: authCfg.anon_key, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  el('login-otp').addEventListener('click', async () => {
+    const email = el('login-email').value.trim();
+    if (!email) { say('enter your email first', 'bad'); return; }
+    const btn = el('login-otp');
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+    say('working');
+    // create_user is what makes the two tabs mean something. Sign in refuses
+    // to mint an account, so a typo'd address says so instead of silently
+    // creating a second empty one the user will never find again.
+    const r = await gotrue('otp', { email, create_user: signUp });
+    btn.disabled = false;
+    btn.textContent = 'Send code';
+    if (r.ok) {
+      el('login-code-row').hidden = false;
+      el('login-code').focus();
+      say('code sent to ' + email, 'good');
+      return;
+    }
+    if (!signUp) { say('no account with that email yet — switch to Sign up', 'bad'); return; }
+    say('could not send a code (' + r.status + ') — check the address and try again', 'bad');
+  });
+  el('login-verify').addEventListener('click', async () => {
+    const email = el('login-email').value.trim();
+    const code = el('login-code').value.trim();
+    if (!code) { say('enter the code from the email', 'bad'); return; }
+    const btn = el('login-verify');
+    btn.disabled = true;
+    say('verifying');
+    const r = await gotrue('verify', { type: 'email', email, token: code });
+    btn.disabled = false;
+    if (!r.ok) { say('that code did not verify — request a fresh one', 'bad'); return; }
+    const body = await r.json();
+    if (!body.access_token) { say('no token in the reply — try again', 'bad'); return; }
+    setJwt(body.access_token);
+    window.location.reload();
+  });
+}
+
+async function initAuth() {
+  try {
+    authCfg = await (await fetch('/api/auth-config')).json();
+  } catch {
+    authCfg = { enabled: false }; // server unreachable: refresh() shows that
+  }
+  if (!authCfg.enabled) return true;
+  // OAuth return lands as #access_token=… in the fragment.
+  const h = window.location.hash || '';
+  if (h.indexOf('access_token=') !== -1) {
+    const p = new window.URLSearchParams(h.replace(/^#/, ''));
+    const t = p.get('access_token');
+    if (t) setJwt(t);
+    window.history.replaceState(null, '', '#/');
+  }
+  if (!jwt()) { renderLogin(); return false; }
+  return true;
+}
+
 // ---- routing: the route decides what's visible; the poll only fills it ----
-// #/       all plans (index)
-// #/new    make a plan (intake + flow)
-// #/t/<id> one season timeline
+// #/         the composer landing (practice IS the front door, 2026-08-10)
+// #/plans    all plans (the old index)
+// #/history  practice history — the reps strip + judged cards
+// #/new      make a plan (intake + flow)
+// #/t/<id>   one season timeline
+// #/practice legacy alias — render() canonicalizes it to #/
 // The old design derived visibility from hasTargets on every poll and
 // focusout, which yanked the user off the intake page — navigation intent
 // and data state are separate things.
 function route() {
   const h = window.location.hash || '#/';
   if (h.startsWith('#/new')) return { page: 'new' };
+  if (h.startsWith('#/plans')) return { page: 'plans' };
+  if (h.startsWith('#/history')) return { page: 'history' };
   if (h.startsWith('#/t/')) return { page: 'timeline', id: decodeURIComponent(h.slice(4)) };
-  return { page: 'index' };
+  // '#/' and the legacy '#/practice' alias are both the composer landing.
+  return { page: 'practice' };
 }
 
 window.addEventListener('hashchange', () => {
-  // Leaving the intake abandons the client-side flow; the target persists
-  // on disk and surfaces on the index as "finish setting up".
-  if (!window.location.hash.startsWith('#/new')) flowTargetId = null;
+  const h = window.location.hash;
+  // Leaving the intake abandons the client-side flow; the target AND its
+  // conversation persist on disk and surface on the plans page as resumable.
+  if (!h.startsWith('#/new')) {
+    flowTargetId = null;
+    resetPlan();
+  }
+  // Leaving the landing drops the un-started flow the same way — a rep that
+  // reached Start lives in reps.json and needs nothing from this tab. The
+  // '#/practice' → '#/' canonicalizing redirect must NOT count as leaving,
+  // or the transient would erase in-progress composer state.
+  if (!(h === '' || h === '#/' || h.startsWith('#/practice'))) resetRep();
   if (lastStateJson) render(JSON.parse(lastStateJson));
 });
 
-// ---- attachments (client-side until Build my plan) ----
-// They concatenate into the target's context string — the reference
-// material IS the moat input, so it gets a real region, not a text link.
-const attachments = [];
+// ---- planning surface: Cowork grammar (design D1, 2026-08-07) ----
+// The chat contains NOTHING but prose; ALL structure lives in the plan
+// panel, which the model maintains through its propose_rounds tool. The
+// composer IS the entry — there is no form. State lives OUTSIDE the DOM
+// (adapt-panel precedent) so the 5s poll can't destroy it.
 
-function renderAttachments() {
-  const list = el('e-attachlist');
-  list.innerHTML = attachments.map((a, i) =>
-    '<div class="attach"><span class="name">' + esc(a.name) + '</span>' +
-    '<span class="kind">' + esc(a.kind) + '</span>' +
-    '<button type="button" data-i="' + i + '" aria-label="remove ' + esc(a.name) + '">×</button></div>'
-  ).join('');
-  for (const b of list.querySelectorAll('button')) {
-    b.addEventListener('click', () => { attachments.splice(Number(b.dataset.i), 1); renderAttachments(); });
-  }
+let flowTargetId = null; // non-null while a planning conversation owns #entry
+
+const attachments = [];
+const BINARY_KINDS = { 'image/png': 'image', 'image/jpeg': 'image', 'image/webp': 'image', 'image/gif': 'image', 'application/pdf': 'pdf' };
+// A paste longer than this becomes a chip instead of composer text — the
+// candidate's own material must never dominate the viewport.
+const PASTE_CHIP_CHARS = 400;
+
+const plan = {
+  tid: null, turns: [], proposal: null, busy: false, error: '',
+  gateOpen: null,          // panel row index whose rationale is expanded
+  include: {},             // draft index -> checkbox state
+  tier: {},                // draft index -> user's tier override (free, T2-B)
+  openChips: {},           // turn index -> expanded paste chip
+  flash: false,            // one render's worth of row-flash after an update
+  readOnly: false,         // no API key: replay + confirm, but no sending
+  askDismissed: null,      // turn index whose pinned options were waved off
+};
+
+let renderedTurnCount = 0; // autoscroll fires only when this grows
+
+function resetPlan() {
+  renderedTurnCount = 0;
+  plan.tid = null; plan.turns = []; plan.proposal = null; plan.busy = false;
+  plan.error = ''; plan.gateOpen = null; plan.include = {}; plan.tier = {};
+  plan.openChips = {}; plan.flash = false; plan.readOnly = false; plan.askDismissed = null;
+  attachments.length = 0;
 }
 
-el('e-addlink').addEventListener('click', () => {
-  const input = el('e-link');
-  const url = input.value.trim();
-  if (!url) return;
-  attachments.push({ kind: 'link', name: url, content: url });
-  input.value = '';
-  renderAttachments();
-});
-el('e-link').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { e.preventDefault(); el('e-addlink').click(); }
-});
-el('e-browse').addEventListener('click', () => el('e-file').click());
-el('e-file').addEventListener('change', () => {
-  for (const f of el('e-file').files) {
-    const reader = new FileReader();
-    reader.onload = () => {
-      attachments.push({ kind: 'file', name: f.name, content: String(reader.result).slice(0, 100_000) });
-      renderAttachments();
-    };
-    reader.readAsText(f);
-  }
-  el('e-file').value = '';
-});
-
 function buildContext() {
-  return attachments.map((a) =>
-    a.kind === 'link' ? '--- link: ' + a.content + ' ---' : '--- file: ' + a.name + ' ---\n' + a.content
+  return attachments.filter((a) => !a.data).map((a) =>
+    a.kind === 'link' ? '--- link: ' + a.content + ' ---' : '--- ' + a.name + ' ---\n' + a.content
   ).join('\n\n');
 }
 
-// ---- first-run flow: build → clarify → confirm → season ----
-
-let flowTargetId = null;
-let draft = null;
-
-function flow(html) {
-  el('entry-form').hidden = true;
-  const f = el('entry-flow');
-  f.hidden = false;
-  f.innerHTML = html;
+function buildBinaryAttachments() {
+  return attachments.filter((a) => a.data).map((a) => ({ name: a.name, media_type: a.media_type, data: a.data }));
 }
-
-el('e-build').addEventListener('click', async () => {
-  const desc = el('e-desc').value.trim();
-  const err = el('e-err');
-  if (!desc) { err.textContent = 'say something about the round — one sentence is enough'; return; }
-  err.textContent = '';
-  const btn = el('e-build');
-  btn.disabled = true;
-  btn.textContent = 'Saving…';
-  const r = await fetch('/api/target', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      label: el('e-company').value.trim() || desc.split(/[.,]/)[0].slice(0, 40),
-      date: el('e-date').value.trim(),
-      description: desc,
-      context: buildContext(),
-    }),
-  });
-  const s = await r.json();
-  btn.disabled = false;
-  btn.textContent = 'Build my plan';
-  if (s.error) { err.textContent = s.error; return; }
-  flowTargetId = s.id;
-  runClarify(null);
-});
 
 function specShapeLine(c) {
   return (c.interviewer ? 'live interviewer' : 'no interviewer (OA)') + ' · ' +
@@ -136,123 +286,1217 @@ function specShapeLine(c) {
     (c.submit === 'one_shot' ? 'graded once at submit' : 'iterate freely');
 }
 
-function runClarify(answers) {
-  flow('<h2>Working out the round\'s shape…</h2><div class="progress"><div class="fill"></div></div>');
-  fetch('/api/clarify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: flowTargetId, answers: answers || undefined }) })
+/** Same vocabulary as specShapeLine, compressed for the landing readout —
+ *  the three words that distinguish one round shape from another. */
+function specShapeShort(c) {
+  return (c.interviewer ? 'live' : 'OA') + ' · ' +
+    (c.time_limit_ms ? Math.round(c.time_limit_ms / 60000) + 'm' : 'untimed') + ' · ' +
+    (c.starts_from === 'blank' ? 'from scratch' : c.starts_from === 'diff' ? 'review' : 'repo');
+}
+
+function specDateLine(spec) {
+  if (!spec.date) return 'date not set';
+  const n = daysUntil(spec.date);
+  return fmtDate(spec.date) + (n !== null ? ' · ' + n + ' day' + (n === 1 ? '' : 's') : '');
+}
+
+function planResume(id) {
+  resetPlan();
+  plan.tid = id; plan.busy = true;
+  flowTargetId = id;
+  renderPlan();
+  fetch('/api/plan/conversation?target=' + encodeURIComponent(id))
     .then((r) => r.json())
     .then((d) => {
-      if (d.error) {
-        flow('<p class="err">' + esc(d.error) + '</p><p class="meta">Your description is saved.</p>' +
-          '<button id="re-clarify" class="primary" type="button">try again</button>');
-        el('re-clarify').addEventListener('click', () => runClarify(answers));
+      plan.busy = false;
+      if (d.error) { plan.error = d.error; renderPlan(); return; }
+      // A conversation already on disk is shown even without a key: the
+      // candidate keeps sight of their plan and can still confirm it
+      // (accept-spec needs no key; naming and blueprints degrade on their
+      // own). Only sending is dead, and the notice says so.
+      plan.turns = d.turns || [];
+      plan.proposal = d.proposal || null;
+      plan.readOnly = !d.planner_available;
+      if (plan.readOnly) {
+        plan.error = plan.turns.length
+          ? 'ANTHROPIC_API_KEY is not set, so I cannot reply — your conversation and plan are intact, and you can still confirm below'
+          : 'conversational planning needs ANTHROPIC_API_KEY in .env — set it and restart the app';
+        renderPlan();
         return;
       }
-      // One answer round-trip max: after answers, or with none needed, confirm.
-      if (d.questions && d.questions.length && !answers) renderQuestions(d);
-      else renderConfirm(d.drafts);
-    });
+      if (plan.turns.length === 0) planTurn(null);
+      else renderPlan();
+    })
+    .catch(() => { plan.busy = false; plan.error = 'could not load the conversation'; renderPlan(); });
 }
 
-/** 0-3 structured questions from the reasoner. Options, a recommended tag,
- *  a free-text escape per question, and a global "use your best guess". */
-function renderQuestions(d) {
-  let html = '<h2>Quick check before the plan gets built</h2>' +
-    '<p class="meta">Your description leaves something worth settling — wrong answers here cost you generated rounds of the wrong shape.</p>';
-  d.questions.forEach((q, qi) => {
-    html += '<div class="q" data-qi="' + qi + '"><p class="qtext">' + esc(q.question) + '</p>' +
-      '<p class="meta qwhy">' + esc(q.why) + '</p>';
-    q.options.forEach((op, oi) => {
-      const rec = q.recommended && q.recommended === op.label;
-      html += '<label class="opt"><input type="radio" name="q' + qi + '" value="' + oi + '"' + (rec ? ' checked' : '') + ' />' +
-        '<span>' + esc(op.label) + (rec ? ' <em class="rec">recommended</em>' : '') +
-        (op.detail ? '<br /><span class="meta">' + esc(op.detail) + '</span>' : '') + '</span></label>';
-    });
-    html += '<label class="opt"><input type="radio" name="q' + qi + '" value="other" />' +
-      '<span>something else: <input type="text" class="otherbox" data-qi="' + qi + '" placeholder="say it in a few words" /></span></label>';
-    html += '</div>';
-  });
-  html += '<button id="q-submit" class="primary" type="button">that\'s right — build the plan</button> ' +
-    '<button id="q-skip" type="button">use your best guess</button>';
-  flow(html);
-  for (const box of el('entry-flow').querySelectorAll('.otherbox')) {
-    box.addEventListener('focus', () => {
-      const radios = el('entry-flow').querySelectorAll('input[name="q' + box.dataset.qi + '"]');
-      radios[radios.length - 1].checked = true;
-    });
-  }
-  el('q-skip').addEventListener('click', () => renderConfirm(d.drafts));
-  el('q-submit').addEventListener('click', () => {
-    const answers = d.questions.map((q, qi) => {
-      const picked = el('entry-flow').querySelector('input[name="q' + qi + '"]:checked');
-      if (!picked) return { question: q.question, answer: '(no answer — use your best guess)' };
-      if (picked.value === 'other') {
-        const box = el('entry-flow').querySelector('.otherbox[data-qi="' + qi + '"]');
-        return { question: q.question, answer: box.value.trim() || '(no answer — use your best guess)' };
+function planTurn(message) {
+  plan.busy = true; plan.error = '';
+  renderPlan();
+  fetch('/api/plan/turn', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ target_id: plan.tid, message: message || undefined }),
+  })
+    .then(async (r) => ({ status: r.status, body: await r.json() }))
+    .then(({ status, body }) => {
+      plan.busy = false;
+      if (status === 501) {
+        plan.error = 'conversational planning needs ANTHROPIC_API_KEY in .env — set it and restart the app';
+        renderPlan();
+        return;
       }
-      return { question: q.question, answer: q.options[Number(picked.value)].label };
+      if (body.error) { plan.error = body.error; renderPlan(); return; }
+      // We already rendered the user's message optimistically — keep only
+      // the assistant's side of the server echo.
+      const incoming = (body.turns || []).filter((t) => (message ? t.role !== 'user' : true));
+      plan.turns = plan.turns.concat(incoming);
+      for (const t of incoming) {
+        if (t.proposal) { plan.proposal = t.proposal; plan.flash = true; }
+      }
+      renderPlan();
+    })
+    .catch(() => {
+      plan.busy = false;
+      plan.error = 'the planner did not answer — your conversation is saved, try again';
+      renderPlan();
     });
-    runClarify(answers);
-  });
 }
 
-/** The confirm gate, now over one OR MORE drafts. Each can be dropped;
- *  unsupported drafts render as honest declines and are never accepted. */
-function renderConfirm(allDrafts) {
-  drafts = allDrafts || [];
-  const usable = drafts.filter((x) => !x.unsupported);
-  let html = '<h2>' + (usable.length > 1 ? 'Confirm your rounds — the plan covers all of them' : 'Confirm the shape') + '</h2>';
-  drafts.forEach((x, i) => {
-    if (x.unsupported) {
-      html += '<div class="specbox dropped"><p><b>' + esc(x.spec.label) + '</b> — can\'t run honestly</p>' +
-        '<p class="meta">' + esc(x.unsupported) + '</p></div>';
-      return;
-    }
-    html += '<div class="specbox" data-di="' + i + '"><p><b>' + esc(x.spec.label) + '</b>' +
-      (usable.length > 1 ? ' <label class="keep"><input type="checkbox" checked data-di="' + i + '" /> include</label>' : '') +
-      '</p><p class="meta">' + specShapeLine(x.spec.capabilities) +
-      (x.spec.emphasis ? ' · emphasis: ' + esc(x.spec.emphasis) : '') + '</p>' +
-      '<p class="rationale">' + esc(x.rationale) + '</p></div>';
-  });
-  if (usable.length === 0) {
-    html += '<p class="meta">Rather than fake it, none of this is offered. Edit the description if that\'s wrong.</p>' +
-      '<button id="back-edit" type="button">edit description</button>';
-    flow(html);
-    el('back-edit').addEventListener('click', backToForm);
-    return;
+/** First Send: the message IS the intake. Create the target, then kick off. */
+async function planFirstSend(text) {
+  plan.busy = true; plan.error = '';
+  if (text) plan.turns.push({ role: 'user', at: new Date().toISOString(), prose: text });
+  renderPlan();
+  // Label from typed words, else from the first pasted chip's words.
+  const seed = text || (attachments.find((a) => a.content) || {}).content || '';
+  const label = seed.split(/[.,\n]/)[0].split(/\s+/).slice(0, 5).join(' ').slice(0, 40) || 'plan';
+  try {
+    const r = await fetch('/api/target', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label, description: text, context: buildContext(), attachments: buildBinaryAttachments() }),
+    });
+    const sBody = await r.json();
+    if (sBody.error) { plan.busy = false; plan.error = sBody.error; if (text) plan.turns.pop(); renderPlan(); return; }
+    plan.tid = sBody.id;
+    flowTargetId = sBody.id;
+    attachments.length = 0;
+    // The kickoff turn (server side) carries the description + attachments;
+    // our optimistic turn already shows the words, so drop the echo.
+    plan.turns = [];
+    planTurn(null);
+  } catch {
+    plan.busy = false; plan.error = 'could not reach the app server'; renderPlan();
   }
-  html += '<button id="accept" class="primary" type="button">looks right — build my plan</button> ' +
-    '<button id="back-edit" type="button">edit description</button>';
-  flow(html);
-  el('back-edit').addEventListener('click', backToForm);
-  el('accept').addEventListener('click', async () => {
-    const kept = drafts.filter((x, i) => {
-      if (x.unsupported) return false;
-      const cb = el('entry-flow').querySelector('input[type="checkbox"][data-di="' + i + '"]');
-      return !cb || cb.checked;
-    }).map((x) => x.spec);
-    if (!kept.length) return;
-    flow('<h2>Building your plan…</h2><div class="progress"><div class="fill"></div></div>');
-    const r = await fetch('/api/accept-spec', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: flowTargetId, specs: kept }) });
-    const s = await r.json();
-    if (s.error) {
-      flow('<p class="err">' + esc(s.error) + '</p><button id="re-confirm" class="primary" type="button">back</button>');
-      el('re-confirm').addEventListener('click', () => renderConfirm(drafts));
+}
+
+// The planner writes markdown — links, bold, inline code, short numbered
+// lists. Render the small subset it actually uses; raw ** and merged list
+// items read as broken output (live failure 2026-08-08). Escape FIRST,
+// then mark up: esc() has already neutralised '<', so every tag below is
+// one we wrote.
+function linkify(escaped) {
+  return escaped
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    // Single newlines are the model's line breaks (list items, short
+    // enumerations); paragraphs were already split on blank lines.
+    .replace(/\n/g, '<br>');
+}
+
+function renderTurns() {
+  // One model turn can render as SEVERAL assistant bubbles (tool call,
+  // then narration). "Current" is everything after the last user message;
+  // an ask's pills stay live until a user message answers them.
+  let lastUser = -1;
+  plan.turns.forEach((t, i) => { if (t.role === 'user') lastUser = i; });
+  let html = '';
+  plan.turns.forEach((t, i) => {
+    if (t.role === 'user') {
+      const long = (t.prose || '').length > PASTE_CHIP_CHARS;
+      html += '<div class="turn-user">';
+      if (long) {
+        const open = !!plan.openChips[i];
+        html += '<button type="button" class="pastechip" data-chip="' + i + '">' +
+          '<span>' + (open ? '▾' : '▸') + '</span><span>pasted · ' + (t.prose.length > 999 ? (t.prose.length / 1000).toFixed(1) + 'k' : t.prose.length) + ' chars</span></button>' +
+          (open ? '<div class="pastebody">' + esc(t.prose) + '</div>' : '');
+      } else {
+        html += esc(t.prose);
+      }
+      if ((t.attachments || []).length) {
+        html += '<div class="att">attached: ' + t.attachments.map(esc).join(', ') + '</div>';
+      }
+      html += '</div>';
+    } else {
+      // A tool-only message (the model calls propose_rounds, then narrates
+      // in the NEXT message) carries no words — the panel is its feedback.
+      // Rendering it painted an empty bubble on every proposal turn.
+      if (!(t.prose || '').trim() && !(t.questions && t.questions.length) && !(t.unreadable && t.unreadable.length)) return;
+      html += '<div class="turn-planner' + (i > lastUser ? '' : ' history') + '">';
+      for (const para of (t.prose || '').split('\n\n')) {
+        if (para.trim()) html += '<p>' + linkify(esc(para.trim())) + '</p>';
+      }
+      // A link the fetch tool could not read is a dead end unless the
+      // candidate hears about it — many sites (reddit.com among them) are
+      // blocked at the tool layer, and their OWN links are the ones that
+      // fail. Name the site, say why, point at the composer.
+      if (t.unreadable && t.unreadable.length) {
+        for (const u of t.unreadable) {
+          let host = u.url;
+          try { host = new URL(u.url).hostname.replace(/^www\./, ''); } catch { /* keep raw */ }
+          html += '<div class="unread"><b>' + esc(host) + '</b> — ' + esc(u.reason) +
+            '. Paste the text here instead and I\'ll use it.</div>';
+        }
+      }
+      html += '</div>';
+    }
+  });
+  if (plan.busy) {
+    html += '<div class="turn-planner"><p class="meta">working' +
+      (plan.turns.length <= 1 ? ' — reading your material' : '') + '…</p>' +
+      '<div class="progress"><div class="fill"></div></div></div>';
+  }
+  if (plan.error) html += '<p class="err">' + esc(plan.error) + '</p>';
+  return html;
+}
+
+/** The plan panel: the ONE structured surface (Cowork's plan pane). */
+function renderPanel() {
+  const p = plan.proposal;
+  let body = '';
+  if (!p) {
+    body = '<div class="paceline">' + (plan.busy ? 'thinking…' : 'the plan appears here as we talk') + '</div>';
+  } else {
+    const usable = [];
+    const declined = [];
+    p.drafts.forEach((d, i) => (d.unsupported ? declined : usable).push({ d, i }));
+    const dated = usable.filter((x) => x.d.spec.date).sort((a, b) => (a.d.spec.date < b.d.spec.date ? -1 : 1));
+    const ordered = dated.concat(usable.filter((x) => !x.d.spec.date));
+    const openIdx = plan.gateOpen === null ? (ordered.length ? ordered[0].i : null) : plan.gateOpen;
+    for (const { d, i } of ordered) {
+      const included = plan.include[i] !== false;
+      const tier = plan.tier[i] || d.spec.evidence_tier || 'public_prior';
+      const open = i === openIdx;
+      body += '<div class="gaterow' + (plan.flash ? ' flash' : '') + '">' +
+        '<label class="gcheck"><input type="checkbox"' + (included ? ' checked' : '') + ' data-gi="' + i + '" /> ' +
+        '<span style="color:' + (included ? 'var(--text-1)' : 'var(--text-2)') + '">' + esc(d.spec.label) + '</span></label>' +
+        '<div class="gshape">' + specShapeLine(d.spec.capabilities) + '</div>' +
+        '<div class="grow2">' +
+        '<span class="gdate' + (d.spec.date ? '' : ' nodate') + '">' + specDateLine(d.spec) + '</span>' +
+        '<button type="button" class="tier" data-ti="' + i + '" title="How this round is evidenced — click to override">' +
+        esc(tier === 'public_prior' ? 'public' : tier) + '</button>' +
+        '<button type="button" class="gexpand" data-gx="' + i + '" aria-expanded="' + open + '">' + (open ? 'why ▴' : 'why ▾') + '</button>' +
+        '</div>' +
+        (open ? '<div class="gatedetail"><b>Why this shape:</b> ' + esc(d.rationale || '') + '</div>' : '') +
+        '</div>';
+    }
+    for (const { d } of declined) {
+      body += '<div class="gatedecline">' + esc(d.spec.label) + ' — can\'t run honestly: ' + esc(d.unsupported) + '</div>';
+    }
+    body += '<div class="paceline">' +
+      (p.pace_per_week
+        ? p.pace_per_week + ' rounds/week — from your answer'
+        : '3 rounds/week — default until you tell me your daily time') + '</div>';
+    // Season topics render BEFORE the confirm button freezes them: after
+    // accept they are append-only (rounds bind to this list and the season
+    // page counts drills over it).
+    if (p.topics && p.topics.length) {
+      body += '<div class="paceline gtopics">this season tests: ' +
+        p.topics.map((t) => esc(t.label || t.id)).join(' · ') + '</div>';
+    }
+  }
+  const n = p ? p.drafts.filter((d, i) => !d.unsupported && plan.include[i] !== false).length : 0;
+  return '<aside id="plan-panel">' +
+    '<div class="phead"><p class="micro">The plan</p>' +
+    '<div class="meta">nothing is generated until you confirm</div></div>' +
+    '<div class="pbody">' + body + '</div>' +
+    '<div class="pfoot"><button id="gate-confirm" class="primary" type="button"' + (n === 0 ? ' disabled' : '') + '>' +
+    (n === 1 ? 'Confirm 1 round and build the plan' : 'Confirm ' + n + ' rounds and build the plan') + '</button>' +
+    '<span class="meta" id="gate-note"></span></div>' +
+    '</aside>';
+}
+
+/** The open question, if any: the latest ask with no user message after it
+ *  and no dismissal. Options are pinned to the composer rather than left in
+ *  the transcript — scrolling back to find a live control is not a UI. */
+function pendingAsk() {
+  let lastUser = -1;
+  let ask = null;
+  plan.turns.forEach((t, i) => {
+    if (t.role === 'user') { lastUser = i; ask = null; return; }
+    if (t.questions && t.questions.length && i > lastUser) ask = { turn: i, questions: t.questions };
+  });
+  if (!ask || plan.askDismissed === ask.turn || plan.busy) return null;
+  return ask;
+}
+
+function renderAskCard() {
+  const ask = pendingAsk();
+  if (!ask) return '';
+  let html = '<div id="plan-ask"><button type="button" id="ask-dismiss" aria-label="Dismiss and type instead">×</button>';
+  ask.questions.forEach((q, qi) => {
+    html += '<div class="askrow"><div class="askq">' + esc(q.question) + '</div><div class="askopts">';
+    q.options.forEach((o, oi) => {
+      // Indexes, not labels, ride the dataset — labels are model text.
+      html += '<button type="button" class="qopt" data-t="' + ask.turn + '" data-q="' + qi + '" data-o="' + oi + '">' +
+        esc(o.label) +
+        (q.recommended === o.label ? '<span class="rec">suggested</span>' : '') +
+        '</button>';
+      if (o.detail) html += '<span class="optdetail">' + esc(o.detail) + '</span>';
+    });
+    html += '</div></div>';
+  });
+  return html + '<div class="askor">or just type your answer below</div></div>';
+}
+
+function renderComposer() {
+  let chips = '';
+  if (attachments.length) {
+    chips = '<div id="plan-attach">' + attachments.map((a, i) =>
+      '<div class="attach"><span class="name">' + esc(a.name) + '</span>' +
+      '<span class="kind">' + esc(a.kind) + '</span>' +
+      '<button type="button" data-i="' + i + '" aria-label="remove ' + esc(a.name) + '">×</button></div>'
+    ).join('') + '</div>';
+  }
+  return '<div id="plan-composer">' + renderAskCard() + chips +
+    '<div class="row">' +
+    '<textarea id="plan-msg" rows="2" aria-label="Message the planner" placeholder="' +
+    (plan.tid ? 'Answer, correct me, or ask what a round shape is' : 'Describe the interview — paste everything you have') + '"' +
+    (plan.busy || plan.readOnly ? ' disabled' : '') + '></textarea>' +
+    '<button id="plan-attach-btn" class="mini" type="button" style="min-height:40px"' + (plan.readOnly ? ' disabled' : '') + '>Attach</button>' +
+    '<button id="plan-send" type="button"' + (plan.busy || plan.readOnly ? ' disabled' : '') + '>Send</button></div>' +
+    '<div class="linkrow"><input id="plan-link" placeholder="add a link (optional) — a repo, a thread, a writeup" aria-label="Add a link (optional)" />' +
+    '<button id="plan-addlink" type="button">add</button></div>' +
+    '<div class="helper">Correct me where I am wrong. What you saw yourself outranks anything I find.</div>' +
+    '</div>';
+}
+
+function renderPlan() {
+  if (route().page !== 'new') return;
+  const f = el('entry-flow');
+  const prevMsg = el('plan-msg') ? el('plan-msg').value : '';
+  const prevLink = el('plan-link') ? el('plan-link').value : '';
+  const focusId = document.activeElement ? document.activeElement.id : '';
+  const hadFocus = focusId === 'plan-msg';
+
+  let chat = '';
+  if (!plan.tid && plan.turns.length === 0) {
+    chat = '<div id="plan-intro">Describe the interview you\'re preparing for — company, what the recruiter said, ' +
+      'what a friend told you, a screenshot of the assessment preview. Paste everything; I\'ll sort out what matters ' +
+      'and build a practice plan you confirm before anything is generated.</div>' +
+      (plan.error ? '<p class="err">' + esc(plan.error) + '</p>' : '');
+  } else {
+    chat = renderTurns();
+  }
+
+  const hasPanel = Boolean(plan.tid || plan.turns.length);
+  f.innerHTML = '<div id="plan-wrap"' + (hasPanel ? '' : ' class="nopanel"') + '>' +
+    '<div id="plan-main"><div id="plan-chat">' + chat + '</div>' + renderComposer() + '</div>' +
+    (hasPanel ? renderPanel() : '') +
+    '</div>';
+  plan.flash = false;
+
+  if (el('plan-msg')) {
+    el('plan-msg').value = prevMsg;
+    if (hadFocus) el('plan-msg').focus();
+  }
+  if (el('plan-link')) {
+    el('plan-link').value = prevLink;
+    if (focusId === 'plan-link') el('plan-link').focus();
+  }
+  wirePlan(f);
+  // The PAGE scrolls, not #plan-chat — scroll to the composer when a new
+  // turn arrived so the reply is never invisible below the fold (QA
+  // ISSUE-002). Count-gated: re-renders from tier clicks etc. must not yank.
+  if (plan.turns.length !== renderedTurnCount) {
+    renderedTurnCount = plan.turns.length;
+    if (plan.turns.length && el('plan-composer')) el('plan-composer').scrollIntoView({ block: 'end' });
+  }
+}
+
+function wirePlan(f) {
+  const send = () => {
+    const box = el('plan-msg');
+    const text = box.value.trim();
+    if (plan.busy) return;
+    if (!plan.tid) {
+      // Chips alone are a valid intake — a candidate who pasted Erik's
+      // messages has said plenty without typing a word.
+      if (!text && attachments.length === 0) return;
+      box.value = '';
+      planFirstSend(text);
       return;
     }
-    // The payoff moment: the whole season appears NOW — day 1 keeps
-    // generating behind it.
-    const id = flowTargetId;
+    // Mid-conversation, link/pasted chips ride the message itself — the
+    // target's context field was consumed by the kickoff and /api/plan/turn
+    // takes only text. Without this, a chip added later silently vanished.
+    const extra = buildContext();
+    if (!text && !extra) return;
+    box.value = '';
+    const message = text + (extra ? (text ? '\n\n' : '') + extra : '');
+    for (let i = attachments.length - 1; i >= 0; i--) {
+      if (!attachments[i].data) attachments.splice(i, 1);
+    }
+    plan.turns.push({ role: 'user', at: new Date().toISOString(), prose: message });
+    planTurn(message);
+  };
+  if (el('plan-send')) el('plan-send').addEventListener('click', send);
+  if (el('plan-msg')) {
+    el('plan-msg').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+    // A long paste becomes a chip, not a wall (Cowork treatment).
+    el('plan-msg').addEventListener('paste', (e) => {
+      const text = (e.clipboardData || window.clipboardData).getData('text');
+      if (text && text.length > PASTE_CHIP_CHARS) {
+        e.preventDefault();
+        attachments.push({ kind: 'pasted', name: 'pasted · ' + (text.length > 999 ? (text.length / 1000).toFixed(1) + 'k' : text.length) + ' chars', content: text });
+        renderPlan();
+      }
+    });
+  }
+  if (el('ask-dismiss')) el('ask-dismiss').addEventListener('click', () => {
+    const ask = pendingAsk();
+    if (ask) plan.askDismissed = ask.turn;
+    renderPlan();
+    if (el('plan-msg')) el('plan-msg').focus();
+  });
+  if (el('plan-attach-btn')) el('plan-attach-btn').addEventListener('click', () => el('e-file').click());
+  const addLink = () => {
+    const box = el('plan-link');
+    let url = (box.value || '').trim();
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    attachments.push({ kind: 'link', name: url, content: url });
+    box.value = '';
+    renderPlan();
+  };
+  if (el('plan-addlink')) el('plan-addlink').addEventListener('click', addLink);
+  if (el('plan-link')) el('plan-link').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addLink(); }
+  });
+  const attach = el('plan-attach');
+  if (attach) {
+    for (const b of attach.querySelectorAll('button[data-i]')) {
+      b.addEventListener('click', () => { attachments.splice(Number(b.dataset.i), 1); renderPlan(); });
+    }
+  }
+  for (const b of f.querySelectorAll('.qopt')) {
+    b.addEventListener('click', () => {
+      if (plan.busy) return;
+      const turn = plan.turns[Number(b.dataset.t)];
+      const q = turn && turn.questions && turn.questions[Number(b.dataset.q)];
+      const opt = q && q.options[Number(b.dataset.o)];
+      if (!opt) return;
+      plan.turns.push({ role: 'user', at: new Date().toISOString(), prose: opt.label });
+      planTurn(opt.label);
+    });
+  }
+  for (const b of f.querySelectorAll('[data-chip]')) {
+    b.addEventListener('click', () => {
+      plan.openChips[Number(b.dataset.chip)] = !plan.openChips[Number(b.dataset.chip)];
+      renderPlan();
+    });
+  }
+  for (const cb of f.querySelectorAll('.gcheck input[type="checkbox"]')) {
+    cb.addEventListener('change', () => {
+      plan.include[Number(cb.dataset.gi)] = cb.checked;
+      renderPlan();
+    });
+  }
+  for (const b of f.querySelectorAll('.tier')) {
+    b.addEventListener('click', () => {
+      // Free override in both directions (T2 decision B, 2026-08-07): the
+      // candidate's plan, the candidate's call. The planner's own rating is
+      // still what it proposed — this only changes the stored tier.
+      const order = ['firsthand', 'secondhand', 'public_prior'];
+      const i = Number(b.dataset.ti);
+      const d = plan.proposal.drafts[i];
+      const cur = plan.tier[i] || d.spec.evidence_tier || 'public_prior';
+      plan.tier[i] = order[(order.indexOf(cur) + 1) % order.length];
+      plan.flash = true;
+      renderPlan();
+    });
+  }
+  for (const b of f.querySelectorAll('.gexpand')) {
+    b.addEventListener('click', () => { plan.gateOpen = Number(b.dataset.gx); renderPlan(); });
+  }
+  if (el('gate-confirm')) el('gate-confirm').addEventListener('click', async () => {
+    const p = plan.proposal;
+    const kept = [];
+    p.drafts.forEach((d, i) => {
+      if (d.unsupported || plan.include[i] === false) return;
+      const tier = plan.tier[i] || d.spec.evidence_tier;
+      kept.push(Object.assign({}, d.spec, tier ? { evidence_tier: tier } : {}));
+    });
+    if (!kept.length) return;
+    el('gate-confirm').disabled = true;
+    el('gate-note').textContent = 'building your plan…';
+    const r = await fetch('/api/accept-spec', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target_id: plan.tid, specs: kept, pace_per_week: p.pace_per_week }),
+    });
+    const sBody = await r.json();
+    if (sBody.error) {
+      el('gate-confirm').disabled = false;
+      el('gate-note').textContent = '';
+      plan.error = sBody.error;
+      renderPlan();
+      return;
+    }
+    // The payoff moment: the whole season appears NOW.
+    const id = plan.tid;
+    resetPlan();
     flowTargetId = null;
-    el('entry-flow').hidden = true;
-    el('entry-form').hidden = false;
     window.location.hash = '#/t/' + encodeURIComponent(id);
     refresh(true);
   });
 }
 
-function backToForm() {
-  el('entry-flow').hidden = true;
-  el('entry-form').hidden = false;
+// The #e-file input is shared by the plan composer and the practice door;
+// re-render whichever surface owns the current route.
+function rerenderComposerHost() {
+  if (route().page === 'practice') renderPractice();
+  else renderPlan();
+}
+
+// Binary/text file attach — the input lives in static HTML so this binds once.
+el('e-file').addEventListener('change', () => {
+  for (const file of el('e-file').files) {
+    const kind = BINARY_KINDS[file.type];
+    const reader = new FileReader();
+    if (kind) {
+      if (file.size > 10 * 1024 * 1024) {
+        const msg = file.name + ' is over 10MB — trim it down';
+        if (route().page === 'practice') rep.error = msg; else plan.error = msg;
+        rerenderComposerHost();
+        continue;
+      }
+      reader.onload = () => {
+        attachments.push({ kind, name: file.name, media_type: file.type, data: String(reader.result).split(',')[1] || '' });
+        rerenderComposerHost();
+      };
+      reader.readAsDataURL(file);
+    } else {
+      reader.onload = () => {
+        attachments.push({ kind: 'file', name: file.name, content: String(reader.result).slice(0, 100_000) });
+        rerenderComposerHost();
+      };
+      reader.readAsText(file);
+    }
+  }
+  el('e-file').value = '';
+});
+
+
+// ---- the practice door (CEO + design reviews, 2026-08-08) ----
+// Paste what you gathered, confirm the inferred shape, one rep — no target,
+// no queue, no pace. State lives OUTSIDE the DOM (the plan/adapt pattern)
+// so the 5s poll can't destroy a half-typed correction. The readback shows
+// a menu ONLY where a closed vocabulary exists (check.kind); language /
+// size / difficulty are open blueprint prose and render as editable text —
+// affordance matches constraint (design D4).
+
+const rep = {
+  phase: 'input',        // input | clarifying | confirm | started
+  busy: false,           // a re-infer is in flight; confirm STAYS rendered
+  repId: null,           // client-generated at confirm so a double-click
+                         // carries the SAME id into the server's mkdir lock
+  description: '',
+  drafts: [], questions: [], answers: [], chosen: 0,
+  // The gap model (design review 2026-08-12): ONE list, two views — the
+  // rail renders settled gaps, the question column renders open ones.
+  gaps: [], brief: '', degraded: false,
+  // The paste + attachment count that PRODUCED the current gaps. Step 1's
+  // forward action compares against these: unchanged means going back to the
+  // confirm screen is free, changed means an explicit regenerate.
+  sourceText: null, sourceAttachN: 0,
+  flashIds: [],          // gap ids to .flash after the next render, then cleared
+  pendingFocus: null,    // gap id whose first control gets focus post-render
+  linkOpen: false,       // the link input appears on request, not by default
+  error: '',
+};
+
+const REP_STORE_KEY = 'zenkai-rep-v1';
+
+/** The wait phases used to ride the container's aria-live; that region is
+ *  gone (decision 6A), so transitions announce themselves — once each. */
+let lastWaitAnnounced = null;
+
+function resetRep() {
+  rep.phase = 'input'; rep.busy = false; rep.repId = null; rep.description = '';
+  rep.drafts = []; rep.questions = []; rep.answers = []; rep.chosen = 0;
+  rep.gaps = []; rep.brief = ''; rep.degraded = false;
+  rep.sourceText = null; rep.sourceAttachN = 0;
+  rep.flashIds = []; rep.pendingFocus = null;
+  rep.linkOpen = false;
+  rep.error = '';
+  lastWaitAnnounced = null;
+  try { sessionStorage.removeItem(REP_STORE_KEY); } catch { /* storage denied */ }
+}
+
+/** A refresh used to cost one textarea; with the gap screen it would cost a
+ *  co-authoring session — the loss scales with how good the screen is (T10).
+ *  Versioned key + discard-on-mismatch: schema drift falls back to blank. */
+function saveRep() {
+  try {
+    sessionStorage.setItem(REP_STORE_KEY, JSON.stringify({
+      phase: rep.phase, repId: rep.repId, description: rep.description,
+      drafts: rep.drafts, chosen: rep.chosen, gaps: rep.gaps,
+      brief: rep.brief, degraded: rep.degraded, answers: rep.answers,
+      sourceText: rep.sourceText, sourceAttachN: rep.sourceAttachN,
+    }));
+  } catch { /* storage full or denied — the feature degrades to pre-T10 */ }
+}
+
+function hydrateRep() {
+  try {
+    const raw = sessionStorage.getItem(REP_STORE_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (!Array.isArray(s.gaps) || !Array.isArray(s.drafts)) return;
+    rep.repId = s.repId || null;
+    rep.description = typeof s.description === 'string' ? s.description : '';
+    rep.drafts = s.drafts; rep.chosen = Number.isInteger(s.chosen) ? s.chosen : 0;
+    rep.gaps = s.gaps; rep.brief = s.brief || ''; rep.degraded = Boolean(s.degraded);
+    rep.answers = Array.isArray(s.answers) ? s.answers : [];
+    rep.sourceText = typeof s.sourceText === 'string' ? s.sourceText : null;
+    rep.sourceAttachN = Number.isInteger(s.sourceAttachN) ? s.sourceAttachN : 0;
+    rep.questions = rep.gaps.filter((g) => g.status === 'open');
+    // In-flight states don't survive a reload; clamp to what the data holds.
+    rep.phase = s.phase === 'started' ? 'started'
+      : rep.drafts.length ? 'confirm' : 'input';
+  } catch { /* torn or stale snapshot — start blank */ }
+}
+hydrateRep();
+
+/** Has the paste (or its attachments) changed since the gaps were built?
+ *  Drives step 1's forward action: free return vs explicit regenerate. */
+function repPasteDirty(currentText) {
+  if (rep.sourceText === null) return false;      // nothing built yet
+  return (currentText || '').trim() !== rep.sourceText.trim()
+    || attachments.length !== rep.sourceAttachN;
+}
+
+/** The door's one live region (decision 6A): only DELTAS are announced —
+ *  the container aria-live re-read the whole panel on every rebuild. */
+function announce(text) {
+  const live = el('rep-live');
+  if (live) live.textContent = text;
+}
+
+/** Past this many changed rows the delta stops being a delta: a correction
+ *  re-runs inference over the WHOLE description, so six rows can move at once
+ *  and flashing all six reads as "the page redrew" — the exact sensation the
+ *  flash exists to prevent (live report 2026-08-12). Collapse instead. */
+const FLASH_MAX = 3;
+
+/** An answer is the CANDIDATE's data, not the model's. The server is
+ *  stateless per request and re-derives its whole gap list every turn, so a
+ *  gap the model renames or forgets simply vanishes — and with it the answer,
+ *  out of the rail AND out of the context practiceStart assembles at Start.
+ *  Observed live 2026-08-12: answering seniority and part-scope, then
+ *  re-inferring, dropped both from the response and the model later re-asked
+ *  seniority under a new id.
+ *
+ *  So the client owns them. Server gaps are authoritative for what is still
+ *  OPEN; anything the candidate has answered survives regardless. Renamed
+ *  re-asks are caught on the normalized label, which drifts far less than the
+ *  id (the live re-ask kept the label "seniority bar" verbatim). */
+function mergeGaps(prevGaps, serverGaps, answers) {
+  const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const answeredIds = new Set((answers || []).map((a) => a.id));
+  const mine = new Map(prevGaps.filter((g) => answeredIds.has(g.id)).map((g) => [g.id, g]));
+  const myLabels = new Set([...mine.values()].map((g) => norm(g.label)));
+
+  const out = [];
+  for (const g of serverGaps) {
+    if (mine.has(g.id)) {
+      // Prefer the server's settled version (it may carry a tidier value);
+      // fall back to ours if it came back open, which is a re-ask.
+      out.push(g.status === 'settled' ? g : mine.get(g.id));
+      mine.delete(g.id);
+      continue;
+    }
+    // A renamed re-ask of something already answered: drop it silently.
+    if (g.status === 'open' && myLabels.has(norm(g.label))) continue;
+    out.push(g);
+  }
+  // Anything answered that the server dropped entirely.
+  for (const g of mine.values()) out.push(g);
+  return out;
+}
+
+/** Old vs new gap lists by STABLE id → what changed. Feeds the visible
+ *  .gaterow.flash AND the aria-live sentence — one diff, two outputs, so
+ *  sighted and screen-reader users get the same delta at the same threshold. */
+function diffGaps(oldGaps, newGaps) {
+  const before = new Map(oldGaps.map((g) => [g.id, g]));
+  const changed = [];
+  const sentences = [];
+  for (const g of newGaps) {
+    const prev = before.get(g.id);
+    if (prev && prev.status === g.status && prev.value === g.value) continue;
+    changed.push(g.id);
+    if (g.status === 'settled') sentences.push(g.label + ' set to ' + g.value);
+    else if (prev && prev.status === 'settled') sentences.push(g.label + ' reopened');
+    else sentences.push(g.label + ' still open');
+  }
+  const collapsed = changed.length > FLASH_MAX;
+  return {
+    changed,
+    // Flash only when the flash still means "look here".
+    flash: collapsed ? [] : changed,
+    sentence: collapsed
+      ? changed.length + ' facts updated — review the confirmed column'
+      : sentences.join(' · '),
+  };
+}
+
+function renderPractice() {
+  if (route().page !== 'practice') return;
+  const host = el('practice-flow');
+  const paste = el('rep-paste');
+  const keep = paste ? paste.value : rep.description;
+  const keepLink = el('rep-link') ? el('rep-link').value : '';
+  const chips = attachments.length
+    ? '<div id="plan-attach">' + attachments.map((a, i) =>
+        '<span class="attach"><span class="name">' + esc(a.name) + '</span>' +
+        '<button type="button" data-ri="' + i + '" aria-label="remove ' + esc(a.name) + '">×</button></span>').join('') + '</div>'
+    : '';
+  let html = '<div id="practice-wrap">';
+  if (rep.phase === 'started') {
+    html += renderRepWait() + '</div>';
+    host.innerHTML = html;
+    for (const b of host.querySelectorAll('.repstart')) {
+      b.addEventListener('click', () => launchRep(b.dataset.rep, b));
+    }
+    for (const b of host.querySelectorAll('.repretry')) {
+      b.addEventListener('click', () => repRetry(b.dataset.rep, b));
+    }
+    return;
+  }
+  // ONE step on screen at a time. The composer used to render underneath the
+  // confirm screen: still editable, but with its Generate button removed, so
+  // an edit fired nothing and then silently rode along on whatever re-infer
+  // happened next (proved live 2026-08-12 — text typed during confirm reached
+  // the server minutes later attached to an unrelated correction). A live
+  // input with no trigger is worse than either a dead one or an honest one.
+  if (rep.phase === 'confirm' && rep.drafts.length) {
+    // Step 2 keeps the paste as a READ-ONLY referent — "Confirmed from your
+    // paste" has to point at something you can see — and that referent IS the
+    // way back to step 1.
+    const src = (rep.sourceText || rep.description || '').replace(/\s+/g, ' ').trim();
+    html += '<button type="button" id="rep-back" aria-label="Back to your paste, to edit it">' +
+      '<span class="micro">← your paste</span>' +
+      '<span class="rep-src">' + esc(src.slice(0, 140)) + (src.length > 140 ? '…' : '') + '</span>' +
+      '</button>';
+  } else {
+    // The hero IS the textarea's label (label-in-h1: heading semantics and the
+    // a11y association in one element — the real-labels rule, no duplication).
+    // The composer is ONE framed instrument: borderless textarea, chips, an
+    // optional link row (progressive disclosure — the always-open input read
+    // as form furniture), and a footer with quiet affordances + the action.
+    // The example copy lives in the placeholder; the hero is the real label.
+    // Returning here from step 2 keeps the drafts, so the forward action is
+    // free when nothing changed and an explicit REGENERATE when it did.
+    const dirty = repPasteDirty(keep);
+    const returning = rep.drafts.length > 0;
+    html += '<h1 class="hero"><label for="rep-paste">What are you preparing for?</label></h1>' +
+      '<div class="composer-frame">' +
+      '<textarea id="rep-paste" placeholder="paste a recruiter email, a JD, a friend’s description…"></textarea>' + chips +
+      (rep.linkOpen
+        // The explicit link input (planner precedent, user call 2026-08-07:
+        // affordances beat discovery). Honest copy: the practice path never
+        // fetches — a link rides along with the notes as-is.
+        ? '<div class="linkrow"><input id="rep-link" placeholder="add a link (optional) — the posting, a thread; it rides along with your notes" aria-label="Add a link (optional)" />' +
+          '<button id="rep-addlink" type="button">add</button></div>'
+        : '') +
+      '<div class="composer-foot">' +
+      '<span class="quiet-affordances"><a href="#" id="rep-attach">attach a file</a> · ' +
+      '<a href="#" id="rep-linktoggle">add a link</a></span>' +
+      (rep.phase === 'input'
+        ? '<button type="button" class="primary" id="rep-infer">' +
+          (!returning ? 'Generate my round →' : dirty ? 'Regenerate from your edits →' : 'Back to your round →') +
+          '</button>'
+        : '<span></span>') +
+      '</div></div>';
+    // Say what the button will DO before it does it — the whole point of
+    // making this deliberate instead of asynchronous.
+    if (returning && dirty) {
+      html += '<div class="metaline">this rebuilds the confirmed facts and the questions</div>';
+    }
+  }
+
+  if (rep.phase === 'confirm' && rep.drafts.length) {
+    // The gap-derived confirm screen (design review 2026-08-12): ONE list,
+    // two views. The rail is the READBACK — model guesses sort first because
+    // the screen's job is catching the fact the model was confident and
+    // wrong about; questions are gaps it already knows it has.
+    const d = rep.drafts[rep.chosen];
+    const settled = rep.gaps.filter((g) => g.status === 'settled');
+    const open = rep.gaps.filter((g) => g.status === 'open');
+    const tierOrder = { inferred: 0, answered: 1, stated: 2 };
+    settled.sort((a, b) => (tierOrder[a.evidence] ?? 1) - (tierOrder[b.evidence] ?? 1));
+    const tierWord = { inferred: 'guessed', answered: 'you said', stated: 'stated' };
+    const startLabel = d.unsupported ? 'Build the closest version →' : 'Start →';
+
+    // DOM order: questions FIRST (they are the task — tab order per pass 6);
+    // the grid places the rail visually left, and narrow widths stack the
+    // rail above via order:-1.
+    const dis = rep.busy ? ' disabled' : '';
+    html += '<div id="rep-confirm">';
+    html += '<div id="rep-open"><div class="micro">Needed before I build</div>';
+    if (rep.busy) {
+      // A re-infer runs 8-20s. The screen never blanks: the rail stays put,
+      // controls disable, and the wait gets the SAME progress bar the first
+      // inference gets. A 12px grey line alone was invisible — and when the
+      // re-infer was triggered from the correction box at the bottom of this
+      // column, it rendered off-screen above the fold entirely (live report
+      // 2026-08-12: "sudden generation after a wait with no indicator").
+      html += '<div class="metaline" style="margin-top:8px">re-checking the shape…</div>' +
+        '<div class="progress"><div class="fill"></div></div>';
+    }
+    if (open.length === 0 && !rep.busy) {
+      // The column degrades, never empties (the zero-gap COMMON case).
+      html += '<div class="metaline" style="margin-top:10px">nothing — the shape is settled. Anything you want different?</div>';
+    }
+    for (const g of open) {
+      html += '<div class="askrow" data-gap="' + esc(g.id) + '" style="margin-top:14px"><div class="askq">' + esc(g.question) + '</div>' +
+        '<div class="optdetail">' + esc(g.why) + '</div>' +
+        '<div class="askopts">' +
+        g.options.map((o, oi) =>
+          '<button type="button" class="qopt" data-gap="' + esc(g.id) + '" data-o="' + oi + '"' + dis + '>' + esc(o.label) +
+          (o.detail ? ' <span class="rec">' + esc(o.detail) + '</span>' : '') + '</button>').join('') +
+        '</div>' +
+        // Options are SHORTCUTS, never a gate (rule 3): every open value
+        // keeps a real text path beside the pills.
+        (g.closed ? '' :
+          '<div class="gapinput-row">' +
+          '<label for="gapfree-' + esc(g.id) + '" class="rep-srlabel" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">' + esc(g.label) + '</label>' +
+          '<input id="gapfree-' + esc(g.id) + '" class="gapinput" data-gap="' + esc(g.id) + '" placeholder="or type your own…"' + dis + '>' +
+          '</div>') +
+        '</div>';
+    }
+    // The control you clicked carries its own state. The busy line above sits
+    // at the TOP of this column; the correction box is at the bottom, so on a
+    // scrolled screen that line is the one thing you cannot see. Feedback has
+    // to live where the click happened.
+    html += '<div id="rep-note">not right? change it on the left, or say so below — plain words work</div>' +
+      '<div class="row" style="display:flex;gap:8px;margin-top:6px">' +
+      '<label for="rep-change" class="rep-srlabel" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">what should be different</label>' +
+      '<input id="rep-change" placeholder="e.g. actually it’s Rust, and harder" style="flex:1;background:var(--panel);color:var(--text-1);border:1px solid var(--line);border-radius:6px;padding:10px 12px;font:inherit;min-height:44px"' + dis + '>' +
+      '<button type="button" id="rep-rechecks" class="mini" style="min-height:44px"' + dis + '>' +
+      (rep.busy ? 'applying…' : 'apply') + '</button></div>';
+    html += '</div>'; // #rep-open
+
+    html += '<div id="rep-rail"><div class="micro">Confirmed from your paste</div>';
+    if (rep.degraded) {
+      html += '<div class="metaline" style="margin-top:6px">I couldn’t get a full read on this — check these facts before starting</div>';
+    }
+    if (rep.drafts.length > 1) {
+      // T14: never a silent discard — the selector is TODO #37.
+      html += '<div class="metaline" style="margin-top:6px">your material describes ' + rep.drafts.length +
+        ' rounds — building “' + esc(d.spec.label) + '”</div>';
+    }
+    for (const g of settled) {
+      html += '<div class="gaterow" data-gap="' + esc(g.id) + '">' +
+        '<label class="micro" for="gap-' + esc(g.id) + '">' + esc(g.label) +
+        ' <span class="tier">' + (tierWord[g.evidence] || 'guessed') + '</span></label>' +
+        (g.closed && g.options.length
+          ? '<select id="gap-' + esc(g.id) + '" class="gapedit" data-gap="' + esc(g.id) + '"' + dis + '>' +
+            g.options.map((o) => '<option' + (o.label === g.value ? ' selected' : '') + '>' + esc(o.label) + '</option>').join('') +
+            (g.options.some((o) => o.label === g.value) ? '' : '<option selected>' + esc(g.value) + '</option>') +
+            '</select>'
+          : '<input id="gap-' + esc(g.id) + '" class="gapedit" data-gap="' + esc(g.id) + '" value="' + esc(g.value) + '"' + dis + '>') +
+        '<div class="gapwhy">' + esc(g.why) + '</div>' +
+        '</div>';
+    }
+    html += '<div class="metaline" style="margin-top:10px">' + esc(specShapeLine(d.spec.capabilities)) + '</div>';
+    html += '</div>'; // #rep-rail
+
+    // The commit block spans BOTH columns. The brief is a paragraph meant to
+    // be read right before an irreversible build; in the 220px rail it
+    // rendered as a twelve-line sliver (QA 2026-08-12, ISSUE-004). Full width
+    // here also puts Start below everything it is committing, which is what
+    // the approved mockup showed. Still in flow — the sticky slot stays free.
+    html += '<div id="rep-commit">';
+    if (rep.brief) html += '<div id="rep-brief">' + esc(rep.brief) + '</div>';
+    if (d.unsupported) {
+      // Decision 2B: the decline is visible and the choice is the user's.
+      html += '<div id="rep-unsupported">can’t run this honestly: ' + esc(d.unsupported) + '</div>';
+    }
+    html += '<div class="rep-actions"><button type="button" class="primary" id="rep-start"' + dis + '>' + startLabel + '</button></div>';
+    html += '</div>'; // #rep-commit
+    html += '</div>'; // #rep-confirm
+  }
+  if (rep.phase === 'clarifying') {
+    html += '<div class="metaline" style="margin-top:18px">reading your notes…</div>' +
+      '<div class="progress"><div class="fill"></div></div>';
+  }
+  if (rep.error) html += '<div class="err" style="margin-top:12px">' + esc(rep.error) + '</div>';
+  html += '</div>';
+  host.innerHTML = html;
+  const pasteEl = el('rep-paste');
+  if (pasteEl) {
+    pasteEl.value = keep;
+    // Typing re-renders only the footer action (free-return vs regenerate),
+    // so the label always matches what the button will actually do.
+    pasteEl.addEventListener('input', () => {
+      const btn = el('rep-infer');
+      if (!btn || !rep.drafts.length) return;
+      const d = repPasteDirty(pasteEl.value);
+      btn.textContent = d ? 'Regenerate from your edits →' : 'Back to your round →';
+    });
+  }
+  if (el('rep-link')) el('rep-link').value = keepLink;
+  wirePractice();
+  // Post-render (decision 6A): the flash marks what the last answer changed
+  // in the rail; focus follows the task to the next open question. Both are
+  // one-shot — consumed here, never re-applied by the next render.
+  if (rep.phase === 'confirm') {
+    for (const gid of rep.flashIds) {
+      const row = host.querySelector('.gaterow[data-gap="' + CSS.escape(gid) + '"]');
+      if (row) row.classList.add('flash');
+    }
+    rep.flashIds = [];
+    if (rep.pendingFocus && !rep.busy) {
+      const row = host.querySelector('.askrow[data-gap="' + CSS.escape(rep.pendingFocus) + '"]');
+      const ctl = row && row.querySelector('button, input, select');
+      if (ctl) ctl.focus();
+      rep.pendingFocus = null;
+    }
+  }
+}
+
+/** The wait state (design 4A): honest elapsed from the .generating marker,
+ *  the shape named in plain words, and explicit permission to leave. */
+function renderRepWait() {
+  const mine = (lastReps || []).find((x) => x.id === rep.repId);
+  const status = !mine ? 'starting' : mine.status === 'ready' ? 'ready' : mine.status === 'failed' ? 'failed' : 'building';
+  if (status !== lastWaitAnnounced) {
+    lastWaitAnnounced = status;
+    if (status === 'ready') announce('Your round is ready');
+    else if (status === 'failed') announce('The build failed — you can retry');
+    else if (status === 'building') announce('Building your round — about five minutes');
+  }
+  if (!mine) {
+    return '<div class="micro">Building your round</div><div class="metaline">starting…</div>';
+  }
+  if (mine.status === 'ready') {
+    return '<div class="micro">Ready</div>' +
+      '<h2 style="margin:10px 0 4px">' + esc(mine.title) + '</h2>' +
+      '<div class="metaline">' + esc(specShapeLine(mine.spec.capabilities)) + '</div>' +
+      '<div class="rep-actions"><button type="button" class="primary repstart" data-rep="' + esc(mine.id) + '">Start session →</button></div>';
+  }
+  if (mine.status === 'failed') {
+    return '<div class="micro">Build failed</div>' +
+      '<div class="err" style="margin:10px 0">' + (mine.phase === 'draft_failed'
+        ? 'couldn’t shape the round from your notes — retry, or start over with more detail'
+        : 'the build died partway — retry usually works') + '</div>' +
+      '<div class="rep-actions"><button type="button" class="mini repretry" data-rep="' + esc(mine.id) + '">Retry</button></div>';
+  }
+  const g = mine.generating || {};
+  return '<div class="micro">Building your round</div>' +
+    '<h2 style="margin:10px 0 4px">' + esc(mine.label) + '</h2>' +
+    '<div class="metaline">' +
+      (mine.phase === 'drafting' ? 'shaping the round' : genProgressLine(mine)) +
+      (mine.phase === 'drafting' && g.since ? ' · <span class="genclock" data-since="' + esc(g.since) + '"></span>' : '') +
+    '</div>' +
+    '<div class="progress"><div class="fill det" data-since="' + esc(g.since || '') + '"></div></div>' +
+    '<p class="meta" style="margin-top:16px">You can close this. It’ll be waiting under <b>history</b> — the tab title flips when it’s ready (~5 min).</p>';
+}
+
+function wirePractice() {
+  const linktoggle = el('rep-linktoggle');
+  if (linktoggle) linktoggle.addEventListener('click', (e) => {
+    e.preventDefault();
+    rep.linkOpen = !rep.linkOpen;
+    renderPractice();
+    if (rep.linkOpen && el('rep-link')) el('rep-link').focus();
+  });
+  const attach = el('rep-attach');
+  if (attach) attach.addEventListener('click', (e) => { e.preventDefault(); el('e-file').click(); });
+  const addRepLink = () => {
+    const box = el('rep-link');
+    let url = (box.value || '').trim();
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    attachments.push({ kind: 'link', name: url, content: url });
+    box.value = '';
+    renderPractice();
+  };
+  if (el('rep-addlink')) el('rep-addlink').addEventListener('click', addRepLink);
+  if (el('rep-link')) el('rep-link').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addRepLink(); }
+  });
+  const f = el('practice-flow');
+  for (const b of f.querySelectorAll('[data-ri]')) {
+    b.addEventListener('click', () => { attachments.splice(Number(b.dataset.ri), 1); renderPractice(); });
+  }
+  // Step 2 → step 1. The gaps SURVIVE, so coming back is free when nothing
+  // changed; only an edit costs a rebuild.
+  const back = el('rep-back');
+  if (back) back.addEventListener('click', () => {
+    rep.phase = 'input';
+    saveRep();
+    renderPractice();
+    const t = el('rep-paste');
+    if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+  });
+  const infer = el('rep-infer');
+  if (infer) infer.addEventListener('click', () => {
+    // Returning with an untouched paste is navigation, not inference — never
+    // spend a model call to show the user what they already confirmed.
+    const cur = el('rep-paste');
+    if (rep.drafts.length && !repPasteDirty(cur ? cur.value : '')) {
+      rep.phase = 'confirm';
+      saveRep();
+      renderPractice();
+      return;
+    }
+    practiceClarify(rep.answers);
+  });
+  const paste = el('rep-paste');
+  if (paste) paste.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) practiceClarify();
+  });
+  // Answers key on the gap's STABLE id (T12) — never an array index, which
+  // re-inference is free to reorder. answerGap routes by cost: shape
+  // re-infers (coherence lives in the server's draftToSpec gate), flavor
+  // settles locally with no round trip (C2).
+  for (const b of f.querySelectorAll('.qopt')) {
+    b.addEventListener('click', () => {
+      const g = rep.gaps.find((x) => x.id === b.dataset.gap);
+      if (g) answerGap(g.id, g.options[Number(b.dataset.o)].label);
+    });
+  }
+  for (const input of f.querySelectorAll('.gapinput')) {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); answerGap(input.dataset.gap, input.value); }
+    });
+  }
+  for (const ctl of f.querySelectorAll('.gapedit')) {
+    // Rail rows are the editable readback (decision 1A) — committing a
+    // change routes through the same answer path as the question column.
+    const commit = () => {
+      const g = rep.gaps.find((x) => x.id === ctl.dataset.gap);
+      if (!g || !ctl.value.trim() || ctl.value.trim() === g.value) return;
+      answerGap(g.id, ctl.value);
+    };
+    ctl.addEventListener('change', commit);
+    ctl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    });
+  }
+  const recheck = el('rep-rechecks');
+  if (recheck) recheck.addEventListener('click', () => {
+    const change = el('rep-change');
+    if (!change || !change.value.trim() || rep.busy) return;
+    rep.description = rep.description + '\n\nCorrection: ' + change.value.trim();
+    // A correction re-runs inference over the WHOLE description, so it is the
+    // most disruptive update the screen can make — it gets the same
+    // revert-on-failure snapshot a shape answer gets.
+    practiceClarify(rep.answers, { snapshot: JSON.parse(JSON.stringify(rep.gaps)) });
+  });
+  const change = el('rep-change');
+  if (change) change.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); el('rep-rechecks').click(); }
+  });
+  const start = el('rep-start');
+  if (start) start.addEventListener('click', () => practiceStart(start));
+}
+
+function upsertRepAnswer(id, question, answer) {
+  const i = rep.answers.findIndex((a) => a.id === id);
+  const entry = { id, question, answer };
+  if (i >= 0) rep.answers[i] = entry; else rep.answers.push(entry);
+}
+
+/** One answer path for pills, free-text, and rail edits. Shape re-infers;
+ *  flavor settles locally and rides along on the next re-infer's ANSWERS
+ *  (the server's gate re-settles it), so nothing is ever lost. */
+function answerGap(id, answer) {
+  const g = rep.gaps.find((x) => x.id === id);
+  const a = (answer || '').trim();
+  if (!g || !a || rep.busy) return;
+  upsertRepAnswer(g.id, g.question, a);
+  if (g.id === 'named-problem') {
+    // The binding is MECHANICAL — a model round trip adds nothing here.
+    // Settle locally; Start ships this row's value as source_ref and the
+    // server's re-resolution is the only one that counts.
+    g.status = 'settled'; g.value = a; g.evidence = 'answered';
+    rep.questions = rep.gaps.filter((x) => x.status === 'open');
+    announce('problem set to ' + a);
+    saveRep();
+    renderPractice();
+    return;
+  }
+  if (g.affects === 'shape') {
+    // Optimistic settle: the answer moves into the rail immediately; the
+    // snapshot restores it if the re-infer fails. Server gaps win on merge —
+    // a model that re-opens this gap does so VISIBLY (diff → flash), never
+    // silently.
+    const snapshot = JSON.parse(JSON.stringify(rep.gaps));
+    g.status = 'settled'; g.value = a; g.evidence = 'answered';
+    rep.questions = rep.gaps.filter((x) => x.status === 'open');
+    practiceClarify(rep.answers, { snapshot });
+    return;
+  }
+  g.status = 'settled'; g.value = a; g.evidence = 'answered';
+  rep.questions = rep.gaps.filter((x) => x.status === 'open');
+  announce(g.label + ' set to ' + a);
+  const nextOpen = rep.gaps.find((x) => x.status === 'open');
+  rep.pendingFocus = nextOpen ? nextOpen.id : null;
+  saveRep();
+  renderPractice();
+}
+
+async function practiceClarify(answers, opts) {
+  // The composer only exists in step 1. In step 2 the paste is FROZEN at what
+  // produced the gaps, so corrections are the only way the description can
+  // grow — no more silent accumulation from an editable box with no button.
+  const paste = el('rep-paste');
+  const basePaste = paste ? paste.value : (rep.sourceText ?? rep.description);
+  const cut = rep.description.indexOf('\n\nCorrection: ');
+  rep.description = basePaste + (cut >= 0 ? rep.description.slice(cut) : '');
+  // Link-only input works: a landing that says "paste anything" must accept
+  // someone who only dropped a link or a file. Seed the description from the
+  // first text-bearing attachment; binary-only gets a stock line (the server
+  // gate requires a non-empty description).
+  if (!rep.description.trim() && attachments.length) {
+    rep.description = (attachments.find((a) => a.content) || {}).content || 'see the attached material';
+  }
+  if (!rep.description.trim()) { rep.error = 'describe the round in a sentence or two first'; renderPractice(); return; }
+  // First inference replaces the screen; a RE-inference keeps the confirm
+  // screen rendered (busy) so the ~8s round trip is never a blank page.
+  const firstRun = rep.phase !== 'confirm';
+  const snapshot = opts && opts.snapshot;
+  rep.error = ''; rep.answers = answers || [];
+  if (firstRun) rep.phase = 'clarifying'; else rep.busy = true;
+  renderPractice();
+  const r = await fetch('/api/practice/clarify', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      description: rep.description,
+      context: buildContext(),
+      answers: rep.answers.length ? rep.answers : undefined,
+      attachments: buildBinaryAttachments(),
+    }),
+  });
+  const s = await r.json();
+  if (s.error) {
+    // A failed re-infer restores the pre-answer gaps: the optimistic settle
+    // must not survive a round trip that never happened.
+    if (snapshot) { rep.gaps = snapshot; rep.questions = rep.gaps.filter((g) => g.status === 'open'); }
+    rep.busy = false;
+    rep.phase = rep.drafts.length ? 'confirm' : 'input';
+    rep.error = s.error;
+    renderPractice();
+    return;
+  }
+  const oldGaps = rep.gaps;
+  rep.drafts = s.drafts || []; rep.chosen = 0;
+  // Answered gaps survive whatever the model did with its list.
+  rep.gaps = mergeGaps(oldGaps, s.gaps || [], rep.answers);
+  rep.brief = s.brief || ''; rep.degraded = Boolean(s.degraded);
+  // Open gaps ARE the questions — same render, answers keyed by gap id.
+  rep.questions = rep.gaps.filter((g) => g.status === 'open');
+  // One diff, two outputs (decision 6A): changed rows flash, and the live
+  // region hears only the delta, never the whole panel.
+  if (!firstRun) {
+    const delta = diffGaps(oldGaps, rep.gaps);
+    rep.flashIds = delta.flash;
+    if (delta.sentence) announce(delta.sentence);
+  }
+  const nextOpen = rep.gaps.find((g) => g.status === 'open');
+  rep.pendingFocus = nextOpen ? nextOpen.id : null;
+  // Stamp what produced these gaps, so step 1 can tell "go back" from
+  // "rebuild" without guessing.
+  rep.sourceText = basePaste;
+  rep.sourceAttachN = attachments.length;
+  // The rep id is minted at confirm-render, ONCE — Start can be mashed and
+  // every click carries this same id into the server's mkdir lock.
+  rep.repId = rep.repId || 'rep-' + Date.now().toString(36);
+  rep.phase = 'confirm'; rep.busy = false;
+  saveRep();
+  renderPractice();
+}
+
+async function practiceStart(btn) {
+  const d = rep.drafts[rep.chosen];
+  if (!d) return;
+  btn.disabled = true; btn.textContent = 'Starting…';
+  // The spec ships VERBATIM: every shape answer already landed in it through
+  // the server's re-inference, and the client never patches a spec again
+  // (T3, 2026-08-12 review — the hardcoded {language, difficulty} assembly
+  // silently ate every other answer). Flavor gaps ride as context lines,
+  // GENERICALLY: one line per settled flavor gap with a value — including
+  // standing model guesses the user left in place. The rail is honest:
+  // what you see is what rides.
+  const prose = rep.gaps
+    .filter((g) => g.status === 'settled' && g.affects === 'flavor' && g.value)
+    .map((g) => g.label + ': ' + g.value)
+    .join('\n');
+  // Real-set binding: a row the candidate EDITED wins over the draft's
+  // decoration; the server re-resolves whatever ships (its resolution is
+  // the only one that counts). No row and no decoration = invention.
+  const srcRow = rep.gaps.find((g) => g.id === 'named-problem');
+  let sourceRefs; let sourceAutos;
+  if (srcRow && srcRow.evidence === 'answered' && srcRow.value) {
+    // An edited row replaces the WHOLE set with what they typed (comma-
+    // separated refs supported); the server re-resolves every ref.
+    sourceRefs = srcRow.value.split(',').map((x) => x.trim()).filter(Boolean);
+    sourceAutos = sourceRefs.map(() => false);
+  } else if (d.source && d.source.slug) {
+    const parts = d.source.parts || [d.source];
+    sourceRefs = parts.map((p) => p.slug);
+    sourceAutos = parts.map((p) => p.picked_by === 'auto');
+  }
+  const r = await fetch('/api/practice', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      rep_id: rep.repId,
+      spec: d.spec,
+      // The task hypothesis (round-task on the rail) routes the generation
+      // skeleton server-side; the server re-validates against its enum.
+      task: d.task || undefined,
+      description: rep.description,
+      context: [buildContext(), prose].filter(Boolean).join('\n\n') || undefined,
+      source_refs: sourceRefs && sourceRefs.length ? sourceRefs : undefined,
+      source_autos: sourceAutos && sourceAutos.length ? sourceAutos : undefined,
+    }),
+  });
+  const s = await r.json();
+  if (s.error && !String(s.error).startsWith('already building')) {
+    btn.disabled = false; btn.textContent = 'Start →'; rep.error = s.error; renderPractice(); return;
+  }
+  rep.phase = 'started';
+  saveRep();
+  renderPractice();
+  refresh(true);
+}
+
+async function launchRep(repId, btn) {
+  repReadyUnseen = false;
+  // origin is per call site, never defaulted — the falsifier metric divides
+  // on it (2026-08-10 CEO review).
+  await launchCommon('/api/practice/launch', { rep_id: repId, origin: 'practice' }, btn, 'Start session →');
+}
+
+async function repRetry(repId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Retrying…'; }
+  const r = await fetch('/api/practice/retry', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rep_id: repId }) });
+  const s = await r.json();
+  if (s.error) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Retry'; launchStatus(btn, s.error, true); }
+    return;
+  }
+  refresh(true);
 }
 
 // ---- season timeline ----
@@ -271,6 +1515,44 @@ function fmtDate(iso) {
   if (!iso) return '';
   const [, m, d] = iso.split('-').map(Number);
   return String(d).padStart(2, '0') + ' ' + MONTHS[m - 1];
+}
+
+/** Dated rounds for a target, nearest first. Spec dates win; the target's
+ *  single date stands in for specs without one (and for pre-dates targets,
+ *  where it renders under the target's own label). */
+function roundDates(t) {
+  const byDate = {};
+  const out = [];
+  for (const s of t.specs || []) {
+    const date = s.date || t.interview_date;
+    if (!date) continue;
+    if (byDate[date]) { byDate[date].labels.push(s.label); continue; }
+    byDate[date] = { date, labels: [s.label] };
+    out.push(byDate[date]);
+  }
+  if (!out.length && t.interview_date) out.push({ date: t.interview_date, labels: [t.label] });
+  out.sort((a, b) => (a.date < b.date ? -1 : 1));
+  return out.map((r) => ({
+    date: r.date,
+    label: r.labels.join(' · '),
+    passed: Date.parse(r.date + 'T23:59:59') < Date.now(),
+  }));
+}
+
+/** Tick marks on the season bar, one per upcoming round day — the loop's
+ *  milestones on the single spine, never separate bars. */
+function seasonTicks(t, rounds) {
+  const upcoming = rounds.filter((r) => !r.passed);
+  if (upcoming.length < 2) return ''; // one round = the bar's end IS the tick
+  const end = Date.parse(upcoming[upcoming.length - 1].date + 'T23:59:59');
+  const span = end - Date.now();
+  if (span <= 0) return '';
+  let out = '';
+  for (const r of upcoming) {
+    const pct = Math.round(((Date.parse(r.date + 'T23:59:59') - Date.now()) / span) * 100);
+    out += '<span class="tick" style="left:' + Math.min(99, Math.max(1, pct)) + '%" title="' + esc(r.label) + ' · ' + fmtDate(r.date) + '"></span>';
+  }
+  return out;
 }
 
 function metaLine(caps) {
@@ -331,23 +1613,44 @@ function renderSeason(row, state) {
   const days = row.days || [];
   let html = '<div class="season">';
 
-  // Header: the days-remaining number is the page's loudest fact.
-  const leftDays = daysUntil(t.interview_date);
-  if (t.interview_date && leftDays !== null) {
-    const left = leftDays;
-    if (left === 0 || Date.parse(t.interview_date + 'T23:59:59') < Date.now()) {
-      const ago = Math.max(1, Math.floor((Date.now() - Date.parse(t.interview_date + 'T00:00:00')) / 86400000));
-      html += '<h2 class="daysleft">' + esc(t.label) + ' was ' + ago + ' day' + (ago === 1 ? '' : 's') + ' ago — how did it go?</h2>';
-      html += '<p class="meta"><a href="#/new" class="addlink">+ prepare for the next one</a></p></div>';
-      return html;
+  // Header: the days-remaining number is the page's loudest fact — and it
+  // counts to the NEAREST round, because that is what governs today. One
+  // loop, several rounds, several dates (per-round dates, 2026-08-06).
+  const rounds = roundDates(t);
+  const upcoming = rounds.filter((r) => !r.passed);
+  const passed = rounds.filter((r) => r.passed);
+  if (rounds.length && upcoming.length === 0) {
+    // EVERY dated round has happened — the season-over header. Header ONLY:
+    // the timeline below must keep rendering (QA 2026-08-14: the old early
+    // return here discarded the whole runway, so a ready item had no Start
+    // button and a failed item no Retry — the plan soft-locked the moment
+    // its last date passed).
+    const last = rounds[rounds.length - 1];
+    const ago = Math.max(1, Math.floor((Date.now() - Date.parse(last.date + 'T00:00:00')) / 86400000));
+    html += '<h2 class="daysleft">' + esc(t.label) + ' was ' + ago + ' day' + (ago === 1 ? '' : 's') + ' ago — how did it go?</h2>';
+    html += '<p class="meta"><a href="#/new" class="addlink">+ prepare for the next one</a></p>';
+  } else if (upcoming.length) {
+    const nearest = upcoming[0];
+    const loopEnd = rounds[rounds.length - 1];
+    const left = daysUntil(nearest.date);
+    html += '<h2 class="daysleft"><b data-count="' + left + '">' + left + '</b> days to ' + esc(nearest.label) + '</h2>';
+    if (loopEnd.date !== nearest.date) {
+      html += '<p class="meta" style="margin:-14px 0 16px">loop ends ' + fmtDate(loopEnd.date) + '</p>';
     }
-    html += '<h2 class="daysleft"><b data-count="' + left + '">' + left + '</b> days to ' + esc(t.label) + '</h2>';
     const total = row.queue ? row.queue.items.length : 0;
     const done = row.queue ? row.queue.items.filter((i) => i.status === 'done' || i.status === 'skipped').length : 0;
     const pct = total ? Math.round((done / total) * 100) : 0;
-    html += '<div class="seasonbar"><div class="fill" style="width:' + pct + '%"></div></div>';
+    // One bar spans the whole loop; a tick marks each round day inside it.
+    html += '<div class="seasonbar"><div class="fill" style="width:' + pct + '%"></div>' + seasonTicks(t, rounds) + '</div>';
     html += '<div class="paceline"><span>' + (row.queue ? row.queue.pace.per_week + ' rounds/week keeps you on pace' : '') + '</span>' +
       '<span>' + done + ' / ' + total + ' done</span></div>';
+    // A round that already happened, mid-loop: the debrief moment, inline —
+    // never a takeover while later rounds still need prep.
+    for (const r of passed) {
+      const ago = Math.max(1, Math.floor((Date.now() - Date.parse(r.date + 'T00:00:00')) / 86400000));
+      html += '<p class="meta debrief">' + esc(r.label) + ' was ' + ago + ' day' + (ago === 1 ? '' : 's') +
+        ' ago — how did it go? <a href="#" class="addlearn" data-t="' + esc(t.id) + '">tell the plan</a></p>';
+    }
   } else {
     html += '<h2 class="daysleft">' + esc(t.label) + '</h2><p class="meta">no date set</p>';
   }
@@ -359,11 +1662,39 @@ function renderSeason(row, state) {
     '<a href="#" class="addlearn" data-t="' + esc(t.id) + '">+ add what you learned</a></div>' +
     '<div class="adaptpanel" data-t="' + esc(t.id) + '" hidden></div>';
 
+  // Season topics: what to drill, from the plan's own frozen vocabulary
+  // joined with finished rounds. Renders only once something deposited —
+  // an all-○ band is a promise, not information. Chips render for DONE
+  // rounds only; upcoming rounds never disclose their topics.
+  if (row.topic_rollup && row.topic_rollup.some((x) => x.exercised > 0)) {
+    const done = row.topic_rollup.filter((x) => x.exercised > 0).length;
+    html += '<div class="topicband"><p class="micro">season topics · ' + done + ' of ' + row.topic_rollup.length + ' exercised</p>';
+    const sorted = row.topic_rollup.slice().sort((a, b) => b.exercised - a.exercised || a.id.localeCompare(b.id));
+    for (const x of sorted) {
+      const drill = x.exercised > 0 && x.solved === 0;
+      html += '<div class="topicrow' + (drill ? ' drill' : '') + '">' +
+        '<span class="tmark">' + (x.exercised > 0 ? '●'.repeat(Math.min(x.exercised, 5)) : '○') + '</span>' +
+        '<span class="tlabel">' + esc(x.label) + '</span>' +
+        '<span class="meta">' + (x.exercised === 0 ? 'not yet exercised'
+          : x.exercised + ' round' + (x.exercised === 1 ? '' : 's') + ' · ' + x.solved + ' solved' + (drill ? ' — drill this' : '')) + '</span>' +
+        '</div>';
+    }
+    html += '</div>';
+  }
+
   html += '<ol class="runway">';
   for (const d of days) {
     if (d.kind === 'interview') {
+      // Per-round markers carry the round's own label; the single-date
+      // compat path has none and keeps the target label.
       html += '<li class="interview"><span class="date">' + fmtDate(d.date) + '</span><span class="dot"></span>' +
-        '<span class="body">' + fmtDate(d.date) + ' — ' + esc(t.label) + '</span></li>';
+        '<span class="body">' + fmtDate(d.date) + ' — ' + esc(d.label || t.label) + '</span></li>';
+      continue;
+    }
+    if (d.kind === 'unscheduled') {
+      html += '<li class="quiet"><span class="date"></span><span class="dot"></span>' +
+        '<span class="body">date not set — ' + d.count + ' confirmed round' + (d.count === 1 ? '' : 's') +
+        ' unscheduled (add the date via “+ add what you learned”)</span></li>';
       continue;
     }
     if (d.kind === 'collapsed') {
@@ -393,13 +1724,40 @@ function renderSeason(row, state) {
       continue;
     }
     const item = d.items[0] || null;
+    // Provenance ONLY — the plan row says where a round came from and offers
+    // no control over it. Per-item rebinding was removed 2026-08-13: a queue
+    // item carries a single `source`, but an algorithmic_set round may be a
+    // multi-part OA (the oa-hackerrank-classic skeleton mandates "same count
+    // of parts"), so "change this round's problem" is unrepresentable the
+    // moment a set has more than one part. Restore it — plural — when
+    // `sources[]` lands. A user pick shows its title (they named it); an auto
+    // pick stays hidden so the reskin still lands fresh.
+    const sourceBits = (it) => {
+      if (!it.source) return { line: '' };
+      const parts = it.source.parts || [it.source];
+      const named = parts.filter((p) => p.picked_by === 'user');
+      let label;
+      if (parts.length === 1) {
+        label = it.source.picked_by === 'user'
+          ? 'real set: ' + it.source.title + ' · ' + it.source.difficulty
+          : 'real set · ' + it.source.difficulty + ' — hidden until the round';
+      } else if (named.length) {
+        const extra = parts.length - named.length;
+        label = 'real set: ' + named.map((p) => p.title).join(', ') + (extra ? ' + ' + extra + ' more — hidden' : '');
+      } else {
+        label = 'real set × ' + parts.length + ' — hidden until the round';
+      }
+      return { line: '<span class="srcline">' + esc(label) + '</span>' };
+    };
     if (d.today) {
       html += '<li class="today" aria-current="date"><span class="date">TODAY</span><span class="dot"></span><div class="body">';
       if (!item) {
         html += '<div class="grow"><span class="title meta">nothing scheduled — the plan resumes tomorrow</span></div>';
       } else if (item.status === 'ready') {
+        const sb = sourceBits(item);
         html += '<div class="grow"><div class="title">' + esc(itemTitle(item)) + '</div>' +
           '<div class="metaline">' + metaLine(capsOf(item)) + '</div>' +
+          (sb.line ? '<div class="metaline">' + sb.line + '</div>' : '') +
           (item.stale ? '<div class="metaline stale">built for the old round shape — still startable, or rebuild it to match the plan</div>' : '') +
           (state.focus ? '<div class="aimed">aimed at: ' + esc(state.focus.description) + '</div>' : '') + '</div>';
         if (item.stale) {
@@ -419,12 +1777,16 @@ function renderSeason(row, state) {
           (item.generating && item.generating.since ? ' data-since="' + esc(item.generating.since) + '"' : '') +
           ' style="width:' + genProgressPct(item) + '%"></div></div></div>';
       } else if (item.status === 'failed') {
+        const sb = sourceBits(item);
         html += '<div class="grow"><div class="title">' + esc(itemTitle(item)) + '</div>' +
-          '<div class="metaline err">couldn\'t build this one</div></div>' +
+          '<div class="metaline err">couldn\'t build this one</div>' +
+          (sb.line ? '<div class="metaline">' + sb.line + '</div>' : '') + '</div>' +
           '<button class="retry" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">retry</button>';
       } else {
+        const sb = sourceBits(item);
         html += '<div class="grow"><div class="title">' + esc(itemTitle(item)) + '</div>' +
-          '<div class="metaline">not built yet — usually 5–8 minutes to generate</div></div>' +
+          '<div class="metaline">not built yet — usually 5–8 minutes to generate</div>' +
+          (sb.line ? '<div class="metaline">' + sb.line + '</div>' : '') + '</div>' +
           '<button class="primary gen" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">Generate</button>';
       }
       html += '</div></li>';
@@ -456,9 +1818,11 @@ function renderSeason(row, state) {
       } else if (item.status === 'generating') {
         action = ' <span class="meta">building…</span>';
       }
+      const sb = sourceBits(item);
       html += '<li class="future"><span class="date">' + fmtDate(d.date) + '</span><span class="dot"></span>' +
         '<span class="body">' + esc(itemTitle(item)) +
-        (item.stale ? ' <span class="stale">— built for the old shape</span>' : '') + action + '</span></li>';
+        (item.stale ? ' <span class="stale">— built for the old shape</span>' : '') +
+        (sb.line ? ' <span class="meta">·</span> ' + sb.line : '') + action + '</span></li>';
     } else {
       html += '<li class="future empty"><span class="date">' + fmtDate(d.date) + '</span><span class="dot"></span>' +
         '<span class="body"></span></li>';
@@ -484,9 +1848,11 @@ async function refresh(force) {
   // them sent this QA hunting a healthy server: a render TypeError (stale
   // cached client meeting a newer payload) reported itself as "app server
   // unreachable". Each failure now names itself.
+  if (loggedOut) return;
   let text;
   try {
     const r = await fetch('/api/state');
+    if (r.status === 401) { clearJwt(); renderLogin('signed out — sign in again'); return; }
     text = await r.text();
   } catch {
     const boot = el('boot');
@@ -524,22 +1890,34 @@ document.addEventListener('focusout', () => {
 // ---- all plans (index) ----
 
 function renderIndex(state) {
-  let html = '<h2 class="daysleft" style="font-size:15px">your plans</h2>';
+  // "+ new plan" moved here from the masthead when the tabs took its slot —
+  // plan creation belongs to the plans page (design 2026-08-10).
+  let html = '<h2 class="daysleft" style="font-size:15px">your plans' +
+    ' <a href="#/new" class="addlink">+ new plan</a></h2>';
   for (const row of state.targets) {
     const t = row.target;
     if (!t.specs.length) {
-      // Orphan from an abandoned intake: visible and resumable, never dead.
+      // Abandoned mid-planning: honest about being unfinished, with exactly
+      // two ways out — pick the conversation back up, or delete it. (Live
+      // use grew 5 orphans out of 8 targets when the only option was a
+      // dead "finish setting up" that restarted from scratch.)
       html += '<a href="#/new" class="plancard setup" data-resume="' + esc(t.id) + '">' +
         '<h2>' + esc(t.label) + '</h2>' +
-        '<span class="go">finish setting up →</span></a>';
+        '<span class="go">resume planning →</span>' +
+        '<button type="button" class="carddel" data-del="' + esc(t.id) + '">delete</button></a>';
       continue;
     }
     const total = row.queue ? row.queue.items.length : 0;
     const done = row.queue ? row.queue.items.filter((i) => i.status === 'done' || i.status === 'skipped').length : 0;
     const pct = total ? Math.round((done / total) * 100) : 0;
     let left = '';
-    const n = daysUntil(t.interview_date);
-    if (n !== null) left = n === 0 ? 'interview passed' : n + ' days left';
+    const cardRounds = roundDates(t);
+    const cardUpcoming = cardRounds.filter((r) => !r.passed);
+    if (cardUpcoming.length) {
+      left = daysUntil(cardUpcoming[0].date) + ' days to ' + (cardRounds.length > 1 ? 'next round' : 'interview');
+    } else if (cardRounds.length) {
+      left = 'interview passed';
+    }
     const nextItem = row.next;
     const nextLine = nextItem
       ? (nextItem.status === 'generating' ? 'building: ' : 'next: ') + esc(nextItem.title || nextItem.planned_title || nextItem.label)
@@ -557,14 +1935,183 @@ function renderIndex(state) {
       resumeIntake(a.dataset.resume);
     });
   }
+  for (const b of el('index').querySelectorAll('[data-del]')) {
+    b.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!window.confirm('Delete this plan and its conversation? This cannot be undone.')) return;
+      const r = await fetch('/api/target/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: b.dataset.del }) });
+      const s = await r.json();
+      if (s.error) { el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>'; return; }
+      refresh(true);
+    });
+  }
 }
 
-/** Re-enter the intake flow for a target created but never confirmed —
- *  its description is already on disk; /api/infer reads it. */
+/** Pick an unfinished plan's conversation back up — replayed from disk, so
+ *  a closed tab or restarted app costs nothing. */
+// ---- the landing's one status line (design round2-A-minimal, 2026-08-10):
+//      everything the old strip and NEXT row said, compressed to a sentence.
+//      Repainted every poll — it lives OUTSIDE the composer's repaint guard,
+//      so it stays fresh while a half-typed correction stays protected. ----
+function renderHomeStatus(state) {
+  const host = el('home-status');
+  if (!host) return;
+  const bits = [];
+  // Practice segment — suppressed while the wait card is up (it already
+  // says "building" in a much bigger voice).
+  if (rep.phase !== 'started') {
+    const reps = state.reps || [];
+    const building = reps.find((x) => x.status === 'generating');
+    const ready = reps.filter((x) => x.status === 'ready').length;
+    if (building) {
+      const since = (building.generating || {}).since;
+      bits.push('building your round' +
+        (since ? ' · <span class="genclock" data-since="' + esc(since) + '"></span>' : ''));
+    } else if (ready > 0) {
+      bits.push('<a href="#/history">' + ready + ' ready →</a>');
+    }
+  }
+  // Recent-formats segment (user calls 2026-08-10): the landing is the
+  // generator's page, so its readout feeds the generator — the last few
+  // distinct SHAPES you generated in, each one tap from a fresh problem.
+  // Shapes, not titles: the user remembers "backend live debugging round",
+  // never "Hourly usage metering". Dedup by spec.id — regenerate chains
+  // share their parent's spec verbatim, so a chain collapses to one row.
+  // The seasons have their own tab; the readout doesn't point there.
+  const rows = [];
+  const seenShapes = new Set();
+  for (const x of state.reps || []) {
+    if (x.status !== 'ready' && x.status !== 'done') continue;
+    if (!x.spec || seenShapes.has(x.spec.id)) continue;
+    seenShapes.add(x.spec.id);
+    // "another like this", never "regenerate": regenerate reads as
+    // rebuild-the-same-thing (which is Retry's job on failed reps) — this
+    // link means a FRESH problem in the same confirmed format.
+    rows.push('<div>' + esc(x.spec.label) + ' — ' + specShapeShort(x.spec.capabilities) +
+      ' · <a href="#" class="rep-regen" data-rep="' + esc(x.id) + '">another like this →</a></div>');
+    if (rows.length >= 3) break;
+  }
+  const lines = (bits.length ? ['<div>' + bits.join(' · ') + '</div>'] : []).concat(rows);
+  host.innerHTML = lines.length ? '<div class="statusline">' + lines.join('') + '</div>' : '';
+  for (const regen of host.querySelectorAll('.rep-regen')) {
+    regen.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (regen.dataset.busy) return;
+      regen.dataset.busy = '1';
+      regen.textContent = 'starting…';
+      regenerateLike(regen.dataset.rep, state);
+    });
+  }
+}
+
+/**
+ * One tap, same confirmed shape, fresh problem: re-post the last rep's
+ * spec/description/context under a new id. The server re-proves the spec;
+ * a fresh blueprint draft plus the current gap note vary the problem, and
+ * the variation line names the previous title so the generator is TOLD not
+ * to re-roll the same domain (the never-a-copy rule, aimed at itself).
+ */
+async function regenerateLike(lastId, state) {
+  const last = (state.reps || []).find((x) => x.id === lastId);
+  if (!last || !last.spec) return;
+  const newId = 'rep-' + Date.now().toString(36);
+  // Strip any variation line a previous regeneration appended, so chained
+  // regenerations don't stack directives — each round names only its parent.
+  const base = (last.description || last.label).replace(/\n\nVariation: a fresh problem[\s\S]*$/, '');
+  const r = await fetch('/api/practice', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      rep_id: newId,
+      spec: last.spec,
+      description: base +
+        '\n\nVariation: a fresh problem, same shape — do not repeat the previous one ("' + (last.title || last.label) + '").',
+      context: last.context || undefined,
+    }),
+  });
+  const s = await r.json();
+  if (s.error && !String(s.error).startsWith('already building')) {
+    el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>';
+    return;
+  }
+  rep.repId = newId;
+  rep.phase = 'started';
+  renderPractice();
+  refresh(true);
+}
+
+// ---- practice history (#/history): the reps strip, extracted from the old
+//      index when the composer took over '#/' (2026-08-10). Failed ≠ ready
+//      visually, the empty state is a door, and judged cards work for free —
+//      reps carry a session_id and the card store is session-keyed. ----
+function renderHistory(state) {
+  const reps = state.reps || [];
+  // The Gaps band leads: where-am-I before what-did-I-do. Its data comes
+  // from /api/memory (fetched once per history open), never from the poll.
+  let html = renderGapsBand();
+  html += '<div class="rep-strip"><h2 class="daysleft" style="font-size:15px">practice history</h2>';
+  if (!reps.length) {
+    html += '<div class="meta">No practice yet — <a href="#/">paste a JD or recruiter email</a> and be mid-problem in ten minutes. No plan needed.</div>';
+  }
+  for (const x of reps) {
+    const shape = x.spec && x.spec.capabilities ? specShapeLine(x.spec.capabilities) : '';
+    let line = '';
+    let action = '';
+    if (x.status === 'generating') {
+      line = (x.phase === 'drafting' ? 'shaping the round' : genProgressLine(x));
+    } else if (x.status === 'ready') {
+      line = 'ready · ' + shape;
+      if (!state.session_live) action = '<button type="button" class="primary repstart" data-rep="' + esc(x.id) + '">Start</button>';
+    } else if (x.status === 'failed') {
+      line = '<span class="err">' + (x.phase === 'draft_failed' ? 'couldn’t shape the round from those notes' : 'build failed') + '</span>';
+      action = '<button type="button" class="mini repretry" data-rep="' + esc(x.id) + '">Retry</button>';
+    } else if (x.status === 'done') {
+      line = 'done' + (x.done_at ? ' · ' + fmtDate(x.done_at) : '');
+      if (x.session_id) action = feedbackToggle({ session_id: x.session_id });
+    } else {
+      line = x.status;
+    }
+    html += '<div class="reprow"><div class="grow"><b>' + esc(x.title || x.label) + '</b>' +
+      '<div class="metaline">' + line + '</div>' +
+      feedbackPanel({ session_id: x.session_id }) +
+      '</div>' + action + '</div>';
+  }
+  html += '</div>';
+  const host = el('history');
+  host.innerHTML = html;
+  for (const b of host.querySelectorAll('.repstart')) {
+    b.addEventListener('click', () => launchRep(b.dataset.rep, b));
+  }
+  for (const b of host.querySelectorAll('.repretry')) {
+    b.addEventListener('click', () => repRetry(b.dataset.rep, b));
+  }
+  for (const a of host.querySelectorAll('a.fbtoggle')) {
+    a.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const sid = a.dataset.s;
+      if (openFeedback.has(sid)) { openFeedback.delete(sid); rerender(); return; }
+      openFeedback.add(sid);
+      if (!feedbackCache[sid]) {
+        try {
+          const r = await fetch('/api/feedback?session=' + encodeURIComponent(sid));
+          const d = await r.json();
+          feedbackCache[sid] = {
+            card: d.card || { state: 'unassessed', reason: d.error || 'No feedback recorded for this session.' },
+            confirms: d.confirms || {},
+          };
+        } catch {
+          feedbackCache[sid] = { card: { state: 'unassessed', reason: 'Could not load feedback.' }, confirms: {} };
+        }
+      }
+      rerender();
+    });
+  }
+}
+
 function resumeIntake(id) {
   window.location.hash = '#/new';
   flowTargetId = id;
-  runClarify(null);
+  planResume(id);
 }
 
 function wireTimeline(container) {
@@ -612,9 +2159,12 @@ function wireTimeline(container) {
         try {
           const r = await fetch('/api/feedback?session=' + encodeURIComponent(sid));
           const d = await r.json();
-          feedbackCache[sid] = d.card || { state: 'unassessed', reason: d.error || 'No feedback recorded for this session.' };
+          feedbackCache[sid] = {
+            card: d.card || { state: 'unassessed', reason: d.error || 'No feedback recorded for this session.' },
+            confirms: d.confirms || {},
+          };
         } catch {
-          feedbackCache[sid] = { state: 'unassessed', reason: 'Could not load feedback.' };
+          feedbackCache[sid] = { card: { state: 'unassessed', reason: 'Could not load feedback.' }, confirms: {} };
         }
       }
       rerender();
@@ -632,6 +2182,118 @@ function wireTimeline(container) {
 const openFeedback = new Set();
 const feedbackCache = {};
 
+// ---- the Gaps band (#/history): cross-session memory made visible ----
+// Fetched ONCE per history open (never on the 5s poll — render() clears the
+// cache whenever the route leaves history, so returning refetches). State
+// lives outside the DOM, same trick as feedbackCache.
+let memoryCache = null;      // /api/memory payload, or null = not fetched
+let memoryFetching = false;
+
+const GAP_DIMS = ['clarify', 'approach', 'communicate', 'implement', 'verify', 'reflect'];
+
+function ensureMemory() {
+  if (memoryCache || memoryFetching) return;
+  memoryFetching = true;
+  fetch('/api/memory')
+    .then((r) => r.json())
+    .catch((e) => ({ degraded: String(e) }))
+    .then((d) => { memoryCache = d; memoryFetching = false; rerender(); });
+}
+
+/** One strip cell. Shape backs hue (DESIGN.md): color alone never grades. */
+function gapGlyph(row) {
+  if (!row) return '<span class="gg g-none" title="not judged">·</span>';
+  if (row.verdict === 'strong') return '<span class="gg g-ok" title="strong">■</span>';
+  if (row.verdict === 'adequate') return '<span class="gg g-ok" title="adequate">◆</span>';
+  if (row.verdict === 'unassessable') return '<span class="gg g-none" title="not assessable">·</span>';
+  if (row.unreceipted) return '<span class="gg g-none" title="weak — no receipt survived">▫</span>';
+  return '<span class="gg g-weak" title="gap">▫</span>';
+}
+
+/** Plain-language state, composed from the reader's arithmetic — never
+ *  model-written. */
+function gapStateLine(s) {
+  if (!s || s.state === 'no signal') return 'not yet assessable';
+  if (s.state === 'still firing') {
+    return s.weak_count === s.informative_count ? 'still firing — every round' : 'still firing';
+  }
+  if (s.state === 'improving') return 'improving — ' + s.recent_not_weak + ' of last ' + s.recent_informative + ' adequate or better';
+  if (s.state === 'quiet lately') return 'quiet lately — no gap in the last 3';
+  return 'mixed';
+}
+
+function renderGapsBand() {
+  const h = memoryCache;
+  if (!h) { ensureMemory(); return '<div class="gapsband"><p class="micro">your gaps</p><div class="meta">loading…</div></div>'; }
+  if (h.degraded) {
+    return '<div class="gapsband"><p class="micro">your gaps</p>' +
+      '<div class="meta err">couldn’t load history — feedback cards below still work</div></div>';
+  }
+  if (!h.sessions || h.sessions.length === 0) {
+    return '<div class="gapsband"><p class="micro">your gaps</p>' +
+      '<div class="meta">no judged rounds yet — finish one and this becomes your across-rounds view</div></div>';
+  }
+  const head = h.sessions.length + ' round' + (h.sessions.length === 1 ? '' : 's') +
+    (h.solved_count ? ' · ' + h.solved_count + ' solved' : '');
+  let sub = '';
+  if (h.mode === 'observations') {
+    sub = 'patterns need ' + h.sessions_until_patterns + ' more round' + (h.sessions_until_patterns === 1 ? '' : 's');
+  } else if (h.trend && h.trend.first.informative >= 4 && h.trend.second.informative >= 4) {
+    const pct = (t) => Math.round((100 * t.not_weak) / t.informative);
+    // The one defensible claim (judge-measurability moved too): share of
+    // ASSESSABLE verdicts that were not weak, early half vs recent half.
+    sub = 'of what could be assessed: ' + pct(h.trend.first) + '% → ' + pct(h.trend.second) + '% not weak (early → recent)';
+  }
+  const bounds = new Set(h.comparability_boundaries || []);
+  let html = '<div class="gapsband"><p class="micro">your gaps</p>' +
+    '<div class="meta">' + esc(head) + (sub ? ' · ' + esc(sub) : '') + '</div>';
+  for (const dim of GAP_DIMS) {
+    const s = h.states ? h.states[dim] : null;
+    let strip = '';
+    h.sessions.forEach((sess, i) => {
+      if (bounds.has(i)) strip += '<span class="gg g-none gb" title="judge prompt changed here — halves may not compare">│</span>';
+      strip += gapGlyph(sess.rows.find((r) => r.dimension === dim));
+    });
+    html += '<div class="gaprow"><span class="dim">' + dim + '</span>' +
+      // aria-hidden: the glyphs are visual texture; the state line + counts
+      // beside them carry the same information as text.
+      '<span class="gapstrip" aria-hidden="true">' + strip + '</span>' +
+      '<span class="gapstate">' + esc(gapStateLine(s)) + '</span>' +
+      (s && s.latest_analysis ? '<div class="cite gapcite">' + esc(s.latest_analysis.length > 160 ? s.latest_analysis.slice(0, 157) + '…' : s.latest_analysis) + '</div>' : '') +
+      '</div>';
+  }
+  if ((h.skipped || 0) + (h.unattributable || 0) > 0) {
+    html += '<div class="meta">' +
+      (h.skipped ? h.skipped + ' unreadable' : '') +
+      (h.skipped && h.unattributable ? ' · ' : '') +
+      (h.unattributable ? h.unattributable + ' unattributable' : '') +
+      ' session file' + ((h.skipped || 0) + (h.unattributable || 0) === 1 ? '' : 's') + ' excluded</div>';
+  }
+  return html + '</div>';
+}
+
+// One delegated listener for every history/timeline card confirm — panels
+// re-render on each poll, so per-render wiring would leak or miss.
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.fbconfirm .cf');
+  if (!btn) return;
+  const wrap = btn.closest('.fbconfirm');
+  const sid = wrap.dataset.s;
+  const agree = btn.dataset.agree === '1';
+  try {
+    const r = await fetch('/api/card-feedback', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: sid, dimension: wrap.dataset.dim, agree }),
+    });
+    if (!r.ok) { wrap.textContent = 'could not record that — try reopening the card'; return; }
+    if (feedbackCache[sid]) feedbackCache[sid].confirms[wrap.dataset.dim] = agree;
+    wrap.textContent = 'did this match? noted — ' + (agree ? 'confirmed' : 'disputed');
+  } catch {
+    wrap.textContent = 'could not record that — try reopening the card';
+  }
+});
+
 function feedbackToggle(i) {
   if (!i.session_id) return '';
   return ' <a href="#" class="fbtoggle" data-s="' + esc(i.session_id) + '">' +
@@ -640,16 +2302,17 @@ function feedbackToggle(i) {
 
 function feedbackPanel(i) {
   if (!i.session_id || !openFeedback.has(i.session_id)) return '';
-  const card = feedbackCache[i.session_id];
-  if (!card) return '<div class="fbcard"><p class="meta">loading…</p></div>';
-  return '<div class="fbcard">' + renderCardHtml(card) + '</div>';
+  const entry = feedbackCache[i.session_id];
+  if (!entry) return '<div class="fbcard"><p class="meta">loading…</p></div>';
+  return '<div class="fbcard">' + renderCardHtml(entry.card, entry.confirms, i.session_id) + '</div>';
 }
 
-/** Read-only render of an assessment card — same content the session page
- *  shows at grading time, minus the interactive bits that need the (long
- *  dead) session server: no "did this match?" buttons, and the bug is shown
- *  only when solved (an unsolved problem stays re-runnable unspoiled). */
-function renderCardHtml(card) {
+/** Render of an assessment card — same content the session page shows at
+ *  grading time. WU-C reversal: the "did this match?" control now lives HERE
+ *  (POSTing to the app), because the session server's copy dies with its tab
+ *  and, under multi-session, with the ended-session reap. The bug is still
+ *  shown only when solved (an unsolved problem stays re-runnable unspoiled). */
+function renderCardHtml(card, confirms, sid) {
   let html = '';
   if (card.state === 'unassessed') {
     return '<p class="desc"><b>Session not assessed.</b> ' + esc(card.reason || '') + '</p>';
@@ -668,6 +2331,13 @@ function renderCardHtml(card) {
       html += '<p class="cite"><span class="clk">' + esc(q.clock) + '</span>  ' + esc(q.text) + '</p>';
     }
     if (r.unreceipted) html += '<p class="cite">No verifiable citation survived for this claim — weigh it accordingly.</p>';
+    if (sid && r.verdict !== 'unassessable') {
+      const answered = confirms && Object.prototype.hasOwnProperty.call(confirms, r.dimension);
+      html += answered
+        ? '<p class="cite">did this match? noted — ' + (confirms[r.dimension] ? 'confirmed' : 'disputed') + '</p>'
+        : '<p class="cite fbconfirm" data-s="' + esc(sid) + '" data-dim="' + esc(r.dimension) + '">did this match? ' +
+          '<button class="cf" data-agree="1">yes</button> <button class="cf" data-agree="0">no</button></p>';
+    }
     html += '</div>';
   }
   if (card.bug && card.solved) {
@@ -676,6 +2346,9 @@ function renderCardHtml(card) {
   if (card.focus) {
     html += '<div class="fbfocus"><p class="k">next session focus</p><p>' + esc(card.focus.description) + '</p></div>';
   }
+  // Beta (WU9): same memory roadmap note as the live session card — the
+  // history tab is where cards get re-read, so the retention line rides here too.
+  html += '<p class="cite">Zenkai is learning your patterns across rounds — this card already aims your next problem. Deeper memory is in development: why a gap happens, not just where it showed.</p>';
   return html;
 }
 
@@ -816,20 +2489,54 @@ function choreograph(section, routeKey) {
   }
 }
 
+// ---- the rep return signal (design 2A): the user is INVITED to close the
+//      tab during a ~5-min build, so the tab itself says when to come back —
+//      title flips, favicon plate fills. No notification permission prompt.
+let lastReps = [];
+let repWasGenerating = new Set();
+let repReadyUnseen = false;
+const FAVICON_EL = document.querySelector('link[rel="icon"]');
+const FAVICON_IDLE = FAVICON_EL ? FAVICON_EL.href : '';
+// Ready = the tile inverts: plate blue floods the ground and the Z drops to
+// graphite. At 16px the color swap is the whole signal — the mark's internal
+// fold is unreadable that small, so don't lean on it.
+const FAVICON_READY = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%235099c2'/%3E%3Cpath d='M21.2 8 L45.5 8 L44.15 21.5 L36.5 42.5 L53.6 42.5 L42.8 56 L18.5 56 L19.85 42.5 L27.5 21.5 L10.4 21.5 Z' fill='%230e0e0f'/%3E%3C/svg%3E";
+
+function trackRepSignal(state, page) {
+  lastReps = state.reps || [];
+  for (const x of lastReps) {
+    if (x.status === 'ready' && repWasGenerating.has(x.id)) repReadyUnseen = true;
+  }
+  repWasGenerating = new Set(lastReps.filter((x) => x.status === 'generating').map((x) => x.id));
+  // "Seen" means the ready rep is actually ON SCREEN: the history strip, or
+  // the landing — where the status line now shows "N ready" in every phase
+  // (the QA ISSUE-004 rationale, satisfied by the line itself).
+  if (page === 'history' || page === 'practice') repReadyUnseen = false;
+  if (FAVICON_EL) FAVICON_EL.href = repReadyUnseen ? FAVICON_READY : FAVICON_IDLE;
+}
+
 /** The tab is one of thirty. Name the page, and for a season put the
  *  countdown itself in the title — the days remaining are readable
  *  without switching to the tab. */
 function setTitle(r, state) {
-  if (r.page === 'new') { document.title = 'new plan · Zenkai'; return; }
+  // Rep signals outrank page names: "come back" is the one thing a
+  // backgrounded tab can usefully say.
+  if (repReadyUnseen) { document.title = '✓ Ready · Zenkai'; return; }
+  const building = (state.reps || []).some((x) => x.status === 'generating');
+  const prefix = building ? '(building) ' : '';
+  if (r.page === 'practice') { document.title = prefix + 'Zenkai'; return; }
+  if (r.page === 'plans') { document.title = prefix + 'your plans · Zenkai'; return; }
+  if (r.page === 'history') { document.title = prefix + 'practice history · Zenkai'; return; }
+  if (r.page === 'new') { document.title = prefix + 'new plan · Zenkai'; return; }
   if (r.page === 'timeline') {
     const row = state.targets.find((x) => x.target.id === r.id);
     if (row) {
       const n = daysUntil(row.target.interview_date);
-      document.title = (n === null ? '' : n + ' days · ') + row.target.label;
+      document.title = prefix + (n === null ? '' : n + ' days · ') + row.target.label;
       return;
     }
   }
-  document.title = 'your plans · Zenkai';
+  document.title = prefix + 'your plans · Zenkai';
 }
 
 function render(state) {
@@ -837,49 +2544,84 @@ function render(state) {
   // problems only. A full-width bar on every page for a usually-false
   // condition was pure vertical tax.
   el('nav-live').classList.toggle('on', Boolean(state.session_live));
-  el('nav-live').href = state.session_url || '#/';
+  el('nav-live').href = state.session_url ? sessionHref(state.session_url) : '#/';
   el('nav-kill').classList.toggle('on', Boolean(state.session_live));
   el('banner').innerHTML = '';
 
   const boot = el('boot');
   if (boot) boot.remove();
 
-  const r = route();
-  setTitle(r, state);
-  // Data-driven redirects only — never visibility flips: with nothing set
-  // up yet, the only page that exists is the intake.
-  if (!state.targets.length && r.page !== 'new') {
-    window.location.hash = '#/new';
-    return; // hashchange re-renders
+  // Canonicalize the legacy practice route — the composer lives at '#/'
+  // now. Same redirect-in-render pattern as the deleted-target fallback
+  // below; hashchange re-renders, and its guard treats the transient and
+  // the destination as one surface so composer state survives.
+  if (window.location.hash.startsWith('#/practice')) {
+    window.location.hash = '#/';
+    return;
   }
 
-  el('index').hidden = r.page !== 'index';
-  el('entry').hidden = r.page !== 'new';
-  el('timeline').hidden = r.page !== 'timeline';
-  el('nav-new').hidden = r.page === 'new';
+  const r = route();
+  trackRepSignal(state, r.page);
+  setTitle(r, state);
+  // The old zero-plans redirect to #/new is GONE (2026-08-10): the composer
+  // at '#/' IS the correct page for someone with nothing set up — that's
+  // the whole point of the flip. Data-driven redirects only.
 
-  if (r.page === 'index') {
+  el('index').hidden = r.page !== 'plans';
+  el('entry').hidden = r.page !== 'new';
+  el('practice').hidden = r.page !== 'practice';
+  el('history').hidden = r.page !== 'history';
+  el('timeline').hidden = r.page !== 'timeline';
+  // You-are-here: the active tab wears the steel underline (aria-current
+  // drives the CSS, so wayfinding and a11y are one mechanism). The landing
+  // has its own tab too (user call 2026-08-10: the wordmark alone was an
+  // undiscoverable way back to the generator).
+  if (r.page === 'practice') el('nav-practice').setAttribute('aria-current', 'page');
+  else el('nav-practice').removeAttribute('aria-current');
+  if (r.page === 'plans') el('nav-plans').setAttribute('aria-current', 'page');
+  else el('nav-plans').removeAttribute('aria-current');
+  if (r.page === 'history') el('nav-history').setAttribute('aria-current', 'page');
+  else el('nav-history').removeAttribute('aria-current');
+  // The planning surface gets a wider page column for its two-pane layout.
+  document.body.classList.toggle('wide', r.page === 'new');
+
+  // Off the history page: drop the memory snapshot so the next visit
+  // refetches — "fetched once per surface open", never once per page load.
+  if (r.page !== 'history') memoryCache = null;
+  if (r.page === 'plans') {
     renderIndex(state);
-    choreograph(el('index'), 'index');
+    choreograph(el('index'), 'plans');
+    return;
+  }
+  if (r.page === 'history') {
+    renderHistory(state);
+    return;
+  }
+  if (r.page === 'practice') {
+    // input/confirm hold a half-typed correction — the poll must not repaint
+    // under the user (the plan-page rule). The wait state has no inputs, so
+    // it repaints freely and the phase flips (drafting → building → ready)
+    // arrive within one poll. The status line is a sibling of the flow and
+    // repaints on EVERY poll — it carries no inputs, only fresh state.
+    if (rep.phase === 'started' || !el('practice-wrap')) renderPractice();
+    renderHomeStatus(state);
     return;
   }
   if (r.page === 'new') {
     lastRouteKey = 'new';
-    // Mid-flow the flow DOM owns the section — never repaint under the user.
-    if (flowTargetId === null) {
-      el('entry-flow').hidden = true;
-      el('entry-form').hidden = false;
-    }
+    // The conversation owns the section; the poll must never repaint under
+    // the user. Build the surface only when it isn't there yet.
+    if (!el('plan-wrap')) renderPlan();
     return;
   }
   // timeline
   const row = state.targets.find((x) => x.target.id === r.id);
   if (!row) {
-    window.location.hash = '#/';
+    window.location.hash = '#/plans';
     return;
   }
   const tl = el('timeline');
-  tl.innerHTML = '<a href="#/" class="backlink">← all plans</a>' + renderSeason(row, state);
+  tl.innerHTML = '<a href="#/plans" class="backlink">← all plans</a>' + renderSeason(row, state);
   wireTimeline(tl);
   choreograph(tl, 'timeline:' + r.id);
 }
@@ -900,12 +2642,15 @@ function launchStatus(btn, text, isError) {
   line.classList.toggle('err', Boolean(isError));
 }
 
-async function launch(targetId, itemId, btn) {
+/** Shared launch: POST, then poll session-live until the editor is up —
+ *  identical boot semantics for queue items and reps, one copy of the
+ *  Docker error truth. */
+async function launchCommon(endpoint, body, btn, idleLabel) {
   if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
-  const r = await fetch('/api/launch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ target_id: targetId, item_id: itemId }) });
+  const r = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const s = await r.json();
   if (s.error) {
-    if (btn) { btn.disabled = false; btn.textContent = 'Start'; launchStatus(btn, s.error, true); }
+    if (btn) { btn.disabled = false; btn.textContent = idleLabel; launchStatus(btn, s.error, true); }
     else el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>';
     return;
   }
@@ -914,16 +2659,32 @@ async function launch(targetId, itemId, btn) {
   if (btn) launchStatus(btn, 'booting the container and editor — up to a minute the first time…');
   const until = Date.now() + 180000;
   const tick = async () => {
-    const live = (await (await fetch('/api/session-live')).json()).live;
-    if (live) { window.location.href = s.url; return; }
+    // Per-sid poll (WU-F): under multi-session, a global boolean would fire
+    // on ANOTHER user's boot and navigate this user into their round. The
+    // server ignores sid in legacy mode, so this is backward compatible.
+    const sidQ = s.session_id ? '?sid=' + encodeURIComponent(s.session_id) : '';
+    const r = await (await fetch('/api/session-live' + sidQ)).json();
+    if (r.gone) {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = idleLabel;
+        launchStatus(btn, "couldn't start — is Docker running? Try again.", true);
+      }
+      return;
+    }
+    if (r.live) { window.location.href = sessionHref(s.url); return; }
     if (Date.now() < until) { window.setTimeout(tick, 2000); return; }
     if (btn) {
       btn.disabled = false;
-      btn.textContent = 'Start';
+      btn.textContent = idleLabel;
       launchStatus(btn, "couldn't start — is Docker running? Try again.", true);
     }
   };
   tick();
+}
+
+async function launch(targetId, itemId, btn) {
+  await launchCommon('/api/launch', { target_id: targetId, item_id: itemId, origin: 'plans' }, btn, 'Start');
 }
 
 // Masthead "end session" — discard, never grade (QA D1). Submit inside the
@@ -931,12 +2692,15 @@ async function launch(targetId, itemId, btn) {
 // starts, so they can't pollute the gap graph.
 el('nav-kill').addEventListener('click', async (e) => {
   e.preventDefault();
-  if (!window.confirm('End without grading? The attempt is discarded (recoverable via rejudge).')) return;
+  if (!window.confirm('End without grading? This attempt won’t be scored or added to your history.')) return;
   const r = await fetch('/api/session-kill', { method: 'POST' });
   const s = await r.json();
   if (s.error) el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>';
   refresh(true);
 });
 
-window.setInterval(refresh, 5000);
-refresh(true);
+initAuth().then((ok) => {
+  if (!ok) return; // login screen owns the page; success path reloads
+  window.setInterval(refresh, 5000);
+  refresh(true);
+});

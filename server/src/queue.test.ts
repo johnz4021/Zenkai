@@ -58,6 +58,15 @@ describe('proposeQueue', () => {
   it('no confirmed specs → empty queue, never invented items', () => {
     expect(proposeQueue(target({ specs: [] }), NOW).items).toEqual([]);
   });
+
+  it('a conversational pace resizes the queue; omitting it keeps the default', () => {
+    const t = target({ interview_date: '2026-08-15' });
+    const paced = proposeQueue(t, NOW, 5);
+    expect(paced.items.length).toBe(11); // 15-day runway × 5/week
+    expect(paced.pace.per_week).toBe(5);
+    // Byte-identical default when the third arg is absent (compat contract).
+    expect(proposeQueue(t, NOW)).toEqual(proposeQueue(t, NOW, 3));
+  });
 });
 
 describe('repace — a queue with a pace, not a calendar', () => {
@@ -112,6 +121,16 @@ describe('reconcileWithDisk — restart-safe by construction', () => {
 
     writeFileSync(path.join(root, 'assessments', 'sess-abc.json'), '{}');
     expect(reconcileWithDisk(root, q).items[0]!.status).toBe('done');
+  });
+
+  it('a source binding survives the JSON round-trip untouched', () => {
+    const root = scratch();
+    const q = proposeQueue(target({ interview_date: '2026-08-15' }), NOW);
+    q.items[0]!.source = {
+      kind: 'leetcode', slug: 'two-sum', title: 'Two Sum',
+      difficulty: 'easy', picked_by: 'user',
+    };
+    expect(reconcileWithDisk(root, q).items[0]!.source).toEqual(q.items[0]!.source);
   });
 });
 
@@ -275,5 +294,115 @@ describe('bucketIntoDays — the timeline spine (D2: dated, forward-only)', () =
       (r) => r.kind === 'day' && r.past && r.items.some((i) => i.id === 'item-1'),
     ) as Extract<(typeof rows)[0], { kind: 'day' }>;
     expect(pinned.date).toBe(localDate(NOW - 2 * 86_400_000));
+  });
+});
+
+// ---- per-round dates (one plan per loop, rounds on different days) ----
+
+const datedSpec = (id: string, date?: string): RoundSpec => ({ ...spec(id), ...(date ? { date } : {}) });
+
+describe('proposeQueue with per-round dates', () => {
+  it('orders by imminence and sizes each round against its own runway', () => {
+    // NOW = Aug 1. OA on Aug 5 (4 days), onsite Sep 1 (31 days).
+    const t = target({
+      interview_date: '2026-09-01',
+      specs: [datedSpec('onsite', '2026-09-01'), datedSpec('oa', '2026-08-05')],
+    });
+    const q = proposeQueue(t, NOW);
+    // Nearest round's practice comes FIRST even though the spec is listed second.
+    expect(q.items[0]!.spec_id).toBe('oa');
+    const oa = q.items.filter((i) => i.spec_id === 'oa').length;
+    const onsite = q.items.filter((i) => i.spec_id === 'onsite').length;
+    expect(oa).toBeGreaterThanOrEqual(1);
+    expect(onsite).toBeGreaterThan(oa); // 31-day runway outweighs 4 days
+    expect(q.items.length).toBeLessThanOrEqual(12);
+    // Labels still count per spec, never a global "round N".
+    expect(q.items[0]!.label).toBe('oa — round 1');
+  });
+
+  it('an undated spec gets a small flat block at the end', () => {
+    const t = target({
+      specs: [datedSpec('oa', '2026-08-08'), datedSpec('mystery')],
+    });
+    const q = proposeQueue(t, NOW);
+    const mystery = q.items.filter((i) => i.spec_id === 'mystery');
+    expect(mystery).toHaveLength(2);
+    // Parked at the end, after every dated item.
+    expect(q.items.slice(-2).every((i) => i.spec_id === 'mystery')).toBe(true);
+  });
+});
+
+describe('repace surfaces per-round over-commitment', () => {
+  it('a tight segment gets a note; a comfortable loop does not hide it', () => {
+    // 6 debugging items, 3 days to the debugging round, loop ends a month out.
+    const t = target({
+      interview_date: '2026-09-01',
+      specs: [datedSpec('debug', '2026-08-04'), datedSpec('onsite', '2026-09-01')],
+    });
+    const q = proposeQueue(t, NOW);
+    const debugItems = q.items.filter((i) => i.spec_id === 'debug');
+    for (let k = debugItems.length; k < 6; k++) {
+      q.items.unshift({ id: `extra-${k}`, label: `debug — round ${k}`, spec_id: 'debug', status: 'pending' });
+    }
+    const paced = repace(q, t, null, NOW);
+    const noted = paced.items.find((i) => i.note?.startsWith('tight:'));
+    expect(noted?.spec_id).toBe('debug');
+    expect(noted?.note).toContain('to debug');
+    // The onsite segment is comfortable — no tight note there.
+    expect(paced.items.filter((i) => i.spec_id === 'onsite').every((i) => !i.note?.startsWith('tight:'))).toBe(true);
+  });
+});
+
+describe('bucketIntoDays with per-round dates', () => {
+  it('each dated round gets a labeled interview row at its place in the runway', () => {
+    const t = target({
+      interview_date: '2026-08-15',
+      specs: [datedSpec('oa', '2026-08-05'), datedSpec('onsite', '2026-08-15')],
+    });
+    const q = proposeQueue(t, NOW);
+    const rows = bucketIntoDays(q, t, NOW);
+    const interviews = rows.filter((r) => r.kind === 'interview');
+    expect(interviews).toHaveLength(2);
+    expect(interviews[0]).toMatchObject({ date: '2026-08-05', label: 'oa' });
+    expect(interviews[1]).toMatchObject({ date: '2026-08-15', label: 'onsite' });
+    // The OA's marker comes BEFORE the onsite practice that follows it.
+    const kinds = rows.map((r) => (r.kind === 'interview' ? 'interview:' + r.date : r.kind));
+    expect(kinds.indexOf('interview:2026-08-05')).toBeLessThan(kinds.indexOf('interview:2026-08-15'));
+    // Practice for the OA lands before its round day.
+    const oaIdx = kinds.indexOf('interview:2026-08-05');
+    const before = rows.slice(0, oaIdx).filter((r) => r.kind === 'day' && !r.past && !r.today);
+    expect(before.some((r) => r.kind === 'day' && r.items.some((i) => i.spec_id === 'oa'))).toBe(true);
+  });
+
+  it('undated rounds park after the runway as an honest unscheduled block', () => {
+    const t = target({
+      specs: [datedSpec('oa', '2026-08-08'), datedSpec('mystery')],
+    });
+    const q = proposeQueue(t, NOW);
+    const rows = bucketIntoDays(q, t, NOW);
+    const unschedIdx = rows.findIndex((r) => r.kind === 'unscheduled');
+    expect(unschedIdx).toBeGreaterThan(-1);
+    expect(rows[unschedIdx]).toMatchObject({ kind: 'unscheduled', count: 2 });
+    // Its items follow as undated day rows.
+    const tail = rows.slice(unschedIdx + 1).filter((r) => r.kind === 'day');
+    expect(tail.every((r) => r.kind === 'day' && r.date === null)).toBe(true);
+    expect(tail.flatMap((r) => (r.kind === 'day' ? r.items : [])).every((i) => i.spec_id === 'mystery')).toBe(true);
+  });
+
+  it('a passed round emits no future marker; its leftovers merge into the next window', () => {
+    // Debug round was Jul 30 (passed); onsite Aug 15 upcoming.
+    const t = target({
+      interview_date: '2026-08-15',
+      specs: [datedSpec('debug', '2026-07-30'), datedSpec('onsite', '2026-08-15')],
+    });
+    const q = proposeQueue(t, NOW);
+    q.items.unshift({ id: 'left', label: 'debug — round 9', spec_id: 'debug', status: 'pending' });
+    const rows = bucketIntoDays(q, t, NOW);
+    const interviews = rows.filter((r) => r.kind === 'interview');
+    expect(interviews).toHaveLength(1);
+    expect(interviews[0]).toMatchObject({ date: '2026-08-15' });
+    // The leftover debug item still appears on a future day (never dropped).
+    const futureItems = rows.flatMap((r) => (r.kind === 'day' && !r.past && !r.today ? r.items : []));
+    expect(futureItems.some((i) => i.spec_id === 'debug')).toBe(true);
   });
 });

@@ -37,6 +37,17 @@ const ASK_PATTERNS: RegExp[] = [
   /\bdo you know\b/i,
   /\bhow(?:'s| does) that sound\b/i,
   /\b(?:can|do) you hear me\b/i,
+  // Language/library validity checks (sess-1786072934316). The candidate
+  // asked eight variants of "is this valid syntax" over fourteen minutes;
+  // the three shapes below all MISSED the fast path and paid a full haiku
+  // round trip each, and the gate then had to decide whether a question
+  // about the code in front of them was narration — exactly the call it is
+  // worst at. They are now unambiguous asks, which they always were.
+  /\bis (?:this|that|it) (?:valid|allowed|legal|fine|ok|okay)\b/i,
+  /\b(?:valid|correct) syntax\b/i,
+  /\bdo (?:i|we) (?:need|have to|still need)\b/i,
+  /\b(?:just )?to clarify\b/i,
+  /\bare you (?:allowed|able) to\b/i,
 ];
 
 export function isExplicitAsk(text: string): boolean {

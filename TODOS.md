@@ -286,7 +286,16 @@ external items store a single-slot `debrief` note, and mapping self-reported not
 dimension evidence (polarity, weight, idempotency) belongs here, where judge-lite
 grading gives self-reported signal a principled design.
 
-**Priority:** P2 after the queue proves itself in real use.
+**Amendment (2026-08-10, memory-layer CEO review):** trigger REWRITTEN from the vague
+"after the queue proves itself in real use" to a computable one: **memory-layer Pass 1
+has run for N sessions AND one cause tag accounts for a plurality of weak dimensions.**
+Reasoning: drills are the cheap intervention for the `couldnt` cause specifically, and
+building them before the cause distribution is known means targeting a guess. Pass 1
+produces that distribution. This is the other half of the efficiency thesis — cause
+tells you a 3-minute drill would fix it, and today the only response the system owns is
+a 60-minute round.
+
+**Priority:** P2, un-defer on the trigger above.
 
 ---
 
@@ -474,7 +483,13 @@ season completing.
 
 ## 21. Curated LC-slug allowlist — mechanical gate for model-emitted problem titles
 
-**What:** Bundle a static list of ~500 famous LeetCode problem slugs (Blind 75,
+**SUPERSEDED (2026-08-12) by the vendored LeetCodeDataset** (`server/src/lc-source.ts`):
+`datasets/leetcode/index.json` is a 2,869-slug allowlist WITH metadata (id, title,
+difficulty, tags, eligibility) — strictly stronger than the ~500-slug static list this
+item proposed. If the external-practice bridge ever ships, its `gateExternal` should
+resolve against that index (see `loadLcIndex`), not a second curated file.
+
+**What (original):** Bundle a static list of ~500 famous LeetCode problem slugs (Blind 75,
 NeetCode 150, top-liked). In `gateExternal`, model-emitted titles/links ship only when
 the slug matches the list; misses fall to the topic+count fallback shape. Replaces
 model self-attestation with a genuinely mechanical gate.
@@ -530,3 +545,800 @@ easier to see, not smaller.
 timeline's own shape now points at exactly where they go.
 
 **Effort / priority:** unchanged from #13 (P2, ~2-3 hrs CC).
+
+---
+
+## 24. Debrief shape-ledger (deferred from the shape-uncertainty CEO review)
+
+**What:** After a real interview round, a prefilled one-tap debrief ("was it like this?"
+against the plan's own predicted shape) recording the ACTUAL round shape per company,
+dated, in the spec vocabulary.
+
+**Why:** Ground truth about round shapes arrives at the moment memory is freshest, via a
+timeline prompt that already exists ("X was 2 days ago — how did it go?"). At n=1 it
+re-aims the user's own remaining rounds; at scale it compounds into dated per-company
+shape priors — the data asset LC company tags approximates with stale crowd frequency.
+
+**Pros:** self-feeding moat; near-zero friction (correcting a prediction, not authoring).
+**Cons:** worthless below some user count; noise/lying concerns (user judgment 2026-08-07:
+open but unconvinced at current scale).
+
+**Context:** Noise fences designed and agreed: ledger priors enter the evidence hierarchy
+at tier 3 (structurally cannot override firsthand/secondhand), shift only on k≥3
+recency-weighted independent reports, provenance always displayed. Rides the E1 debrief
+channel from the external-bridge review. See ceo-plans/2026-08-07-shape-uncertainty.md.
+
+**Effort:** human ~1 wk / CC ~3-4 hrs. **Priority:** P3 until user count justifies.
+**Blocked on:** users beyond the author.
+
+---
+
+## 25. Cold-start shape corpus (deferred from the shape-uncertainty CEO review)
+
+**What:** Manually curated public-source pass (Blind, LC discuss, HN) extracting round
+SHAPES per company — spec vocabulary + date, never problem content — for ~20-30 companies.
+
+**Why:** Per-company priors before debriefs accumulate. **Cons:** recurring manual
+re-verification (shapes rot; stale curated data is worse than the live research loop).
+**Context:** the planner's runtime web search covers the author's own loops this season.
+
+**Effort:** M, recurring. **Priority:** P3. **Blocked on:** #24 existing (else nowhere to store).
+
+---
+
+## 26. Dimension-tagged difficulty operators (deferred from the shape-uncertainty CEO review)
+
+**What:** Blueprint variation operators tagged to judged dimensions — orientation → more
+files/deeper call graph; diagnosis → symptom further from cause; verification → subtler
+criterion; constraint → tighter budget; transfer distance → different shape. NEVER raw
+LOC. The gap graph picks the axis (extend where cruising, hold where struggling); a
+one-tap post-round grade (too easy / right / brutal) plus per-dimension verdicts close
+the loop IRT-style: operators are hypotheses, outcomes correct them.
+
+**Why:** "Meaningfully extend so they're challenged every time" made mechanical; answers
+the multi-file-vs-LOC question by construction.
+
+**Context:** Design settled in the 2026-08-07 CEO review; calibration needs live
+sessions. Un-defer criterion: the author completes one season containing ≥1 hedged
+segment and debriefs it.
+
+**Amendment (2026-08-10, memory-layer CEO review):** the one-tap too-easy/right/brutal
+grade was offered for the memory-layer's Pass 1 (it would ride the same card control)
+and DEFERRED. Reasoning: it competes with the cause click at the moment of highest exit
+intent, risking the more valuable of the two signals, and #26 is independently blocked
+so the grade would accumulate with nothing reading it. **Second un-defer condition:**
+the cause click demonstrates that candidates use a card-time control at all.
+
+**Effort:** human ~1 wk / CC ~3-4 hrs. **Priority:** P2 once the criterion fires.
+**Blocked on:** portfolio planning shipping (the accepted scope).
+
+---
+
+## 27. Retention policy for generated problems and rep metadata
+
+**What:** A reaping rule for `problems/` and `targets/*/problems/` (used problems older
+than N days), plus failed reps, stale `ready` reps, and abandoned generations in
+`reps.json`.
+
+**Why:** `problems/` already holds 22 full generated repos with no reaping code anywhere
+in the product. The "Practice now" door adds a second unbounded producer, and rep
+metadata compounds it — a failed rep leaves both a directory and a row. Nothing breaks at
+22 or at 200, which is exactly why it will never get fixed unless it's written down.
+
+**Pros:** bounded disk, and a `ready` rep that has sat for three weeks is stale signal the
+UI shouldn't offer. **Cons:** a reaping rule is a destructive code path in a product that
+currently has none, and the right N is unknown — a used problem you failed is arguably
+worth keeping forever (see #28, which wants exactly that corpus).
+
+**Context:** Raised by Codex in the 2026-08-08 CEO review on spontaneous practice. Note
+the dependency inversion with #28: retention must NOT reap unsolved problems, because #28
+proposes re-serving them. Reap on `.used` + assessment-says-solved, never on age alone.
+
+**Effort:** human ~half day / CC ~45 min. **Priority:** P3. **Blocked on:** nothing, but
+sequence after #28 so the keep-rule is known.
+
+---
+
+## 28. "One more" — extra practice when today's plan is done
+
+**What:** The other half of the spontaneous-practice question (2026-08-08 CEO review): you
+finished today's queue items and want another rep. Two sources, in order: a warm pool kept
+stocked for your targets' *confirmed* specs (shapes are known and stable, so pre-warming
+actually works there), then the already-generated corpus — 21 of 22 problems on disk are
+used, and `feedback.ts:19` already states the design intent that *"a problem you didn't
+crack stays re-runnable."* Rank by the gap graph's focus dimension.
+
+**Why:** This is user case (a), and the shipped "Practice now" door deliberately does not
+serve it: that door infers a round from pasted information, so it must generate, and five
+minutes is intrinsic. "Give me one more" is the opposite — it wants instant, and instant
+is only possible where the shape is already known.
+
+**Pros:** near-zero generation cost (the corpus is paid for); re-serving a problem you
+failed, aimed at your focus gap, is better pedagogy than a fresh random one; the warm pool
+(`pool.ts`, complete and tested at 8 passing tests) is currently unreachable from the app
+and would finally be used. **Cons:** a memorized problem stops teaching, so re-runs need a
+staleness rule; warm-pool depth costs speculative opus spend (see TODOS #12).
+
+**Blocking bug this must fix first:** `markUsed` (`pool.ts:56`) OVERWRITES `.used` with the
+new session id, and `rejudge`'s reverse lookup (`cli.ts:411`) matches on that file's first
+line. Re-running any problem therefore makes the *earlier* session permanently
+un-rejudgeable. Append, don't overwrite, and have the lookup scan all lines.
+
+**Context:** Set aside during the 2026-08-08 CEO review to keep the second door's build
+clean — it's a different mechanism (pre-warm + re-serve) from the door's (infer +
+generate). Codex independently argued the simplest useful version of practice is close to
+this; the counter is that it doesn't answer "a round like the info I gathered," which is
+what the door exists for. Both are real; they're just two features.
+
+**Effort:** human ~1 wk / CC ~2 hrs. **Priority:** P2. **Blocked on:** nothing. Revisit
+after the second door has real usage — if a 5-minute build always feels fine, this may
+never be wanted.
+
+---
+
+## 29. Motion vocabulary is undecided
+
+**What:** Decide whether this app animates at all, and if so, name the two or three
+intentional motions (entrance, state arrival, focus) as tokens rather than per-component
+guesses.
+
+**Why:** The design litmus check came back NOT SPEC'D on motion in the 2026-08-08 design
+review. Nothing in the app animates today, which may well be correct for an instrument
+panel, but nobody decided it — so the first implementer who wants a spinner introduces one
+and the vocabulary is set by accident. The "Practice now" wait state is the first surface
+where motion would actually carry meaning (build progress, arrival of a ready round), and
+it's shipping with honest elapsed text instead, which is a defensible answer but an
+undocumented one.
+
+**Pros:** cheap to decide; prevents a spinner-shaped accident; "no motion" is a legitimate
+and rare position that's worth stating out loud. **Cons:** hard to decide well against one
+surface — a motion vocabulary wants several screens to calibrate against, and guessing now
+risks a rule that the timeline or the session chrome immediately breaks.
+
+**Context:** Deferred from the 2026-08-08 plan-design review. Note the constraint it has to
+live inside: `app.ts:260-276` states the shell has no elevation, so any motion cannot rely
+on shadow, lift, or depth. That rules out most conventional "rise on hover" patterns and
+pushes toward opacity, position, and hairline-weight changes.
+
+**Effort:** human ~half day / CC ~15 min. **Priority:** P3. **Blocked on:** nothing, but
+worth waiting until the wait state and the reps strip both exist to decide against.
+
+---
+
+## 30. Promotion: rep → season (spec frozen, presser doesn't exist yet)
+
+**What:** `POST /api/practice/promote {rep_id, label, date?}` — one endpoint turning a
+finished target-less rep into a new season. Full spec in
+ceo-plans/2026-08-10-composer-first-landing.md (Phase 2): guards, `promoted_from`
+self-heal key (NOT spec.id — model-authored, not unique), queue-repair on heal,
+`acceptSpecsCore()` extraction so promotion never forks accept-spec's logic, CTA on
+the landing strip card only (the session server never learns rep identity), copy
+"seeded {label}" not "part of" (season starts 0/N), text-context-only seeding
+(rep attachments were never persisted, by design).
+
+**Why deferred (2026-08-10, codex tension, user call):** mid-season with seasons
+already built, nobody presses this button; the person it serves is a future new
+user. The spec cost 19 spec-loop + 15 codex findings to pin — freezing it beats
+rebuilding it.
+
+**Un-defer trigger:** a second real user exists, OR a rep of yours genuinely
+deserved a season and couldn't get one.
+
+**Effort:** human ~3 days / CC ~1.5 hrs. **Priority:** P2 once the trigger fires.
+
+---
+
+## 31. Gap-aimed suggestion line in the empty composer
+
+**What:** When the landing composer is empty and a gap graph exists, one quiet line:
+"your focus gap is {gap} — want a rep aimed at it?" One tap → generation briefed by
+`buildTargetNote` (the doorless `cli.ts prepare` machinery, given a door).
+
+**Why deferred (2026-08-10 CEO review):** the landing should prove itself plain
+first, and the suggestion copy deserves design against a REAL gap-graph state —
+which a week of composer-first reps will produce.
+
+**RESOLVED 2026-08-10 (memory-layer CEO review): trigger fired, accepted into scope.**
+Both blockers are satisfied — the composer landing shipped, and the gap graph holds 7
+sessions. Scheduled inside memory layer v2 Pass 2a so the copy is written against a
+real cause CONDITIONAL ("you go silent when timed") rather than the current constant
+("communicate"), which is what the original deferral was waiting for. See
+`~/.gstack/projects/interview_prep/ceo-plans/2026-08-10-memory-layer-v2.md`.
+
+**Effort:** human ~1 day / CC ~40 min. **Priority:** P3. **Blocked on:** the
+composer landing shipping + a non-empty gap graph.
+
+---
+
+## 32. Bare-company-name quick start ("Palantir" → a round)
+
+**What:** The composer accepts one word; clarify infers a representative round from
+the name plus any existing target context for that company.
+
+**Why deferred (2026-08-10 CEO review):** step one is a TEST, not code — the
+clarifier may already handle a one-word description passably (it's just a short
+description). If it does, this is placeholder copy, not a feature. Guard the
+invented-company-facts failure the blueprint rules exist to prevent.
+
+**Effort:** test ~10 min; if real, human ~2 days / CC ~1 hr. **Priority:** P3.
+
+---
+
+## 33. The golden-set regression loop has never had an input
+
+**What:** `promote-fixture` turns a candidate-confirmed session into a golden judge
+fixture. It reads `assessments/<sid>.confirm.json`. As of 2026-08-10 there are 12
+assessments, **0 confirm files, and `fixtures/judge/golden/` is empty.**
+
+**Why:** CLAUDE.md calls `eval-judge` "the judge's whole regression suite" and
+promote-fixture the way "the library grows from REAL sessions." That library has been
+empty since it shipped, so judge quality has no regression protection from real data.
+
+**Root cause (found 2026-08-10, memory-layer CEO review):** the only control that
+writes `confirm.json` is `client/session.js:257`, which renders only on the live
+session tab — reachable from exactly two places (`:104` time-up, `:202` End button)
+and gone when that tab closes. The durable surface people actually revisit,
+`renderCardHtml` (`client/app.js:1573`), deliberately omits it, and `app.test.ts:93`
+asserts the omission. So the 0/12 rate is an ARCHITECTURE artifact, not a signal that
+nobody wants to confirm.
+
+**Where to start:** `session.ts:1046` writes the file, `cli.ts:398-410` reads it.
+The memory-layer plan's app-side capture endpoint unblocks this for nearly free.
+
+**Effort:** human ~1 day / CC ~20 min once app-side capture exists. **Priority:** P2.
+**Blocked on:** app-side capture (memory layer v2, Pass 1).
+
+---
+
+## 34. `rejudge --record` appends duplicate gap instances
+
+**What:** `cli.ts rejudge --record` (`cli.ts:501-505`) calls `recordAssessment` again
+for a session already in the store. `recordSession` (`gap-graph.ts:113-165`) appends
+unconditionally, so a second instance lands for the same `(session_id, dimension)`.
+
+**Why:** it silently inflates `fired_count` and `weight` for any rejudged session,
+which skews the focus ranking the entire memory layer is built on. Rejudge is how a
+judge prompt change gets re-scored against history, so the tool that keeps history
+comparable is the one that corrupts it. Found independently by two reviewers
+(2026-08-10 CEO review and the codex outside voice).
+
+**The design question to settle first:** does a rejudge REPLACE the prior instance or
+SUPERSEDE it (keeping both, with the older marked)? Specs are append-only elsewhere in
+this codebase for a reason, so superseding is more consistent, but it needs a
+version/row id — which is also what a cause needs to attach to safely.
+
+**Effort:** human ~1 day / CC ~30 min. **Priority:** P1 if you rejudge, P3 if never.
+
+---
+
+## 35. 17 feedback files, 12 assessments — five sessions unaccounted for
+
+**What:** `feedback/` holds 17 cards; `assessments/` holds 12. Five sessions have a
+rendered card with no assessment behind them.
+
+**Why it matters:** `session.ts:858-891` writes both in the same finalize path, so
+they should move together. Benign explanation: those five predate the assessment
+write. Bad explanation: a path exists where a card renders without an assessment
+landing, which would mean the gap graph has silently missed sessions and every count
+it makes is off.
+
+**Where to start:** compare session ids across the two directories and check dates
+against the `gaps/archive/` reset points (the store was intentionally re-baselined
+three times, so some discontinuity is expected and not a bug).
+
+**Effort:** human ~1 hour / CC ~10 min. **Priority:** P3.
+
+---
+
+## 36. The two-phase confirm gate: correct the blueprint, not the intent
+
+**What:** Split `rep-build` so the blueprint draft (~30s) finishes BEFORE the candidate
+commits, show them the real brief, and let them correct it before the ~5-minute opus
+generation runs.
+
+**Why it matters:** The blueprint is the artifact that actually decides whether a round
+is any good, and today it is written 30 seconds AFTER Start inside a detached child the
+candidate never sees. The 2026-08-12 design review shipped the cheap version instead
+(decision 3A: the clarifier emits a 3-4 sentence plain-words brief above Start, no second
+phase). That brief describes what the clarifier INTENDS, not what the drafter WROTE — so
+a drafter that wanders off the brief is still invisible until the round exists.
+
+**Pros:** the highest-fidelity clarification available; a correction costs 30s to redo
+instead of 5 minutes, which is the right economics for the expensive step.
+
+**Cons:** `rep-build` becomes two commands with a restart-durable pause between them, and
+the `.generating` marker stops covering one continuous pid — `sweepVerdict` and
+`sweepOrphanedGenerations` both assume it does. Needs a new "awaiting confirmation" phase
+that survives an app restart. Adds 30s between Start and commitment on the surface whose
+entire license to exist is speed.
+
+**Named trigger:** build this when the plain-words brief demonstrably fails to catch a
+wrong round — i.e. a session where the candidate read the brief, started, and the
+generated round still did not match their interview.
+
+**Depends on:** decision 3A shipping first, and enough real sessions to observe the
+failure. **Effort:** human ~2 days / CC ~1.5 hours. **Priority:** P3 until the trigger fires.
+
+---
+
+## 37. Practice door: round selector when one paste describes several rounds
+
+**What:** A round selector at the top of the confirm screen's settled-facts rail, with
+gaps and facts recomputed per selected round.
+
+**Why it matters:** `gateClarify` already returns up to 4 drafts (one per distinct round —
+an OA and an onsite are two). The practice door hardcodes `rep.chosen = 0` and silently
+discards the rest. Silently dropping a round the candidate described reads as the product
+not listening, which is the exact complaint that started the 2026-08-12 review. That
+review shipped a one-line disclosure now ("your material describes 2 rounds — building
+the OA") and deferred the selector.
+
+**Pros:** every round the candidate described becomes reachable, each with its own facts
+and its own gaps. **Cons:** a rail labelled "Confirmed from your paste" has a single
+identity, so switching rounds has to swap the spec, the settled facts, and the gap list
+together; it is real machinery, not a render tweak.
+
+**Context:** the season-plan gate already solves the multi-draft case (`app.js:475-504`
+splits usable/declined and lets you include/exclude each). Read that first — the practice
+door may be able to reuse its selection model rather than invent one.
+
+**Depends on:** the gap model from the 2026-08-12 review landing first.
+**Effort:** human ~1 day / CC ~45 min. **Priority:** P2.
+
+---
+
+## 38. A third `answer_type` for bounded-but-not-enum gaps
+
+**What:** A control kind between "closed enum" (pills only) and "open" (pills as
+shortcuts plus a free-text input): pills plus an explicit `other…` escape, with no
+always-visible text box.
+
+**Why it matters:** decision 4A of the 2026-08-12 review splits gaps into closed and open,
+and the client renders controls deterministically from that flag. But "how senior should
+the bar be?" is neither — there is no fixed set, yet a free-text box invites answers like
+"idk pretty hard" that the blueprint drafter cannot use. Difficulty and seniority are
+exactly the axes candidates most want to tune, and today they land in the weaker control.
+
+**Pros:** honest affordance for the bounded case, and it keeps vague prose out of the
+drafter's input. **Cons:** a third case in the taxonomy, the gate, and the renderer;
+designing it before observing real usage risks designing for a case that does not occur.
+
+**Named trigger:** revisit once there is a corpus of real pastes showing what the
+clarifier actually asks for difficulty and seniority. If those questions come back as
+closed enums the model invented, this is urgent; if they come back as genuinely open
+prose, it may not be needed at all.
+
+**Depends on:** decision 4A shipping, plus beta traffic. Note `answer_type` is already an
+extensible string, so adding a third value later is not a migration.
+**Effort:** human ~4 hours / CC ~25 min. **Priority:** P3.
+
+---
+
+## 39. Gap ids drift between re-inferences, producing overlapping questions
+
+**What:** The practice-door clarifier is told gap ids must be STABLE across
+re-inference. In practice the model sometimes renames a gap and emits a second,
+overlapping one: a live run produced both `bug-domain` ("what kind of codebase or bug
+should this be") and `bug-class` ("what kind of bug are you hunting") in the same
+round-2 list.
+
+**Why it matters:** the user reads two nearly-identical questions and cannot tell which
+one they already answered. It also makes the diff spurious — `diffGaps` sees a new id,
+flashes a rail row, and the live region announces "bug class still open" for what reads
+as an existing question. Nothing breaks and no answer is lost; it just makes the screen
+look like it is not listening, which is the exact complaint the whole gap redesign
+exists to fix.
+
+**Where the obvious fix does NOT work:** "at most one open gap per skeleton section" is
+mechanical and testable, and it was my first instinct — but the two gaps sat in
+*different* sections (Repo shape vs Topic guidance), so the rule would not have fired.
+The root cause is a round-1 question that conflated two things, not a section collision.
+
+**Pros of fixing:** the confirm screen stops repeating itself; the flash and the
+announcement become trustworthy signals.
+**Cons:** the only honest lever is prompt tuning ("each gap asks about exactly ONE
+thing", firmer id-stability language), and tuning a prompt without a corpus of real
+pastes is guesswork that can easily make gap coverage worse.
+
+**Named trigger:** once there are ~20 real practice-door sessions, dump the gap lists
+per re-inference round and count how often an id changes or an overlapping gap appears.
+Tune the prompt against that corpus, and add a `clarify.test.ts` fixture pinning the
+observed-stable ids.
+
+**Depends on:** beta traffic. **Effort:** human ~3 hours / CC ~20 min. **Priority:** P3.
+**Found by:** /qa on `beta`, 2026-08-12 (ISSUE-005).
+
+---
+
+## 40. LC-sourced rounds — phase-2/3 deferrals, each with its trigger
+
+**What shipped (2026-08-12):** the dataset layer (`lc-source.ts`, pinned +
+blocklisted), deterministic test conversion (`lc-convert.ts`), `{{SOURCE_BLOCK}}`
+skinned/verbatim generation, `QueueItem.source`/`Rep.source` → `--source lc:<slug>`,
+`lc verify` (mechanical oracle proof + `--generate` sampling), submit-run pass counts
+through timeline (renderer v3) + judge ground truth, the flushSaves-on-submit fix,
+and the record-only topic ledger (`topic-graph.ts`).
+
+**Deliberately deferred, with the trigger that un-defers each:**
+- **Weakness-RANKED problem selection** (the topic-graph-driven picker) — user
+  decision 2026-08-12: build the conceptual graph, hold the steering. Trigger:
+  enough beta ledger rows that ranking beats coverage (~10 LC sessions/user), and
+  the user asking for it. SHIPPED 2026-08-13 instead: the memory-blind half —
+  intake extraction of named problems (both doors, `lc-refs.ts`), `/api/item/source`
+  manual binding, and `lc-pick.ts` diverse auto-sourcing as the DEFAULT for unnamed
+  algorithmic rounds (dedup = 14-day recency window over the ledger, slug+ts only —
+  a seen-list, not steering).
+- **Tree/linked-list problems** (~180 slugs) — the converter's `build_tree`/`build_list`
+  harness half exists as a design; scaffolds must carry standard `TreeNode`/`ListNode`.
+  Trigger: eligible coverage feels thin in tree-heavy targets.
+- **Verbatim mode past the CLI** (`IP_LC_VERBATIM` policy in public-config,
+  `verbatimAllowed` gate, statement rendering wider than the 480px pane, a real md
+  renderer). Trigger: verbatim graduating past the founder's own practice.
+- **`checkSourceLeak`** (slug/title/entry-point/10-word-shingle scan over
+  candidate-visible files, additive in validate.ts behind `manifest.source`).
+  Trigger: first observed lazy skin from `lc verify --generate` sampling.
+- **Hidden-test split** (visible samples + grading suite). Trigger: evidence that
+  reading expected outputs in `tests/cases.json` distorts one-shot scores.
+- **pip/sortedcontainers image bump** (`ip-ide-python:2`). Trigger: same as trees —
+  coverage pressure (currently ~90 slugs excluded as non-stdlib).
+- **Mechanical `solved` override on one-shot rounds** (exit code beats the judge).
+  Trigger: the gauntlet showing solved-errors on build rounds.
+- **`cli.ts topics rebuild`** (ledger reconstruction from assessments + manifests —
+  the store is non-precious by design; this makes it provably so). Trigger: first
+  corrupt-store warning in a beta log.
+- ~~**Plural `sources[]` for multi-part OA sets**~~ **SHIPPED 2026-08-13**
+  (same day): additive `source.parts`, stated `part_count` (clamped 2..4 and
+  by `max_source_files`), flat `solution_partN.py`/`tests/test_partN.py`
+  layout, set-aware source block (the blueprint's "same count of parts" and
+  the scaffold contract now AGREE), per-part topic-ledger rows replaced as a
+  session set. Per-item manual rebinding REMAINS removed — now representable,
+  restore only when wanted.
+
+- **Two known oracle-failure classes the blocklist absorbs** (~5% of eligible in the
+  2026-08-12 sample sweep): any-order answers where the canonical's output order
+  differs from the recorded order (a sort-on-mismatch comparator would false-accept
+  problems where order MATTERS — do not add it casually), and canonicals that
+  genuinely exceed the 10s per-case alarm on the largest inputs. Trigger for
+  rescuing either class: the blocklist visibly starving a tag the user needs.
+
+**Found by:** the LC integration build (plan `glittery-stirring-harbor`, 2026-08-12).
+
+---
+
+## 42. Task hypothesis on the plans path (planner / adapt / target specs)
+
+**What:** Extend the round-task hypothesis (blueprint.ts `ROUND_TASKS`) from the
+practice door to the season-plan path: `propose_rounds` and `adapt_plan` emit
+`task`/`task_evidence`, the planner conversation surfaces it ("I'm reading this as a
+build round — correct me"), the confirm gate renders it, and it persists alongside the
+target's specs so `cli.ts blueprint`/`generate-for` route on it.
+
+**Why it matters:** the plans path currently uses the capability fallback, which cannot
+distinguish `algorithmic_set` from `practical_build` (blank+all_failing+panes is
+capability-identical — the exact ambiguity that misgenerated the 2026-08-12 practice
+round). Queue rounds carry the same risk today.
+
+**Why deferred:** touching shared `ROUND_FIELDS` changes the planner AND adapt tool
+schemas at once, and persisting task next to append-only specs deserves its own review
+(validateRoundSpec ignores unknown fields, so storage is mechanically safe, but the
+append-only discipline is a design decision, not a syntax one).
+
+**Named trigger:** the first misrouted QUEUE round, or when the planner conversation
+starts asking round-nature questions on its own.
+
+**Effort:** human ~1 day / CC ~40 min. **Priority:** P2.
+
+---
+
+## 41. AI-assisted rounds — a delivery capability the market now runs
+
+**What:** A session mode where the CANDIDATE has an AI assistant inside the round
+(chat pane against a model, prompt/verify/debug workflow), matching the fastest-moving
+2026 interview format: Meta pilots a discrete "AI-enabled" coding slot (candidate picks
+the model, CoderPad-hosted); Google's code-comprehension pilot puts Gemini in the round
+and grades prompt engineering, output validation, and debugging of model output.
+
+**Why it matters:** these rounds are graded on HOW the candidate uses the assistant —
+a skill Zenkai currently cannot let anyone practice. It is a capability (RoundSpec-level,
+session-runtime-enforced: an `assistant` capability is exactly what the closed vocabulary
+exists for), NOT a skeleton — any task can be delivered with or without an assistant.
+
+**Cons / cost:** a real in-session model integration (spend per round), interviewer
+prompts that know the assistant exists, and judge dimensions for assistant use — this is
+a feature, not a patch.
+
+**Named trigger:** the first user paste describing an AI-allowed round (grep clarify
+logs), or Meta/Google expanding the pilots beyond select orgs.
+
+**Effort:** human ~1-2 weeks / CC ~half a day. **Priority:** P3 until the trigger fires.
+**Context:** 2026-08-13 market research in
+~/.gstack/projects/interview_prep/johnzhang-beta-plan-20260812-task-taxonomy.md.
+
+---
+
+## 43. Skinned LC rounds de-skin themselves through the cases files
+
+**What:** `tests/cases.json` / `cases_partN.json` carry the dataset's raw kwarg
+strings verbatim — original LeetCode parameter names (`low`, `high`, `zero`,
+`one`) — and the panes file strip lists them, so one tab-click reveals the
+problem's real identity on every skinned round (single AND multi-part; 2026-08-14
+full-surface QA hit it on `count-ways-to-build-good-strings` and all 3 parts of
+rep-set67388).
+
+**Why it's a decision, not just a fix:** the harness already passes case values
+POSITIONALLY (lc-convert.ts header: "a skinned scaffold may rename parameters
+freely as long as order and meaning hold"), so the kwarg NAMES in cases files are
+display-only. Two viable shapes: (a) hide cases/tests files from the panes list
+on one-shot rounds — matches real OAs, which never show the grading suite, and
+the in-session PUT block for the grading contract already landed (2026-08-14);
+(b) re-emit cases keys renamed to the skinned scaffold's own signature (parse the
+generated `def`). (a) is 10 lines in `listWorkspaceFiles`; (b) preserves
+inspectability. Pick one deliberately — (a) changes what a candidate sees.
+
+**Where to start:** `server/src/panes.ts` `listWorkspaceFiles` for (a);
+`server/src/lc-convert.ts` `renderCasesJson` + a signature parse for (b).
+
+**Effort:** (a) CC ~15 min / (b) CC ~1-2 hr. **Priority:** P1 — it defeats the
+skinned-mode policy on every sourced round.
+
+---
+
+## 44. Multi-part rounds: per-part outcomes for the topic ledger and the judge
+
+**What:** a multi-part set records the whole-session `solved` boolean on every
+part row and drops per-part pass counts — so a set where part 1 went 12/12 and
+part 3 went 0/12 scores every part at the unsolved floor, and the judge (which
+only receives the aggregate "29/36") asserts breakage in parts that fully passed.
+Feedback card gives no per-part outcome either. (2026-08-14 QA, sess-qa813-lcset
+lineage; three agents confirmed independently.)
+
+**Why deferred:** needs per-part results plumbed from the graded run. The
+unittest aggregate output does contain per-class failures (`Part1Tests` …), so
+`parseRunCounts` could grow a per-class variant and `topic-graph.ts`
+`attemptsFromSession` could stamp real per-part solved/tests — but that touches
+the ledger row shape, and the topic graph is record-only by decision; get the
+record RIGHT before anything reads it.
+
+**Where to start:** `server/src/panes.ts` `parseRunCounts` (per-class parse),
+then `topic-graph.ts` `attemptsFromSession`, then the card's multi-part block.
+
+**Effort:** CC ~1-2 hr. **Priority:** P2.
+
+---
+
+## 45. One invalid ANTHROPIC_API_KEY silently degrades everything — no preflight, no fallback, no signal
+
+**What:** with a set-but-invalid key, `pick*Model()` commits to the API path on
+env presence alone; the interviewer goes silent with zero user-visible signal,
+every judge run lands UNASSESSED, and generation burns ~180s of retries per
+build before surfacing a raw JSON blob. The documented `claude -p` degraded mode
+never engages because the bad key also poisons the CLI. (2026-08-14 QA: the
+harness's shell key shadowed the repo's valid .env key and took down eleven
+sessions' judges and every interviewer before root-cause.)
+
+**Fix shape (pick deliberately):** a 1-second auth preflight at process start
+(GET /v1/models) that logs loudly and flips the transport to `claude -p` with a
+clean env, plus a session-chrome chip when the interviewer's model path is dead
+(the silent-interviewer UX is the worst part). The rejudge/report plumbing
+already stopped destroying records on this failure (fixed 2026-08-14).
+
+**Where to start:** the `pickX()` family (judge.ts:395 is canonical), then a
+`voiceOffReason`-style `interviewerOffReason` in session.ts + chrome chip.
+
+**Effort:** CC ~1 hr. **Priority:** P1 — cheapest insurance against the worst
+silent-failure class found in the full-surface QA.
+
+---
+
+## 46. CLI `generate-for` is a second, poorer generation path
+
+**What:** the CLI path is queue-blind: it drops a queue item's bound LC
+`source` unless an undocumented `--source` flag is repeated by hand, binds
+nothing back to the queue item (the app shows 8/8 pending while two validated
+problems sit on disk), writes no `.generating` marker and no `<dir>.build.log`,
+bypasses the app's build caps, and leaves orphan empty dirs with no `.failed`
+reason on death. The app's `spawnGeneration` does all of this correctly.
+(2026-08-14 QA; three generation agents hit different facets.)
+
+**Fix shape:** extract the app's spawn/bind/marker logic into one function both
+paths call, or make `generate-for` resolve the target's queue and behave like a
+headless click of the timeline's Generate button.
+
+**Where to start:** `server/src/app.ts` `spawnGeneration` vs `cli.ts`
+`generate-for`; the marker/log helpers already exist beside `openBuildLog`.
+
+**Effort:** CC ~1-2 hr. **Priority:** P2.
+
+---
+
+## 47. Review-round surface: the diff deserves a diff
+
+**What:** `starts_from:'diff'` has no diff-specific UI: CHANGE.diff renders as
+uncolored plaintext (word wrap for .md landed 2026-08-14, the diff itself is
+still monochrome), a dead 180px TEST RESULTS pane occupies the work column on a
+round where nothing can run, REVIEW.md — the only graded artifact — is one
+undistinguished tab among twelve, and the PR's changed-file set is never
+surfaced. The format WORKS end-to-end now (judge reads REVIEW.md, no phantom
+suite run — both fixed 2026-08-14); this is the experience gap that remains.
+
+**Where to start:** `chrome.ts` `panesMain` (hide the run panel when
+`!can_run_tests`; pin REVIEW.md + CHANGE.diff as primary tabs), a minimal diff
+colorizer for Monaco (`monaco.languages` tokenizer, ~40 lines).
+
+**Effort:** CC ~1-2 hr. **Priority:** P2 — first-impression quality of a format
+the practice door now generates on demand.
+
+---
+
+## 48. `.used` is a single-session slot — reruns orphan history and replay dirty workspaces
+
+**What:** re-running a problem dir overwrites `.used` (the session→problem
+binding), so earlier sessions of the same dir become un-rejudgeable and their
+provenance is gone; and because the panes editor writes into the host problem
+dir with no restore, a re-run replays the previous candidate's code (2026-08-14
+QA: four sessions consumed rep-set67388; only the last is recoverable, and the
+queue-launch path handed a QA agent a pre-solved workspace).
+
+**Fix shape:** append-only `.used` (one line per session; rejudge matches any
+line) is 5 lines and fixes provenance. Workspace restore is the bigger half —
+either a pristine snapshot taken at validate time (`.session-snapshot` machinery
+already exists) restored on launch, or per-session workspace copies.
+
+**Where to start:** `cli.ts` markUsed + the rejudge `.used` scan (now three
+universes, cli.ts:599); `session.ts` launch path for the restore.
+
+**Effort:** CC ~1-2 hr. **Priority:** P2 (P1 the moment anyone re-runs a round
+deliberately).
+
+---
+
+## 49. Voice pipeline trace hygiene (ambient transcripts, health disagreement)
+
+**What:** an open mic on a silent room streams non-speech to STT and plants
+empty/noise `utterance` events in the graded trace (five sessions in the
+2026-08-14 QA; on one no-interviewer round SEVEN phantom "you (voice)" turns
+rendered in the chat rail); separately the trace recorded 8 stt 'up' events
+while /api/status said `stt_up:false` — the two health surfaces disagree.
+
+**Why deferred:** energy-gate tuning is judgment work against real audio, and
+the QA's phantom turns may partly be the harness's silent-room setup; needs a
+human listen-through before touching thresholds. The health split is mechanical
+but lives in the same file.
+
+**Where to start:** `server/src/voice.ts` (energy gate, health events), then
+`judge`'s `isPhantomUtterance` for whether graded traces should drop empties.
+
+**Effort:** CC ~1-2 hr + a real-mic session. **Priority:** P2.
+
+---
+
+## 50. Planner first-turn failure orphans an empty plan card
+
+**What:** the #/new client creates the target BEFORE the first planner turn (so
+conversations can resume — the documented orphan-litter fix), but when that
+FIRST turn fails or is abandoned there is no conversation to resume: an empty
+spec-less target rots as a junk plan card, named by a mid-phrase truncation of
+the paste. Two accumulated during the 2026-08-14 QA alone
+(`i-have-a-stripe-phone-mssin1je`, `-mst3i4t0`).
+
+**Fix shape:** on first-turn failure with no persisted conversation, the client
+deletes the just-created target and restores the message into the composer (no
+data loss, no litter); or the plans list hides spec-less conversation-less
+targets. Also: derive the label from the planner's first reply, not the paste.
+
+**Where to start:** `client/app.js` #/new send flow + `/api/target/delete`.
+
+**Effort:** CC ~30-45 min. **Priority:** P2.
+
+---
+
+## 51. Interviewer observations from the 2026-08-14 full-surface QA (record, not fixes)
+
+Deliberately note-only (owner's instruction: no interviewer changes from QA).
+From live probed sessions (sess-qa814-leak trace analysis, sess-qa813-panesint-b)
+and the legacy round:
+
+- **Mechanism leak in a stuck nudge:** one nudge handed over the planted bug's
+  MECHANISM without naming the file; `leaksBugLocation()` is deliberately
+  locational and has zero coverage for non-locational disclosure. The
+  `leaksImplementationVocabulary` stuck-turn guard exists but did not catch it.
+- **Ground-truth vocabulary volunteered:** replied to a bug-location probe with
+  "boundary minute" before the candidate had used any such term.
+- **Latency cliff:** a direct root-cause statement went unanswered 190s, then
+  was answered by a turn the pipeline flagged unprompted (~40x median latency).
+- **Repetition:** near-identical follow-up appended to three consecutive turns
+  within 43s (settle-window shape).
+- **Invented constraints:** told an untimed round it had "45 minutes"; skipped
+  the round emphasis's mandated LP questions entirely.
+- **Intent gate fails open to 'narration'** when the classifier call errors —
+  directly-addressed questions get silence (session.ts routing, arguably
+  interviewer-side; left untouched per instruction).
+- **Refused a rubric-rewarded clarifying question** on the implement round, and
+  the judge then penalized the candidate for not clarifying — the two ends of
+  the product disagree about the same behavior.
+- **Wrong runner claim:** stated the Run Tests button is "the only runner
+  installed here" on an IDE round whose terminal runs the suite fine.
+
+**Where the fixes would start (when unfrozen):** `interviewer.ts` guard family
++ `round-rules.ts` ANSWERABLE, `session.ts` intent-gate error path, prompt
+emphasis handling. **Priority:** owner's call.
+
+---
+
+## 52. Reload and post-end trace hygiene — the rest of it
+
+**What:** three residual leaks around the same seam, found by fix-verification
+after the post-end append guard landed (2026-08-14):
+
+- **Every session-page reload fires an extra automatic test run and a second
+  `session_start` into the trace** — and it demonstrably changed a verdict: the
+  judge narrated a phantom "session restart" as graded fact
+  (sess-qa814-verify-ide). Reload is a candidate's most ordinary recovery move;
+  it must be free.
+- **A 403-refused save still posts `file_save` into the trace** and increments
+  the header save counter, so the record shows a save that never happened — and
+  the candidate is shown no error at all, so they believe it saved.
+- **A reloaded ended page loses the feedback card** and leaves an enabled chat
+  box (now 409-refused) as the only affordance, with a 00:00 clock.
+
+**Why grouped:** all three are the client and the trace disagreeing about
+session state across a page load. Fixing them one at a time invites three
+different notions of "is this page live"; the client wants ONE resume path that
+asks the server what state it is in and renders that (live / ended+card).
+
+**Where to start:** `client/session.js` boot path (it re-emits `session_start`
+and re-triggers autorun), then the save-error path in `client/panes.js:44-56`,
+then the ended-page render (`markEndedChrome` + `/api/status` carrying the card).
+
+**Effort:** CC ~1-2 hr. **Priority:** P2 (P1 for the autorun/duplicate-start
+half — it reaches the judge).
+
+---
+
+## 53. `reconcileWithDisk` never heals an item already persisted as `done`
+
+**What:** the unassessed-stub guard (2026-08-14) stops NEW wrong completions,
+but items written `done` before it landed stay `done` forever — reconciliation
+only ever moves an item forward. Two live items are wrongly `done` today off
+sessions whose assessment is an unassessed stub.
+
+**Why it is not just a data patch:** a one-off script fixes today's two rows and
+the same drift returns the next time a judge write shape changes. The
+reconciler should be able to CORRECT a status from disk, not only advance it —
+which means deciding whether disk or the stored queue wins per field. That is
+the same question `repace` and the adapt flow already answer differently.
+
+**Where to start:** `server/src/queue.ts` `reconcileWithDisk` (the
+`item.status !== 'done'` precondition), plus a migration pass over
+`targets/*/queue.json` for the rows already stuck.
+
+**Effort:** CC ~45 min. **Priority:** P2.
+
+---
+
+## 54. Contract inconsistencies the fix-verification pass turned up
+
+Small, individually cheap, each one a place where two parts of the product
+state different things. Recorded together so they can be swept in one pass:
+
+- **`/api/file` GET serves pipeline marker files** (`.used`, `.validated`,
+  `.session-snapshot`) by guessed name, contradicting the spoiler contract
+  56bd859's own commit message states. `listWorkspaceFiles` hides them; the
+  fetch route does not. (`session.ts` GET `/api/file` — mirror the dotfile skip.)
+- **`deliverableText` labels ANY saved `.md`** — including the round's own
+  `README.md` / `PROBLEM.md` — as "the candidate's submitted written
+  deliverable, verbatim". Exclude round-provided docs, or take only files the
+  trace shows the candidate actually wrote to. (`judge.ts:445`.)
+- **The degenerate-tool-call retry does not cover an ABSENT tool call**, and the
+  `claude -p` transport has no equivalent retry at all — so the same judge
+  flake is fatal on one path and survivable on the other. (`judge.ts:390-405`.)
+- **The feedback card narrates an interviewer on `interviewer:false` rounds**
+  ("the interviewer would have had to interrupt") — the same copy contract
+  06b70ba fixed in the session chrome, unfixed in the card and in the judge's
+  own dimension prose. (`feedback.ts` + the `communicate` anchor.)
+- **One-shot rounds render the submit action to the judge as "candidate clicked
+  End Session"** when the button says Submit, and that fiction reached a graded
+  card. (`timeline.ts` `renderTimeline` session_end line.)
+
+**Effort:** CC ~15-30 min each. **Priority:** P3, except the deliverable
+labeling (P2 — it is in the judge's ground truth).

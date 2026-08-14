@@ -14,6 +14,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { childEnv } from './child-env.js';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { GeneratedProblem } from '@interview-prep/shared';
@@ -76,16 +77,25 @@ const TEST_DIRS = new Set(['test', 'tests']);
 const HARNESS_BASENAMES = /^(vitest|vite)\.config\.\w+$/;
 const TEST_BASENAMES = /(\.test\.\w+|_test\.py)$|^test_.*\.py$/;
 
+/** Is this workspace-relative path a test file by the repo's conventions?
+ *  The ONLY test-file identification that exists: no manifest field names
+ *  the test file, so consumers (problem-view's failing-test lookup) share
+ *  this predicate instead of growing a drifting copy. */
+export function isTestFile(rel: string): boolean {
+  const parts = rel.split('/');
+  if (TEST_DIRS.has(parts[0] ?? '')) return true;
+  return TEST_BASENAMES.test(parts[parts.length - 1] ?? '');
+}
+
 /** Candidate-facing source files from a listWorkspaceFiles() listing —
  *  what check.max_source_files counts. Tests and harness config are the
  *  problem's scaffolding, not its size. */
 export function countSourceFiles(files: string[]): number {
   return files.filter((f) => {
     if (!SOURCE_EXTENSIONS.has(path.extname(f))) return false;
-    const parts = f.split('/');
-    if (TEST_DIRS.has(parts[0] ?? '')) return false;
-    const base = parts[parts.length - 1] ?? '';
-    return !TEST_BASENAMES.test(base) && !HARNESS_BASENAMES.test(base);
+    if (isTestFile(f)) return false;
+    const base = f.split('/').pop() ?? '';
+    return !HARNESS_BASENAMES.test(base);
   }).length;
 }
 
@@ -111,7 +121,14 @@ export function checkManifest(problem: GeneratedProblem, repoDir: string): strin
     }
   }
   if (spec.check.kind === 'diff_present') {
-    for (const f of spec.check.files_changed ?? []) {
+    // The manifest-side half of the diff contract: the GENERATOR must declare
+    // which files changed (validateRoundSpec no longer requires this at
+    // inference time — no problem exists there to name files from), and every
+    // declared file must exist. An empty declaration means the review round
+    // has nothing to review, which is a generation failure.
+    const changed = spec.check.files_changed ?? [];
+    if (changed.length === 0) failures.push('diff_present manifest requires non-empty check.files_changed');
+    for (const f of changed) {
       if (!existsSync(path.join(repoDir, f))) failures.push(`files_changed entry does not exist: ${f}`);
     }
   }
@@ -152,10 +169,18 @@ export function checkExpectations(problem: GeneratedProblem): string[] {
   // Vocabulary pool: the spec AND the planted bug. reflect/approach
   // expectations legitimately speak the bug's language ("the boundary
   // instant"), which the candidate-facing spec deliberately does not.
+  // Identifiers stay WHOLE (`[^a-z0-9_]+`, not `[^a-z]+`): `min_ms` used to
+  // shred into "min"+"ms", both under the floor, so the most
+  // problem-specific token a spec and its expectations can share was
+  // invisible to the gate. Skinned LC rounds fail on this structurally —
+  // the spec speaks the story ("chime", "pulses") while expectations speak
+  // the algorithm ("recurrence", "modulus"), and the shared identifiers are
+  // the whole bridge (rep-e2e52324, 2026-08-13; standing limitation #5 in
+  // docs/problem-generation.md). Strictly additive: nothing that matched
+  // before stops matching.
+  const tokenize = (s: string) => s.toLowerCase().split(/[^a-z0-9_]+/);
   const specWords = new Set(
-    `${problem.spec ?? ''} ${problem.planted_bug?.description ?? ''}`
-      .toLowerCase()
-      .split(/[^a-z]+/)
+    tokenize(`${problem.spec ?? ''} ${problem.planted_bug?.description ?? ''}`)
       .filter((w) => w.length >= 5),
   );
   for (const key of DIMENSIONS) {
@@ -170,10 +195,7 @@ export function checkExpectations(problem: GeneratedProblem): string[] {
     if (VAGUE_STEMS.test(exp.trim())) {
       failures.push(`expectation for ${key} starts with a vague stem: "${exp.slice(0, 40)}..."`);
     }
-    const tied = exp
-      .toLowerCase()
-      .split(/[^a-z]+/)
-      .some((w) => w.length >= 5 && specWords.has(w));
+    const tied = tokenize(exp).some((w) => w.length >= 5 && specWords.has(w));
     if (!tied) {
       failures.push(`expectation for ${key} shares no vocabulary with the spec — not problem-specific: "${exp.slice(0, 60)}..."`);
     }
@@ -224,6 +246,9 @@ function runSuite(
       cwd: repoDir,
       encoding: 'utf8',
       timeout: 180_000,
+      // WU8: generated (potentially stranger-steered) code runs with a bare
+      // env — no keys, no config, nothing to exfiltrate.
+      env: childEnv('sandbox', process.env),
     });
     const text = `${run.stderr ?? ''}\n${run.stdout ?? ''}`;
     const parsed = parseUnittestOutput(text);
@@ -237,6 +262,7 @@ function runSuite(
       cwd: repoDir,
       encoding: 'utf8',
       timeout: 180_000,
+      env: childEnv('sandbox', process.env),
     });
     if (install.status !== 0) {
       return { error: `npm install failed: ${install.stderr?.slice(0, 400)}` };
@@ -246,7 +272,7 @@ function runSuite(
   spawnSync(
     'npx',
     ['vitest', 'run', '--reporter=json', `--outputFile=${outFile}`],
-    { cwd: repoDir, encoding: 'utf8', timeout: 180_000 },
+    { cwd: repoDir, encoding: 'utf8', timeout: 180_000, env: childEnv('sandbox', process.env) },
   );
   if (!existsSync(outFile)) return { error: 'vitest produced no JSON report' };
   return parseVitestJson(readFileSync(outFile, 'utf8'));

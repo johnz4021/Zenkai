@@ -58,6 +58,21 @@ describe('detectStuck — fires on grinding, not on working', () => {
     expect(s!.last_summary).toMatch(/failures=1/);
   });
 
+  it('re-focusing an already-seen file mid-streak does NOT reset — only first opens are exploration', () => {
+    // The focus sensor reuses file_open (via: 'focus') for tab switches, so
+    // flipping between two long-known tabs while grinding must not read as a
+    // new hypothesis. The detector keys "first time" on paths seen this
+    // session — pinned here because the focus sensor multiplied file_open
+    // volume.
+    const s = detectStuck(
+      thrash().open(8.5, TEST).open(8.7, A).build(), // both opened at min 1-2
+      at(11),
+      T0,
+    );
+    expect(s).not.toBeNull();
+    expect(s!.cycles).toBe(3);
+  });
+
   it('two cycles is normal iteration, not a pattern', () => {
     const two = new T().open(1, A).edit(3, A).fail(4).edit(6, A).fail(7).build();
     expect(detectStuck(two, at(8), T0)).toBeNull();

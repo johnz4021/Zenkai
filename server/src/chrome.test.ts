@@ -118,7 +118,7 @@ describe('session chrome', () => {
     // The client asks for /voice/tts/<seq>; the server reads that event's
     // payload.text, which guard() produced. No client path carries raw
     // model output to the speaker.
-    expect(js).toContain('window.ipVoice.speak(m.seq)');
+    expect(js).toContain('window.ipVoice.speak(m.seq,');
     expect(clientScript('voice.js')).toContain("'/voice/tts/' + seq");
   });
 
@@ -261,5 +261,79 @@ describe('panes surface (the HackerRank-classic renderer)', () => {
 
   it('the ended layout swallows the panes work area like it swallows the iframe', () => {
     expect(oaPanes()).toContain('body.ended main #panes { display: none; }');
+  });
+});
+
+describe('beta auth — session-origin token handoff (WU4)', () => {
+  it('catches #token= before any request-firing script runs', () => {
+    const page = sessionPage('sess-test');
+    const catcher = page.indexOf("'#token='");
+    const firstScriptSrc = page.indexOf('<script src=');
+    expect(catcher).toBeGreaterThan(-1);
+    expect(firstScriptSrc).toBeGreaterThan(-1);
+    expect(catcher).toBeLessThan(firstScriptSrc);
+    expect(page).toContain("document.cookie = 'ip_jwt='");
+  });
+});
+
+describe('beta copy on the session card (WU9)', () => {
+  it('the memory note rides below the patterns line in the card renderer', () => {
+    const js = clientScript('session.js') ?? '';
+    const patterns = js.indexOf('before patterns emerge');
+    const note = js.indexOf('Deeper memory is in development');
+    expect(patterns).toBeGreaterThan(-1);
+    expect(note).toBeGreaterThan(patterns); // below, never replacing
+  });
+});
+
+describe('one-shot status copy (QA ISSUE-001)', () => {
+  // Regression: ISSUE-001 — the header promised "waiting for first failing
+  // test run" on rounds where no test run can occur (no Run button at all),
+  // for the round's full duration.
+  // Found by /qa on 2026-08-12
+  // Report: .gstack/qa-reports/qa-report-localhost-2026-08-12.md
+  it('marks one_shot rounds so the client can drop the impossible trigger copy', () => {
+    const oneShot = sessionPage('s', { surface: 'panes', one_shot: true, statement: 'x' });
+    expect(oneShot).toContain('data-one-shot="1"');
+    // An iterate round keeps the trigger semantics — the attribute is the
+    // ONLY thing separating them, so it must be absent there.
+    const iterate = sessionPage('s', { surface: 'panes', one_shot: false, statement: 'x' });
+    expect(iterate).not.toContain('data-one-shot');
+  });
+
+  it('the client branches the trigger phrase on that attribute', () => {
+    const js = clientScript() ?? '';
+    expect(js).toContain('suite runs once at submit');
+    expect(js).toContain('oneShot');
+    // The debugging-round phrase must survive for rounds that can arm it.
+    expect(js).toContain('waiting for first failing test run');
+  });
+});
+
+describe('panes flush completeness (QA ISSUE-002)', () => {
+  const panes = clientScript('panes.js') ?? '';
+
+  // Regression: ISSUE-002 — pending EDIT events were not flushed on submit,
+  // so the last edits landed after session_end and were invisible to the
+  // judge's trace snapshot ("made unseen edits").
+  // Found by /qa on 2026-08-12
+  // Report: .gstack/qa-reports/qa-report-localhost-2026-08-12.md
+  it('flushes pending edit events, not just pending saves', () => {
+    expect(panes).toContain('flushEdits');
+    // flushSaves is the submit/run entry point; it must invoke the edit
+    // flush, or the fix is unreachable from the only paths that call it.
+    expect(panes).toMatch(/const flushSaves = \(\) => \{\s*\n\s*flushEdits\(\);/);
+  });
+
+  it('awaits the edit posts instead of firing them into the void', () => {
+    // A fire-and-forget post still races /api/end. postEvent must return its
+    // promise and the flush must track it.
+    expect(panes).toMatch(/const postEvent = \([^)]*\) =>\s*\n?\s*fetch/);
+    expect(panes).toContain("postEvent('edit', { path, changes: n }).finally");
+    expect(panes).toContain('Promise.all([...inflight])');
+  });
+
+  it('is still a parseable classic script after the change', () => {
+    expect(() => new Function(panes)).not.toThrow();
   });
 });

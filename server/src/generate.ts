@@ -12,6 +12,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { childEnv } from './child-env.js';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { RoundSpec } from '@interview-prep/shared';
@@ -105,11 +106,17 @@ export interface GenerateOptions {
   spec?: RoundSpec;
   /** Optional emphasis derived from the gap graph. */
   targetNote?: string;
+  /** Dataset-sourced rounds: the SOURCED PROBLEM section (lc-convert's
+   *  sourceRequirements). Absent = empty substitution, invented round. */
+  sourceBlock?: string;
   /** Prompt template path. */
   templatePath: string;
   model?: string;
   /** Hard wall-clock cap on the agent run. */
   timeoutMs?: number;
+  /** Agent turn cap. Sourced builds skip invention and test authoring, so
+   *  they run tighter (sonnet/40/5min) than invented rounds (opus/80/8min). */
+  maxTurns?: number;
 }
 
 export interface GenerateResult {
@@ -126,6 +133,7 @@ export async function generateProblem(opts: GenerateOptions): Promise<GenerateRe
   const spec = opts.spec ?? DEFAULT_DEBUGGING_SPEC;
   const prompt = template
     .replace(/\{\{ROUND_BRIEF\}\}/g, opts.brief)
+    .replace(/\{\{SOURCE_BLOCK\}\}/g, opts.sourceBlock ?? '')
     .replace(/\{\{CHECK_REQUIREMENTS\}\}/g, checkRequirements(spec.check))
     .replace(/\{\{ROUND_SPEC_JSON\}\}/g, JSON.stringify(spec))
     .replace(/\{\{TARGET_NOTE\}\}/g, opts.targetNote ?? '');
@@ -138,7 +146,7 @@ export async function generateProblem(opts: GenerateOptions): Promise<GenerateRe
     // The target dir is dedicated and disposable; the agent must be able to
     // write files and run npm without interactive permission prompts.
     '--permission-mode', 'bypassPermissions',
-    '--max-turns', '80',
+    '--max-turns', String(opts.maxTurns ?? 80),
   ];
   if (opts.model) args.push('--model', opts.model);
 
@@ -146,7 +154,9 @@ export async function generateProblem(opts: GenerateOptions): Promise<GenerateRe
   return new Promise<GenerateResult>((resolve) => {
     const child = spawn('claude', args, {
       cwd: path.resolve(opts.targetDir),
-      env: process.env,
+      // WU8: the agent needs the Anthropic key; it never needs voice or DB
+      // credentials, and its brief now carries stranger-authored prose.
+      env: childEnv('generator', process.env),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -155,9 +165,15 @@ export async function generateProblem(opts: GenerateOptions): Promise<GenerateRe
     child.stdout.on('data', (d) => (stdout += d));
     child.stderr.on('data', (d) => (stderr += d));
 
+    // 8 minutes was calibrated for a single-module debugging round (~5 min,
+    // per CLAUDE.md). A multi-part OA is roughly triple the work — three
+    // implementation files plus three suites — and two of them died at
+    // EXACTLY 480s with SIGTERM, one of them holding a complete, validating
+    // problem (2026-08-12). Sourced LC builds keep their own tighter 5-min
+    // budget from cli.ts: those are a transform, not invention.
     const timeout = setTimeout(() => {
       child.kill('SIGTERM');
-    }, opts.timeoutMs ?? 8 * 60_000);
+    }, opts.timeoutMs ?? 15 * 60_000);
 
     child.on('close', (code) => {
       clearTimeout(timeout);

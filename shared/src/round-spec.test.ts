@@ -48,11 +48,35 @@ describe('validateRoundSpec', () => {
     expect(validateRoundSpec(s).join('\n')).toMatch(/incoherent/);
   });
 
-  it('requires files_changed for diff_present', () => {
+  it('diff_present passes WITHOUT files_changed — inference cannot name files that do not exist yet', () => {
+    // Requiring the list here made every model-authored review round fail
+    // every intake path (QA 2026-08-13). The non-empty requirement lives in
+    // checkManifest, where the generated artifact exists to prove it.
     const s = good();
     s.capabilities.can_run_tests = false;
     s.check = { kind: 'diff_present' };
+    expect(validateRoundSpec(s)).toEqual([]);
+  });
+
+  it('files_changed is shape-checked when present', () => {
+    const s = good();
+    s.capabilities.can_run_tests = false;
+    s.check = { kind: 'diff_present', files_changed: ['ok.ts', ''] };
     expect(validateRoundSpec(s).join('\n')).toMatch(/files_changed/);
+    s.check = { kind: 'diff_present', files_changed: ['a.ts', 'b.ts'] };
+    expect(validateRoundSpec(s)).toEqual([]);
+  });
+
+  it('evidence_tier: optional, closed vocabulary', () => {
+    for (const tier of ['firsthand', 'secondhand', 'public_prior'] as const) {
+      const s = good();
+      s.evidence_tier = tier;
+      expect(validateRoundSpec(s)).toEqual([]);
+    }
+    const s = good();
+    s.evidence_tier = 'gospel' as never;
+    expect(validateRoundSpec(s).join('\n')).toMatch(/evidence_tier/);
+    expect(validateRoundSpec(good())).toEqual([]); // absent stays valid
   });
 
   it('rejects non-objects and empty shells loudly', () => {

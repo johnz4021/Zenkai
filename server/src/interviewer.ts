@@ -21,6 +21,8 @@
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
+import { isCandidateActivity } from '@interview-prep/shared';
+import { ANSWERABLE, SURRENDER, roundRules } from './round-rules.js';
 
 export type InterviewerKind = 'answer' | 'pressure' | 'probe' | 'decline' | 'silent';
 
@@ -34,6 +36,36 @@ export interface InterviewerTurn {
    *  Exists because a silent turn used to be indistinguishable from a
    *  crashed one (sess-1785962737985: three dropped asks, zero evidence). */
   reason?: string;
+}
+
+/**
+ * Does the problem SPEC itself name the bug file? Then its name is public —
+ * the candidate reads it in the statement — and the guard's basename/stem
+ * checks would censor the spec's own vocabulary. Found live on a
+ * single-file round: the spec opened with "`hydrator.py` is what an
+ * analysis session runs…", the bug was in hydrator.py, and every opening
+ * turn that framed the task was silently redacted. In a single-file
+ * problem the "location" carries zero information anyway.
+ */
+export function specNamesBugFile(spec: string, bugFile: string): boolean {
+  if (!bugFile || !spec) return false;
+  const base = bugFile.split('/').pop() ?? bugFile;
+  const stem = base.replace(/\.[^.]+$/, '');
+  const hay = spec.toLowerCase();
+  if (hay.includes(base.toLowerCase())) return true;
+  return stem.length > 3 && new RegExp(`\\b${escapeRe(stem)}\\b`, 'i').test(spec);
+}
+
+/** Has the candidate themselves touched the bug file? Drives the guard
+ *  relaxation: found territory may be discussed. */
+export function candidateVisitedBugFile(events: TraceEvent[], bugFile: string): boolean {
+  if (!bugFile) return false;
+  const base = bugFile.split('/').pop() ?? bugFile;
+  return events.some((e) => {
+    if (e.type !== 'edit' && e.type !== 'file_open' && e.type !== 'file_save') return false;
+    const p = String((e.payload as { path?: string })?.path ?? '');
+    return p.endsWith(`/${base}`) || p === base || p.endsWith(`/${bugFile}`) || p === bugFile;
+  });
 }
 
 export interface InterviewerContext {
@@ -74,6 +106,46 @@ export interface InterviewerContext {
    * on their screen even though it also appears inside `bug`.
    */
   allowedExtra?: string;
+  /** renderWorkspaceView() output: real diffs of recently-edited files +
+   *  the latest test output. PER-TURN (below the cache marker). */
+  workspaceView?: string;
+  /** True once the candidate has themselves touched the bug file —
+   *  relaxes the location guard for found territory. */
+  bugFileVisited?: boolean;
+  /** The problem's six rubric dimension expectations, rendered as a list.
+   *  Per-session constant (stable half, cacheable). The judge always had
+   *  these; the interviewer probing blind to them was the rubric-blind
+   *  finding — one dimension literally graded a question "to the
+   *  interviewer" it never knew to expect. */
+  rubric?: string;
+  /** The blueprint's "## Interviewer engagement" section (or a per-check
+   *  default): how led this round is, what to reward. Stable half. */
+  engagement?: string;
+  /** Set when a moment trigger fired ('opening' or a moments.ts detection):
+   *  the observation text for the per-turn half. */
+  momentObservation?: string | null;
+  /**
+   * describeAdrift()/describeWarm() output: they have been reading one region
+   * for a long time with nothing moving. Fires the REDIRECT rules (close the
+   * dead end) or, when the answer is inside that region, the encouragement
+   * inversion. Never both with stuckObservation — the tick picks one.
+   */
+  adriftObservation?: string | null;
+  /** The round's check kind — selects the per-kind prompt blocks
+   *  (round-rules.ts). Absent = one_failing_test, the legacy resolution. */
+  checkKind?: string;
+  /** codebaseViewOf() output: repo map + the failing test verbatim.
+   *  Session-constant by construction (computed once at start) → stable
+   *  half. The interviewer had never seen a line of the problem it was
+   *  probing; this is the fix, bounded. */
+  codebase?: string;
+  /** renderAgenda() output: which evaluation dimensions still lack
+   *  evidence. PER-TURN (it changes as evidence accumulates) — the running
+   *  to-do list that makes unprompted probes purposeful instead of generic. */
+  agenda?: string;
+  /** renderWrapState() output while the wrap-up phase is active: which
+   *  evaluation question is next, or the closing instruction. PER-TURN. */
+  wrapState?: string;
 }
 
 export type Interviewer = (ctx: InterviewerContext) => Promise<InterviewerTurn>;
@@ -154,7 +226,9 @@ export function leaksBugLocation(text: string, bugFile: string): boolean {
   return stem.length > 3 && new RegExp(`\\b${escapeRe(stem)}\\b`, 'i').test(text);
 }
 
-const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 /** Parse the model's JSON reply; anything unparseable becomes silence. */
 export function parseTurn(raw: string): InterviewerTurn {
@@ -284,6 +358,12 @@ export function leaksImplementationVocabulary(
  * going to point you anywhere" would be a non-sequitur — and, worse, a tell
  * that the agent nearly said something about where to look. Unprompted turns
  * redact to silence.
+ *
+ * Related but prompt-enforced only: the quote-only-opened-files rule (the
+ * interviewer now sees the repo map and failing test up front, and may
+ * discuss content only from files the candidate has opened). No mechanical
+ * layer here — quoting unvisited NON-bug files is a taste violation, not a
+ * leak, and this guard stays surgical about actual leaks.
  */
 export function guard(
   turn: InterviewerTurn,
@@ -292,9 +372,14 @@ export function guard(
   hasTargetNote = false,
   /** Present only on stuck turns: arms the vocabulary check. */
   stuckVocab?: { forbidden: string; allowed: string },
+  /** True once the candidate has edited/opened/saved the bug file
+   *  THEMSELVES. Mentioning territory they already found is not a leak —
+   *  discussing their own changes there is the whole point of the
+   *  interviewer having eyes. Unvisited stays redacted exactly as before. */
+  bugFileVisited = false,
 ): InterviewerTurn {
   if (!turn.say) return turn;
-  const bugLeak = leaksBugLocation(turn.say, bugFile);
+  const bugLeak = !bugFileVisited && leaksBugLocation(turn.say, bugFile);
   // The gap-note guard only arms when a note was actually injected —
   // otherwise a turn like "you tend to..." is just conversation.
   const gapLeak = hasTargetNote && leaksGapNote(turn.say);
@@ -316,38 +401,81 @@ export function guard(
 /**
  * Compact activity summary for the prompt: what they have been doing.
  *
- * File paths are ALIASED ("file A", "file B"). Measured with the real agent:
- * given raw paths, an unprompted pressure beat parroted the buggy file's name
- * straight back out of the activity feed. The interviewer never needs the
- * name — it needs identity ("still in the same file after 8 minutes"), which
- * an alias carries just as well while removing the easiest accidental leak.
+ * REAL paths now (the aliasing era is over): every path here is a file the
+ * candidate themselves touched, and the relaxed guard still redacts
+ * bug-file mentions until the candidate has visited it — so the parroting
+ * incident that created aliasing ("file A"/"file B") cannot recur through
+ * this feed. What changed: the interviewer has workspace eyes, and an
+ * interviewer that can see engine.py's diff but must call it "file A" in
+ * conversation is incoherent.
  */
 export function renderActivity(events: TraceEvent[], nowMs: number, limit = 10): string {
+  // isCandidateActivity is the filter, at last with a consumer: the old
+  // "everything but chat" filter let voice-sensor flips flood the window —
+  // measured live, 9 of the 10 lines the interviewer saw were the literal
+  // word "sensor" and the candidate's file opens had been evicted (it then
+  // asked which file they were in, with the answer sitting in the trace).
+  // utterances live in the transcript slot; view_range coalesces into the
+  // workspace view's "currently viewing" line — repeating either here would
+  // just re-crowd the window.
   const recent = events
-    .filter((e) => e.type !== 'utterance' && e.type !== 'interviewer')
+    .filter((e) => isCandidateActivity(e) && e.type !== 'utterance' && e.type !== 'view_range')
     .slice(-limit);
   if (recent.length === 0) return '(no editor activity yet)';
-  const aliases = new Map<string, string>();
-  const alias = (p: string) => {
-    if (!p) return 'a file';
-    if (!aliases.has(p)) aliases.set(p, `file ${String.fromCharCode(65 + aliases.size)}`);
-    return aliases.get(p) as string;
-  };
+  const basename = (p: string) => (p ? (p.split('/').pop() ?? p) : 'a file');
   return recent
     .map((e) => {
       const ago = Math.round((nowMs - e.ts) / 1000);
       const p = e.payload as Record<string, unknown> | null;
       let what: string = e.type;
       if (e.type === 'test_run') {
-        what = p?.exit_code === 0 ? 'test run PASSED' : 'test run FAILED';
-      } else if (e.type === 'edit' || e.type === 'file_save' || e.type === 'file_open') {
-        what = `${e.type} ${alias(String(p?.path ?? ''))}`;
-      } else if (e.type === 'pause') {
-        what = 'went silent';
+        const s = String(p?.summary ?? '');
+        what = `test run ${p?.exit_code === 0 ? 'PASSED' : 'FAILED'}${s ? ` (${s})` : ''}`;
+      } else if (e.type === 'edit' || e.type === 'file_save') {
+        what = `${e.type} ${basename(String(p?.path ?? ''))}`;
+      } else if (e.type === 'file_open') {
+        const via = (p as { via?: string } | null)?.via;
+        what = `${via === 'focus' ? 'switched to' : 'opened'} ${basename(String(p?.path ?? ''))}`;
       }
       return `  -${ago}s  ${what}`;
     })
     .join('\n');
+}
+
+/**
+ * The conversation window for the prompt: last `limit` REAL lines.
+ *
+ * Untranscribed utterances (voice segments STT heard nothing in) used to
+ * render as empty `candidate:` lines and consume transcript slots — 3 of 10
+ * in one measured session. They are dropped from the window but collapsed
+ * into one honest count line, because the opposite failure is worse: speech
+ * the interviewer reads as silence.
+ */
+export function buildTranscript(
+  events: TraceEvent[],
+  limit = 10,
+): { who: 'candidate' | 'interviewer'; text: string }[] {
+  const talk = events.filter((e) => e.type === 'utterance' || e.type === 'interviewer');
+  const textOf = (e: TraceEvent) => String((e.payload as { text?: string })?.text ?? '').trim();
+  const spoken = talk.filter((e) => textOf(e) !== '');
+  const kept = spoken.slice(-limit);
+  // Count unheard segments inside the rendered window (or all of them when
+  // nothing transcribed at all) — older ones are stale, not signal.
+  const sinceTs = kept[0]?.ts ?? 0;
+  const unheard = talk.filter(
+    (e) => e.type === 'utterance' && e.ts >= sinceTs && textOf(e) === '',
+  ).length;
+  const out = kept.map((e) => ({
+    who: e.type === 'utterance' ? ('candidate' as const) : ('interviewer' as const),
+    text: textOf(e),
+  }));
+  if (unheard > 0) {
+    out.push({
+      who: 'candidate',
+      text: `(spoke ${unheard} more time${unheard === 1 ? '' : 's'} in this window, but the words could not be transcribed)`,
+    });
+  }
+  return out;
 }
 
 /**
@@ -364,14 +492,35 @@ export function render(template: string, ctx: InterviewerContext): string {
     ctx.transcript.length === 0
       ? '(nothing said yet)'
       : ctx.transcript.map((t) => `${t.who}: ${t.text}`).join('\n');
+  const rules = roundRules(ctx.checkKind);
   const values: Record<string, string> = {
     SPEC: ctx.spec,
     BUG: ctx.bug,
+    ROUND_INTRO: rules.intro,
+    ANSWER_RULES: rules.answerRules,
+    READING_LIMIT: rules.readingLimit,
+    STUCK_FORBIDDEN: rules.stuckForbidden,
+    FEEDBACK_RULES: rules.feedbackRules,
+    ADRIFT_RULED_OUT: rules.adriftRuledOut,
+    ANSWERABLE,
+    SURRENDER,
+    CODEBASE: ctx.codebase ?? '(no codebase view available for this round)',
     HOW_TO_RUN: ctx.howToRun ?? 'Not known for this round — say you are not sure if asked.',
     TARGET_NOTE: ctx.targetNote ?? '(no history yet — first sessions)',
+    RUBRIC: ctx.rubric ?? '(no rubric available for this round)',
+    ENGAGEMENT: ctx.engagement ?? 'Balanced: probe at the flagged moments, otherwise let them work.',
+    WORKSPACE_VIEW: ctx.workspaceView ?? '(no edits yet this session)',
+    MOMENT: ctx.momentObservation
+      ? `MOMENT — ${ctx.momentObservation} Follow the moment rules above: one focused probe about it, then release.`
+      : 'no',
     ELAPSED_MIN: String(Math.round(ctx.elapsedMs / 60_000)),
     REMAINING_MIN: String(Math.max(0, Math.round(ctx.remainingMs / 60_000))),
     RECENT_ACTIVITY: ctx.recentActivity,
+    ADRIFT: ctx.adriftObservation
+      ? `ADRIFT — ${ctx.adriftObservation} Follow the adrift rules above: one move, nudge true.`
+      : 'no',
+    AGENDA: ctx.agenda ?? '(no agenda computed for this round)',
+    WRAPUP: ctx.wrapState ?? 'no — the working phase is still on.',
     STUCK: ctx.stuckObservation
       ? `STUCK — ${ctx.stuckObservation} Follow the stuck rules above: one move, their vocabulary only, nudge true.`
       : 'no',
@@ -387,14 +536,17 @@ export function render(template: string, ctx: InterviewerContext): string {
   );
 }
 
-/** The guard inputs for a stuck turn, or undefined on ordinary turns.
- *  Forbidden = the private bug knowledge; allowed = everything the candidate
- *  already has (spec, the failing test's name via allowedExtra, their own
- *  words). Exported so tests exercise the exact composition the runtime uses. */
+/** The guard inputs for a SCAFFOLDING turn (stuck or adrift), or undefined on
+ *  ordinary turns. Forbidden = the private bug knowledge; allowed = everything
+ *  the candidate already has (spec, the failing test's name via allowedExtra,
+ *  their own words). The candidate's own words matter most on an adrift turn:
+ *  the redirect names their region back to them, so their vocabulary is
+ *  exactly what it must be free to use. Exported so tests exercise the exact
+ *  composition the runtime uses. */
 export function stuckVocabOf(
   ctx: InterviewerContext,
 ): { forbidden: string; allowed: string } | undefined {
-  if (!ctx.stuckObservation) return undefined;
+  if (!ctx.stuckObservation && !ctx.adriftObservation) return undefined;
   const candidateWords = ctx.transcript
     .filter((t) => t.who === 'candidate')
     .map((t) => t.text)
@@ -447,7 +599,7 @@ export function claudeInterviewer(templatePath: string, model = 'sonnet'): Inter
   const template = readFileSync(templatePath, 'utf8');
   return async (ctx) => {
     const raw = await runClaudeP(render(template, ctx), model, 45_000);
-    return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx));
+    return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx), (ctx.bugFileVisited ?? false) || specNamesBugFile(ctx.spec, ctx.bugFile));
   };
 }
 
@@ -496,7 +648,7 @@ export function streamingInterviewer(templatePath: string, model = 'claude-sonne
         // A truncated turn parses to SILENT and vanishes — say so loudly.
         console.warn(`[interviewer] turn TRUNCATED at max_tokens — raw tail: …${raw.slice(-120)}`);
       }
-      return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx));
+      return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx), (ctx.bugFileVisited ?? false) || specNamesBugFile(ctx.spec, ctx.bugFile));
     } catch (e) {
       console.warn('[interviewer] streaming failed, this turn is silent:', String(e).slice(0, 200));
       return { say: '', kind: 'silent', nudge: false };
