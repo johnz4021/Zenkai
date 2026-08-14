@@ -710,7 +710,20 @@ if (cmd === 'generate') {
   console.log(JSON.stringify(card, null, 2));
   process.exit(result.status === 'assessed' ? 0 : 3);
 } else if (cmd === 'validate') {
-  const report = validateProblem(path.resolve(target ?? '.'));
+  const dir = path.resolve(target ?? '.');
+  const report = validateProblem(dir);
+  // Match the generate path's post-validate hygiene (QA 2026-08-14):
+  // running the suite leaves __pycache__ inside a dir the candidate will
+  // see, and a passing validate that wrote no marker left the pool and the
+  // queue unable to tell a validated problem from an unchecked one — the
+  // pipeline diagram's ".validated" step simply never happened on this
+  // path.
+  const { removePythonArtifacts } = await import('./generation-state.js');
+  removePythonArtifacts(dir);
+  if (report.ok) {
+    const { writeFileSync: wf } = await import('node:fs');
+    wf(path.join(dir, '.validated'), new Date().toISOString());
+  }
   console.log(JSON.stringify(report, null, 2));
   process.exit(report.ok ? 0 : 2);
 } else if (cmd === 'pool') {
