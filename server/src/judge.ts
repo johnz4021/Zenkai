@@ -387,6 +387,22 @@ export function apiJudgeModel(model = 'claude-sonnet-5'): JudgeModel {
     if (res.truncated) {
       throw new Error(`judge output truncated at ${JUDGE_MAX_TOKENS * 3} max_tokens`);
     }
+    // A degenerate emission ({"params":{}}, {}) is a stochastic scaffolding
+    // failure, not the deterministic schema mismatch the no-retry rule was
+    // written for — QA 2026-08-14 saw it void a whole round with no
+    // recovery. One retry, same precedent as truncation.
+    const degenerate = (t: string) => {
+      try {
+        const o = JSON.parse(t) as Record<string, unknown> | null;
+        return !o || typeof o !== 'object' || !('dimensions' in o);
+      } catch {
+        return true;
+      }
+    };
+    if (res.text && degenerate(res.text)) {
+      console.warn('[judge] degenerate tool input (no dimensions) — one retry');
+      res = await call(JUDGE_MAX_TOKENS);
+    }
     if (!res.text) throw new Error('judge returned no tool call');
     return res.text;
   };
