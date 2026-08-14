@@ -133,6 +133,10 @@
     }
     activePath = path;
     editor.setModel(models.get(path));
+    // Prose wraps; code scrolls. Review rounds' whole deliverable is a
+    // markdown write-up — without wrap it edited as one endless line
+    // (QA 2026-08-14).
+    editor.updateOptions({ wordWrap: langOf(path) === 'markdown' ? 'on' : 'off' });
     markActive();
     postEvent('file_open', { path });
     editor.focus();
