@@ -318,6 +318,12 @@ describe('repStateView', () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(path.join(dir, '.used'), 'sess-9\n2026-08-14T00:00:00Z\n');
     mkdirSync(path.join(dir, '.session-snapshot'));
+    // A snapshot with nothing in it is a killed session's leftover, not a
+    // workspace — restoring from it would wipe the tree and replace it with
+    // nothing (QA 2026-08-14), so it must not advertise itself as repeatable.
+    expect(repStateView(root, repsFile(r))[0]!.repeatable).toBe(false);
+
+    writeFileSync(path.join(dir, '.session-snapshot', 'solution.py'), 'print(1)\n');
     expect(repStateView(root, repsFile(r))[0]!.repeatable).toBe(true);
   });
 });

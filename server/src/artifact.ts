@@ -104,6 +104,14 @@ export function makePristineArchive(
     if (existsSync(path.join(problemDir, '.used'))) return { ok: false, skipped: 'dir is consumed (.used exists)' };
     if (existsSync(dest)) return { ok: false, skipped: 'archive already exists' };
   }
+  // An archive of nothing is never legitimate, and it is worse than no
+  // archive: restorability() would report 'pristine' forever and every future
+  // repeat would "succeed" into an empty workspace. Cheap structural guard on
+  // the force path, where the caller has already decided the tree is pristine.
+  const substantive = readdirSync(problemDir).filter(
+    (e) => !(PRISTINE_MARKERS as readonly string[]).includes(e) && e !== SNAPSHOT_DIR,
+  );
+  if (substantive.length === 0) return { ok: false, skipped: 'nothing to archive — dir holds only markers' };
   try {
     const tmp = `${dest}.tmp`;
     const r = tar([
@@ -130,9 +138,30 @@ export function makePristineArchive(
 export function restorePristine(problemDir: string): void {
   const archive = pristineArchivePath(problemDir);
   if (!existsSync(archive)) throw new Error(`no pristine archive at ${archive}`);
+  // Existing is not the same as extractable, and the wipe below is the point
+  // of no return: QA 2026-08-14 pointed this at a corrupt archive and the dir
+  // ended with nothing but `.used`. Listing costs one spawn on a path that
+  // already spawns tar, and turns an unrecoverable loss into a clean throw.
+  if (!tar(['-tzf', archive]).ok) throw new Error(`pristine archive unreadable: ${archive}`);
   wipeExcept(problemDir, PRISTINE_MARKERS as readonly string[]);
   const r = tar(['-xzf', archive, '-C', problemDir]);
   if (!r.ok) throw new Error(`pristine extract failed: ${r.err}`);
+}
+
+/**
+ * Is there a snapshot worth restoring FROM? Existence is not enough:
+ * `snapshotWorkspace` rm -rf's the dir and re-copies into it on every session
+ * start, so a process killed inside that window leaves an EMPTY
+ * `.session-snapshot` behind — and `listWorkspaceFiles` legitimately returns
+ * nothing for a workspace whose files are all dotfiles or problem.json.
+ */
+export function hasUsableSnapshot(problemDir: string): boolean {
+  const snap = path.join(problemDir, SNAPSHOT_DIR);
+  try {
+    return statSync(snap).isDirectory() && readdirSync(snap).length > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -145,7 +174,12 @@ export function restorePristine(problemDir: string): void {
  */
 export function restoreFromSnapshot(problemDir: string): void {
   const snap = path.join(problemDir, SNAPSHOT_DIR);
-  if (!existsSync(snap)) throw new Error(`no ${SNAPSHOT_DIR} in ${problemDir}`);
+  // Refuse BEFORE the wipe. An empty snapshot used to take the whole path:
+  // wipe, copy nothing, drop the snapshot, then force-archive the wreckage —
+  // minting a permanent empty "pristine" archive that made every later repeat
+  // silently succeed into an empty workspace (QA 2026-08-14). This is the only
+  // restore path pre-archive reps have, so their working tree is the sole copy.
+  if (!hasUsableSnapshot(problemDir)) throw new Error(`no usable ${SNAPSHOT_DIR} in ${problemDir}`);
   wipeExcept(problemDir, SNAPSHOT_KEEP);
   cpSync(snap, problemDir, { recursive: true });
   rmSync(snap, { recursive: true, force: true });
@@ -179,7 +213,19 @@ export interface RunEntry {
  *  reader keeps working, and its mtime stays retention's age clock); this
  *  ledger is the history. */
 export function appendRun(problemDir: string, entry: RunEntry): void {
-  appendFileSync(runsLedgerPath(problemDir), `${JSON.stringify(entry)}\n`);
+  const p = runsLedgerPath(problemDir);
+  // Heal a torn tail before appending. readRuns tolerates an unterminated
+  // final line, but a bare append CONCATENATES onto it and takes the new row
+  // down with it — losing the very provenance rejudge resolves through
+  // dirRanSession (QA 2026-08-14). One small read per session start.
+  let lead = '';
+  try {
+    const existing = readFileSync(p, 'utf8');
+    if (existing.length > 0 && !existing.endsWith('\n')) lead = '\n';
+  } catch {
+    /* no ledger yet — nothing to heal */
+  }
+  appendFileSync(p, `${lead}${JSON.stringify(entry)}\n`);
 }
 
 /**

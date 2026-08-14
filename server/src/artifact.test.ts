@@ -16,6 +16,7 @@ import {
   appendRun,
   backfillRunFromUsed,
   dirRanSession,
+  hasUsableSnapshot,
   makePristineArchive,
   preserveRunTree,
   pristineArchivePath,
@@ -313,5 +314,77 @@ describe('backfillRunFromUsed — a pre-ledger session keeps its provenance', ()
     expect(rows).toHaveLength(1);
     expect(rows[0]!.session_id).toBe('sess-bare');
     expect(Number.isNaN(Date.parse(rows[0]!.at))).toBe(false);
+  });
+});
+
+describe('destructive paths refuse before they wipe (QA 2026-08-14)', () => {
+  it('a corrupt pristine archive throws with the tree still intact', () => {
+    const dir = makeProblemDir(scratch());
+    expect(makePristineArchive(dir).ok).toBe(true);
+    writeFileSync(pristineArchivePath(dir), 'not a gzip stream at all');
+
+    expect(() => restorePristine(dir)).toThrow(/unreadable/);
+    // The wipe is the point of no return: it must not have happened.
+    expect(read(dir, 'solution.py')).toBe(SOLUTION);
+    expect(read(dir, 'problem.json')).toBe(PROBLEM_JSON);
+    expect(existsSync(path.join(dir, 'tests', 'test_x.py'))).toBe(true);
+  });
+
+  it('an EMPTY snapshot never wipes the tree and never mints a pristine archive', () => {
+    // snapshotWorkspace rm -rf's then re-copies, so a killed session leaves an
+    // empty dir behind. The old code wiped, copied nothing, then force-archived
+    // the wreckage — making every later repeat succeed into an empty workspace.
+    const dir = makeProblemDir(scratch());
+    writeFileSync(path.join(dir, '.used'), USED_TWO_LINE);
+    mkdirSync(path.join(dir, '.session-snapshot'), { recursive: true });
+
+    expect(() => restoreFromSnapshot(dir)).toThrow(/no usable/);
+    expect(read(dir, 'solution.py')).toBe(SOLUTION);
+    expect(read(dir, 'tests', 'test_x.py')).toBe(TEST_X);
+    expect(existsSync(pristineArchivePath(dir))).toBe(false);
+  });
+
+  it('a .session-snapshot that is a FILE is refused, not half-applied', () => {
+    const dir = makeProblemDir(scratch());
+    writeFileSync(path.join(dir, '.session-snapshot'), 'not a directory');
+
+    expect(() => restoreFromSnapshot(dir)).toThrow(/no usable/);
+    expect(read(dir, 'solution.py')).toBe(SOLUTION);
+  });
+
+  it('hasUsableSnapshot distinguishes present from usable', () => {
+    const dir = makeProblemDir(scratch());
+    expect(hasUsableSnapshot(dir)).toBe(false); // absent
+    mkdirSync(path.join(dir, '.session-snapshot'), { recursive: true });
+    expect(hasUsableSnapshot(dir)).toBe(false); // present but empty
+    writeFileSync(path.join(dir, '.session-snapshot', 'solution.py'), SOLUTION);
+    expect(hasUsableSnapshot(dir)).toBe(true);
+  });
+
+  it('refuses to archive a dir holding nothing but markers', () => {
+    const bare = path.join(scratch(), 'bare');
+    mkdirSync(bare, { recursive: true });
+    writeFileSync(path.join(bare, '.used'), USED_TWO_LINE);
+
+    const r = makePristineArchive(bare, { force: true });
+    expect(r.ok).toBe(false);
+    expect(r.skipped).toContain('nothing to archive');
+    expect(existsSync(pristineArchivePath(bare))).toBe(false);
+  });
+});
+
+describe('the ledger heals a torn tail instead of swallowing the next row', () => {
+  it('keeps the new row resolvable after a crash mid-append', () => {
+    const dir = makeProblemDir(scratch());
+    appendRun(dir, { session_id: 'sess-one', user_id: 'u1', at: '2026-01-01T00:00:00Z' });
+    // A process killed mid-write leaves an unterminated line.
+    writeFileSync(path.join(dir, '.runs.jsonl'), '{"session_id":"sess-torn","user_i', { flag: 'a' });
+
+    appendRun(dir, { session_id: 'sess-after', user_id: 'u1', at: '2026-01-02T00:00:00Z' });
+
+    // The torn row is unrecoverable, but the NEW one must survive — rejudge
+    // resolves a dir through exactly this.
+    expect(readRuns(dir).map((r) => r.session_id)).toEqual(['sess-one', 'sess-after']);
+    expect(dirRanSession(dir, 'sess-after')).toBe(true);
   });
 });

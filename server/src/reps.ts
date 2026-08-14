@@ -33,7 +33,7 @@ import path from 'node:path';
 import type { RoundSpec } from '@interview-prep/shared';
 import type { Queue, QueueItem } from './queue.js';
 import { localDate, reconcileWithDisk } from './queue.js';
-import { pristineArchivePath, readRuns, restorability, type RunEntry } from './artifact.js';
+import { hasUsableSnapshot, pristineArchivePath, readRuns, restorability, type RunEntry } from './artifact.js';
 import {
   generationProgress,
   readGeneratingMarker,
@@ -366,7 +366,10 @@ export function repStateView(root: string, file: RepsFile): RepView[] {
           rep.status === 'done' &&
           restorability({
             hasPristine: existsSync(pristineArchivePath(dir)),
-            hasSnapshot: existsSync(path.join(dir, '.session-snapshot')),
+            // Usable, not merely present — an empty snapshot dir is a killed
+            // session's leftover, and offering "practice again" on it would
+            // promise a restore that has nothing to restore.
+            hasSnapshot: hasUsableSnapshot(dir),
           }) !== null,
         runs: readRuns(dir),
       };
