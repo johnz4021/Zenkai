@@ -17,10 +17,15 @@
   const editorHost = $('editor');
   if (!editorHost) return; // not a panes page
 
+  // Writes carry the page's session id so a stale page whose server died is
+  // refused by whichever session binds :3200 next (QA 2026-08-14).
+  const SID = ((document.getElementById('sid') || {}).textContent || '');
+  const sidHeaders = (h) => Object.assign({ 'x-ip-session': SID }, h || {});
+
   const postEvent = (type, payload) =>
     fetch('/api/panes-event', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: sidHeaders({ 'content-type': 'application/json' }),
       body: JSON.stringify({ type, payload }),
     }).catch(() => {}); // trace loss is the server's problem to notice, not a UI error
 
@@ -41,7 +46,7 @@
     if (!m) return;
     const p = fetch('/api/file', {
       method: 'PUT',
-      headers: { 'content-type': 'application/json' },
+      headers: sidHeaders({ 'content-type': 'application/json' }),
       body: JSON.stringify({ path, content: m.getValue() }),
     })
       .then(() => postEvent('file_save', { path }))
@@ -174,7 +179,7 @@
       await flushSaves();
       $('runstate').textContent = 'running…';
       try {
-        const r = await fetch('/api/run', { method: 'POST' });
+        const r = await fetch('/api/run', { method: 'POST', headers: sidHeaders() });
         const out = await r.json();
         if (out.error) {
           $('runstate').textContent = out.error === 'busy' ? 'a run is already in progress' : 'run refused: ' + out.error;

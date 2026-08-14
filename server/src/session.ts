@@ -1084,6 +1084,23 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         }),
       );
     }
+    // A page from an earlier session keeps polling and writing after its
+    // server dies; once the next session binds :3200 those writes would land
+    // in the NEW session's trace (QA 2026-08-14: a second stale client
+    // contaminated a live run). Pages stamp their session id on every write;
+    // a mismatch is refused, never recorded. Header absent (old pages, the
+    // IDE extension's WS path) ⇒ no check — this is trace hygiene, not auth.
+    {
+      const claimed = req.headers['x-ip-session'];
+      const writeRoute =
+        req.method !== 'GET' &&
+        (url === '/api/utterance' || url === '/api/file' || url === '/api/panes-event' ||
+          url === '/api/run' || url === '/api/ide-run' || url === '/api/end' || url === '/api/card-feedback');
+      if (writeRoute && typeof claimed === 'string' && claimed !== '' && claimed !== cfg.sessionId) {
+        res.writeHead(409, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'stale_session_page', live_session: cfg.sessionId }));
+      }
+    }
     if (url === '/api/utterance' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req)) || '{}') as { text?: string };
       const ev = store.emitChrome('utterance', { text: body.text ?? '', via: 'text' });

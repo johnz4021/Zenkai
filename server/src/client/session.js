@@ -18,6 +18,12 @@
 // Count up untimed, count DOWN when the round carries a limit (data-limit,
 // set by the server from the round spec). The server owns enforcement; this
 // clock is display only.
+// Every write carries this page's session id so a stale page (its server
+// died; a NEW session now owns :3200) is refused instead of writing into
+// someone else's trace (QA 2026-08-14).
+const SID = (document.getElementById('sid') || {}).textContent || '';
+const sidHeaders = (h) => Object.assign({ 'x-ip-session': SID }, h || {});
+
 const clockEl = document.getElementById('clock');
 // Seed from the server's elapsed time, not page load: a mid-round reload
 // used to restart the displayed countdown at the full limit while the
@@ -174,7 +180,7 @@ document.getElementById('f').addEventListener('submit', async (e) => {
   say('you', text);
   await fetch('/api/utterance', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: sidHeaders({ 'content-type': 'application/json' }),
     body: JSON.stringify({ text }),
   });
 });
@@ -190,7 +196,7 @@ if (runButton && runButton.dataset.endpoint === '/api/ide-run') {
     runButton.disabled = true;
     runButton.textContent = '▶ Running…';
     try {
-      const r = await fetch('/api/ide-run', { method: 'POST' });
+      const r = await fetch('/api/ide-run', { method: 'POST', headers: sidHeaders() });
       const out = await r.json();
       if (out.error) {
         say(
@@ -230,7 +236,7 @@ async function endSession() {
     try { await window.ipPanesFlush(); } catch { /* grade what's on disk */ }
   }
   stopSessionLoops();
-  const res = await fetch('/api/end', { method: 'POST' });
+  const res = await fetch('/api/end', { method: 'POST', headers: sidHeaders() });
   if (res.status === 409) { markEndedChrome(); return; }
   const card = await res.json();
   render(card);
