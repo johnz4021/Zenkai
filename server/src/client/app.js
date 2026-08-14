@@ -1613,14 +1613,16 @@ function renderSeason(row, state) {
   const upcoming = rounds.filter((r) => !r.passed);
   const passed = rounds.filter((r) => r.passed);
   if (rounds.length && upcoming.length === 0) {
-    // EVERY dated round has happened — the season-over takeover.
+    // EVERY dated round has happened — the season-over header. Header ONLY:
+    // the timeline below must keep rendering (QA 2026-08-14: the old early
+    // return here discarded the whole runway, so a ready item had no Start
+    // button and a failed item no Retry — the plan soft-locked the moment
+    // its last date passed).
     const last = rounds[rounds.length - 1];
     const ago = Math.max(1, Math.floor((Date.now() - Date.parse(last.date + 'T00:00:00')) / 86400000));
     html += '<h2 class="daysleft">' + esc(t.label) + ' was ' + ago + ' day' + (ago === 1 ? '' : 's') + ' ago — how did it go?</h2>';
-    html += '<p class="meta"><a href="#/new" class="addlink">+ prepare for the next one</a></p></div>';
-    return html;
-  }
-  if (upcoming.length) {
+    html += '<p class="meta"><a href="#/new" class="addlink">+ prepare for the next one</a></p>';
+  } else if (upcoming.length) {
     const nearest = upcoming[0];
     const loopEnd = rounds[rounds.length - 1];
     const left = daysUntil(nearest.date);
