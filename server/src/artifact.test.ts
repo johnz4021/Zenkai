@@ -14,6 +14,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   appendRun,
+  backfillRunFromUsed,
   dirRanSession,
   makePristineArchive,
   preserveRunTree,
@@ -259,5 +260,58 @@ describe('preserveRunTree', () => {
     expect(names).toContain('solution.py');
     expect(names).toContain('.used'); // the candidate's run, provenance included
     expect(names.some((n) => n.startsWith('node_modules'))).toBe(false);
+  });
+});
+
+describe('backfillRunFromUsed — a pre-ledger session keeps its provenance', () => {
+  // Regression: QA 2026-08-14 repeated rep-e2e52324 (consumed long before the
+  // ledger existed) and `rejudge sess-qa813-lc1` then reported "no problem
+  // found" — the repeat overwrote the ONLY record binding that session to its
+  // dir, which is exactly the loss TODOS #48 was closed to prevent.
+  it('banks the outgoing sid before .used is overwritten', () => {
+    const dir = makeProblemDir(scratch());
+    writeFileSync(path.join(dir, '.used'), 'sess-original\n2026-08-13T04:05:06.000Z\n');
+
+    backfillRunFromUsed(dir); // what onReady now does before markUsed
+    writeFileSync(path.join(dir, '.used'), 'sess-repeat\n2026-08-14T00:00:00.000Z\n');
+    appendRun(dir, { session_id: 'sess-repeat', user_id: 'u1', at: '2026-08-14T00:00:00.000Z' });
+
+    expect(dirRanSession(dir, 'sess-original')).toBe(true);
+    expect(dirRanSession(dir, 'sess-repeat')).toBe(true);
+    const banked = readRuns(dir).find((r) => r.session_id === 'sess-original');
+    // The marker never recorded an owner; 'unknown' beats inventing one in
+    // the file that IS the provenance record.
+    expect(banked).toEqual({
+      session_id: 'sess-original',
+      user_id: 'unknown',
+      at: '2026-08-13T04:05:06.000Z',
+    });
+  });
+
+  it('is idempotent, and ignores non-session markers and virgin dirs', () => {
+    const dir = makeProblemDir(scratch());
+    backfillRunFromUsed(dir); // no .used at all
+    expect(readRuns(dir)).toEqual([]);
+
+    // `cli.ts lc verify` pre-burns dirs with a non-session sentinel.
+    writeFileSync(path.join(dir, '.used'), 'lc-verify\n2026-08-01T00:00:00Z\n');
+    backfillRunFromUsed(dir);
+    expect(readRuns(dir)).toEqual([]);
+
+    writeFileSync(path.join(dir, '.used'), 'sess-once\n2026-08-02T00:00:00Z\n');
+    backfillRunFromUsed(dir);
+    backfillRunFromUsed(dir);
+    backfillRunFromUsed(dir);
+    expect(readRuns(dir).filter((r) => r.session_id === 'sess-once')).toHaveLength(1);
+  });
+
+  it('falls back to the marker mtime when .used has no timestamp line', () => {
+    const dir = makeProblemDir(scratch());
+    writeFileSync(path.join(dir, '.used'), 'sess-bare'); // legacy single-line
+    backfillRunFromUsed(dir);
+    const rows = readRuns(dir);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.session_id).toBe('sess-bare');
+    expect(Number.isNaN(Date.parse(rows[0]!.at))).toBe(false);
   });
 });

@@ -41,6 +41,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
 } from 'node:fs';
 import path from 'node:path';
 
@@ -179,6 +180,47 @@ export interface RunEntry {
  *  ledger is the history. */
 export function appendRun(problemDir: string, entry: RunEntry): void {
   appendFileSync(runsLedgerPath(problemDir), `${JSON.stringify(entry)}\n`);
+}
+
+/**
+ * Capture the session `.used` currently names, if the ledger never saw it.
+ *
+ * Every problem dir consumed before this module existed carries its ONLY
+ * session→dir binding in `.used`, and the next run overwrites it — so the
+ * first repeat of a pre-ledger rep orphaned the original session's
+ * provenance, which is precisely the loss TODOS #48 set out to end (QA
+ * 2026-08-14 reproduced it live: repeating rep-e2e52324 left
+ * `rejudge sess-qa813-lc1` reporting "no problem found").
+ *
+ * Called immediately before markUsed on every launch path, so the outgoing
+ * sid is banked no matter which door ran it. `user_id` is 'unknown' rather
+ * than a guess: the marker never recorded who ran it, and inventing an owner
+ * would put a fabricated attribution in the one file that is supposed to be
+ * the provenance record.
+ */
+export function backfillRunFromUsed(problemDir: string): void {
+  const usedFile = path.join(problemDir, '.used');
+  let sid: string;
+  let stamp: string;
+  try {
+    const [first, second] = readFileSync(usedFile, 'utf8').split('\n');
+    sid = (first ?? '').trim();
+    stamp = (second ?? '').trim();
+  } catch {
+    return; // never consumed — nothing to bank
+  }
+  // Session ids only: `cli.ts lc verify` writes an `lc-verify` sentinel here.
+  if (!/^sess-[\w-]+$/.test(sid)) return;
+  if (readRuns(problemDir).some((r) => r.session_id === sid)) return;
+  let at = stamp;
+  if (!at) {
+    try {
+      at = new Date(statSync(usedFile).mtimeMs).toISOString();
+    } catch {
+      at = new Date(0).toISOString();
+    }
+  }
+  appendRun(problemDir, { session_id: sid, user_id: 'unknown', at });
 }
 
 export function readRuns(problemDir: string): RunEntry[] {

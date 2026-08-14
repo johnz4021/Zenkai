@@ -13,7 +13,7 @@ import { generateProblem } from './generate.js';
 import { validateProblem } from './validate.js';
 import { buildGraphView, buildTargetNote, loadStore } from './gap-graph.js';
 import { listReady, markUsed, pickProblem } from './pool.js';
-import { appendRun, dirRanSession, makePristineArchive } from './artifact.js';
+import { appendRun, backfillRunFromUsed, dirRanSession, makePristineArchive } from './artifact.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
@@ -935,7 +935,10 @@ if (cmd === 'generate') {
   await runSession({
     onReady: () => {
       // .used stays overwrite-latest (every existing reader depends on that);
-      // the ledger beside it is the history a repeated dir needs.
+      // the ledger beside it is the history a repeated dir needs. Bank the
+      // OUTGOING sid first: a dir consumed before the ledger existed keeps its
+      // only session binding in .used, and this write is what would erase it.
+      backfillRunFromUsed(problemDir);
       markUsed(problemDir, sessionId);
       appendRun(problemDir, { session_id: sessionId, user_id: userId, at: new Date().toISOString() });
     },
