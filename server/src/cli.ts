@@ -690,10 +690,11 @@ if (cmd === 'generate') {
   }
 
   // --record writes into the gap graph; plain rejudge is a dry look.
-  // qa-* sessions never deposit — the same sess- boundary finalize enforces
-  // (two QA runs silently polluted the founder's store, found 2026-08-13).
+  // QA sessions never deposit — the mint-shape boundary finalize enforces
+  // (see isMemorableSessionId for the two pollution incidents behind it).
   let store = loadStore(path.join(repoRoot, 'gaps'), userId);
-  if (process.argv.includes('--record') && result.status === 'assessed' && /^sess-/.test(sessionId)) {
+  const { isMemorableSessionId } = await import('./gap-graph.js');
+  if (process.argv.includes('--record') && result.status === 'assessed' && isMemorableSessionId(sessionId)) {
     const { resolveRoundSpec } = await import('@interview-prep/shared');
     const spec = resolveRoundSpec(problem);
     // The owning plan, when the .used-marker dir sits under a target — the
@@ -754,20 +755,23 @@ if (cmd === 'generate') {
   console.log(JSON.stringify(card, null, 2));
   process.exit(result.status === 'assessed' ? 0 : 3);
 } else if (cmd === 'purge-qa') {
-  // Memory hygiene: remove qa-* sessions from the gap store and the LC topic
-  // ledger. Two /qa harness runs deposited as real history (2 of the
-  // founder's 10 store sessions; 100% of the topic ledger — found
-  // 2026-08-13); the recording guard stops NEW pollution, this removes the
-  // existing rows. Archive-first (the gaps/archive convention), atomic
-  // writes, and --dry-run prints the focus-ranking diff: dropping sessions
-  // shifts every instance's sessionsAgo, so the 0.5^(n/5) weights feeding
-  // buildTargetNote — live generation and the interviewer — move too. That
-  // diff must be seen before it is applied.
+  // Memory hygiene: remove QA-harness sessions from the gap store and the
+  // LC topic ledger. Harness runs deposited as real history twice — qa-lc-*
+  // (2026-08-13), then sess-qa813/qa814-* which beat the prefix guard
+  // (found 2026-08-14: 12 of 22 store sessions, 100% of the ledger). The
+  // predicate is the shared mint-shape boundary (isMemorableSessionId);
+  // the recording guard stops NEW pollution, this removes existing rows.
+  // Backup-first (gaps/ SIBLING, never gaps/archive/ — the memory reader
+  // treats archive files as excluded eras), atomic writes, and --dry-run
+  // prints the focus-ranking diff: dropping sessions shifts sessionsAgo,
+  // so the 0.5^(n/5) weights feeding buildTargetNote — live generation and
+  // the interviewer — move too. That diff must be seen before it applies.
   const dryRun = process.argv.includes('--dry-run');
   const { mkdirSync, renameSync, writeFileSync } = await import('node:fs');
+  const { isMemorableSessionId } = await import('./gap-graph.js');
   const gapsDir = path.join(repoRoot, 'gaps');
   const store = loadStore(gapsDir, userId);
-  const qaIds = new Set(store.sessions.map((s) => s.session_id).filter((id) => !/^sess-/.test(id)));
+  const qaIds = new Set(store.sessions.map((s) => s.session_id).filter((id) => !isMemorableSessionId(id)));
 
   const tg = await import('./topic-graph.js');
   let topicStore: import('./topic-graph.js').TopicStore | null = null;
@@ -776,7 +780,7 @@ if (cmd === 'generate') {
   } catch (e) {
     console.warn(`[purge-qa] topic ledger unreadable, skipping it: ${String(e).slice(0, 120)}`);
   }
-  const qaAttempts = topicStore?.attempts.filter((a) => !/^sess-/.test(a.session_id)) ?? [];
+  const qaAttempts = topicStore?.attempts.filter((a) => !isMemorableSessionId(a.session_id)) ?? [];
 
   if (qaIds.size === 0 && qaAttempts.length === 0) {
     console.log('[purge-qa] nothing to purge — both stores are clean');
@@ -830,7 +834,7 @@ if (cmd === 'generate') {
     );
     tg.saveTopicStore(tg.topicsDir(repoRoot), {
       ...topicStore,
-      attempts: topicStore.attempts.filter((a) => /^sess-/.test(a.session_id)),
+      attempts: topicStore.attempts.filter((a) => isMemorableSessionId(a.session_id)),
     });
     console.log(`[purge-qa] topic ledger written; archive at topics/${userId}-pre-qa-purge-${stamp}.json`);
   }

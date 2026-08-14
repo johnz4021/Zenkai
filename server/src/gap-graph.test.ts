@@ -287,3 +287,17 @@ describe('the full memory pipeline (deterministic: judge -> graph -> patterns)',
     expect(note).toContain('(dsa)');
   });
 });
+
+describe('isMemorableSessionId — the memory boundary', () => {
+  it('admits only the mint shape: sess- plus a bare timestamp', async () => {
+    const { isMemorableSessionId } = await import('./gap-graph.js');
+    expect(isMemorableSessionId('sess-1786643587196')).toBe(true);
+    // Both real pollution incidents, pinned so the arms race is not re-fought:
+    expect(isMemorableSessionId('qa-lc-1786575866')).toBe(false);
+    expect(isMemorableSessionId('sess-qa814-lcset2')).toBe(false);
+    expect(isMemorableSessionId('sess-qa813-panesint-b')).toBe(false);
+    // A suffixed or short id is not a mint either.
+    expect(isMemorableSessionId('sess-1786643587196-b')).toBe(false);
+    expect(isMemorableSessionId('sess-123')).toBe(false);
+  });
+});

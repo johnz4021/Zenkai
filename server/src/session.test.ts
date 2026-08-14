@@ -92,10 +92,12 @@ describe('memory deposit guard (source contract)', () => {
   // boundary worth pinning as source — qa-* harness sessions polluted the
   // founder's real memory once (2 of 10 store sessions, 100% of the topic
   // ledger, found 2026-08-13) and must never deposit again.
-  it('only sess- sessions write memory, and the plan deposit rides the same gate', async () => {
+  it('only mint-shaped session ids write memory, and the plan deposit rides the same gate', async () => {
     const { readFileSync } = await import('node:fs');
     const src = readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), 'session.ts'), 'utf8');
-    expect(src).toContain('const realSession = /^sess-/.test(cfg.sessionId);');
+    // NOT a bare /^sess-/ prefix: the second harness pass minted
+    // sess-qa814-* ids that beat exactly that check (2026-08-14).
+    expect(src).toContain('const realSession = isMemorableSessionId(cfg.sessionId);');
     expect(src).toContain("result.status === 'assessed' && realSession");
     expect(src).toContain('recordTopicLogRow');
   });

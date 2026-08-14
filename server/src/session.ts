@@ -28,7 +28,7 @@ import { makeAuth } from './auth.js';
 import { childEnv } from './child-env.js';
 import { judgeSession } from './judge.js';
 import { buildAssessmentCard, mergeConfirm } from './feedback.js';
-import { buildGraphView, buildTargetNote, loadStore, recordAssessment, saveStore } from './gap-graph.js';
+import { buildGraphView, buildTargetNote, isMemorableSessionId, loadStore, recordAssessment, saveStore } from './gap-graph.js';
 import { attemptsFromSession, recordTopicAttempts } from './topic-graph.js';
 import { clientScript, sessionPage } from './chrome.js';
 import { injectWorkbenchDefaults } from './workbench-inject.js';
@@ -938,12 +938,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     );
 
     let gapStore = loadStore(gapsDir, cfg.userId);
-    // QA harness sessions (qa-*) run this same finalize with fabricated ids;
-    // two of them silently became 2 of the founder's 10 memory sessions and
-    // 100% of the topic ledger (found 2026-08-13). Only real sessions
-    // deposit memory — the sess- prefix is the same boundary the DB sweep
-    // and the card endpoints already enforce.
-    const realSession = /^sess-/.test(cfg.sessionId);
+    // QA harness sessions run this same finalize with fabricated ids and
+    // polluted the founder's memory twice (qa-lc-*, then sess-qa814-* which
+    // beat a prefix guard). Only ids shaped like a real mint deposit —
+    // see isMemorableSessionId for the arms-race record.
+    const realSession = isMemorableSessionId(cfg.sessionId);
     if (result.status === 'assessed' && realSession) {
       // Unassessed writes NOTHING — a judge failure must not become history.
       const spec = resolveRoundSpec(problem);

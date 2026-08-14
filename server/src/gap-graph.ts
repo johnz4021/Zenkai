@@ -111,6 +111,26 @@ export interface GraphView {
   newly_closed: string[];
 }
 
+/**
+ * THE memory boundary: may this session id deposit into (or be read back
+ * from) the user's memory stores — the gap graph, the topic ledgers, the
+ * verdict history?
+ *
+ * Every real session is minted `sess-${Date.now()}` (app.ts launch paths,
+ * cli.ts session default) — `sess-` + digits, nothing else. Anything with a
+ * non-digit id segment came in through the IP_SESSION_ID override, which is
+ * the QA harness's door. History of this arms race, so it is not re-fought:
+ * qa-lc runs polluted the store first (2026-08-13, prefix guard added);
+ * the next harness pass minted sess-qa813 and sess-qa814 ids that PASSED
+ * the bare sess- prefix guard and deposited 10 more sessions plus an
+ * all-QA topic ledger (found at merge, 2026-08-14). Shape-of-mint is the
+ * boundary a harness cannot drift past without also colliding with real
+ * session semantics.
+ */
+export function isMemorableSessionId(sid: string): boolean {
+  return /^sess-\d{10,}$/.test(sid);
+}
+
 export const PATTERN_MIN_SESSIONS = 3;
 const HALF_LIFE_SESSIONS = 5;
 const REMEDIATION_STREAK = 3;

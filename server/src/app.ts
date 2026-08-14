@@ -1403,11 +1403,13 @@ export function runApp(cfg: AppConfig): http.Server {
           let skipped = 0;
           const sids: string[] = [];
           if (existsSync(asmDir)) {
+            const { isMemorableSessionId } = await import('./gap-graph.js');
             for (const f of readdirSync(asmDir)) {
-              // One regex does three jobs (the DB-sweep boundary): real
-              // sessions only, no .confirm/.cause sidecars, no qa-* runs.
+              // Filename regex drops sidecars (.confirm/.cause); the
+              // mint-shape boundary drops harness sessions — including the
+              // sess-qa814-* ids that beat a bare prefix check.
               const m = /^(sess-[\w-]+)\.json$/.exec(f);
-              if (!m) continue;
+              if (!m || !isMemorableSessionId(m[1]!)) continue;
               try {
                 assessments.push(JSON.parse(readFileSync(path.join(asmDir, f), 'utf8')) as import('./judge.js').JudgeResult);
                 sids.push(m[1]!);
