@@ -73,6 +73,15 @@ export interface SessionRecord {
    * remediation streak.
    */
   contaminated_labels?: string[];
+  /**
+   * The plan this session's round belonged to (additive, forward-only —
+   * absent on pool problems, reps, and pre-stamp history). Storage stays
+   * GLOBAL: six dimensions score every session, and splitting them per plan
+   * would starve the remediation streak by construction. This stamp exists
+   * so a future "how is this prep going" view can be a FILTER over the one
+   * store, never a second store.
+   */
+  target_id?: string;
 }
 
 export interface GapStore {
@@ -184,6 +193,8 @@ export function recordAssessment(
   roundType: string,
   /** Closed-vocabulary tags from the round's spec (MEMORY_TAGS). */
   memoryTags?: string[],
+  /** The owning plan, when the round came from one (SessionRecord.target_id). */
+  targetId?: string,
 ): GapStore {
   const fired: string[] = [];
   const uninformative: string[] = [];
@@ -224,6 +235,7 @@ export function recordAssessment(
       trigger_occurred: anyAssessable,
       labels_fired: fired,
       contaminated_labels: uninformative,
+      ...(targetId ? { target_id: targetId } : {}),
     },
     evidenceByKey,
     metaByKey,

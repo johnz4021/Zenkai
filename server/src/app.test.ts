@@ -141,6 +141,31 @@ describe('home app page', () => {
     expect(html).toContain('.adaptpanel');
   });
 
+  it('the Gaps band leads the history page, fetched off the poll', () => {
+    // Cross-session memory made visible: the band renders from /api/memory,
+    // fetched once per history open — NEVER inside the 5s refresh loop —
+    // and the cache drops when the route leaves history.
+    expect(js).toContain("fetch('/api/memory')");
+    expect(js).toContain('function renderGapsBand');
+    expect(js).toContain("if (r.page !== 'history') memoryCache = null;");
+    // Shape backs hue (DESIGN.md): the strip is glyphs, not color alone,
+    // and it is decorative to a screen reader — the state line is the text.
+    expect(js).toContain('aria-hidden="true"');
+    expect(html).toContain('.gapsband');
+    expect(html).toContain('.gapstrip');
+  });
+
+  it('season topics render on confirm (pre-freeze) and on the season page (post-deposit)', () => {
+    expect(js).toContain('this season tests:');
+    expect(js).toContain('topic_rollup');
+    expect(js).toContain('not yet exercised');
+    expect(html).toContain('.topicband');
+  });
+
+  it('no surface promises a user the CLI-only rejudge', () => {
+    expect(js).not.toContain('recoverable via rejudge');
+  });
+
   it('a running session can be ended from the masthead — discard, never grade (QA ISSUE-001/D1)', () => {
     expect(html).toContain('id="nav-kill"');
     expect(js).toContain("'/api/session-kill'");
@@ -750,6 +775,28 @@ describe('app-side card confirms (WU-C)', () => {
   });
   it('GET /api/feedback hydrates confirm state', () => {
     expect(appSource).toContain('card: fb.card, confirms');
+  });
+});
+
+describe('the memory read side (/api/memory + season topics)', () => {
+  const appSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'app.ts'), 'utf8');
+  it('enumerates with the one boundary regex: real sessions, no sidecars, no qa runs', () => {
+    expect(appSource).toContain("url === '/api/memory' && req.method === 'GET'");
+    expect(appSource).toContain('/^(sess-[\\w-]+)\\.json$/.exec(f)');
+  });
+  it('an unexpected reader failure degrades loudly, never as an empty state', () => {
+    // Expected per-file skips are counted; only a thrown reader sets
+    // `degraded` — a server bug must not read as "no rounds yet".
+    expect(appSource).toContain("json(200, { degraded: String(e).slice(0, 200) })");
+  });
+  it('season topics freeze from the STORED proposal, once, at accept', () => {
+    // Same server-side re-read as named_problems — never the client body —
+    // and append-only after the first confirmation.
+    expect(appSource).toContain('!t.topics?.length && prop?.topics?.length');
+  });
+  it('the state projection carries the frozen list and the rollup', () => {
+    expect(appSource).toContain('topics: t.topics ?? null');
+    expect(appSource).toContain('topic_rollup: topicRollup');
   });
 });
 

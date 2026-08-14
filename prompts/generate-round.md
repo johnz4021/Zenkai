@@ -78,6 +78,12 @@ Plus any fields the mechanical requirements above demand (e.g. `planted_bug`).
 `round_type` stays `"debugging"` for tooling compatibility regardless of the round's
 actual shape — the `round_spec` is what describes this round.
 
+When the round brief lists the plan's concept topics, add `"topics_exercised"`:
+the 1-3 topic ids this problem genuinely tests, copied EXACTLY from that list
+(the build drops anything outside it). Topics never appear in candidate-visible
+files — the manifest is the only place they are written. Omit the field when
+the brief lists no topics.
+
 ## Writing the dimension expectations (this is graded feedback material — be exact)
 
 Each expectation describes what a STRONG candidate does on THIS SPECIFIC problem,

@@ -500,6 +500,13 @@ function renderPanel() {
       (p.pace_per_week
         ? p.pace_per_week + ' rounds/week — from your answer'
         : '3 rounds/week — default until you tell me your daily time') + '</div>';
+    // Season topics render BEFORE the confirm button freezes them: after
+    // accept they are append-only (rounds bind to this list and the season
+    // page counts drills over it).
+    if (p.topics && p.topics.length) {
+      body += '<div class="paceline gtopics">this season tests: ' +
+        p.topics.map((t) => esc(t.label || t.id)).join(' · ') + '</div>';
+    }
   }
   const n = p ? p.drafts.filter((d, i) => !d.unsupported && plan.include[i] !== false).length : 0;
   return '<aside id="plan-panel">' +
@@ -1655,6 +1662,26 @@ function renderSeason(row, state) {
     '<a href="#" class="addlearn" data-t="' + esc(t.id) + '">+ add what you learned</a></div>' +
     '<div class="adaptpanel" data-t="' + esc(t.id) + '" hidden></div>';
 
+  // Season topics: what to drill, from the plan's own frozen vocabulary
+  // joined with finished rounds. Renders only once something deposited —
+  // an all-○ band is a promise, not information. Chips render for DONE
+  // rounds only; upcoming rounds never disclose their topics.
+  if (row.topic_rollup && row.topic_rollup.some((x) => x.exercised > 0)) {
+    const done = row.topic_rollup.filter((x) => x.exercised > 0).length;
+    html += '<div class="topicband"><p class="micro">season topics · ' + done + ' of ' + row.topic_rollup.length + ' exercised</p>';
+    const sorted = row.topic_rollup.slice().sort((a, b) => b.exercised - a.exercised || a.id.localeCompare(b.id));
+    for (const x of sorted) {
+      const drill = x.exercised > 0 && x.solved === 0;
+      html += '<div class="topicrow' + (drill ? ' drill' : '') + '">' +
+        '<span class="tmark">' + (x.exercised > 0 ? '●'.repeat(Math.min(x.exercised, 5)) : '○') + '</span>' +
+        '<span class="tlabel">' + esc(x.label) + '</span>' +
+        '<span class="meta">' + (x.exercised === 0 ? 'not yet exercised'
+          : x.exercised + ' round' + (x.exercised === 1 ? '' : 's') + ' · ' + x.solved + ' solved' + (drill ? ' — drill this' : '')) + '</span>' +
+        '</div>';
+    }
+    html += '</div>';
+  }
+
   html += '<ol class="runway">';
   for (const d of days) {
     if (d.kind === 'interview') {
@@ -2019,7 +2046,10 @@ async function regenerateLike(lastId, state) {
 //      reps carry a session_id and the card store is session-keyed. ----
 function renderHistory(state) {
   const reps = state.reps || [];
-  let html = '<div class="rep-strip"><h2 class="daysleft" style="font-size:15px">practice history</h2>';
+  // The Gaps band leads: where-am-I before what-did-I-do. Its data comes
+  // from /api/memory (fetched once per history open), never from the poll.
+  let html = renderGapsBand();
+  html += '<div class="rep-strip"><h2 class="daysleft" style="font-size:15px">practice history</h2>';
   if (!reps.length) {
     html += '<div class="meta">No practice yet — <a href="#/">paste a JD or recruiter email</a> and be mid-problem in ten minutes. No plan needed.</div>';
   }
@@ -2151,6 +2181,96 @@ function wireTimeline(container) {
 // same trick as `adapt`).
 const openFeedback = new Set();
 const feedbackCache = {};
+
+// ---- the Gaps band (#/history): cross-session memory made visible ----
+// Fetched ONCE per history open (never on the 5s poll — render() clears the
+// cache whenever the route leaves history, so returning refetches). State
+// lives outside the DOM, same trick as feedbackCache.
+let memoryCache = null;      // /api/memory payload, or null = not fetched
+let memoryFetching = false;
+
+const GAP_DIMS = ['clarify', 'approach', 'communicate', 'implement', 'verify', 'reflect'];
+
+function ensureMemory() {
+  if (memoryCache || memoryFetching) return;
+  memoryFetching = true;
+  fetch('/api/memory')
+    .then((r) => r.json())
+    .catch((e) => ({ degraded: String(e) }))
+    .then((d) => { memoryCache = d; memoryFetching = false; rerender(); });
+}
+
+/** One strip cell. Shape backs hue (DESIGN.md): color alone never grades. */
+function gapGlyph(row) {
+  if (!row) return '<span class="gg g-none" title="not judged">·</span>';
+  if (row.verdict === 'strong') return '<span class="gg g-ok" title="strong">■</span>';
+  if (row.verdict === 'adequate') return '<span class="gg g-ok" title="adequate">◆</span>';
+  if (row.verdict === 'unassessable') return '<span class="gg g-none" title="not assessable">·</span>';
+  if (row.unreceipted) return '<span class="gg g-none" title="weak — no receipt survived">▫</span>';
+  return '<span class="gg g-weak" title="gap">▫</span>';
+}
+
+/** Plain-language state, composed from the reader's arithmetic — never
+ *  model-written. */
+function gapStateLine(s) {
+  if (!s || s.state === 'no signal') return 'not yet assessable';
+  if (s.state === 'still firing') {
+    return s.weak_count === s.informative_count ? 'still firing — every round' : 'still firing';
+  }
+  if (s.state === 'improving') return 'improving — ' + s.recent_not_weak + ' of last ' + s.recent_informative + ' adequate or better';
+  if (s.state === 'quiet lately') return 'quiet lately — no gap in the last 3';
+  return 'mixed';
+}
+
+function renderGapsBand() {
+  const h = memoryCache;
+  if (!h) { ensureMemory(); return '<div class="gapsband"><p class="micro">your gaps</p><div class="meta">loading…</div></div>'; }
+  if (h.degraded) {
+    return '<div class="gapsband"><p class="micro">your gaps</p>' +
+      '<div class="meta err">couldn’t load history — feedback cards below still work</div></div>';
+  }
+  if (!h.sessions || h.sessions.length === 0) {
+    return '<div class="gapsband"><p class="micro">your gaps</p>' +
+      '<div class="meta">no judged rounds yet — finish one and this becomes your across-rounds view</div></div>';
+  }
+  const head = h.sessions.length + ' round' + (h.sessions.length === 1 ? '' : 's') +
+    (h.solved_count ? ' · ' + h.solved_count + ' solved' : '');
+  let sub = '';
+  if (h.mode === 'observations') {
+    sub = 'patterns need ' + h.sessions_until_patterns + ' more round' + (h.sessions_until_patterns === 1 ? '' : 's');
+  } else if (h.trend && h.trend.first.informative >= 4 && h.trend.second.informative >= 4) {
+    const pct = (t) => Math.round((100 * t.not_weak) / t.informative);
+    // The one defensible claim (judge-measurability moved too): share of
+    // ASSESSABLE verdicts that were not weak, early half vs recent half.
+    sub = 'of what could be assessed: ' + pct(h.trend.first) + '% → ' + pct(h.trend.second) + '% not weak (early → recent)';
+  }
+  const bounds = new Set(h.comparability_boundaries || []);
+  let html = '<div class="gapsband"><p class="micro">your gaps</p>' +
+    '<div class="meta">' + esc(head) + (sub ? ' · ' + esc(sub) : '') + '</div>';
+  for (const dim of GAP_DIMS) {
+    const s = h.states ? h.states[dim] : null;
+    let strip = '';
+    h.sessions.forEach((sess, i) => {
+      if (bounds.has(i)) strip += '<span class="gg g-none gb" title="judge prompt changed here — halves may not compare">│</span>';
+      strip += gapGlyph(sess.rows.find((r) => r.dimension === dim));
+    });
+    html += '<div class="gaprow"><span class="dim">' + dim + '</span>' +
+      // aria-hidden: the glyphs are visual texture; the state line + counts
+      // beside them carry the same information as text.
+      '<span class="gapstrip" aria-hidden="true">' + strip + '</span>' +
+      '<span class="gapstate">' + esc(gapStateLine(s)) + '</span>' +
+      (s && s.latest_analysis ? '<div class="cite gapcite">' + esc(s.latest_analysis.length > 160 ? s.latest_analysis.slice(0, 157) + '…' : s.latest_analysis) + '</div>' : '') +
+      '</div>';
+  }
+  if ((h.skipped || 0) + (h.unattributable || 0) > 0) {
+    html += '<div class="meta">' +
+      (h.skipped ? h.skipped + ' unreadable' : '') +
+      (h.skipped && h.unattributable ? ' · ' : '') +
+      (h.unattributable ? h.unattributable + ' unattributable' : '') +
+      ' session file' + ((h.skipped || 0) + (h.unattributable || 0) === 1 ? '' : 's') + ' excluded</div>';
+  }
+  return html + '</div>';
+}
 
 // One delegated listener for every history/timeline card confirm — panels
 // re-render on each poll, so per-render wiring would leak or miss.
@@ -2465,6 +2585,9 @@ function render(state) {
   // The planning surface gets a wider page column for its two-pane layout.
   document.body.classList.toggle('wide', r.page === 'new');
 
+  // Off the history page: drop the memory snapshot so the next visit
+  // refetches — "fetched once per surface open", never once per page load.
+  if (r.page !== 'history') memoryCache = null;
   if (r.page === 'plans') {
     renderIndex(state);
     choreograph(el('index'), 'plans');
@@ -2569,7 +2692,7 @@ async function launch(targetId, itemId, btn) {
 // starts, so they can't pollute the gap graph.
 el('nav-kill').addEventListener('click', async (e) => {
   e.preventDefault();
-  if (!window.confirm('End without grading? The attempt is discarded (recoverable via rejudge).')) return;
+  if (!window.confirm('End without grading? This attempt won’t be scored or added to your history.')) return;
   const r = await fetch('/api/session-kill', { method: 'POST' });
   const s = await r.json();
   if (s.error) el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>';

@@ -86,3 +86,17 @@ describe('per-session identity derivation (WU-A)', () => {
     expect(ideDataDirFor('/r', 'sess-123-ab')).toBe(path.join('/r', '.ide-data', 'sess-123-ab'));
   });
 });
+
+describe('memory deposit guard (source contract)', () => {
+  // finalize is process-level and untestable here; the guard is a one-line
+  // boundary worth pinning as source — qa-* harness sessions polluted the
+  // founder's real memory once (2 of 10 store sessions, 100% of the topic
+  // ledger, found 2026-08-13) and must never deposit again.
+  it('only sess- sessions write memory, and the plan deposit rides the same gate', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), 'session.ts'), 'utf8');
+    expect(src).toContain('const realSession = /^sess-/.test(cfg.sessionId);');
+    expect(src).toContain("result.status === 'assessed' && realSession");
+    expect(src).toContain('recordTopicLogRow');
+  });
+});

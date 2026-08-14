@@ -938,10 +938,16 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     );
 
     let gapStore = loadStore(gapsDir, cfg.userId);
-    if (result.status === 'assessed') {
+    // QA harness sessions (qa-*) run this same finalize with fabricated ids;
+    // two of them silently became 2 of the founder's 10 memory sessions and
+    // 100% of the topic ledger (found 2026-08-13). Only real sessions
+    // deposit memory — the sess- prefix is the same boundary the DB sweep
+    // and the card endpoints already enforce.
+    const realSession = /^sess-/.test(cfg.sessionId);
+    if (result.status === 'assessed' && realSession) {
       // Unassessed writes NOTHING — a judge failure must not become history.
       const spec = resolveRoundSpec(problem);
-      gapStore = recordAssessment(gapStore, result, spec.label, spec.memory_tags);
+      gapStore = recordAssessment(gapStore, result, spec.label, spec.memory_tags, cfg.targetId);
       saveStore(gapsDir, gapStore);
       // Second graph: an LC-sourced round deposits topic-ledger rows —
       // one per part for a set (attemptsFromSession returns [] for
@@ -953,6 +959,22 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         }));
       } catch (e) {
         console.warn(`[session] topic record skipped: ${String(e)}`);
+      }
+      // Third graph: a plan round whose manifest carries topics_exercised
+      // (already subset-filtered against the plan's frozen list at build
+      // time) deposits one row into the plan's topic-log. Same gates.
+      if (cfg.targetId && Array.isArray(problem.topics_exercised) && problem.topics_exercised.length) {
+        try {
+          const { recordTopicLogRow } = await import('./topic-log.js');
+          recordTopicLogRow(cfg.repoRoot, cfg.targetId, {
+            session_id: cfg.sessionId,
+            ts: result.judged_at,
+            topics: problem.topics_exercised,
+            solved: result.solved ?? null,
+          });
+        } catch (e) {
+          console.warn(`[session] plan-topic record skipped: ${String(e)}`);
+        }
       }
     }
 

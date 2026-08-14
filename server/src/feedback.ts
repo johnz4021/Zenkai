@@ -143,7 +143,10 @@ export function buildAssessmentCard(
     return {
       session_id: result.session_id,
       state: 'unassessed',
-      reason: `Couldn't assess this session (${why}). Your trace is saved — rejudge anytime.`,
+      // Failure copy names what the USER can do (DESIGN.md rule 10) — the
+      // old "rejudge anytime" promised a CLI only the founder can run. The
+      // scrubbed `why` keeps provider error blobs off the card (QA 2026-08-14).
+      reason: `Couldn't assess this session (${why}). Your work is saved and doesn't count against you — this round can be scored later.`,
       ...graphBits(graph),
     };
   }

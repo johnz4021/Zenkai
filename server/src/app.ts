@@ -25,6 +25,7 @@ import { ATTACHMENT_MEDIA_TYPES, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, listTarg
 import { bucketIntoDays, loadQueue, nextUp, proposeQueue, reconcileWithDisk, repace, saveQueue, type Queue, type QueueItem } from './queue.js';
 import { buildGraphView, gapDescription, loadStore } from './gap-graph.js';
 import { mergeConfirm } from './feedback.js';
+import { loadTopicLog, rollupTopics } from './topic-log.js';
 import { applyAdaptation, pickAdapter, planAdaptation, reconcileAdaptation, retiredSpecIds, type AdaptDiff } from './adapt.js';
 import { appendLearnings, gateBlueprint, loadBlueprint, writeBlueprintWithBackup } from './blueprint.js';
 import { clearGeneratingMarker, generationProgress, pidAlive, readGeneratingMarker, sweepVerdict, writeGeneratingMarker } from './generation-state.js';
@@ -1024,6 +1025,26 @@ export function appPage(): string {
   .fbcard .closedmark { border-left: 2px solid var(--steel); padding-left: 10px; }
   .fbcard .fbfocus { border: 1px solid var(--steel); padding: 8px 10px; margin-top: 10px; border-radius: 6px; }
   .fbcard .fbfocus .k { color: var(--steel-text); font-family: var(--mono); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; margin: 0 0 4px; }
+  /* The Gaps band (#/history) + the season topics band. Existing tokens
+     only: verdict hues stay --ok/--weak/--none, shape backs hue (the strip
+     glyphs differ by character, never color alone), no elevation. */
+  .gapsband { border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px 12px; margin: 0 0 18px; }
+  .gapsband .micro { margin: 0 0 2px; }
+  .gaprow { border-top: 1px solid var(--line-soft); padding: 7px 0 6px; }
+  .gaprow:first-of-type { border-top: 0; }
+  .gaprow .dim { font-family: var(--mono); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; display: inline-block; width: 104px; }
+  .gapstrip { font-family: var(--mono); font-size: 12px; letter-spacing: .12em; margin-right: 10px; white-space: nowrap; }
+  .g-ok { color: var(--ok); }
+  .g-weak { color: var(--weak-text); }
+  .g-none { color: var(--none); }
+  .gb { letter-spacing: 0; opacity: .8; }
+  .gapstate { color: var(--text-2); font-size: 12px; }
+  .gapcite { color: var(--text-3); font-size: 12px; margin: 3px 0 0 104px; }
+  .topicband { border: 1px solid var(--line); border-radius: 6px; padding: 8px 14px 10px; margin: 10px 0 4px; }
+  .topicrow { display: flex; gap: 10px; align-items: baseline; border-top: 1px solid var(--line-soft); padding: 5px 0; }
+  .topicrow:first-of-type { border-top: 0; }
+  .topicrow .tmark { font-family: var(--mono); font-size: 11px; color: var(--steel-text); width: 44px; flex: none; }
+  .topicrow.drill .tlabel { color: var(--weak-text); }
   .adaptpanel .bpchange summary { cursor: pointer; margin: 6px 0; }
   .adaptpanel .bpview { max-height: 260px; overflow: auto; border: 1px solid var(--line); padding: 10px 12px; font-size: 12px; white-space: pre-wrap; }
   .adaptpanel .repoint b { color: var(--text-1); }
@@ -1369,6 +1390,71 @@ export function runApp(cfg: AppConfig): http.Server {
         Boolean(t && (user!.admin || (t.user_id ?? cfg.userId) === user!.id));
       const ownsRep = (r: { user_id?: string }): boolean =>
         user!.admin || repOwnedBy(r, user!.id, cfg.userId);
+      if (url === '/api/memory' && req.method === 'GET') {
+        // The Gaps band's data: every assessed session the caller owns, full
+        // verdict rows, trend, per-dimension states — read fresh from disk
+        // each call (fetched once per history open, never on the poll).
+        // Failure honesty: expected per-file skips are COUNTED in the
+        // payload; an unexpected reader throw sets `degraded` — a server bug
+        // must never masquerade as "no rounds yet".
+        try {
+          const asmDir = path.join(repoRoot, 'assessments');
+          const assessments: import('./judge.js').JudgeResult[] = [];
+          let skipped = 0;
+          const sids: string[] = [];
+          if (existsSync(asmDir)) {
+            for (const f of readdirSync(asmDir)) {
+              // One regex does three jobs (the DB-sweep boundary): real
+              // sessions only, no .confirm/.cause sidecars, no qa-* runs.
+              const m = /^(sess-[\w-]+)\.json$/.exec(f);
+              if (!m) continue;
+              try {
+                assessments.push(JSON.parse(readFileSync(path.join(asmDir, f), 'utf8')) as import('./judge.js').JudgeResult);
+                sids.push(m[1]!);
+              } catch {
+                skipped += 1;
+              }
+            }
+          }
+          const owners: Record<string, string | undefined> = {};
+          const presentFeedback = new Set<string>();
+          for (const sid of sids) {
+            try {
+              const fb = JSON.parse(
+                readFileSync(path.join(repoRoot, 'feedback', `${sid}.json`), 'utf8'),
+              ) as { user_id?: string };
+              presentFeedback.add(sid);
+              owners[sid] = fb.user_id;
+            } catch { /* absent → unattributable, counted by the reader */ }
+          }
+          const archivedIds = new Set<string>();
+          try {
+            for (const f of readdirSync(path.join(repoRoot, 'gaps', 'archive'))) {
+              try {
+                const arch = JSON.parse(readFileSync(path.join(repoRoot, 'gaps', 'archive', f), 'utf8')) as {
+                  sessions?: { session_id?: string }[];
+                };
+                for (const s of arch.sessions ?? []) if (s.session_id) archivedIds.add(s.session_id);
+              } catch { /* unreadable archive file proves nothing */ }
+            }
+          } catch { /* no archive dir */ }
+          const { buildVerdictHistory } = await import('./verdict-history.js');
+          const { PATTERN_MIN_SESSIONS } = await import('./gap-graph.js');
+          const h = buildVerdictHistory({
+            assessments, owners, presentFeedback, archivedIds,
+            userId: user!.id, legacyOwnerId: cfg.userId, isAdmin: user!.admin,
+            nowMs: Date.now(),
+          });
+          return json(200, {
+            ...h,
+            mode: h.sessions.length < PATTERN_MIN_SESSIONS ? 'observations' : 'patterns',
+            sessions_until_patterns: Math.max(0, PATTERN_MIN_SESSIONS - h.sessions.length),
+            skipped,
+          });
+        } catch (e) {
+          return json(200, { degraded: String(e).slice(0, 200) });
+        }
+      }
       if (url.startsWith('/api/feedback') && req.method === 'GET') {
         // A finished round's judged card, read from the file finalize (and
         // rejudge --record) writes. The planning page is where feedback
@@ -1484,13 +1570,25 @@ export function runApp(cfg: AppConfig): http.Server {
                   }),
                 }
               : null;
+            // Season-topic coverage for the plan page's band: the frozen
+            // list joined with topic-log outcomes. Derived per poll — the
+            // log is one tiny file read in a loop that already does disk
+            // work per target; corrupt/missing degrades to no band.
+            let topicRollup: import('./topic-log.js').TopicRollup[] | null = null;
+            if (t.topics?.length) {
+              try {
+                topicRollup = rollupTopics(t.topics, loadTopicLog(repoRoot, t.id));
+              } catch { /* unreadable log — band absent, plan unaffected */ }
+            }
             return {
               target: {
                 id: t.id,
                 label: t.label,
                 interview_date: t.interview_date ?? null,
                 specs: t.specs.map((s) => ({ id: s.id, label: s.label, capabilities: s.capabilities, date: s.date ?? null, evidence_tier: s.evidence_tier ?? null })),
+                topics: t.topics ?? null,
               },
+              topic_rollup: topicRollup,
               queue: withTitles,
               // Latest adaptation only — the timeline explains why rounds
               // changed with one line, not the whole history.
@@ -2086,6 +2184,16 @@ export function runApp(cfg: AppConfig): http.Server {
             writeFileSync(path.join(targetDir(repoRoot, t.id), 'planner-summary.md'), prop.summary + '\n');
           }
           if (pace === undefined && prop?.pace_per_week) pace = prop.pace_per_week;
+          // Season topics FREEZE here, once: already gated at proposal time
+          // (gateConceptTopics), re-read from the STORED proposal like the
+          // summary and named_problems — never the client body — and never
+          // overwritten on a later accept (append-only, the specs
+          // discipline: topic-log.json counts over this list, so history
+          // must keep pointing at the list it ran under).
+          if (!t.topics?.length && prop?.topics?.length) {
+            t.topics = prop.topics;
+            saveTarget(repoRoot, t);
+          }
           for (const d of prop?.drafts ?? []) {
             if (d.named_problems?.length) namedBySpec.set(d.spec.id, d.named_problems);
             if (d.part_count && d.part_count >= 2) partCountBySpec.set(d.spec.id, d.part_count);

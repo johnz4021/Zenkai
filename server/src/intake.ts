@@ -50,6 +50,13 @@ export interface Target {
    *  re-points future items; it never edits or removes one, so history
    *  keeps describing what actually ran. */
   specs: RoundSpec[];
+  /** The season's concept vocabulary — planner-authored, mechanically gated
+   *  (concept-topics.ts), candidate-confirmed at the same gate as specs, and
+   *  FROZEN after (append-only, the specs discipline): rounds bind to this
+   *  list at generation and topic-log.json counts over it, so history must
+   *  keep pointing at the list it ran under. Absent on pre-topics plans and
+   *  on doors without a planner proposal. */
+  topics?: import('./concept-topics.js').ConceptTopic[];
   /** Applied adaptations, newest last — the audit trail the timeline
    *  renders ("Aug 5 — new: LLD round · 4 rounds re-shaped") and the
    *  recovery record reconcileAdaptation repairs from. See adapt.ts. */
