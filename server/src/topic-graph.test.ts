@@ -11,8 +11,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { GeneratedProblem, RoundSpec, TraceEvent } from '@interview-prep/shared';
 import type { Assessment } from './judge.js';
 import {
-  TOPIC_SCHEMA_VERSION, attemptFromSession, attemptScore, buildTopicView,
-  emptyTopicStore, loadTopicStore, saveTopicStore, upsertAttempt, validateTopicStore,
+  TOPIC_SCHEMA_VERSION, attemptsFromSession, attemptScore, buildTopicView,
+  emptyTopicStore, loadTopicStore, saveTopicStore, upsertAttempt, upsertSessionAttempts, validateTopicStore,
   type TopicAttempt,
 } from './topic-graph.js';
 
@@ -156,7 +156,7 @@ describe('buildTopicView — derived, clock injected', () => {
   });
 });
 
-describe('attemptFromSession — mechanical extraction, LC-only', () => {
+describe('attemptsFromSession — mechanical extraction, LC-only', () => {
   const spec: RoundSpec = {
     id: 'oa', label: 'OA', capabilities: {
       interviewer: false, can_run_tests: true, time_limit_ms: 3_600_000,
@@ -185,7 +185,7 @@ describe('attemptFromSession — mechanical extraction, LC-only', () => {
   ] as TraceEvent[];
 
   it('builds the full row from manifest + assessment + spec + events', () => {
-    const a = attemptFromSession({ assessment, problem, spec, events, origin: 'session' })!;
+    const a = attemptsFromSession({ assessment, problem, spec, events, origin: 'session' })[0]!;
     expect(a.session_id).toBe('sess-9');
     expect(a.slug).toBe('two-sum');
     expect(a.tags).toEqual(['array', 'hash_table']); // normalized
@@ -198,6 +198,61 @@ describe('attemptFromSession — mechanical extraction, LC-only', () => {
 
   it('returns null for non-LC rounds — their topical identity is model prose', () => {
     const { source, ...rest } = problem;
-    expect(attemptFromSession({ assessment, problem: rest as GeneratedProblem, spec, events, origin: 'session' })).toBeNull();
+    expect(attemptsFromSession({ assessment, problem: rest as GeneratedProblem, spec, events, origin: 'session' })).toEqual([]);
+  });
+});
+
+describe('multi-part sets in the ledger (plural sources, 2026-08-13)', () => {
+  const spec: RoundSpec = {
+    id: 'oa', label: 'OA', capabilities: {
+      interviewer: false, can_run_tests: true, time_limit_ms: 3_600_000,
+      starts_from: 'blank', submit: 'one_shot', surface: 'panes',
+    },
+    check: { kind: 'all_failing' }, memory_tags: ['from_scratch'],
+  };
+  const assessment = {
+    session_id: 'sess-set', status: 'assessed', judged_at: NOW, model: 'm', prompt_hash: 'h',
+    schema_version: 1, renderer_version: 3, expectations_used: {}, solved: true, summary: 's',
+    dimensions: [],
+  } as unknown as import('./judge.js').Assessment;
+  const problem = {
+    round_type: 'debugging', repo_path: '.', model_paths: [], spec: 'x'.repeat(120), mutations: [],
+    rubric: { round_type: 'debugging' },
+    source: {
+      kind: 'leetcode', slug: 'a-easy', title: 'A', difficulty: 'easy', tags: ['Array'], mode: 'skinned',
+      parts: [
+        { slug: 'a-easy', title: 'A', difficulty: 'easy', tags: ['Array'] },
+        { slug: 'b-med', title: 'B', difficulty: 'medium', tags: ['Graph'] },
+        { slug: 'c-med', title: 'C', difficulty: 'medium', tags: ['Dynamic Programming'] },
+      ],
+    },
+  } as never;
+  const events = [
+    { session_id: 's', user_id: 'u', source: 'chrome', seq: 0, ts: NOW - 60_000, type: 'session_start', payload: {} },
+    { session_id: 's', user_id: 'u', source: 'chrome', seq: 1, ts: NOW - 1_000, type: 'test_run', payload: { via: 'submit', exit_code: 0, passed: 36, total: 36 } },
+  ] as never;
+
+  it('one row per part, each with its own slug/tags/difficulty; whole-suite counts NOT fabricated per part', () => {
+    const rows = attemptsFromSession({ assessment, problem, spec, events, origin: 'session' });
+    expect(rows.map((r) => r.slug)).toEqual(['a-easy', 'b-med', 'c-med']);
+    expect(rows.map((r) => r.tags[0])).toEqual(['array', 'graph', 'dynamic_programming']);
+    expect(rows.every((r) => r.solved)).toBe(true);
+    expect(rows.every((r) => r.tests === undefined)).toBe(true); // set → no per-part counts
+  });
+
+  it('rejudge replaces the whole session set, even when the part count changes', () => {
+    const rows = attemptsFromSession({ assessment, problem, spec, events, origin: 'session' });
+    let store = upsertSessionAttempts(emptyTopicStore('u1'), rows);
+    expect(store.attempts).toHaveLength(3);
+    // Rejudge with a corrected 2-part manifest: exactly 2 rows remain.
+    store = upsertSessionAttempts(store, rows.slice(0, 2).map((r) => ({ ...r, origin: 'rejudge' as const })));
+    expect(store.attempts).toHaveLength(2);
+    expect(store.attempts.every((a) => a.origin === 'rejudge')).toBe(true);
+  });
+
+  it('mixed session ids in one call throw — the replace key is the session', () => {
+    const rows = attemptsFromSession({ assessment, problem, spec, events, origin: 'session' });
+    expect(() => upsertSessionAttempts(emptyTopicStore('u1'), [rows[0]!, { ...rows[1]!, session_id: 'other' }]))
+      .toThrow(/mixed session/);
   });
 });

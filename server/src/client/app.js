@@ -1439,11 +1439,16 @@ async function practiceStart(btn) {
   // decoration; the server re-resolves whatever ships (its resolution is
   // the only one that counts). No row and no decoration = invention.
   const srcRow = rep.gaps.find((g) => g.id === 'named-problem');
-  let sourceRef; let sourceAuto;
+  let sourceRefs; let sourceAutos;
   if (srcRow && srcRow.evidence === 'answered' && srcRow.value) {
-    sourceRef = srcRow.value; sourceAuto = false;
+    // An edited row replaces the WHOLE set with what they typed (comma-
+    // separated refs supported); the server re-resolves every ref.
+    sourceRefs = srcRow.value.split(',').map((x) => x.trim()).filter(Boolean);
+    sourceAutos = sourceRefs.map(() => false);
   } else if (d.source && d.source.slug) {
-    sourceRef = d.source.slug; sourceAuto = d.source.picked_by === 'auto';
+    const parts = d.source.parts || [d.source];
+    sourceRefs = parts.map((p) => p.slug);
+    sourceAutos = parts.map((p) => p.picked_by === 'auto');
   }
   const r = await fetch('/api/practice', {
     method: 'POST', headers: { 'content-type': 'application/json' },
@@ -1455,8 +1460,8 @@ async function practiceStart(btn) {
       task: d.task || undefined,
       description: rep.description,
       context: [buildContext(), prose].filter(Boolean).join('\n\n') || undefined,
-      source_ref: sourceRef || undefined,
-      source_auto: sourceAuto || undefined,
+      source_refs: sourceRefs && sourceRefs.length ? sourceRefs : undefined,
+      source_autos: sourceAutos && sourceAutos.length ? sourceAutos : undefined,
     }),
   });
   const s = await r.json();
@@ -1700,9 +1705,19 @@ function renderSeason(row, state) {
     // pick stays hidden so the reskin still lands fresh.
     const sourceBits = (it) => {
       if (!it.source) return { line: '' };
-      const label = it.source.picked_by === 'user'
-        ? 'real set: ' + it.source.title + ' · ' + it.source.difficulty
-        : 'real set · ' + it.source.difficulty + ' — hidden until the round';
+      const parts = it.source.parts || [it.source];
+      const named = parts.filter((p) => p.picked_by === 'user');
+      let label;
+      if (parts.length === 1) {
+        label = it.source.picked_by === 'user'
+          ? 'real set: ' + it.source.title + ' · ' + it.source.difficulty
+          : 'real set · ' + it.source.difficulty + ' — hidden until the round';
+      } else if (named.length) {
+        const extra = parts.length - named.length;
+        label = 'real set: ' + named.map((p) => p.title).join(', ') + (extra ? ' + ' + extra + ' more — hidden' : '');
+      } else {
+        label = 'real set × ' + parts.length + ' — hidden until the round';
+      }
       return { line: '<span class="srcline">' + esc(label) + '</span>' };
     };
     if (d.today) {

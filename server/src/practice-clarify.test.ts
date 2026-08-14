@@ -566,14 +566,42 @@ describe('named problems ride the gate raw (2026-08-13 sourcing)', () => {
     expect(out.gaps.some((g) => g.id === 'named-problem')).toBe(false);
   });
 
-  it('namedProblemGap: user picks show the title, auto picks stay hidden', async () => {
+  it('namedProblemGap: user picks show titles, auto picks stay hidden, sets mix honestly', async () => {
     const { namedProblemGap } = await import('./practice-clarify.js');
-    const user = namedProblemGap({ title: 'Two Sum', difficulty: 'easy' }, 'user');
+    const user = namedProblemGap([{ title: 'Two Sum', difficulty: 'easy', picked_by: 'user' }]);
     expect(user.value).toContain('Two Sum');
     expect(user.evidence).toBe('stated');
-    const auto = namedProblemGap({ title: 'Two Sum', difficulty: 'easy' }, 'auto');
+    const auto = namedProblemGap([{ title: 'Two Sum', difficulty: 'easy', picked_by: 'auto' }]);
     expect(auto.value).not.toContain('Two Sum');
     expect(auto.value).toContain('hidden');
     expect(auto.options.map((o) => o.label)).toContain('invent instead');
+    // A set: named parts listed, auto remainder counted, never titled.
+    const set = namedProblemGap([
+      { title: 'Two Sum', difficulty: 'easy', picked_by: 'user' },
+      { title: 'Hidden One', difficulty: 'medium', picked_by: 'auto' },
+      { title: 'Hidden Two', difficulty: 'medium', picked_by: 'auto' },
+    ]);
+    expect(set.label).toBe('problems (3)');
+    expect(set.value).toContain('Two Sum · easy + 2 picked');
+    expect(set.value).not.toContain('Hidden One');
+  });
+});
+
+describe('blank + all_passing coherence (live 2026-08-13)', () => {
+  it('coerces the check kind so a stated OA set keeps its algorithmic task', async () => {
+    const { gatePracticeClarify } = await import('./practice-clarify.js');
+    const round = {
+      id: 'oa', label: 'Amazon OA', interviewer: false, can_run_tests: true,
+      time_limit_minutes: 70, starts_from: 'blank', submit: 'one_shot',
+      check_kind: 'all_passing', // the model slip: no green suite exists from blank
+      rationale: 'x', unsupported: '',
+      time_evidence: 'stated_timed', language: '', language_evidence: 'unknown',
+      language_options: [], task: 'algorithmic_set', task_evidence: 'stated',
+      part_count: 3,
+    };
+    const out = gatePracticeClarify({ rounds: [round], gaps: [], brief: 'x'.repeat(60) });
+    expect(out.drafts[0]!.spec.check.kind).toBe('all_failing');
+    expect(out.drafts[0]!.task).toBe('algorithmic_set'); // hypothesis survives
+    expect(out.drafts[0]!.part_count).toBe(3);
   });
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { LcProblem } from './lc-source.js';
 import {
-  CASE_TARGET, renderOracleSolution, renderRaisingStub, renderTestFile,
+  CASE_TARGET, partNames, renderOracleSolution, renderRaisingStub, renderTestFile,
   selectCases, sourceRequirements, starterParams,
 } from './lc-convert.js';
 
@@ -109,7 +109,7 @@ describe('starterParams', () => {
 
 describe('sourceRequirements', () => {
   const sel = selectCases(PROBLEM.cases);
-  const skinned = sourceRequirements(PROBLEM, 'skinned', sel);
+  const skinned = sourceRequirements([{ problem: PROBLEM, cases: sel }], 'skinned');
 
   it('fences the statement as data-not-instructions (draft-blueprint precedent)', () => {
     expect(skinned).toContain('<<<SOURCE_MATERIAL');
@@ -129,8 +129,61 @@ describe('sourceRequirements', () => {
 
   it('embeds the manifest source stamp per mode', () => {
     expect(skinned).toContain('"slug": "sum-of-widget-batches-ii", "mode": "skinned"');
-    const verbatim = sourceRequirements(PROBLEM, 'verbatim', sel);
+    const verbatim = sourceRequirements([{ problem: PROBLEM, cases: sel }], 'verbatim');
     expect(verbatim).toContain('"mode": "verbatim"');
     expect(verbatim).toContain('VERBATIM');
+  });
+});
+
+describe('multi-part sets (plural sources, 2026-08-13)', () => {
+  const P2: LcProblem = { ...PROBLEM, slug: 'part-two-problem', method: 'countThings', title: 'Part Two Problem' };
+  const parts = [
+    { problem: PROBLEM, cases: selectCases(PROBLEM.cases, undefined, 12) },
+    { problem: P2, cases: selectCases(PROBLEM.cases, undefined, 12) },
+  ];
+
+  it('partNames: single = historical filenames, sets = flat suffixes', () => {
+    expect(partNames(0, 1)).toEqual({ module: 'solution', casesFile: 'cases.json', testFile: 'test_solution.py', className: 'SolutionTests' });
+    expect(partNames(1, 3)).toEqual({ module: 'solution_part2', casesFile: 'cases_part2.json', testFile: 'test_part2.py', className: 'Part2Tests' });
+  });
+
+  it('renderTestFile default is byte-identical to the single-part shape', () => {
+    expect(renderTestFile('skinned', 'sumOfBatches')).toBe(
+      renderTestFile('skinned', 'sumOfBatches', { module: 'solution', casesFile: 'cases.json', className: 'SolutionTests' }),
+    );
+  });
+
+  it('a part test imports its own module, reads its own cases, no subTest', () => {
+    const t = renderTestFile('skinned', 'countThings', { module: 'solution_part2', casesFile: 'cases_part2.json', className: 'Part2Tests' });
+    expect(t).toContain('from solution_part2 import solve as _target');
+    expect(t).toContain('cases_part2.json');
+    expect(t).toContain('class Part2Tests(unittest.TestCase)');
+    expect(t).toContain('setattr(Part2Tests');
+    expect(t).not.toContain('subTest');
+  });
+
+  it('per-part budget: targetOverride trims the selection', () => {
+    expect(selectCases(PROBLEM.cases, undefined, 12)).toHaveLength(12);
+    expect(selectCases(PROBLEM.cases)).toHaveLength(CASE_TARGET);
+  });
+
+  it('setRequirements: N files contract, per-part fences, count agreement', () => {
+    const block = sourceRequirements(parts, 'skinned');
+    expect(block).toContain('SOURCED PROBLEM SET (skinned) — 2 parts');
+    expect(block).toContain('exactly 2 files — solution_part1.py, solution_part2.py');
+    expect(block).toContain('### Part 1 of 2');
+    expect(block).toContain('### Part 2 of 2');
+    expect((block.match(/<<<SOURCE_MATERIAL/g) ?? []).length).toBe(2);
+    expect(block).toContain('tests/test_part1.py, tests/cases_part1.json');
+    expect(block).toContain('"parts": [{"slug": "sum-of-widget-batches-ii"}, {"slug": "part-two-problem"}]');
+    // The single-part scaffold sentence must NOT leak into set blocks.
+    expect(block).not.toContain('exactly ONE file, solution.py');
+  });
+
+  it('single-part sourceRequirements is unchanged by the plural refactor', () => {
+    const single = sourceRequirements([{ problem: PROBLEM, cases: selectCases(PROBLEM.cases) }], 'skinned');
+    expect(single).toContain('## SOURCED PROBLEM (skinned) — this section is authoritative');
+    expect(single).toContain('exactly ONE file, solution.py');
+    expect(single).toContain('tests/test_solution.py, tests/cases.json');
   });
 });

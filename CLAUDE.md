@@ -117,9 +117,11 @@ the dataset record and is what the topic ledger (`topic-graph.ts`, `topics/<uid>
 records on. Bindings come from intake extraction (`named_problems` on both doors,
 resolved mechanically by `lc-refs.ts`), from `lc-pick.ts` auto-sourcing (the default
 for unnamed algorithmic rounds — memory-BLIND diverse picks; the topic ledger is read
-only as a 14-day seen-window dedup). Per-item manual rebinding was removed pending
-plural `sources[]` — a multi-part OA cannot be expressed by one slug. Weakness-ranked
-selection stays deferred (TODOS #40). Read `server/src/lc-source.ts` / `lc-convert.ts`
+only as a 14-day seen-window dedup). Multi-part OA sets bind N problems via the
+additive `source.parts` array (stated `part_count`, capped by `max_source_files` and
+4; flat `solution_partN.py` + `tests/test_partN.py` layout; one topic-ledger row per
+part, replaced as a session set). Weakness-ranked selection stays deferred (TODOS
+#40); per-item manual rebinding stays removed until someone wants it back. Read `server/src/lc-source.ts` / `lc-convert.ts`
 headers before touching any of it.
 
 **The pipeline**, end to end:

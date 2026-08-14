@@ -45,6 +45,49 @@ function hash(s: string): number {
   return h >>> 0;
 }
 
+const DIFFICULTY_RANK = { easy: 0, medium: 1, hard: 2 } as const;
+
+/**
+ * A full problem SET for one round: named problems first (the candidate's
+ * commitments, deduped), diverse picks fill to `count`, and the result is
+ * sorted easy→hard — the oa-hackerrank-classic escalation contract. Named
+ * entries are trusted as pre-verified by the caller (they went through
+ * resolution + the binding verdict); picks exclude them automatically.
+ * Short output when the pool runs dry — callers bind what they got.
+ */
+export function buildSourceSet(opts: {
+  index: LcIndexEntry[];
+  named: LcIndexEntry[];
+  count: number;
+  difficulty?: PickOptions['difficulty'];
+  excludeSlugs?: Set<string>;
+  seed: string;
+}): { entry: LcIndexEntry; picked_by: 'user' | 'auto' }[] {
+  const seen = new Set<string>();
+  const set: { entry: LcIndexEntry; picked_by: 'user' | 'auto' }[] = [];
+  for (const e of opts.named) {
+    if (seen.has(e.slug) || set.length >= opts.count) continue;
+    seen.add(e.slug);
+    set.push({ entry: e, picked_by: 'user' });
+  }
+  if (set.length < opts.count) {
+    const exclude = new Set([...(opts.excludeSlugs ?? []), ...seen]);
+    const picks = pickDiverse(opts.index, {
+      count: opts.count - set.length,
+      ...(opts.difficulty ? { difficulty: opts.difficulty } : {}),
+      excludeSlugs: exclude,
+      seed: opts.seed,
+    });
+    for (const e of picks) set.push({ entry: e, picked_by: 'auto' });
+  }
+  // Escalation: easiest part first, stable within a band by slug.
+  return set.sort(
+    (a, b) =>
+      DIFFICULTY_RANK[a.entry.difficulty] - DIFFICULTY_RANK[b.entry.difficulty] ||
+      (a.entry.slug < b.entry.slug ? -1 : 1),
+  );
+}
+
 /**
  * Up to `count` eligible problems, no two consecutive picks sharing a
  * primary tag while other tags still have candidates. Short output when

@@ -52,11 +52,12 @@ function portEnv(v: string | undefined, fallback: number): number {
   return Number.isInteger(n) && n > 0 && n < 65536 ? n : fallback;
 }
 
-/** Dataset-sourced build context, resolved by resolveSourceBinding(). */
+/** Dataset-sourced build context, resolved by resolveSourceBinding().
+ *  One part = a single problem (the historical shape); N parts = a
+ *  multi-part OA set, escalation order already applied by the binder. */
 interface SourcedBuild {
-  problem: import('./lc-source.js').LcProblem;
+  parts: import('./lc-convert.js').SourcedPart[];
   mode: import('./lc-convert.js').SourceMode;
-  cases: import('./lc-convert.js').SelectedCase[];
 }
 
 /**
@@ -77,21 +78,34 @@ async function resolveSourceBinding(
     console.error(`--source-mode out of vocabulary: ${mode} (skinned|verbatim)`);
     process.exit(64);
   }
-  const slug = sourceRef.replace(/^lc:/, '');
-  // One ladder for every binding surface (lc-source.ts) — the CLI's only
-  // addition is the hard exit: a bound build must fail loudly, never
-  // silently substitute an invented problem.
-  const verdict = lc.sourceBindingVerdict(repoRoot, slug);
-  if (!verdict.ok) {
-    console.error(`[source] ${verdict.reason}`);
+  // "lc:a,b,c" = a multi-part set, in part order. Every slug runs the one
+  // ladder (lc-source.ts); ANY failure exits 2 — an explicit binding is a
+  // commitment, and a silently smaller set is a silently different round.
+  const slugs = sourceRef.replace(/^lc:/, '').split(',').map((x) => x.trim()).filter(Boolean);
+  if (slugs.length === 0 || slugs.length > 4) {
+    console.error(`[source] expected 1-4 slugs, got ${slugs.length}`);
     process.exit(2);
   }
-  const problem = lc.loadLcProblem(repoRoot, slug);
-  if (!problem) {
-    console.error(`[source] index lists "${slug}" but its problem file is missing — rerun lc fetch`);
-    process.exit(2);
+  const parts: import('./lc-convert.js').SourcedPart[] = [];
+  for (const slug of slugs) {
+    const verdict = lc.sourceBindingVerdict(repoRoot, slug);
+    if (!verdict.ok) {
+      console.error(`[source] ${verdict.reason}`);
+      process.exit(2);
+    }
+    const problem = lc.loadLcProblem(repoRoot, slug);
+    if (!problem) {
+      console.error(`[source] index lists "${slug}" but its problem file is missing — rerun lc fetch`);
+      process.exit(2);
+    }
+    // Per-part budget ~12 keeps a set's combined suite readable; the
+    // min_tests floor is whole-round and only binds single-part rounds.
+    const cases = slugs.length > 1
+      ? cv.selectCases(problem.cases, undefined, 12)
+      : cv.selectCases(problem.cases, spec?.check.min_tests);
+    parts.push({ problem, cases });
   }
-  return { problem, mode, cases: cv.selectCases(problem.cases, spec?.check.min_tests) };
+  return { parts, mode };
 }
 
 async function generateInto(
@@ -106,9 +120,12 @@ async function generateInto(
     const cv = await import('./lc-convert.js');
     // The grading contract goes on disk BEFORE the agent runs — the agent
     // reads it, never authors it.
-    const emitted = cv.writeSourcedTests(targetDir, sourced.problem, sourced.mode, sourced.cases);
-    sourceBlock = cv.sourceRequirements(sourced.problem, sourced.mode, sourced.cases);
-    console.log(`[source] ${sourced.problem.slug} (${sourced.mode}): ${emitted.count} cases (${emitted.large} large) emitted`);
+    const emitted = cv.writeSourcedTests(targetDir, sourced.parts, sourced.mode);
+    sourceBlock = cv.sourceRequirements(sourced.parts, sourced.mode);
+    for (const part of sourced.parts) {
+      console.log(`[source] ${part.problem.slug} (${sourced.mode}): ${part.cases.length} cases emitted`);
+    }
+    if (sourced.parts.length > 1) console.log(`[source] set of ${sourced.parts.length} parts (${emitted.count} cases total, ${emitted.large} large)`);
   }
   const result = await generateProblem({
     targetDir,
@@ -154,17 +171,28 @@ async function generateInto(
     // the generator — the topic ledger records truth.
     const cv = await import('./lc-convert.js');
     const { writeFileSync: wf, readFileSync: rf } = await import('node:fs');
-    cv.writeSourcedTests(targetDir, sourced.problem, sourced.mode, sourced.cases);
+    cv.writeSourcedTests(targetDir, sourced.parts, sourced.mode);
     try {
       const manifestPath = path.join(targetDir, 'problem.json');
       const manifest = JSON.parse(rf(manifestPath, 'utf8')) as Record<string, unknown>;
+      const primary = sourced.parts[0]!.problem;
       manifest.source = {
         kind: 'leetcode',
-        slug: sourced.problem.slug,
-        title: sourced.problem.title,
-        difficulty: sourced.problem.difficulty,
-        tags: sourced.problem.tags,
+        slug: primary.slug,
+        title: primary.title,
+        difficulty: primary.difficulty,
+        tags: primary.tags,
         mode: sourced.mode,
+        ...(sourced.parts.length > 1
+          ? {
+              parts: sourced.parts.map((part) => ({
+                slug: part.problem.slug,
+                title: part.problem.title,
+                difficulty: part.problem.difficulty,
+                tags: part.problem.tags,
+              })),
+            }
+          : {}),
       };
       wf(manifestPath, JSON.stringify(manifest, null, 2));
     } catch {
@@ -466,7 +494,11 @@ if (cmd === 'generate') {
   // A rep's source binding lives on the rep record itself (reps.json),
   // not a flag — rep-build re-reads it like it re-reads everything else.
   const sourced = rep.source?.kind === 'leetcode'
-    ? await resolveSourceBinding(rep.source.slug, process.env.IP_LC_MODE, rep.spec)
+    ? await resolveSourceBinding(
+        (rep.source.parts ?? [rep.source]).map((part) => part.slug).join(','),
+        process.env.IP_LC_MODE,
+        rep.spec,
+      )
     : undefined;
   // Gap-graph emphasis travels in exactly like generate-for's.
   const store = loadStore(path.join(repoRoot, 'gaps'), userId);
@@ -623,10 +655,10 @@ if (cmd === 'generate') {
     // session_id) — corrective, never inflationary, unlike #34.
     try {
       const tg = await import('./topic-graph.js');
-      const attempt = tg.attemptFromSession({ assessment: result, problem, spec, events, origin: 'rejudge' });
-      if (attempt) {
-        tg.recordTopicAttempt(repoRoot, userId, attempt);
-        console.error('[rejudge] topic ledger updated');
+      const attempts = tg.attemptsFromSession({ assessment: result, problem, spec, events, origin: 'rejudge' });
+      if (attempts.length) {
+        tg.recordTopicAttempts(repoRoot, userId, attempts);
+        console.error(`[rejudge] topic ledger updated (${attempts.length} row${attempts.length === 1 ? '' : 's'})`);
       }
     } catch (e) {
       console.warn(`[rejudge] topic record skipped: ${String(e)}`);
@@ -817,7 +849,7 @@ if (cmd === 'generate') {
       const cases = cv.selectCases(p.cases);
       const dir = mkdtempSync(path.join(tmpdir(), 'lc-verify-'));
       try {
-        cv.writeSourcedTests(dir, p, mode, cases);
+        cv.writeSourcedTests(dir, [{ problem: p, cases }], mode);
         wf(path.join(dir, 'solution.py'), cv.renderRaisingStub(p, mode));
         const red = runPy(dir);
         if (red.total !== cases.length) return { ok: false, reason: `stub run ran ${red.total} of ${cases.length} (suite did not load?)` };

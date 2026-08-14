@@ -60,6 +60,11 @@ A round is described by:
   never a named problem, and you NEVER infer one from difficulty or vibe. You notice
   the name; code resolves what it refers to. Empty when nothing is named — which is
   most of the time.
+- `part_count` — how many SEPARATE problems the round contains, ONLY when the
+  material states it ("three coding problems", a part 1/2/3 ladder of independent
+  problems). Escalating stages of ONE system are a practical_build, never a part
+  count. Omit when the material is silent. When you set a part_count, `max_source_files`
+  must be at least that number — one solution file per problem.
 - `starts_from` — `repo` (existing codebase: debugging, extend), `blank` (build from
   scaffold: most OAs, implement-these-classes), `diff` (review someone's change).
 - `submit` — `one_shot` (graded once at the end) or `iterate`.

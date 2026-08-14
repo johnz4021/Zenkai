@@ -50,9 +50,12 @@ export interface QueueItem {
    *  Advisory — the item stays launchable; the timeline offers a rebuild
    *  and the candidate decides. Cleared by /api/rebuild. */
   stale?: boolean;
-  /** Dataset-sourced items: which real problem this build converts.
+  /** Dataset-sourced items: which real problem(s) this build converts.
    *  `picked_by: 'user'` = the candidate named it (a commitment, like
-   *  planned_title); `'auto'` is reserved for the deferred picker. Survives
+   *  planned_title). Top-level slug/title/difficulty are always PART 1
+   *  (the primary) so single-problem readers stay correct; `parts` exists
+   *  ONLY when the round is a set of >=2 (multi-part OA — the
+   *  oa-hackerrank-classic "same count of parts" contract). Survives
    *  reconcileWithDisk's JSON round-trip like every other field. */
   source?: {
     kind: 'leetcode';
@@ -61,6 +64,12 @@ export interface QueueItem {
     difficulty: 'easy' | 'medium' | 'hard';
     picked_by: 'user' | 'auto';
     reasons?: string[];
+    parts?: {
+      slug: string;
+      title: string;
+      difficulty: 'easy' | 'medium' | 'hard';
+      picked_by: 'user' | 'auto';
+    }[];
   };
 }
 

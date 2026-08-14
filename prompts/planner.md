@@ -174,6 +174,9 @@ NOTHING is generated until they confirm. Rules:
   words on that round's draft — one entry per problem, only explicit
   mentions. A topic ("mostly graphs") is an `emphasis`, never a named
   problem, and you never infer one. Code resolves what the name refers to.
+- `part_count`: when the candidate states how many separate problems a round
+  holds ("the OA is three problems"), record the number on that round. Only
+  explicit statements; omit otherwise.
 - `summary`: once the loop's shape is settled (typically when the candidate
   seems ready to confirm), write the settled facts — company, rounds, dates,
   formats, anything from their material that generation should honor. This

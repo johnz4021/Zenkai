@@ -131,6 +131,15 @@ export interface GeneratedProblem {
     difficulty: 'easy' | 'medium' | 'hard';
     tags: string[];
     mode: 'skinned' | 'verbatim';
+    /** Multi-part OA sets only (>=2): every converted problem, in part
+     *  order. Top-level fields stay = part 1 so single-part readers (and
+     *  the topic ledger's fallback) never notice. */
+    parts?: {
+      slug: string;
+      title: string;
+      difficulty: 'easy' | 'medium' | 'hard';
+      tags: string[];
+    }[];
   };
 }
 

@@ -85,16 +85,28 @@ export function emptyTopicStore(userId: string): TopicStore {
 // ── recording ──────────────────────────────────────────────────────────────
 
 /**
- * Pure replace-by-session_id upsert. There is no append path keyed on
- * anything else, which is what makes rejudge corrective instead of
- * inflationary (the #34 class, killed structurally).
+ * Pure replace-by-session upsert: ALL existing rows for the session go,
+ * the new set lands (a multi-part OA is one session, N rows — one per
+ * part). There is no append path keyed on anything else, which is what
+ * makes rejudge corrective instead of inflationary (the #34 class, killed
+ * structurally) even when the part count changes between judgings.
  */
-export function upsertAttempt(store: TopicStore, attempt: TopicAttempt): TopicStore {
+export function upsertSessionAttempts(store: TopicStore, attempts: TopicAttempt[]): TopicStore {
+  if (attempts.length === 0) return store;
+  const sid = attempts[0]!.session_id;
+  if (attempts.some((a) => a.session_id !== sid)) {
+    throw new Error('upsertSessionAttempts: mixed session ids in one call');
+  }
   const next = JSON.parse(JSON.stringify(store)) as TopicStore;
-  next.attempts = next.attempts.filter((a) => a.session_id !== attempt.session_id);
-  next.attempts.push(JSON.parse(JSON.stringify(attempt)) as TopicAttempt);
+  next.attempts = next.attempts.filter((a) => a.session_id !== sid);
+  next.attempts.push(...(JSON.parse(JSON.stringify(attempts)) as TopicAttempt[]));
   next.attempts.sort((a, b) => a.ts - b.ts);
   return next;
+}
+
+/** Single-row convenience — the historical shape, same semantics. */
+export function upsertAttempt(store: TopicStore, attempt: TopicAttempt): TopicStore {
+  return upsertSessionAttempts(store, [attempt]);
 }
 
 export interface AttemptInputs {
@@ -112,11 +124,14 @@ export interface AttemptInputs {
  * topical identity exists only as model prose, and recording that would
  * put ungated model output into state).
  */
-export function attemptFromSession(inp: AttemptInputs): TopicAttempt | null {
+export function attemptsFromSession(inp: AttemptInputs): TopicAttempt[] {
   const src = inp.problem.source;
-  if (src?.kind !== 'leetcode') return null;
-  const { tags, dropped } = normalizeTopicTags(src.tags ?? []);
-  if (dropped.length) console.warn(`[topics] dropped out-of-vocabulary tags: ${dropped.join(', ')}`);
+  if (src?.kind !== 'leetcode') return [];
+  // A set = one session, one row PER PART (each with its own slug/tags/
+  // difficulty). `solved` is the session's — on a one-shot set that IS
+  // what solved means — and whole-suite pass counts attach only to
+  // single-part rows, never fabricated per part.
+  const partList = src.parts ?? [{ slug: src.slug, title: src.title, difficulty: src.difficulty, tags: src.tags }];
 
   const verdicts: Partial<Record<DimensionKey, Verdict>> = {};
   for (const d of inp.assessment.dimensions) {
@@ -137,22 +152,26 @@ export function attemptFromSession(inp: AttemptInputs): TopicAttempt | null {
   const first = inp.events[0];
   const last = inp.events.at(-1);
 
-  return {
-    session_id: inp.assessment.session_id,
-    ts: inp.assessment.judged_at,
-    slug: src.slug,
-    ...(src.title ? { title: src.title } : {}),
-    difficulty: src.difficulty,
-    tags,
-    solved: inp.assessment.solved,
-    ...(tests ? { tests } : {}),
-    verdicts,
-    ...(first && last && last.ts > first.ts ? { duration_ms: last.ts - first.ts } : {}),
-    time_limit_ms: inp.spec.capabilities.time_limit_ms,
-    round_label: inp.spec.label,
-    memory_tags: inp.spec.memory_tags,
-    origin: inp.origin,
-  };
+  return partList.map((part) => {
+    const { tags, dropped } = normalizeTopicTags(('tags' in part ? part.tags : undefined) ?? []);
+    if (dropped.length) console.warn(`[topics] dropped out-of-vocabulary tags: ${dropped.join(', ')}`);
+    return {
+      session_id: inp.assessment.session_id,
+      ts: inp.assessment.judged_at,
+      slug: part.slug,
+      ...(part.title ? { title: part.title } : {}),
+      difficulty: part.difficulty,
+      tags,
+      solved: inp.assessment.solved,
+      ...(tests && partList.length === 1 ? { tests } : {}),
+      verdicts,
+      ...(first && last && last.ts > first.ts ? { duration_ms: last.ts - first.ts } : {}),
+      time_limit_ms: inp.spec.capabilities.time_limit_ms,
+      round_label: inp.spec.label,
+      memory_tags: inp.spec.memory_tags,
+      origin: inp.origin,
+    };
+  });
 }
 
 // ── persistence (the #17/#18 fixes, locally) ──────────────────────────────
@@ -228,12 +247,14 @@ export function saveTopicStore(dir: string, store: TopicStore): void {
   renameSync(tmp, file);
 }
 
-/** The one call the two record sites make. Load-or-cold-start, upsert,
- *  atomic save. Throws only on a corrupt existing store — callers catch. */
-export function recordTopicAttempt(repoRoot: string, userId: string, attempt: TopicAttempt): void {
+/** The one call the two record sites make. Load-or-cold-start, upsert the
+ *  session's whole row set, atomic save. Throws only on a corrupt existing
+ *  store — callers catch. */
+export function recordTopicAttempts(repoRoot: string, userId: string, attempts: TopicAttempt[]): void {
+  if (attempts.length === 0) return;
   const dir = topicsDir(repoRoot);
   const store = loadTopicStore(dir, userId);
-  saveTopicStore(dir, upsertAttempt(store, attempt));
+  saveTopicStore(dir, upsertSessionAttempts(store, attempts));
 }
 
 /**

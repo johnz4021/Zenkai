@@ -29,7 +29,7 @@ import { childEnv } from './child-env.js';
 import { judgeSession } from './judge.js';
 import { buildAssessmentCard, mergeConfirm } from './feedback.js';
 import { buildGraphView, buildTargetNote, loadStore, recordAssessment, saveStore } from './gap-graph.js';
-import { attemptFromSession, recordTopicAttempt } from './topic-graph.js';
+import { attemptsFromSession, recordTopicAttempts } from './topic-graph.js';
 import { clientScript, sessionPage } from './chrome.js';
 import { injectWorkbenchDefaults } from './workbench-inject.js';
 import { describeStuck, detectStuck, type StuckState } from './stuck.js';
@@ -937,15 +937,14 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       const spec = resolveRoundSpec(problem);
       gapStore = recordAssessment(gapStore, result, spec.label, spec.memory_tags);
       saveStore(gapsDir, gapStore);
-      // Second graph: an LC-sourced round deposits a topic-ledger row
-      // (attemptFromSession returns null for everything else). Same
-      // assessed-only gate; never fatal — finalize must not crash on
-      // memory bookkeeping.
+      // Second graph: an LC-sourced round deposits topic-ledger rows —
+      // one per part for a set (attemptsFromSession returns [] for
+      // everything else). Same assessed-only gate; never fatal — finalize
+      // must not crash on memory bookkeeping.
       try {
-        const attempt = attemptFromSession({
+        recordTopicAttempts(cfg.repoRoot, cfg.userId, attemptsFromSession({
           assessment: result, problem, spec, events, origin: 'session',
-        });
-        if (attempt) recordTopicAttempt(cfg.repoRoot, cfg.userId, attempt);
+        }));
       } catch (e) {
         console.warn(`[session] topic record skipped: ${String(e)}`);
       }

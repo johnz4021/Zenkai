@@ -108,6 +108,11 @@ const PROPOSE_TOOL = {
               description:
                 'Specific well-known problems the candidate NAMED for this round ("they asked me two sum", "LC 146"). Copy their words, one entry per problem. ONLY explicit mentions — a topic is not a named problem, and you never infer one. Empty when nothing was named.',
             },
+            part_count: {
+              type: 'number',
+              description:
+                'How many SEPARATE problems this round contains — ONLY when the candidate stated it ("the OA is three problems"). Omit or 0 otherwise.',
+            },
           },
           required: ['id', 'label', 'interviewer', 'can_run_tests', 'time_limit_minutes', 'starts_from', 'submit', 'check_kind', 'rationale', 'unsupported'],
         },
@@ -220,6 +225,13 @@ export function gateProposal(raw: unknown): PlannerProposal {
   for (const r of rounds) {
     try {
       const draft = draftToSpec(r as DraftToolOutput);
+      // blank + all_passing is self-contradictory (no green suite exists
+      // to keep green from a blank start) — same coercion as the practice
+      // gate, same live slip class (2026-08-13).
+      if (draft.spec.capabilities.starts_from === 'blank' && draft.spec.check.kind === 'all_passing') {
+        console.warn(`[planner] blank + all_passing is incoherent — check kind coerced to all_failing for "${draft.spec.id}"`);
+        draft.spec.check = { ...draft.spec.check, kind: 'all_failing' };
+      }
       // Named problems ride raw — the accept route resolves them against
       // the dataset index; the model never decides which entry a name is.
       const named = coerceArray((r as Record<string, unknown>).named_problems ?? [])
@@ -227,6 +239,21 @@ export function gateProposal(raw: unknown): PlannerProposal {
         .filter(Boolean)
         .slice(0, 4);
       if (named.length) draft.named_problems = named;
+      const pc = Math.round(Number((r as Record<string, unknown>).part_count));
+      if (Number.isFinite(pc) && pc >= 2) {
+        draft.part_count = Math.min(pc, 4);
+        // Coherence, coerceTask-style: a stated 3-problem round with
+        // max_source_files 1 is incoherent on its face (the model's
+        // single-file OA habit) — the size knob must fit the stated set,
+        // or binding silently collapses it back to one problem (live
+        // repro 2026-08-13). Mechanical fact beats model slip; the
+        // coerced value is visible at the confirm gate.
+        const msf = draft.spec.check.max_source_files;
+        if (msf !== undefined && msf < draft.part_count) {
+          console.warn(`[gate] max_source_files ${msf} < part_count ${draft.part_count} — raised to fit the stated set`);
+          draft.spec.check.max_source_files = draft.part_count;
+        }
+      }
       drafts.push(draft);
     } catch (e) {
       dropped.push(String(e).slice(0, 120));

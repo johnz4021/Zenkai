@@ -323,9 +323,12 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
   const args = ['generate-for', target.id, item.spec_id, '--into', dir];
   // Sourced items skip --title: the LC title must not become the manifest
   // title in skinned mode (the title-commitment line would defeat the skin);
-  // the generator names its own skin instead.
-  if (item.source?.kind === 'leetcode') args.push('--source', `lc:${item.source.slug}`);
-  else if (item.planned_title) args.push('--title', item.planned_title);
+  // the generator names its own skin instead. Sets ride as comma slugs, in
+  // part order (escalation already applied by the binder).
+  if (item.source?.kind === 'leetcode') {
+    const slugs = (item.source.parts ?? [item.source]).map((p) => p.slug).join(',');
+    args.push('--source', `lc:${slugs}`);
+  } else if (item.planned_title) args.push('--title', item.planned_title);
   liveGenerations.add(dir);
   mkdirSync(dir, { recursive: true });
   const logFd = openBuildLog(dir);
@@ -470,9 +473,18 @@ function resolveTitle(item: QueueItem): string | null {
   // stays hidden — the reskin is what keeps the round fresh, and the plan
   // view is read the night before.
   if (item.source) {
-    return item.source.picked_by === 'user'
-      ? `${item.source.title} · ${item.source.difficulty} · from the real set`
-      : `sourced · ${item.source.difficulty} — hidden until the round`;
+    const parts = item.source.parts ?? [item.source];
+    const named = parts.filter((p) => p.picked_by === 'user');
+    if (parts.length === 1) {
+      return item.source.picked_by === 'user'
+        ? `${item.source.title} · ${item.source.difficulty} · from the real set`
+        : `sourced · ${item.source.difficulty} — hidden until the round`;
+    }
+    if (named.length) {
+      const extra = parts.length - named.length;
+      return `${named.map((p) => p.title).join(', ')}${extra ? ` + ${extra} more` : ''} · from the real set`;
+    }
+    return `${parts.length} from the real set — hidden until the round`;
   }
   return item.planned_title ?? null;
 }
@@ -1651,7 +1663,7 @@ export function runApp(cfg: AppConfig): http.Server {
             const lc = await import('./lc-source.js');
             if (lc.lcReady(repoRoot).ok) {
               const { resolveProblemRef } = await import('./lc-refs.js');
-              const { pickDiverse } = await import('./lc-pick.js');
+              const { buildSourceSet } = await import('./lc-pick.js');
               const { recentlyAttemptedSlugs } = await import('./topic-graph.js');
               const { namedProblemGap } = await import('./practice-clarify.js');
               const index = lc.loadLcIndex(repoRoot);
@@ -1665,41 +1677,49 @@ export function runApp(cfg: AppConfig): http.Server {
               for (const d of result.drafts) {
                 const task = d.task ?? deriveTaskFromSpec(d.spec);
                 if (task !== 'algorithmic_set' || srcInvent) continue;
-                let entry = null;
-                let pickedBy: 'user' | 'auto' = 'user';
+                // Named refs resolve mechanically; the recency window does
+                // NOT apply to them (re-doing a problem you asked for is
+                // fine) — blocklist and eligibility always do. An answered
+                // row is the strongest ref and must not be silently
+                // substituted when it fails to resolve.
+                const named: import('./lc-source.js').LcIndexEntry[] = [];
                 if (srcAnswer) {
                   const hit = resolveProblemRef(srcAnswer, index);
-                  if (hit && !blocked.has(hit.slug) && lc.eligibleForSourcing(hit)) entry = hit;
-                  else continue; // their words didn't resolve — no silent substitute
+                  if (!hit || blocked.has(hit.slug) || !lc.eligibleForSourcing(hit)) continue;
+                  named.push(hit);
                 }
-                for (const ref of entry ? [] : d.named_problems ?? []) {
+                for (const ref of d.named_problems ?? []) {
                   const hit = resolveProblemRef(ref, index);
-                  // Named = explicit intent: the recency window does NOT
-                  // apply (re-doing a problem you asked for is fine); the
-                  // blocklist and eligibility still do.
-                  if (hit && !blocked.has(hit.slug) && lc.eligibleForSourcing(hit)) {
-                    entry = hit;
-                    break;
-                  }
+                  if (hit && !blocked.has(hit.slug) && lc.eligibleForSourcing(hit)) named.push(hit);
                 }
-                if (!entry) {
-                  pickedBy = 'auto';
-                  const exclude = new Set([
+                // Set size: the stated part count, never below what was
+                // named, capped by the enforceable size knob and 4.
+                const count = Math.min(
+                  Math.max(d.part_count ?? named.length, named.length, 1),
+                  d.spec.check.max_source_files ?? 4,
+                  4,
+                );
+                const set = buildSourceSet({
+                  index,
+                  named,
+                  count,
+                  excludeSlugs: new Set([
                     ...recentlyAttemptedSlugs(repoRoot, user!.id, Date.now()),
                     ...blocked,
-                  ]);
+                  ]),
                   // Seeded on user+spec: re-clarifying the same round deals
-                  // the same problem (stable confirm screen), a different
-                  // round deals a different one.
-                  entry = pickDiverse(index, {
-                    count: 1,
-                    seed: `${user!.id}:${d.spec.id}`,
-                    excludeSlugs: exclude,
-                  })[0] ?? null;
-                }
-                if (!entry) continue;
-                d.source = { slug: entry.slug, title: entry.title, difficulty: entry.difficulty, picked_by: pickedBy };
-                result.gaps.push(namedProblemGap(entry, pickedBy));
+                  // the same set (stable confirm screen).
+                  seed: `${user!.id}:${d.spec.id}`,
+                });
+                if (set.length === 0) continue;
+                const toPart = (x: (typeof set)[number]) => ({
+                  slug: x.entry.slug, title: x.entry.title, difficulty: x.entry.difficulty, picked_by: x.picked_by,
+                });
+                d.source = {
+                  ...toPart(set[0]!),
+                  ...(set.length > 1 ? { parts: set.map(toPart) } : {}),
+                };
+                result.gaps.push(namedProblemGap(set.map((x) => ({ title: x.entry.title, difficulty: x.entry.difficulty, picked_by: x.picked_by }))));
               }
             }
           } catch (e) {
@@ -1750,6 +1770,8 @@ export function runApp(cfg: AppConfig): http.Server {
         const b = JSON.parse((await readBody(req)) || '{}') as {
           rep_id?: string; spec?: unknown; description?: string; context?: string; task?: string;
           source_ref?: string; source_auto?: boolean;
+          /** Set form: refs in part order + which were auto picks. */
+          source_refs?: string[]; source_autos?: boolean[];
         };
         if (typeof b.rep_id !== 'string' || !REP_ID_RE.test(b.rep_id)) {
           return json(400, { error: 'bad rep id' });
@@ -1803,21 +1825,40 @@ export function runApp(cfg: AppConfig): http.Server {
         // build invents. Never an error: a vanished dataset must not block
         // a round the pre-sourcing product could build.
         let source: QueueItem['source'];
-        const ref = typeof b.source_ref === 'string' ? b.source_ref.trim() : '';
-        if (ref && ref.toLowerCase() !== 'invent' && ref.toLowerCase() !== 'invent instead') {
+        // Set form wins; the single-ref form stays for compatibility. Every
+        // ref is re-resolved and re-verdicted server-side; "invent" (any
+        // ref) opts out entirely; a failed ref DROPS with a warn — the set
+        // that binds is the set that resolves.
+        const rawRefs = Array.isArray(b.source_refs) && b.source_refs.length
+          ? b.source_refs.map((r, i) => ({ ref: String(r ?? '').trim(), auto: b.source_autos?.[i] === true }))
+          : (typeof b.source_ref === 'string' && b.source_ref.trim()
+              ? [{ ref: b.source_ref.trim(), auto: b.source_auto === true }]
+              : []);
+        const optedOut = rawRefs.some(({ ref }) => /^invent/i.test(ref));
+        if (rawRefs.length && !optedOut) {
           try {
             const lc = await import('./lc-source.js');
             const { resolveProblemRef } = await import('./lc-refs.js');
-            const ready = lc.lcReady(repoRoot);
-            const hit = ready.ok ? resolveProblemRef(ref, lc.loadLcIndex(repoRoot)) : null;
-            const verdict = hit ? lc.sourceBindingVerdict(repoRoot, hit.slug) : null;
-            if (hit && verdict?.ok) {
-              source = {
-                kind: 'leetcode', slug: hit.slug, title: hit.title, difficulty: hit.difficulty,
-                picked_by: b.source_auto === true ? 'auto' : 'user',
-              };
-            } else {
-              console.warn(`[practice] source ref not bound ("${ref.slice(0, 60)}"): ${verdict && !verdict.ok ? verdict.reason : 'unresolved'} — inventing`);
+            if (lc.lcReady(repoRoot).ok) {
+              const index = lc.loadLcIndex(repoRoot);
+              const parts: NonNullable<NonNullable<QueueItem['source']>['parts']> = [];
+              for (const { ref, auto } of rawRefs.slice(0, 4)) {
+                if (!ref) continue;
+                const hit = resolveProblemRef(ref, index);
+                const verdict = hit ? lc.sourceBindingVerdict(repoRoot, hit.slug) : null;
+                if (hit && verdict?.ok && !parts.some((x) => x.slug === hit.slug)) {
+                  parts.push({ slug: hit.slug, title: hit.title, difficulty: hit.difficulty, picked_by: auto ? 'auto' : 'user' });
+                } else {
+                  console.warn(`[practice] source ref not bound ("${ref.slice(0, 60)}"): ${verdict && !verdict.ok ? verdict.reason : 'unresolved'}`);
+                }
+              }
+              if (parts.length) {
+                source = {
+                  kind: 'leetcode',
+                  ...parts[0]!,
+                  ...(parts.length > 1 ? { parts } : {}),
+                };
+              }
             }
           } catch (e) {
             console.warn(`[practice] source binding skipped: ${String(e).slice(0, 160)}`);
@@ -2023,6 +2064,7 @@ export function runApp(cfg: AppConfig): http.Server {
         // the same server-side re-read the summary uses, so nothing the
         // browser edited can invent a binding.
         const namedBySpec = new Map<string, string[]>();
+        const partCountBySpec = new Map<string, number>();
         try {
           const { loadConversation, latestProposal } = await import('./planner.js');
           const prop = latestProposal(loadConversation(repoRoot, t.id));
@@ -2032,6 +2074,7 @@ export function runApp(cfg: AppConfig): http.Server {
           if (pace === undefined && prop?.pace_per_week) pace = prop.pace_per_week;
           for (const d of prop?.drafts ?? []) {
             if (d.named_problems?.length) namedBySpec.set(d.spec.id, d.named_problems);
+            if (d.part_count && d.part_count >= 2) partCountBySpec.set(d.spec.id, d.part_count);
           }
         } catch { /* no conversation — CLI or legacy path */ }
         if (!loadQueue(repoRoot, t.id)) {
@@ -2046,7 +2089,7 @@ export function runApp(cfg: AppConfig): http.Server {
             const { deriveTaskFromSpec } = await import('./blueprint.js');
             if (lc.lcReady(repoRoot).ok) {
               const { resolveProblemRef } = await import('./lc-refs.js');
-              const { pickDiverse } = await import('./lc-pick.js');
+              const { buildSourceSet } = await import('./lc-pick.js');
               const { recentlyAttemptedSlugs } = await import('./topic-graph.js');
               const index = lc.loadLcIndex(repoRoot);
               const blocked = lc.blocklistedSlugs(repoRoot);
@@ -2056,34 +2099,44 @@ export function runApp(cfg: AppConfig): http.Server {
                 if (deriveTaskFromSpec(spec) !== 'algorithmic_set') continue;
                 const mine = queue.items.filter((i) => i.spec_id === spec.id);
                 if (mine.length === 0) continue;
-                const named: { slug: string; title: string; difficulty: 'easy' | 'medium' | 'hard' }[] = [];
+                // EVERY item of this spec is one full session of the round,
+                // so a 3-part OA spec means a 3-part SET per item. Named
+                // problems land in the FIRST item's set; later items are
+                // all-auto. `bound` accumulates so no slug repeats across
+                // the queue.
+                const named: import('./lc-source.js').LcIndexEntry[] = [];
                 for (const ref of namedBySpec.get(spec.id) ?? []) {
                   const hit = resolveProblemRef(ref, index);
                   if (hit && !blocked.has(hit.slug) && !bound.has(hit.slug) && lc.eligibleForSourcing(hit)) named.push(hit);
                 }
-                mine.forEach((item, i) => {
-                  const e = named[i];
-                  if (!e) return;
-                  item.source = { kind: 'leetcode', slug: e.slug, title: e.title, difficulty: e.difficulty, picked_by: 'user' };
-                  bound.add(e.slug);
+                const count = Math.min(
+                  Math.max(partCountBySpec.get(spec.id) ?? named.length, named.length, 1),
+                  spec.check.max_source_files ?? 4,
+                  4,
+                );
+                mine.forEach((item, itemIdx) => {
+                  const set = buildSourceSet({
+                    index,
+                    named: itemIdx === 0 ? named : [],
+                    count,
+                    excludeSlugs: new Set([
+                      ...recentlyAttemptedSlugs(repoRoot, owner, Date.now()),
+                      ...blocked,
+                      ...bound,
+                    ]),
+                    seed: `${t.id}:${spec.id}:${item.id}`,
+                  });
+                  if (set.length === 0) return;
+                  for (const x of set) bound.add(x.entry.slug);
+                  const toPart = (x: (typeof set)[number]) => ({
+                    slug: x.entry.slug, title: x.entry.title, difficulty: x.entry.difficulty, picked_by: x.picked_by,
+                  });
+                  item.source = {
+                    kind: 'leetcode',
+                    ...toPart(set[0]!),
+                    ...(set.length > 1 ? { parts: set.map(toPart) } : {}),
+                  };
                 });
-                const remaining = mine.filter((i) => !i.source);
-                if (remaining.length) {
-                  const exclude = new Set([
-                    ...recentlyAttemptedSlugs(repoRoot, owner, Date.now()),
-                    ...blocked,
-                    ...bound,
-                  ]);
-                  const picks = pickDiverse(index, {
-                    count: remaining.length, seed: `${t.id}:${spec.id}`, excludeSlugs: exclude,
-                  });
-                  remaining.forEach((item, i) => {
-                    const e = picks[i];
-                    if (!e) return;
-                    item.source = { kind: 'leetcode', slug: e.slug, title: e.title, difficulty: e.difficulty, picked_by: 'auto' };
-                    bound.add(e.slug);
-                  });
-                }
               }
             }
           } catch (e) {

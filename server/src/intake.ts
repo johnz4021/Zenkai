@@ -143,9 +143,16 @@ export interface SpecDraft {
    *  the clarifier notices them, the ROUTE resolves them against the
    *  dataset index (lc-refs.ts). Never model-resolved. */
   named_problems?: string[];
+  /** Stated part count ("three coding problems", a part 1/2/3 ladder),
+   *  gate-clamped 2..4; absent = single. Explicit mentions only. */
+  part_count?: number;
   /** Set by the route after mechanical resolution/auto-pick — the binding
-   *  the confirm screen displays and the start call commits. */
-  source?: { slug: string; title: string; difficulty: 'easy' | 'medium' | 'hard'; picked_by: 'user' | 'auto' };
+   *  the confirm screen displays and the start call commits. Top-level =
+   *  part 1; `parts` present only for sets of >=2. */
+  source?: {
+    slug: string; title: string; difficulty: 'easy' | 'medium' | 'hard'; picked_by: 'user' | 'auto';
+    parts?: { slug: string; title: string; difficulty: 'easy' | 'medium' | 'hard'; picked_by: 'user' | 'auto' }[];
+  };
   /** Non-empty when the round asks for something the environment lacks
    *  (e.g. a system-design canvas). Declining honestly beats a bad session. */
   unsupported?: string;

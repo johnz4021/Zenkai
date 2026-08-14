@@ -986,21 +986,13 @@ and the record-only topic ledger (`topic-graph.ts`).
 - **`cli.ts topics rebuild`** (ledger reconstruction from assessments + manifests —
   the store is non-precious by design; this makes it provably so). Trigger: first
   corrupt-store warning in a beta log.
-- **Plural `sources[]` for multi-part OA sets** — `QueueItem.source` holds ONE
-  slug, but `algorithmic_set` legitimately means a 2-3 problem set (the
-  oa-hackerrank-classic skeleton: "when the material describes MULTIPLE PARTS
-  the set MUST carry that structure"). Two consequences today: auto-sourcing
-  silently collapses a multi-part OA into one problem, AND the generator gets
-  a contradiction (blueprint "same count of parts" vs the source block's
-  "exactly ONE file, solution.py" — both claim precedence in
-  generate-round.md). Per-item manual rebinding was REMOVED 2026-08-13 rather
-  than ship a control that cannot express a set. Fix: `sources[]`, converter
-  emits `part1/`/`part2/` each with its own solution+tests (unittest discover
-  recurses, so test_command is unchanged), per-part display and rebinding.
-  Interim option if this waits: have the source block state "one problem this
-  session" so the contradiction is at least resolved in one direction.
-  Trigger: the first multi-part OA a beta user actually asks for — or now,
-  since Amazon/Meta screens are usually two problems.
+- ~~**Plural `sources[]` for multi-part OA sets**~~ **SHIPPED 2026-08-13**
+  (same day): additive `source.parts`, stated `part_count` (clamped 2..4 and
+  by `max_source_files`), flat `solution_partN.py`/`tests/test_partN.py`
+  layout, set-aware source block (the blueprint's "same count of parts" and
+  the scaffold contract now AGREE), per-part topic-ledger rows replaced as a
+  session set. Per-item manual rebinding REMAINS removed — now representable,
+  restore only when wanted.
 
 - **Two known oracle-failure classes the blocklist absorbs** (~5% of eligible in the
   2026-08-12 sample sweep): any-order answers where the canonical's output order

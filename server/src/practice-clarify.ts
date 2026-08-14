@@ -249,6 +249,11 @@ const PRACTICE_TOOL = {
               description:
                 'Specific well-known problems the material NAMES outright ("two sum", "LC 146", "merge intervals") — copy the words used. ONLY explicit mentions; a topic ("graphs", "DP") is NOT a named problem, and you never infer one. Empty when nothing is named.',
             },
+            part_count: {
+              type: 'number',
+              description:
+                'How many SEPARATE problems this round contains — ONLY when the material states it ("three coding problems", "two questions", a part 1/2/3 ladder of independent problems). Omit or 0 when it does not say. Escalating stages of ONE system are practical_build, not a part count.',
+            },
           },
           required: ['id', 'label', 'interviewer', 'can_run_tests', 'time_limit_minutes', 'starts_from', 'submit', 'check_kind', 'rationale', 'unsupported', 'time_evidence', 'language', 'language_evidence', 'task', 'task_evidence'],
         },
@@ -353,23 +358,34 @@ function roundTaskGap(task: RoundTask, evidence: PracticeGap['evidence']): Pract
  *  the skinning exists to keep fresh. Code-owned: gateGap rejects model
  *  gaps with this id (RUNTIME_GAP_IDS) and with target 'source'. */
 export function namedProblemGap(
-  entry: { title: string; difficulty: string },
-  pickedBy: 'user' | 'auto',
+  parts: { title: string; difficulty: string; picked_by: 'user' | 'auto' }[],
 ): PracticeGap {
+  const named = parts.filter((p) => p.picked_by === 'user');
+  const autoCount = parts.length - named.length;
+  const namedText = named.map((p) => `${p.title} · ${p.difficulty}`).join(', ');
+  let value: string;
+  if (named.length && autoCount) {
+    value = `${namedText} + ${autoCount} picked — hidden until the round`;
+  } else if (named.length) {
+    value = `${namedText} — from the real set`;
+  } else {
+    value = parts.length > 1
+      ? `${parts.length} picked from the real set — hidden until the round`
+      : 'picked from the real set — hidden until the round';
+  }
+  const plural = parts.length > 1;
   return {
     id: 'named-problem',
-    label: 'problem',
-    question: 'Which real problem should this round build from?',
-    why:
-      pickedBy === 'user'
-        ? 'You named it — the build reskins the real problem, so the surface will still be new.'
-        : 'Picked from the real problem set and reskinned. Name one to replace the pick, or type "invent" for a made-up problem.',
+    label: plural ? `problems (${parts.length})` : 'problem',
+    question: plural
+      ? 'Which real problems should this set build from?'
+      : 'Which real problem should this round build from?',
+    why: named.length
+      ? 'You named it — the build reskins the real problem, so the surface will still be new.'
+      : 'Picked from the real problem set and reskinned. Name one to replace the pick, or type "invent" for a made-up problem.',
     status: 'settled',
-    value:
-      pickedBy === 'user'
-        ? `${entry.title} · ${entry.difficulty} — from the real set`
-        : 'picked from the real set — hidden until the round',
-    evidence: pickedBy === 'user' ? 'stated' : 'inferred',
+    value,
+    evidence: named.length ? 'stated' : 'inferred',
     closed: false,
     answer_type: 'text',
     options: [{ label: 'invent instead' }],
@@ -569,6 +585,15 @@ export function gatePracticeClarify(
   for (const r of rounds) {
     try {
       const draft = draftToSpec(r as DraftToolOutput);
+      // blank + all_passing is self-contradictory — a from-scratch round
+      // has no green suite to keep green — and the slip is load-bearing:
+      // it flips the task derivation, which turned a stated 3-part OA into
+      // extend_keep_green and silently skipped sourcing (live 2026-08-13).
+      // Mechanical fact beats model slip, BEFORE the task coherence check.
+      if (draft.spec.capabilities.starts_from === 'blank' && draft.spec.check.kind === 'all_passing') {
+        console.warn(`[practice-clarify] blank + all_passing is incoherent — check kind coerced to all_failing for "${draft.spec.id}"`);
+        draft.spec.check = { ...draft.spec.check, kind: 'all_failing' };
+      }
       // The task hypothesis rides ON the draft (recipe-side): trusted when
       // valid and coherent with the draft's own check kind, else derived
       // from capability facts. Never a reason to sink a draft.
@@ -590,6 +615,23 @@ export function gatePracticeClarify(
         .filter(Boolean)
         .slice(0, 4);
       if (named.length) draft.named_problems = named;
+      // Stated part count, clamped 2..4 (4 = real-OA ceiling and a
+      // prompt-injection guard); 0/1/absent = single, field omitted.
+      const pc = Math.round(Number((r as Record<string, unknown>).part_count));
+      if (Number.isFinite(pc) && pc >= 2) {
+        draft.part_count = Math.min(pc, 4);
+        // Coherence, coerceTask-style: a stated 3-problem round with
+        // max_source_files 1 is incoherent on its face (the model's
+        // single-file OA habit) — the size knob must fit the stated set,
+        // or binding silently collapses it back to one problem (live
+        // repro 2026-08-13). Mechanical fact beats model slip; the
+        // coerced value is visible at the confirm gate.
+        const msf = draft.spec.check.max_source_files;
+        if (msf !== undefined && msf < draft.part_count) {
+          console.warn(`[gate] max_source_files ${msf} < part_count ${draft.part_count} — raised to fit the stated set`);
+          draft.spec.check.max_source_files = draft.part_count;
+        }
+      }
       drafts.push(draft);
       rawByDraft.push(r as Record<string, unknown>);
     } catch (e) {

@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { LcIndexEntry } from './lc-source.js';
-import { pickDiverse } from './lc-pick.js';
+import { buildSourceSet, pickDiverse } from './lc-pick.js';
 
 let n = 100;
 const entry = (slug: string, tag: string, difficulty: 'easy' | 'medium' | 'hard' = 'medium'): LcIndexEntry => ({
@@ -60,5 +60,45 @@ describe('pickDiverse', () => {
     expect(picks).toHaveLength(8); // 8 eligible mediums total
     const firstFour = new Set(picks.slice(0, 4).map((e) => e.tags[0]));
     expect(firstFour.size).toBe(4); // one from each tag before any repeat
+  });
+});
+
+describe('buildSourceSet — named first, picks fill, escalation order', () => {
+  it('named entries lead, dedup, then diverse auto fill to count', () => {
+    const named = [INDEX.find((e) => e.slug === 'g1')!, INDEX.find((e) => e.slug === 'g1')!];
+    const set = buildSourceSet({ index: INDEX, named, count: 3, seed: 's' });
+    expect(set).toHaveLength(3);
+    expect(set.filter((p) => p.picked_by === 'user')).toHaveLength(1);
+    expect(set.filter((p) => p.picked_by === 'auto')).toHaveLength(2);
+    const slugs = set.map((p) => p.entry.slug);
+    expect(new Set(slugs).size).toBe(3); // no dup between named and picks
+  });
+
+  it('sorts easy before medium regardless of arrival order', () => {
+    const named = [INDEX.find((e) => e.slug === 'd1')!]; // medium
+    const set = buildSourceSet({
+      index: INDEX, named, count: 2, difficulty: ['easy', 'medium'], seed: 's',
+    });
+    const ranks = set.map((p) => p.entry.difficulty);
+    expect([...ranks].sort()).toEqual(ranks.slice().sort()); // monotone check below
+    for (let i = 1; i < set.length; i++) {
+      const order = { easy: 0, medium: 1, hard: 2 };
+      expect(order[set[i - 1]!.entry.difficulty]).toBeLessThanOrEqual(order[set[i]!.entry.difficulty]);
+    }
+  });
+
+  it('returns short when the pool runs dry, named still included', () => {
+    const named = [INDEX.find((e) => e.slug === 'h1')!];
+    const set = buildSourceSet({
+      index: INDEX, named, count: 4, seed: 's',
+      excludeSlugs: new Set(['g1', 'g2', 'g3', 'd1', 'd2', 's1', 's2']),
+    });
+    expect(set.map((p) => p.entry.slug)).toEqual(['h1']); // everything else excluded
+  });
+
+  it('is deterministic for a seed', () => {
+    const a = buildSourceSet({ index: INDEX, named: [], count: 3, seed: 'x' });
+    const b = buildSourceSet({ index: INDEX, named: [], count: 3, seed: 'x' });
+    expect(a.map((p) => p.entry.slug)).toEqual(b.map((p) => p.entry.slug));
   });
 });
