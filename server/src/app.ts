@@ -637,13 +637,13 @@ function resolveTitle(item: QueueItem): string | null {
     if (parts.length === 1) {
       return item.source.picked_by === 'user'
         ? `${item.source.title} · ${item.source.difficulty} · from the real set`
-        : `sourced · ${item.source.difficulty} — hidden until the round`;
+        : `sourced · ${item.source.difficulty} — revealed when the round starts`;
     }
     if (named.length) {
       const extra = parts.length - named.length;
       return `${named.map((p) => p.title).join(', ')}${extra ? ` + ${extra} more` : ''} · from the real set`;
     }
-    return `${parts.length} from the real set — hidden until the round`;
+    return `${parts.length} from the real set — revealed when the round starts`;
   }
   return item.planned_title ?? null;
 }

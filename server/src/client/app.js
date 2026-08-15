@@ -2009,12 +2009,12 @@ function renderSeason(row, state) {
       if (parts.length === 1) {
         label = it.source.picked_by === 'user'
           ? 'real set: ' + it.source.title + ' · ' + it.source.difficulty
-          : 'real set · ' + it.source.difficulty + ' — hidden until the round';
+          : 'real set · ' + it.source.difficulty + ' — revealed when the round starts';
       } else if (named.length) {
         const extra = parts.length - named.length;
-        label = 'real set: ' + named.map((p) => p.title).join(', ') + (extra ? ' + ' + extra + ' more — hidden' : '');
+        label = 'real set: ' + named.map((p) => p.title).join(', ') + (extra ? ' + ' + extra + ' more, revealed at start' : '');
       } else {
-        label = 'real set × ' + parts.length + ' — hidden until the round';
+        label = 'real set × ' + parts.length + ' — revealed when the round starts';
       }
       return { line: '<span class="srcline">' + esc(label) + '</span>' };
     };

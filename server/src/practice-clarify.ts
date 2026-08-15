@@ -365,13 +365,13 @@ export function namedProblemGap(
   const namedText = named.map((p) => `${p.title} · ${p.difficulty}`).join(', ');
   let value: string;
   if (named.length && autoCount) {
-    value = `${namedText} + ${autoCount} picked — hidden until the round`;
+    value = `${namedText} + ${autoCount} picked — revealed when the round starts`;
   } else if (named.length) {
     value = `${namedText} — from the real set`;
   } else {
     value = parts.length > 1
-      ? `${parts.length} picked from the real set — hidden until the round`
-      : 'picked from the real set — hidden until the round';
+      ? `${parts.length} picked from the real set — revealed when the round starts`
+      : 'picked from the real set — revealed when the round starts';
   }
   const plural = parts.length > 1;
   return {
