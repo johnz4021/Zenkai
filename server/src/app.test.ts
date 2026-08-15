@@ -569,22 +569,42 @@ describe('practice door — client surface', () => {
     expect(html).toMatch(/#rep-rail \.gapval \{[^}]*cursor: pointer/s);
   });
 
-  it('the commit block moves into the settled column — Start without scrolling', () => {
-    // One builder, two placements: grid row 2 while questions are open,
-    // inside #rep-open once allSettled (owner report 2026-08-15).
+  it('Start is pinned in the question column — never below the rail', () => {
+    // Owner report 2026-08-15: the rail is ~70px per confirmed fact, so a
+    // grid-row-2 commit sat below ALL of it. A settled-only placement still
+    // stranded Start for the whole 8-20s re-check — the exact window the
+    // user hit. ONE unconditional placement, inside #rep-open.
     expect(js).toContain('function renderRepCommit');
-    expect(js).toMatch(/if \(allSettled\) html \+= renderRepCommit/);
-    expect(js).toMatch(/if \(!allSettled\) html \+= renderRepCommit/);
+    expect(js).toMatch(/html \+= renderRepCommit\(d, startLabel, open\.length\);\s*\n\s*html \+= '<\/div>'; \/\/ #rep-open/);
+    expect(js).not.toContain('allSettled');
     expect(html).toMatch(/#rep-open #rep-commit \{[^}]*border-top/s);
+    // The dead grid rule is gone — nested, it never applied.
+    expect(html).not.toMatch(/#rep-commit \{[^}]*grid-column/);
+  });
+
+  it('readiness is visible but never a gate (three states, one always-live button)', () => {
+    // Owner request 2026-08-15: show whether the round is actually ready to
+    // start vs still gathering. Ready = loud white primary; re-checking and
+    // questions-still-open = steel outline, still clickable (rule 3:
+    // questions are shortcuts, never a gate).
+    expect(js).toContain('id="rep-ready"');
+    expect(js).toContain('ready to build');
+    expect(js).toContain('re-checking your answers…');
+    expect(js).toMatch(/still open — start anyway/);
+    expect(js).toMatch(/const ready = openCount === 0 && !rep\.busy/);
+    expect(js).toMatch(/class="primary' \+ \(ready \? '' : ' pending'\)/);
+    // Never disabled by readiness — only by an already-queued Start.
+    expect(js).toMatch(/rep\.startQueued \? ' disabled>Checking your answers…'/);
+    expect(html).toMatch(/button\.primary\.pending \{[^}]*border-color: var\(--steel\)/s);
+    expect(html).toMatch(/#rep-ready\.is-ready \{ color: var\(--ok\)/);
   });
 
   it('the brief, the honest decline, and the multi-draft disclosure render (3A/2B/T14)', () => {
     expect(js).toContain('id="rep-brief"');
-    // Brief + decline + Start span BOTH columns: the brief is prose read
-    // right before an irreversible build, and the rail is 220px (ISSUE-004).
+    // The brief is prose read right before an irreversible build — it needs
+    // the 472px question column, never the 220px rail (ISSUE-004).
     expect(js).toContain('id="rep-commit"');
     expect(js).toMatch(/id="rep-commit"[\s\S]*rep-brief[\s\S]*rep-start/);
-    expect(html).toMatch(/#rep-commit \{[^}]*grid-column: 1 \/ -1/);
     // 2B: unsupported never blocks — the button relabels and the choice is
     // the user's; the server counts occurrences.
     expect(js).toContain('Build the closest version →');

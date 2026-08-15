@@ -861,14 +861,21 @@ export function appPage(): string {
   }
   #rep-rail { grid-column: 1; grid-row: 1; }
   #rep-open { grid-column: 2; grid-row: 1; }
-  /* Brief + decline + Start span both columns: the brief is prose to read
-     before an irreversible build, and the rail is 220px. */
-  #rep-commit { grid-column: 1 / -1; grid-row: 2; margin-top: 8px; border-top: 1px solid var(--rule); padding-top: 14px; }
-  /* Once everything is settled the commit block renders INSIDE the right
-     column (renderRepCommit) so Start is reachable without scrolling the
-     rail (owner report 2026-08-15). Nested, the grid rule above is inert;
-     this restores the separator it loses. */
+  /* Brief + readiness + Start live in the QUESTION column, always (owner
+     report 2026-08-15). The rail is one row per confirmed fact and outgrows
+     the viewport; anything below it is unreachable without scrolling, and a
+     row-2 commit sat below exactly that. At 472px the column still holds the
+     brief's paragraph, which is what drove it out of the 220px rail
+     originally (QA 2026-08-12, ISSUE-004). */
   #rep-open #rep-commit { margin-top: 18px; border-top: 1px solid var(--rule); padding-top: 14px; }
+  /* Readiness is visible, never a gate: ready reads as the loud white
+     primary, pending (re-checking, or questions still open) drops to a
+     steel outline — still clickable, visibly not-yet-the-moment. */
+  #rep-ready { font-size: 12px; margin-top: 12px; }
+  #rep-ready.is-ready { color: var(--ok); }
+  #rep-ready.is-pending { color: var(--steel-text); }
+  button.primary.pending { background: transparent; border-color: var(--steel); color: var(--steel-text); font-weight: 500; }
+  button.primary.pending:hover { background: transparent; border-color: var(--steel-text); color: var(--text-1); }
   @media (max-width: 760px) {
     /* Narrow: no breakout (it would overflow the shell), rail above questions. */
     #rep-confirm { display: flex; flex-direction: column; margin-inline: 0; }

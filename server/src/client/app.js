@@ -1165,9 +1165,6 @@ function renderPractice() {
     // the grid places the rail visually left, and narrow widths stack the
     // rail above via order:-1.
     const dis = rep.busy ? ' disabled' : '';
-    // Settled = zero open questions, no re-infer in flight: the moment the
-    // commit block may move into the right column (see below).
-    const allSettled = open.length === 0 && !rep.busy;
     html += '<div id="rep-confirm">';
     html += '<div id="rep-open"><div class="micro">Needed before I build</div>';
     if (rep.busy) {
@@ -1212,10 +1209,14 @@ function renderPractice() {
       '<input id="rep-change" placeholder="e.g. actually it’s Rust, and harder" style="flex:1;background:var(--panel);color:var(--text-1);border:1px solid var(--line);border-radius:6px;padding:10px 12px;font:inherit;min-height:44px"' + dis + '>' +
       '<button type="button" id="rep-rechecks" class="mini" style="min-height:44px"' + dis + '>' +
       (rep.busy ? 'applying…' : 'apply') + '</button></div>';
-    // Everything settled: brief + Start render HERE, in the short column,
-    // instead of on grid row 2 below the rail (owner report 2026-08-15:
-    // the user scrolled the whole confirmed list to reach the button).
-    if (allSettled) html += renderRepCommit(d, startLabel);
+    // Brief + Start live HERE, always — in the question column, never on a
+    // grid row below the rail. The rail is one ~70px row per confirmed fact
+    // (eight facts ≈ 600px), so a row-2 commit sat below ALL of it; the
+    // earlier settled-only placement still stranded Start for the whole
+    // 8-20s re-check, which is exactly when the user reported hunting for
+    // it (2026-08-15). Pinned here, the rail can grow without ever moving
+    // the page's primary action.
+    html += renderRepCommit(d, startLabel, open.length);
     html += '</div>'; // #rep-open
 
     html += '<div id="rep-rail"><div class="micro">Confirmed from your paste</div>';
@@ -1252,15 +1253,10 @@ function renderPractice() {
     html += '<div class="metaline" style="margin-top:10px">' + esc(specShapeLine(d.spec.capabilities)) + '</div>';
     html += '</div>'; // #rep-rail
 
-    // The commit block spans BOTH columns while questions are open — the
-    // brief is a paragraph meant to be read right before an irreversible
-    // build; in the 220px rail it rendered as a twelve-line sliver (QA
-    // 2026-08-12, ISSUE-004). Once everything is settled it moves INSIDE
-    // the right column instead (see the allSettled branch above): the open
-    // column is one line then, while the rail is at its longest, and Start
-    // on grid row 2 sat below the entire rail (owner report 2026-08-15).
-    // Still in flow either way — the sticky slot stays free.
-    if (!allSettled) html += renderRepCommit(d, startLabel);
+    // (The commit block is rendered inside #rep-open above — the 472px
+    // question column is still wide enough for the brief's paragraph, which
+    // is what drove it out of the 220px rail in the first place (QA
+    // 2026-08-12, ISSUE-004). Still in flow — the sticky slot stays free.)
     html += '</div>'; // #rep-confirm
   }
   if (rep.phase === 'clarifying') {
@@ -1312,16 +1308,28 @@ function renderPractice() {
 /** The commit block: brief → decline → Start, in reading order. One
  *  builder, two placements — grid row 2 while questions are open, inside
  *  the right column once settled (owner report 2026-08-15). */
-function renderRepCommit(d, startLabel) {
+function renderRepCommit(d, startLabel, openCount) {
   let html = '<div id="rep-commit">';
   if (rep.brief) html += '<div id="rep-brief">' + esc(rep.brief) + '</div>';
   if (d.unsupported) {
     // Decision 2B: the decline is visible and the choice is the user's.
     html += '<div id="rep-unsupported">can’t run this honestly: ' + esc(d.unsupported) + '</div>';
   }
+  // Readiness is VISIBLE but never a gate (owner request 2026-08-15): the
+  // three states the screen can be in read differently at a glance — ready
+  // (loud white primary), re-checking, and still-open-questions (both quiet
+  // steel outline). Start works in all three; the questions are shortcuts,
+  // not a gate (rule 3), so "start anyway" stays one click away.
+  const ready = openCount === 0 && !rep.busy;
+  const note = rep.busy
+    ? 're-checking your answers…'
+    : openCount
+      ? openCount + ' question' + (openCount === 1 ? '' : 's') + ' still open — start anyway if you’re happy'
+      : 'ready to build';
+  html += '<div id="rep-ready" class="' + (ready ? 'is-ready' : 'is-pending') + '">' + note + '</div>';
   // A queued Start survives re-renders: the label comes from state, so the
   // background landing that resumes it can repaint freely in between.
-  html += '<div class="rep-actions"><button type="button" class="primary" id="rep-start"' +
+  html += '<div class="rep-actions"><button type="button" class="primary' + (ready ? '' : ' pending') + '" id="rep-start"' +
     (rep.startQueued ? ' disabled>Checking your answers…' : '>' + startLabel) + '</button></div>';
   return html + '</div>'; // #rep-commit
 }
