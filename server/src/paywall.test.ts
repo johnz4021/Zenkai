@@ -50,7 +50,19 @@ describe('gateVerdict — the three exemptions come first', () => {
       used: 3,
       free: 3,
       subscribed: false,
+      // Absent input means false: a box is not sellable until it says so.
+      billing_enabled: false,
     });
+  });
+
+  it('billing_enabled rides the 402 — the card is painted from this alone', () => {
+    // Without it on the GateView the client cannot tell "press Subscribe and
+    // pay" from "press Subscribe and find out the beta is free", and the
+    // unconfigured box answers 503 into an overlay the user cannot leave.
+    expect(gateVerdict({ ...base, used: 3, free: 3, billingEnabled: true })?.billing_enabled).toBe(true);
+    expect(gateVerdict({ ...base, used: 3, free: 3 })?.billing_enabled).toBe(false);
+    // It changes what Subscribe does, never whether the gate fires.
+    expect(gateVerdict({ ...base, used: 0, free: 3, billingEnabled: true })).toBeNull();
   });
 
   it('a free allowance of zero gates immediately', () => {

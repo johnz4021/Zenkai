@@ -21,6 +21,17 @@ describe('home app page', () => {
     expect(() => new Function(js)).not.toThrow();
   });
 
+  it('no DOUBLE-escaped unicode — it renders as literal backslash-u to the user', () => {
+    // Found in QA 2026-08-15: the Stripe merge wrote '\\u2014' into seven
+    // strings in showPaywallGate. In JS source that is an escaped backslash
+    // followed by "u2014", so the button read "Subscribe — $29/mo" on
+    // the one screen where the product asks for money. The page declares
+    // <meta charset="utf-8"> and the rest of this file writes — and ’
+    // literally (app.js:2210), so the literal character is the convention.
+    const doubled = js.match(/\\\\u[0-9a-fA-F]{4}/g) ?? [];
+    expect(doubled).toEqual([]);
+  });
+
   it('the page loads the client script and all three page sections', () => {
     expect(html).toContain('/client/app.js');
     expect(html).toContain('id="index"');
@@ -1222,5 +1233,103 @@ describe('queue-door ownership (the 2026-08-15 doors-QA IDOR pins)', () => {
       const block = appSource.slice(start, appSource.indexOf("if (url === '/api/", start + 40));
       expect(block, `${route} must gate on ownsTarget`).toContain('ownsTarget(');
     }
+  });
+});
+
+describe('the beta measurement mode (gate armed, billing unconfigured)', () => {
+  const js = clientScript('app.js') ?? '';
+
+  it('Subscribe reveals the beta instead of calling a checkout route that 503s', () => {
+    // The whole point: with no Stripe configured, pressing Subscribe used to
+    // POST /api/stripe/checkout, get 503 "billing is not configured", and
+    // leave the user reading a server error inside the overlay — having
+    // ALREADY spent their would_pay beacon. Branch before the fetch.
+    const start = js.indexOf("yes.addEventListener('click'");
+    expect(start).toBeGreaterThan(0);
+    const handler = js.slice(start, start + 900);
+    const revealAt = handler.indexOf('betaReveal()');
+    const fetchAt = handler.indexOf("fetch('/api/stripe/checkout'");
+    expect(revealAt).toBeGreaterThan(0);
+    expect(fetchAt).toBeGreaterThan(0);
+    expect(revealAt).toBeLessThan(fetchAt); // the branch comes FIRST
+    expect(handler).toContain('if (!pw.billing_enabled)');
+  });
+
+  it('the intent is recorded before any path that can navigate away', () => {
+    const start = js.indexOf("yes.addEventListener('click'");
+    const handler = js.slice(start, start + 900);
+    expect(handler.indexOf("probeBeacon('would_pay')")).toBeLessThan(
+      handler.indexOf('if (!pw.billing_enabled)'),
+    );
+  });
+
+  it('step 2 records the honest pair and NEVER costs the user their round', () => {
+    const start = js.indexOf('function betaReveal()');
+    expect(start).toBeGreaterThan(0);
+    const fn = js.slice(start, js.indexOf("yes.addEventListener('click'", start));
+    // would_pay is cheap talk; agreeing to be emailed costs something. The
+    // gap between them is the measurement.
+    expect(fn).toContain("probeBeacon('would_pay_confirmed'");
+    expect(fn).toContain("probeBeacon('notify_declined'");
+    // Both buttons, and the defensive path, proceed. Nothing resolves false.
+    expect(fn).not.toContain('teardown(false)');
+    expect((fn.match(/teardown\(true\)/g) ?? []).length).toBeGreaterThanOrEqual(3);
+    // The optional expected-price answer rides along, bounded server-side.
+    expect(fn).toContain('paywall-expect');
+  });
+
+  it('Escape during step 2 also proceeds — the grant is already spent', () => {
+    const start = js.indexOf('function onKey(e)');
+    const fn = js.slice(start, start + 500);
+    expect(fn).toContain("host.dataset.step === '2'");
+    expect(fn).toContain('teardown(true)');
+  });
+});
+
+describe('every 402 caller opens the gate instead of printing the sentence', () => {
+  const js = clientScript('app.js') ?? '';
+
+  // A 402 body carries BOTH `paywall` (the card) and `error` (a readable
+  // sentence, so an un-updated caller degrades to something legible). That
+  // fallback is a trap: a caller which checks `error` first never reaches the
+  // card, and the gate silently becomes an inline error message. QA 2026-08-15
+  // found exactly that on /api/practice/clarify — the composer's own endpoint,
+  // the first thing a new user touches — so the WTP instrument recorded
+  // nothing on the busiest path in the product.
+  const CALLERS = [
+    { name: 'practiceClarify (the composer)', at: 'async function practiceClarify' },
+    { name: 'planFirstSend', at: 'async function planFirstSend' },
+    { name: 'launchCommon', at: 'async function launchCommon' },
+  ];
+
+  for (const c of CALLERS) {
+    it(`${c.name} checks 402 before the error branch`, () => {
+      const start = js.indexOf(c.at);
+      expect(start).toBeGreaterThan(0);
+      // Bound the slice at the next top-level function so we only read this one.
+      const next = js.indexOf('\nfunction ', start + 10);
+      const body = js.slice(start, next > 0 ? next : start + 6000);
+      const gate = body.search(/status === 402|r\.status === 402/);
+      const err = body.search(/if \((?:s|sBody)\.error\)/);
+      expect(gate).toBeGreaterThan(0);
+      expect(err).toBeGreaterThan(0);
+      expect(gate).toBeLessThan(err);
+      expect(body).toContain('showPaywallGate(');
+    });
+  }
+
+  it('a gated composer keeps the typed words — they are the whole intake', () => {
+    const start = js.indexOf('async function practiceClarify');
+    const body = js.slice(start, js.indexOf('\nfunction ', start + 10));
+    expect(body).toContain('saveRep()');
+    expect(body).toContain("kind: 'clarify'");
+  });
+
+  it('resumeAfterCheckout can replay all three intents, not just two', () => {
+    const start = js.indexOf('async function resumeAfterCheckout');
+    const body = js.slice(start, start + 1400);
+    expect(body).toContain("intent.kind === 'launch'");
+    expect(body).toContain("intent.kind === 'plan'");
+    expect(body).toContain("intent.kind === 'clarify'");
   });
 });

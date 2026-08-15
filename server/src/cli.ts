@@ -543,7 +543,16 @@ if (cmd === 'generate') {
 } else if (cmd === 'app') {
   const { runApp } = await import('./app.js');
   const { resolvePublicConfig } = await import('./public-config.js');
-  runApp({ port: 3300, sessionPort: 3200, userId, pub: resolvePublicConfig(process.env) });
+  // IP_APP_PORT completes the set — IP_SESSION_PORT and IP_IDE_PORT have had
+  // an override all along and this one did not, so trying a config change
+  // (arming the gate, swapping keys) meant stopping the app someone was
+  // actually using. Default 3300 keeps every existing invocation identical.
+  runApp({
+    port: portEnv(process.env.IP_APP_PORT, 3300),
+    sessionPort: portEnv(process.env.IP_SESSION_PORT, 3200),
+    userId,
+    pub: resolvePublicConfig(process.env),
+  });
 } else if (cmd === 'prepare') {
   // Targeting note comes either from the env (set by the session that just
   // ended) or is derived here from the stored gap graph.

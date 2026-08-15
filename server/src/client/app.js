@@ -1659,6 +1659,9 @@ async function practiceClarify(answers, opts) {
   if (firstRun) rep.phase = 'clarifying'; else rep.busy = true;
   renderPractice();
   let s;
+  // Hoisted out of the try because the 402 branch below needs the STATUS, not
+  // just the body — and `r` would otherwise be scoped to the try block.
+  let status = 0;
   try {
     const r = await fetch('/api/practice/clarify', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -1669,11 +1672,36 @@ async function practiceClarify(answers, opts) {
         attachments: buildBinaryAttachments(),
       }),
     });
+    status = r.status;
     s = await r.json();
   } catch {
     // A network drop must never strand busy=true — the background path
     // would silently stop re-checking and Start would queue forever.
     s = { error: 'the app server didn’t answer — check the connection' };
+  }
+  // WTP gate, checked BEFORE the error branch for the same reason as
+  // launchCommon and planFirstSend: a 402 carries a readable sentence in
+  // `error`, so without this the gate DEGRADES INTO AN INLINE ERROR MESSAGE
+  // and the card never opens.
+  //
+  // Found in QA 2026-08-15, and it mattered more than the other two: this is
+  // the composer's own endpoint — "Generate my round" on the landing screen,
+  // the first thing every new user touches. The gate fired correctly on the
+  // server and the whole instrument (gated → would_pay → would_pay_confirmed)
+  // recorded NOTHING on the most-travelled path in the product.
+  if (status === 402 && s.paywall && !paywallOpen) {
+    rep.busy = false;
+    rep.startQueued = false;
+    rep.phase = rep.drafts.length ? 'confirm' : 'input';
+    // Their typed words live in rep.description; saveRep puts them in
+    // sessionStorage so even a Checkout redirect comes back to them.
+    saveRep();
+    paywallIntent = { kind: 'clarify', answers: rep.answers, opts: opts || null };
+    let proceed = false;
+    try { proceed = await showPaywallGate(s.paywall); } catch { proceed = false; }
+    if (proceed) { practiceClarify(answers, opts); return; }
+    renderPractice();
+    return;
   }
   if (s.error) {
     // A failed CORRECTION restores the pre-answer gaps: the optimistic
@@ -3197,6 +3225,11 @@ async function resumeAfterCheckout() {
     var box = el('plan-msg');
     if (box && intent.text) box.value = intent.text;
     planFirstSend(intent.text || '');
+  } else if (intent.kind === 'clarify') {
+    // The composer path. hydrateRep() already ran at module load (app.js:1060,
+    // well before this), so rep.description is back from sessionStorage and
+    // practiceClarify reads it directly — only the answers need carrying.
+    practiceClarify(intent.answers || [], intent.opts || undefined);
   }
 }
 
@@ -3231,10 +3264,22 @@ function showPaywallGate(pw) {
       paywallOpen = false;
       resolve(result);
     }
-    function onKey(e) { if (e.key === 'Escape' && !host.dataset.step) { probeBeacon('not_yet'); teardown(false); } }
+    function onKey(e) {
+      if (e.key !== 'Escape') return;
+      // Step 2 is PAST the decision: they already pressed Subscribe, the
+      // grant is already recorded, and the action goes through either way.
+      // Escaping out of a follow-up question must never cost them the round.
+      if (host.dataset.step === '2') { probeBeacon('notify_declined'); teardown(true); return; }
+      probeBeacon('not_yet');
+      teardown(false);
+    }
 
-    // Step 2: the reveal. Reached only by pressing Subscribe, and it always
-    // ends in the request going through — nothing here can strand the user.
+    // TWO steps, and which one is last depends on whether billing is wired.
+    // With Stripe configured, Subscribe leaves for hosted Checkout and the
+    // card is the whole story. Without it — the beta measurement mode — the
+    // same click reveals that the round is free and asks the follow-up that
+    // actually costs something (betaReveal below). Either way the gated
+    // action goes through; nothing in here can strand the user.
     try {
       host.dataset.step = '';
       // A SUBSCRIBER who has spent this period's rounds gets a different card:
@@ -3245,9 +3290,9 @@ function showPaywallGate(pw) {
       if (pw.subscribed) {
         host.innerHTML =
           '<div class="card" role="dialog" aria-modal="true" aria-labelledby="paywall-h">' +
-            '<h2 id="paywall-h">You have used this month\\u2019s ' + Number(pw.free) + ' rounds</h2>' +
+            '<h2 id="paywall-h">You have used this month’s ' + Number(pw.free) + ' rounds</h2>' +
             '<p>Your plan renews at the start of your next billing period, and the ' +
-              'count resets then. Nothing is lost in the meantime \\u2014 your plans, ' +
+              'count resets then. Nothing is lost in the meantime — your plans, ' +
               'history and gap graph stay where they are.</p>' +
             '<div class="btnrow">' +
               '<button type="button" class="primary" id="paywall-close">Got it</button>' +
@@ -3268,7 +3313,7 @@ function showPaywallGate(pw) {
               var pb = await pr.json();
               if (pb && pb.url) { window.location = pb.url; return; }
               launchStatusInGate(pb && pb.error ? pb.error : 'could not open billing');
-            } catch { launchStatusInGate('could not open billing \\u2014 try again'); }
+            } catch { launchStatusInGate('could not open billing — try again'); }
             portal.disabled = false;
           });
         }
@@ -3281,10 +3326,10 @@ function showPaywallGate(pw) {
         '<div class="card" role="dialog" aria-modal="true" aria-labelledby="paywall-h">' +
           '<h2 id="paywall-h">You have used your ' + Number(pw.free) + ' free ' + unit + '</h2>' +
           '<p class="price">' + esc(price) + '</p>' +
-          '<p>Zenkai is ' + esc(price) + ' \\u2014 plans and rounds included. ' +
+          '<p>Zenkai is ' + esc(price) + ' — plans and rounds included. ' +
             'Cancel any time from your account.</p>' +
           '<div class="btnrow">' +
-            '<button type="button" class="primary" id="paywall-yes">Subscribe \\u2014 ' + esc(price) + '</button>' +
+            '<button type="button" class="primary" id="paywall-yes">Subscribe — ' + esc(price) + '</button>' +
             '<button type="button" id="paywall-no">Maybe later</button>' +
           '</div>' +
         '</div>';
@@ -3298,21 +3343,79 @@ function showPaywallGate(pw) {
         probeBeacon('not_yet');
         teardown(false);
       });
+      /**
+       * Step 2, the beta reveal. Reached only by pressing Subscribe on a box
+       * where billing is NOT configured.
+       *
+       * The click that got here already recorded `would_pay`, which is also
+       * the grant — so by this point the round is theirs no matter what they
+       * do next, and this card must never read as another obstacle. It says
+       * the true thing (free during the beta) and then asks the question that
+       * is actually worth something.
+       *
+       * `would_pay` alone is cheap talk: pressing a button that costs nothing
+       * and blocks nothing measures very little, which is exactly why the
+       * earlier probe-only draft was rejected. Agreeing to be EMAILED about
+       * paying is a second deliberate act with a real cost attached, and the
+       * fall-off between the two is the size of the cheap-talk problem —
+       * measured rather than assumed. The expected-price box is optional and
+       * bounded server-side (expectedText, EXPECTED_MAX).
+       */
+      function betaReveal() {
+        host.dataset.step = '2';
+        host.innerHTML =
+          '<div class="card" role="dialog" aria-modal="true" aria-labelledby="paywall-h">' +
+            '<h2 id="paywall-h">Zenkai is free for the rest of the beta</h2>' +
+            '<p>Going ahead now — there is nothing to pay. When paid plans open ' +
+              'it will be ' + esc(price) + '.</p>' +
+            '<p>Want an email when that happens?</p>' +
+            '<label class="sub" for="paywall-expect">What would you expect to pay? (optional)</label>' +
+            '<input type="text" id="paywall-expect" maxlength="200" autocomplete="off" />' +
+            '<div class="btnrow">' +
+              '<button type="button" class="primary" id="paywall-notify">Email me</button>' +
+              '<button type="button" id="paywall-nothanks">No thanks</button>' +
+            '</div>' +
+          '</div>';
+        var expect = function () {
+          var box = el('paywall-expect');
+          return box && box.value ? box.value : undefined;
+        };
+        var notify = el('paywall-notify');
+        var nothanks = el('paywall-nothanks');
+        // Defensive: if the card failed to build, they still get their round.
+        if (!notify || !nothanks) { teardown(true); return; }
+        notify.addEventListener('click', function () {
+          probeBeacon('would_pay_confirmed', expect());
+          teardown(true);
+        });
+        nothanks.addEventListener('click', function () {
+          probeBeacon('notify_declined', expect());
+          teardown(true);
+        });
+        if (notify.focus) notify.focus();
+      }
+
       yes.addEventListener('click', async function () {
         yes.disabled = true;
         no.disabled = true;
-        yes.textContent = 'Opening checkout...';
-        // Record intent BEFORE the beacon, because the redirect below cancels
-        // in-flight requests; probeBeacon uses keepalive for exactly this.
+        // Record intent BEFORE anything that can navigate away, because a
+        // redirect cancels in-flight requests; probeBeacon uses keepalive for
+        // exactly this. This is also the grant, so from here the action goes
+        // through on every path below.
         probeBeacon('would_pay');
+        // No billing on this box: the honest reveal, not a 503. Checking the
+        // server-supplied flag rather than trying the route and reading the
+        // error keeps the beta path off the failure branch entirely.
+        if (!pw.billing_enabled) { betaReveal(); return; }
+        yes.textContent = 'Opening checkout...';
         try {
           var r = await fetch('/api/stripe/checkout', { method: 'POST' });
           var b = await r.json();
           if (!b || !b.url) {
             yes.disabled = false;
             no.disabled = false;
-            yes.textContent = 'Subscribe \\u2014 ' + price;
-            launchStatusInGate(b && b.error ? b.error : 'could not start checkout - try again');
+            yes.textContent = 'Subscribe — ' + price;
+            launchStatusInGate(b && b.error ? b.error : 'could not start checkout — try again');
             return;
           }
           // THE CONTINUATION PROBLEM: a full-page redirect destroys the
@@ -3324,8 +3427,8 @@ function showPaywallGate(pw) {
         } catch {
           yes.disabled = false;
           no.disabled = false;
-          yes.textContent = 'Subscribe \\u2014 ' + price;
-          launchStatusInGate('could not reach checkout - try again');
+          yes.textContent = 'Subscribe — ' + price;
+          launchStatusInGate('could not reach checkout — try again');
         }
       });
       window.addEventListener('keydown', onKey);

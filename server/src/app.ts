@@ -1779,6 +1779,11 @@ export function runApp(cfg: AppConfig): http.Server {
             // same subscription again — the card says "you have used this
             // month's rounds", and there is nothing to buy.
             subscribed: paid,
+            // Travels with the 402 because the gate card is painted from this
+            // object alone. False = the beta measurement mode: Subscribe
+            // records the intent and reveals that the round is free, rather
+            // than calling a checkout route that can only answer 503.
+            billingEnabled: cfg.pub.stripe !== null,
           });
         } catch {
           return null;

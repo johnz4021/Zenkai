@@ -62,6 +62,16 @@ export interface GateView {
    *  month's rounds", never offer them the subscription they already pay for —
    *  selling someone a thing they own is the fastest way to lose them. */
   subscribed: boolean;
+  /**
+   * Is there anything to actually buy on this box? (cfg.pub.stripe !== null)
+   *
+   * Decides what pressing Subscribe DOES, so it has to travel with the 402
+   * rather than only on /api/state — the gate card is painted from this object
+   * alone. False is the beta measurement mode: the click records `would_pay`
+   * and then reveals that the round is free, instead of calling a checkout
+   * route that answers 503 and stranding the user inside the overlay.
+   */
+  billing_enabled: boolean;
 }
 
 /**
@@ -281,6 +291,9 @@ export function gateVerdict(input: {
   /** Already paying, and out of this period's allowance. Changes the copy,
    *  never the verdict — a subscriber past their rounds is still gated. */
   subscribed?: boolean;
+  /** Whether there is anything to buy. Changes what Subscribe DOES, never the
+   *  verdict — a box with no billing still gates, it just cannot charge. */
+  billingEnabled?: boolean;
 }): GateView | null {
   if (!input.enabled || input.admin || input.granted) return null;
   if (input.used < input.free) return null;
@@ -290,6 +303,7 @@ export function gateVerdict(input: {
     used: input.used,
     free: input.free,
     subscribed: input.subscribed === true,
+    billing_enabled: input.billingEnabled === true,
   };
 }
 
