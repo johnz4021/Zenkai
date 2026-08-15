@@ -37,7 +37,7 @@ import { describeAdrift, describeWarm, detectAdrift, regionContainsAnswer } from
 import { assessAgenda, renderAgenda } from './agenda.js';
 import { CLOSING_TOPIC, WRAP_UP_QUESTIONS, detectWrapSignal, renderWrapState, selectWrapTopic } from './wrapup.js';
 import { isModelPath, listWorkspaceFiles, parseRunCounts, runGuard, safeWorkspacePath, shadowsTestRunner, summarizeTail } from './panes.js';
-import { isCorrectionFollowUp, isExplicitAsk } from './addressing.js';
+import { isAnswerToPendingQuestion, isCorrectionFollowUp, isExplicitAsk } from './addressing.js';
 import { decideAck } from './ack.js';
 import { renderWorkspaceView, selectRecentlyEdited, snapshotWorkspace } from './workspace-view.js';
 import { codebaseViewOf, focusViewOf, namedOutOfContextFiles, toRel } from './problem-view.js';
@@ -800,10 +800,17 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
   const routeUtterance = (text: string): void => {
     if (!interviewer || !intentCheck || !text.trim() || ended) return;
-    // Deterministic fast path: unambiguous asks and post-answer corrections
-    // never touch the LLM gate — no model call, no latency, no chance of the
-    // "narration" misread that dropped three real asks in one session.
-    if (isExplicitAsk(text) || isCorrectionFollowUp(text, store.readAll(), Date.now())) {
+    // Deterministic fast path: unambiguous asks, post-answer corrections,
+    // and the first words after a pending interviewer question never touch
+    // the LLM gate — no model call, no latency, no chance of the
+    // "narration" misread that dropped three real asks in one session (and
+    // later read a candidate's complete root-cause answer to a direct
+    // instruction as narration — sess-qa814-leak, 190s of silence).
+    if (
+      isExplicitAsk(text) ||
+      isCorrectionFollowUp(text, store.readAll(), Date.now()) ||
+      isAnswerToPendingQuestion(text, store.readAll(), Date.now())
+    ) {
       console.log(`[intent] fast-path ADDRESSED: ${text.slice(0, 80)}`);
       turnQueue.push(text);
       notifyTurn(); // ring the doorbell now so the "…" appears immediately
