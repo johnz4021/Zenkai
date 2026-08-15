@@ -1222,36 +1222,77 @@ targets. Also: derive the label from the planner's first reply, not the paste.
 
 ---
 
-## 51. Interviewer observations from the 2026-08-14 full-surface QA (record, not fixes)
+## 51. ~~Interviewer observations from the 2026-08-14 full-surface QA~~ SHIPPED 2026-08-14 (one item retracted)
 
-Deliberately note-only (owner's instruction: no interviewer changes from QA).
-From live probed sessions (sess-qa814-leak trace analysis, sess-qa813-panesint-b)
-and the legacy round:
+The note-only freeze was lifted by the owner the same day; every observation
+became a fix, landed with tests (commits e414145..1a8597c):
 
-- **Mechanism leak in a stuck nudge:** one nudge handed over the planted bug's
-  MECHANISM without naming the file; `leaksBugLocation()` is deliberately
-  locational and has zero coverage for non-locational disclosure. The
-  `leaksImplementationVocabulary` stuck-turn guard exists but did not catch it.
-- **Ground-truth vocabulary volunteered:** replied to a bug-location probe with
-  "boundary minute" before the candidate had used any such term.
-- **Latency cliff:** a direct root-cause statement went unanswered 190s, then
-  was answered by a turn the pipeline flagged unprompted (~40x median latency).
-- **Repetition:** near-identical follow-up appended to three consecutive turns
-  within 43s (settle-window shape).
-- **Invented constraints:** told an untimed round it had "45 minutes"; skipped
-  the round emphasis's mandated LP questions entirely.
-- **Intent gate fails open to 'narration'** when the classifier call errors —
-  directly-addressed questions get silence (session.ts routing, arguably
-  interviewer-side; left untouched per instruction).
-- **Refused a rubric-rewarded clarifying question** on the implement round, and
-  the judge then penalized the candidate for not clarifying — the two ends of
-  the product disagree about the same behavior.
-- **Wrong runner claim:** stated the Run Tests button is "the only runner
-  installed here" on an IDE round whose terminal runs the suite fine.
+- Untimed 45-minute fabrication -> `remainingMsFor` + `timeRules` (the number
+  came from `SESSION_LENGTH_MS`, not the model).
+- "Boundary minute" coinage + composed-pointer leak -> prompt rules ("A
+  refusal must not re-frame the question", "Never compose your own answers
+  into a pointer") + widened nudge definition. Mechanical guards were
+  measured and REJECTED at 1-in-6 precision - the reasoning and the revisit
+  trigger live on `leaksImplementationVocabulary`'s header.
+- 190s unanswered diagnosis -> `isAnswerToPendingQuestion` fast-path detector.
+- Triple follow-up in 43s -> the mandate-to-question removed (ANSWERABLE
+  hand-back now optional-and-open; agenda rides unprompted turns only).
+- Skipped LP segment -> the OPENING rule defers to the engagement style, and
+  the opening rides its own slot instead of the moment wrapper.
+- Intent gate failing open -> `apiIntentCheck` rethrows; the fault feeds the
+  new candidate-visible interviewer-health chip.
+- "Only runner installed here" -> the `howToRun` tail told the model exactly
+  that; it now names the terminal as legal and observed.
 
-**Where the fixes would start (when unfrozen):** `interviewer.ts` guard family
-+ `round-rules.ts` ANSWERABLE, `session.ts` intent-gate error path, prompt
-emphasis handling. **Priority:** owner's call.
+**RETRACTED:** "refused a rubric-rewarded clarifying question and the judge
+penalized the candidate for it." The assessment shows the opposite -
+`assessments/sess-qa814-impl.json` scored clarify **adequate**, explicitly
+crediting the question ("exactly the kind of question the problem calls
+for") and marking down only the failure to follow through, which the trace
+supports. The interviewer's decline ("that's a genuine open point you'll
+need to decide and defend") was good interviewing on an
+implement-from-minimal-docs round. No defect existed.
+
+---
+
+## 58. Interviewer versatility residue (2026-08-14 audit, deferred with reasoning)
+
+The structural fixes landed (initiative gate, per-kind ground truth, adrift
+evidence, agenda/wrap capabilities, mechanics slot). What remains, each too
+design-shaped to land blind:
+
+**(a) Cumulative opened-files state.** The interviewer asserted the candidate
+had "read roster, router, and the ranking helper" when the trace shows two of
+the three were never opened - it conflated self-report with observation, and
+nothing in the state carries "files they actually opened" (RECENT_ACTIVITY is
+a 10-event window; CODEBASE lists everything that exists). Fix: a cumulative
+opened-files line in the per-turn state (the trace walk
+`candidateVisitedBugFile` already does), plus a rule that absence-from-window
+is not evidence. Prose alone cannot fix this - the model has no correct
+source for the claim.
+
+**(b) The agenda's clarify proxy.** `agenda.ts` keys `clarify` off a prompted
+`kind:'answer'` interviewer turn - so every CONFIRM move ("Right - that's
+real", which the prompt maps to kind answer) records that the candidate asked
+a clarifying question. Fix: key off a candidate-side signal (an utterance the
+gate routed as addressed AND shaped like a question), not the interviewer's
+own label.
+
+**(c) `bugFileVisited` scope.** One incidental `file_open` (including the
+extension's activation-focus event) permanently disables LOCATION redaction
+for that file. The relaxation should permit discussing their changes there,
+not free the interviewer to volunteer the location unprompted forever after.
+
+**(d) Prompt dead weight.** ~20 lines duplicate mechanical guarantees
+(`ack.ts` at prompt "Never spend a turn proving you exist" - conditionally
+false as stated; wrap-up procedure text that `renderWrapState` already
+injects at point of use). Cut candidates listed in the 2026-08-14 prompt
+audit. Also: `{{TIME_RULES}}`/`{{ROUND_MECHANICS}}` landed as ADDITIONS; the
+audit's structural recommendation (a never-reveal reminder in the per-turn
+half beside {{CANDIDATE_MESSAGE}}) is still open.
+
+**Trigger:** the next live interviewer round that exhibits any of these, or
+the next prompt-size pass. **Effort:** CC ~1-2 hr total. **Priority:** P2.
 
 ---
 
