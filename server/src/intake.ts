@@ -155,8 +155,11 @@ export interface SpecDraft {
   part_count?: number;
   /** Set by the route after mechanical resolution/auto-pick — the binding
    *  the confirm screen displays and the start call commits. Top-level =
-   *  part 1; `parts` present only for sets of >=2. */
+   *  part 1; `parts` present only for sets of >=2. Carries the same kinded
+   *  shape queue items store (lc-bind.ts SourceBinding) since the binder
+   *  unification; the client reads only slug/parts. */
   source?: {
+    kind?: 'leetcode';
     slug: string; title: string; difficulty: 'easy' | 'medium' | 'hard'; picked_by: 'user' | 'auto';
     parts?: { slug: string; title: string; difficulty: 'easy' | 'medium' | 'hard'; picked_by: 'user' | 'auto' }[];
   };

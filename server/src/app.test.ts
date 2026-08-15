@@ -1129,3 +1129,26 @@ describe('per-sid launch tick (WU-F)', () => {
     expect(js).not.toContain("(await (await fetch('/api/session-live')).json()).live");
   });
 });
+
+describe('LC binder unification (pinned via source — the 2026-08-15 drift guard)', () => {
+  const appSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'app.ts'), 'utf8');
+
+  it('both doors gate through the shared eligibility, and BOTH call sites exist', () => {
+    // One per door: practice clarify + accept-spec. A third inline binder
+    // should trip the count below, not silently ship.
+    const calls = appSource.match(/autoSourceEligible\(/g) ?? [];
+    expect(calls.length).toBe(2);
+    expect(appSource).toContain("await import('./lc-bind.js')");
+  });
+
+  it('no inline task-gate comparison survives — the exact expression that drifted', () => {
+    // The incident was one door running `deriveTaskFromSpec(...) !==
+    // 'algorithmic_set'` locally while the other consulted the hypothesis.
+    expect(appSource).not.toMatch(/!==\s*'algorithmic_set'/);
+    expect(appSource).not.toMatch(/===\s*'algorithmic_set'/);
+  });
+
+  it('composition is shared too — no inline buildSourceSet in the handlers', () => {
+    expect(appSource).not.toContain('buildSourceSet(');
+  });
+});

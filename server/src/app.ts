@@ -2359,7 +2359,8 @@ export function runApp(cfg: AppConfig): http.Server {
             const lc = await import('./lc-source.js');
             if (lc.lcReady(repoRoot).ok) {
               const { resolveProblemRef } = await import('./lc-refs.js');
-              const { buildSourceSet } = await import('./lc-pick.js');
+              const { autoSourceEligible, composeSourceBinding, resolveNamedRefs, sourceSetSize } =
+                await import('./lc-bind.js');
               const { recentlyAttemptedSlugs } = await import('./topic-graph.js');
               const { namedProblemGap } = await import('./practice-clarify.js');
               const index = lc.loadLcIndex(repoRoot);
@@ -2371,51 +2372,39 @@ export function runApp(cfg: AppConfig): http.Server {
               const srcAnswer = answers.find((a) => a.id === 'named-problem')?.answer.trim() ?? null;
               const srcInvent = srcAnswer !== null && /^invent/i.test(srcAnswer);
               for (const d of result.drafts) {
-                const task = d.task ?? deriveTaskFromSpec(d.spec);
-                if (task !== 'algorithmic_set' || srcInvent) continue;
-                // Named refs resolve mechanically; the recency window does
-                // NOT apply to them (re-doing a problem you asked for is
-                // fine) — blocklist and eligibility always do. An answered
-                // row is the strongest ref and must not be silently
-                // substituted when it fails to resolve.
-                const named: import('./lc-source.js').LcIndexEntry[] = [];
+                if (!autoSourceEligible(d.task, d.spec) || srcInvent) continue;
+                // An answered row is the strongest ref and must not be
+                // silently substituted when it fails to resolve — door-level
+                // strictness, checked BEFORE the shared lenient resolution.
                 if (srcAnswer) {
                   const hit = resolveProblemRef(srcAnswer, index);
                   if (!hit || blocked.has(hit.slug) || !lc.eligibleForSourcing(hit)) continue;
-                  named.push(hit);
                 }
-                for (const ref of d.named_problems ?? []) {
-                  const hit = resolveProblemRef(ref, index);
-                  if (hit && !blocked.has(hit.slug) && lc.eligibleForSourcing(hit)) named.push(hit);
-                }
-                // Set size: the stated part count, never below what was
-                // named, capped by the enforceable size knob and 4.
-                const count = Math.min(
-                  Math.max(d.part_count ?? named.length, named.length, 1),
-                  d.spec.check.max_source_files ?? 4,
-                  4,
+                const named = resolveNamedRefs(
+                  [...(srcAnswer ? [srcAnswer] : []), ...(d.named_problems ?? [])],
+                  { index, blocked },
                 );
-                const set = buildSourceSet({
+                const { binding } = composeSourceBinding({
                   index,
                   named,
-                  count,
+                  count: sourceSetSize(d.part_count, named.length, d.spec),
                   excludeSlugs: new Set([
                     ...recentlyAttemptedSlugs(repoRoot, user!.id, Date.now()),
                     ...blocked,
                   ]),
                   // Seeded on user+spec: re-clarifying the same round deals
-                  // the same set (stable confirm screen).
+                  // the same set (stable confirm screen). Deliberately no
+                  // cross-draft dedup on this door — accept-spec's `bound`
+                  // accumulator is the door that must not repeat.
                   seed: `${user!.id}:${d.spec.id}`,
                 });
-                if (set.length === 0) continue;
-                const toPart = (x: (typeof set)[number]) => ({
-                  slug: x.entry.slug, title: x.entry.title, difficulty: x.entry.difficulty, picked_by: x.picked_by,
-                });
-                d.source = {
-                  ...toPart(set[0]!),
-                  ...(set.length > 1 ? { parts: set.map(toPart) } : {}),
-                };
-                result.gaps.push(namedProblemGap(set.map((x) => ({ title: x.entry.title, difficulty: x.entry.difficulty, picked_by: x.picked_by }))));
+                if (!binding) continue;
+                d.source = binding;
+                result.gaps.push(
+                  namedProblemGap(
+                    (binding.parts ?? [binding]).map((p) => ({ title: p.title, difficulty: p.difficulty, picked_by: p.picked_by })),
+                  ),
+                );
               }
             }
           } catch (e) {
@@ -2924,7 +2913,9 @@ export function runApp(cfg: AppConfig): http.Server {
           }
           for (const d of prop?.drafts ?? []) {
             if (d.named_problems?.length) namedBySpec.set(d.spec.id, d.named_problems);
-            if (d.part_count && d.part_count >= 2) partCountBySpec.set(d.spec.id, d.part_count);
+            // Raw stated count — no >=2 filter; sourceSetSize's floor makes a
+            // stated 1 identical to undefined (the old filter was drift).
+            if (d.part_count) partCountBySpec.set(d.spec.id, d.part_count);
             if (d.task) taskBySpec.set(d.spec.id, d.task);
           }
         } catch { /* no conversation — CLI or legacy path */ }
@@ -2937,45 +2928,37 @@ export function runApp(cfg: AppConfig): http.Server {
           // unbound and they invent, the pre-sourcing path — never an error.
           try {
             const lc = await import('./lc-source.js');
-            const { deriveTaskFromSpec } = await import('./blueprint.js');
             if (lc.lcReady(repoRoot).ok) {
-              const { resolveProblemRef } = await import('./lc-refs.js');
-              const { buildSourceSet } = await import('./lc-pick.js');
+              const { autoSourceEligible, composeSourceBinding, resolveNamedRefs, sourceSetSize } =
+                await import('./lc-bind.js');
               const { recentlyAttemptedSlugs } = await import('./topic-graph.js');
               const index = lc.loadLcIndex(repoRoot);
               const blocked = lc.blocklistedSlugs(repoRoot);
               const bound = new Set<string>();
               const owner = t.user_id ?? legacyUserId;
               for (const spec of t.specs) {
-                // The task HYPOTHESIS outranks the capability fallback —
-                // the same gate the intake path has used all along
-                // (d.task ?? deriveTaskFromSpec). Live incident 2026-08-15:
-                // two planner rounds sat exactly in the fallback's
-                // documented blind spot (blank+all_failing+panes ⇒ assumed
-                // algorithmic_set) and got LC problems bound onto a
-                // TypeScript live-design round and an LLD OA — one build
-                // agent faced the contradiction and wrote nothing, the
-                // other shipped a manifest with no runtime contract.
-                if ((taskBySpec.get(spec.id) ?? deriveTaskFromSpec(spec)) !== 'algorithmic_set') continue;
+                // The eligibility gate is the shared module's — the 2026-08-15
+                // incident was exactly this door running the capability
+                // fallback alone while the practice door consulted the
+                // hypothesis; lc-bind.ts carries the incident record and the
+                // matrix test.
+                if (!autoSourceEligible(taskBySpec.get(spec.id), spec)) continue;
                 const mine = queue.items.filter((i) => i.spec_id === spec.id);
                 if (mine.length === 0) continue;
                 // EVERY item of this spec is one full session of the round,
-                // so a 3-part OA spec means a 3-part SET per item. Named
-                // problems land in the FIRST item's set; later items are
-                // all-auto. `bound` accumulates so no slug repeats across
-                // the queue.
-                const named: import('./lc-source.js').LcIndexEntry[] = [];
-                for (const ref of namedBySpec.get(spec.id) ?? []) {
-                  const hit = resolveProblemRef(ref, index);
-                  if (hit && !blocked.has(hit.slug) && !bound.has(hit.slug) && lc.eligibleForSourcing(hit)) named.push(hit);
-                }
-                const count = Math.min(
-                  Math.max(partCountBySpec.get(spec.id) ?? named.length, named.length, 1),
-                  spec.check.max_source_files ?? 4,
-                  4,
-                );
+                // so a 3-part OA spec means a 3-part SET per item — size is
+                // computed ONCE per spec. Named problems land in the FIRST
+                // item's set; later items are all-auto. `bound` accumulates
+                // so no slug repeats across the queue (it gates named refs
+                // AND auto picks; the recency window gates picks only).
+                const named = resolveNamedRefs(namedBySpec.get(spec.id) ?? [], {
+                  index,
+                  blocked,
+                  excludeSlugs: bound,
+                });
+                const count = sourceSetSize(partCountBySpec.get(spec.id), named.length, spec);
                 mine.forEach((item, itemIdx) => {
-                  const set = buildSourceSet({
+                  const { binding, boundSlugs } = composeSourceBinding({
                     index,
                     named: itemIdx === 0 ? named : [],
                     count,
@@ -2986,16 +2969,9 @@ export function runApp(cfg: AppConfig): http.Server {
                     ]),
                     seed: `${t.id}:${spec.id}:${item.id}`,
                   });
-                  if (set.length === 0) return;
-                  for (const x of set) bound.add(x.entry.slug);
-                  const toPart = (x: (typeof set)[number]) => ({
-                    slug: x.entry.slug, title: x.entry.title, difficulty: x.entry.difficulty, picked_by: x.picked_by,
-                  });
-                  item.source = {
-                    kind: 'leetcode',
-                    ...toPart(set[0]!),
-                    ...(set.length > 1 ? { parts: set.map(toPart) } : {}),
-                  };
+                  if (!binding) return;
+                  for (const s of boundSlugs) bound.add(s);
+                  item.source = binding;
                 });
               }
             }
