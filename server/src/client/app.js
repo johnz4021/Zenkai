@@ -274,6 +274,12 @@ const BINARY_KINDS = { 'image/png': 'image', 'image/jpeg': 'image', 'image/webp'
 // A paste longer than this becomes a chip instead of composer text — the
 // candidate's own material must never dominate the viewport.
 const PASTE_CHIP_CHARS = 400;
+// Assistant research reports run long; a HISTORY turn past this folds to its
+// first sentence (the pastechip pattern). The CURRENT turn never folds — it
+// may end in the question the candidate must read. Prompt-side brevity
+// (prompts/planner.md) is the fix; this is the safety net for scrollback and
+// resumed replays (owner report 2026-08-15: walls of research nobody read).
+const PLANNER_FOLD_CHARS = 700;
 
 const plan = {
   tid: null, turns: [], proposal: null, busy: false, error: '',
@@ -452,6 +458,12 @@ function linkify(escaped) {
     .replace(/\n/g, '<br>');
 }
 
+/** The fold's one-line summary: the first sentence, capped. */
+function firstSentence(s) {
+  const m = (s || '').match(/^[\s\S]{0,158}?[.!?](?=\s|$)/);
+  return m ? m[0].trim() : (s || '').slice(0, 140).trim() + '…';
+}
+
 function renderTurns() {
   // One model turn can render as SEVERAL assistant bubbles (tool call,
   // then narration). "Current" is everything after the last user message;
@@ -481,8 +493,23 @@ function renderTurns() {
       // Rendering it painted an empty bubble on every proposal turn.
       if (!(t.prose || '').trim() && !(t.questions && t.questions.length) && !(t.unreadable && t.unreadable.length)) return;
       html += '<div class="turn-planner' + (i > lastUser ? '' : ' history') + '">';
-      for (const para of (t.prose || '').split('\n\n')) {
-        if (para.trim()) html += '<p>' + linkify(esc(para.trim())) + '</p>';
+      // A long HISTORY note folds to its first sentence; reuses the
+      // pastechip toggle (indexes are per-turn, so user chips and fold
+      // chips can't collide). Unreadable-link repairs render OUTSIDE the
+      // fold below — a dead end must stay visible.
+      const foldable = (t.prose || '').length > PLANNER_FOLD_CHARS && i <= lastUser;
+      if (foldable && !plan.openChips[i]) {
+        html += '<button type="button" class="pastechip foldnote" data-chip="' + i + '">' +
+          '<span>▸</span><span>' + linkify(esc(firstSentence(t.prose))) + '</span>' +
+          '<span class="foldmeta">· read the full note</span></button>';
+      } else {
+        if (foldable) {
+          html += '<button type="button" class="pastechip foldnote" data-chip="' + i + '">' +
+            '<span>▾</span><span>' + linkify(esc(firstSentence(t.prose))) + '</span></button>';
+        }
+        for (const para of (t.prose || '').split('\n\n')) {
+          if (para.trim()) html += '<p>' + linkify(esc(para.trim())) + '</p>';
+        }
       }
       // A link the fetch tool could not read is a dead end unless the
       // candidate hears about it — many sites (reddit.com among them) are
@@ -554,14 +581,38 @@ function renderPanel() {
     }
   }
   const n = p ? p.drafts.filter((d, i) => !d.unsupported && plan.include[i] !== false).length : 0;
+  // Soft readiness (owner decision 2026-08-15): the button never gates on
+  // the model — the user outranks it — but the note beneath says whether
+  // the shape is still moving. `summary` is the model's own settle signal
+  // (prompts/planner.md); open questions keep it honest after a reopener.
+  const asks = openAskCount();
+  const settled = Boolean(p && p.summary) && asks === 0;
+  const note = !p ? ''
+    : settled ? 'shape settled — ready when you are'
+    : 'still working out the shape' +
+      (asks ? ' — ' + asks + ' open question' + (asks === 1 ? '' : 's') + ' below' : '') +
+      ' · confirm any time';
   return '<aside id="plan-panel">' +
     '<div class="phead"><p class="micro">The plan</p>' +
     '<div class="meta">nothing is generated until you confirm</div></div>' +
     '<div class="pbody">' + body + '</div>' +
-    '<div class="pfoot"><button id="gate-confirm" class="primary" type="button"' + (n === 0 ? ' disabled' : '') + '>' +
+    '<div class="pfoot"><button id="gate-confirm" class="primary" type="button" aria-describedby="gate-note"' + (n === 0 ? ' disabled' : '') + '>' +
     (n === 1 ? 'Confirm 1 round and build the plan' : 'Confirm ' + n + ' rounds and build the plan') + '</button>' +
-    '<span class="meta" id="gate-note"></span></div>' +
+    '<div class="meta' + (settled ? ' settled' : '') + '" id="gate-note">' + note + '</div></div>' +
     '</aside>';
+}
+
+/** Open planner questions after the last user message. Unlike pendingAsk,
+ *  neither dismissal nor a busy model is checked — waving the pills away
+ *  doesn't make the plan more settled. */
+function openAskCount() {
+  let lastUser = -1;
+  let n = 0;
+  plan.turns.forEach((t, i) => {
+    if (t.role === 'user') { lastUser = i; n = 0; return; }
+    if (t.questions && t.questions.length && i > lastUser) n = t.questions.length;
+  });
+  return n;
 }
 
 /** The open question, if any: the latest ask with no user message after it
@@ -779,7 +830,9 @@ function wirePlan(f) {
     });
     if (!kept.length) return;
     el('gate-confirm').disabled = true;
-    el('gate-note').textContent = 'building your plan…';
+    // The accept is SLOW (queue sourcing + one naming call per spec) — the
+    // same indeterminate bar the chat's busy state uses, not a bare line.
+    el('gate-note').innerHTML = 'building your plan…<div class="progress"><div class="fill"></div></div>';
     const r = await fetch('/api/accept-spec', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -787,10 +840,8 @@ function wirePlan(f) {
     });
     const sBody = await r.json();
     if (sBody.error) {
-      el('gate-confirm').disabled = false;
-      el('gate-note').textContent = '';
       plan.error = sBody.error;
-      renderPlan();
+      renderPlan(); // button + note re-render from state
       return;
     }
     // The payoff moment: the whole season appears NOW.

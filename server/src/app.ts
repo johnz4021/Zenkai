@@ -1071,6 +1071,10 @@ export function appPage(): string {
      dominate the viewport (live-screenshot finding, 2026-08-07). */
   .pastechip { display: flex; gap: 10px; width: 100%; text-align: left; background: none; border: 0; border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); padding: 7px 0; min-height: 0; color: var(--text-2); font-size: 12px; cursor: pointer; font-family: var(--mono); }
   .pastechip:hover { color: var(--text-1); }
+  /* Folded planner notes reuse the pastechip chrome but read as prose, not
+     mono — the summary IS the note's first sentence, not metadata. */
+  .foldnote { font-family: inherit; font-size: 13px; align-items: baseline; }
+  .foldnote .foldmeta { color: var(--text-3); white-space: nowrap; }
   .pastebody { margin: 0; padding: 4px 0 10px 20px; font-size: 13px; line-height: 1.6; color: var(--text-2); white-space: pre-wrap; }
   #plan-intro { color: var(--text-2); margin: 28px 0; line-height: 1.65; }
   /* An unreadable link: a fact about the plan's evidence, not an app error
@@ -1122,6 +1126,8 @@ export function appPage(): string {
   #plan-panel .pfoot { padding: 12px 14px 14px; border-top: 1px solid var(--line); }
   #plan-panel .pfoot button { width: 100%; padding: 10px; }
   #plan-panel .pfoot .meta { font-size: 12px; margin-top: 8px; display: block; line-height: 1.5; }
+  /* The settle signal is information, not completed work: steel, not --ok. */
+  #plan-panel .pfoot .meta.settled { color: var(--steel-text); }
   #plan-composer { margin-top: 14px; position: sticky; bottom: 0; background: var(--bg); padding-bottom: 10px; max-width: 62ch; }
   #plan-composer .row { display: flex; gap: 8px; align-items: flex-start; }
   #plan-composer textarea { flex: 1; min-height: 58px; resize: none; }

@@ -113,6 +113,30 @@ describe('home app page', () => {
     expect(js).toContain('pastechip'); // replayed long kickoffs collapse too
   });
 
+  it('long planner HISTORY notes fold to a sentence; the current turn never folds', () => {
+    // Owner report 2026-08-15: research came back as walls nobody read.
+    expect(js).toContain('PLANNER_FOLD_CHARS');
+    expect(js).toContain('function firstSentence');
+    // History-only: the fold condition requires i <= lastUser.
+    expect(js).toMatch(/PLANNER_FOLD_CHARS && i <= lastUser/);
+    expect(js).toContain('read the full note');
+    expect(html).toContain('.foldnote');
+  });
+
+  it('the build button carries a soft readiness note, never a hard gate', () => {
+    // Owner decision 2026-08-15: the user outranks the model — the button
+    // stays enabled; the note under it says whether the shape still moves.
+    expect(js).toContain('function openAskCount');
+    expect(js).toContain('shape settled — ready when you are');
+    expect(js).toContain('still working out the shape');
+    expect(js).toContain('confirm any time');
+    // Readiness must never disable: the only disabled condition stays n===0.
+    expect(js).toMatch(/id="gate-confirm" class="primary" type="button" aria-describedby="gate-note"' \+ \(n === 0 \? ' disabled' : ''\)/);
+    // The slow accept shows the shared progress bar, not a bare text line.
+    expect(js).toMatch(/building your plan…<div class="progress">/);
+    expect(html).toMatch(/\.pfoot \.meta\.settled \{ color: var\(--steel-text\)/);
+  });
+
   it('adaptation is preview-then-apply — the model never writes unapproved', () => {
     expect(js).toContain("'/api/adapt'");
     expect(js).toContain("'/api/adapt/apply'");
