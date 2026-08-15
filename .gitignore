@@ -37,6 +37,8 @@ reps.json
 launches.jsonl
 # willingness-to-pay probe (paywall.ts) — carries user ids and emails
 paywall.jsonl
+# subscription entitlement (billing.ts) — customer + subscription ids
+subscriptions.jsonl
 sessions-live.json
 .ide-data/
 

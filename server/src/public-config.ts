@@ -88,7 +88,34 @@ export interface PublicConfig {
     freeRounds: number;
     /** Free targets before the gate. A guardrail, not the experiment. */
     freePlans: number;
+    /** Rounds a SUBSCRIBER gets per billing period. Resets on the Stripe
+     *  period boundary (billing.ts periodStart), so last month's rounds never
+     *  eat this month's. Unlimited would be a liability: at ~$2 a round a
+     *  heavy user costs more than they pay. */
+    paidRounds: number;
   };
+  /**
+   * Stripe subscription billing (billing.ts). null = OFF — the gate still
+   * works and the manual grant path still comps, there is just nothing to buy.
+   *
+   * All-or-nothing like `supabase` above: half a billing config is a
+   * misconfiguration, and a box that renders a Subscribe button it cannot
+   * honour is worse than one with no button at all.
+   *
+   * NOTE these are SECRETS. child-env.ts must drop STRIPE_API_KEY and
+   * STRIPE_WEBHOOK_SECRET for every child kind — its generator/session paths
+   * are denylists, so a new key reaches every agentic `claude -p` run unless
+   * it is named there explicitly.
+   */
+  stripe: {
+    /** Restricted key (rk_) preferred over a secret key (sk_): least
+     *  privilege, so a leak can do far less. */
+    apiKey: string;
+    webhookSecret: string;
+    /** The Price to subscribe to. One Product per plan; Prices are for
+     *  variants of the same plan (monthly vs annual). */
+    priceId: string;
+  } | null;
 }
 
 const strip = (u: string): string => u.replace(/\/+$/, '');
@@ -110,6 +137,19 @@ function zeroOr(v: string | undefined, fallback: number): number {
 }
 
 export function resolvePublicConfig(env: Record<string, string | undefined>): PublicConfig {
+  // Billing is all-or-nothing, same rule and same reasoning as Supabase below:
+  // a Subscribe button on a box that cannot complete a purchase is worse than
+  // no button. Unset = billing off = today's behaviour exactly.
+  const sKey = env.STRIPE_API_KEY?.trim();
+  const sHook = env.STRIPE_WEBHOOK_SECRET?.trim();
+  const sPrice = env.STRIPE_PRICE_ID?.trim();
+  if ((sKey || sHook || sPrice) && !(sKey && sHook && sPrice)) {
+    throw new Error(
+      'STRIPE_API_KEY, STRIPE_WEBHOOK_SECRET and STRIPE_PRICE_ID must be set together (or none)',
+    );
+  }
+  const stripeCfg =
+    sKey && sHook && sPrice ? { apiKey: sKey, webhookSecret: sHook, priceId: sPrice } : null;
   const url = env.IP_SUPABASE_URL?.trim();
   const anonKey = env.IP_SUPABASE_ANON_KEY?.trim();
   const serviceKey = env.IP_SUPABASE_SERVICE_KEY?.trim();
@@ -163,6 +203,8 @@ export function resolvePublicConfig(env: Record<string, string | undefined>): Pu
       // Using intOr would make IP_PAYWALL_FREE_ROUNDS=0 silently mean 3.
       freeRounds: zeroOr(env.IP_PAYWALL_FREE_ROUNDS, 3),
       freePlans: zeroOr(env.IP_PAYWALL_FREE_PLANS, 3),
+      paidRounds: zeroOr(env.IP_PAYWALL_PAID_ROUNDS, 4),
     },
+    stripe: stripeCfg,
   };
 }

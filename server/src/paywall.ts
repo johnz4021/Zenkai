@@ -5,7 +5,7 @@
  *   targets ──────────────────► countPlans ────────┤
  *   paywall.jsonl ────────────► hasGrant ──────────┼──► gateVerdict ──► GateView | null
  *   IP_PAYWALL_GATE / _FREE_* ► cfg.pub.paywall ───┘          │
- *                                                       402 at 4 routes
+ *                                                      402 at 10 routes
  *   POST /api/paywall/probe ──► probeAction ──► logPaywall ──► paywall.jsonl
  *
  * Why it exists: docs/beta-runbook.md §6 counts "≥1 unprompted follow-up (can
@@ -57,6 +57,11 @@ export interface GateView {
   reason: 'rounds' | 'plans';
   used: number;
   free: number;
+  /** True when the person hitting this limit is ALREADY a subscriber who has
+   *  spent their monthly allowance. The card must then say "you have used this
+   *  month's rounds", never offer them the subscription they already pay for —
+   *  selling someone a thing they own is the fastest way to lose them. */
+  subscribed: boolean;
 }
 
 /**
@@ -81,7 +86,7 @@ export type ProbeAction = (typeof PROBE_ACTIONS)[number] | 'unknown';
 const GRANTING: readonly string[] = ['would_pay', 'would_pay_confirmed'];
 
 /** Free-text answers arrive on a route whose body reader has no size cap
- *  (readBody, app.ts:86) — bounded here, beside the vocabulary it belongs to. */
+ *  (readBody, app.ts) — bounded here, beside the vocabulary it belongs to. */
 export const EXPECTED_MAX = 200;
 
 /** Minimal shapes this module reads — structural, so RepView, QueueItem and
@@ -89,11 +94,33 @@ export const EXPECTED_MAX = 200;
 export interface CountableRep {
   session_id?: string;
   status?: string;
+  /** ISO. The build's own timestamp, for per-period windowing. */
+  created?: string;
   runs?: RunEntry[];
 }
 export interface CountableItem {
   session_id?: string;
   status?: string;
+  /** ISO. Plan-queue items carry no creation timestamp, so this is the only
+   *  time signal they have — see the windowing note on roundsUsed. */
+  done_at?: string;
+}
+
+/**
+ * Is this timestamp inside the counting window? `sinceMs === null` means no
+ * window (the free tier, which counts for a lifetime — a trial has no period
+ * to reset).
+ *
+ * A record with NO usable timestamp is EXCLUDED from a window. That
+ * undercounts a subscriber, which is the right direction to be wrong in:
+ * wrongly gating someone who paid is a much worse failure than letting a
+ * paying customer have an extra round.
+ */
+function inWindow(iso: unknown, sinceMs: number | null): boolean {
+  if (sinceMs === null) return true;
+  if (typeof iso !== 'string') return false;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) && t >= sinceMs;
 }
 export interface CountableTarget {
   user_id?: string;
@@ -127,17 +154,20 @@ export function countRoundsRun(
   items: CountableItem[],
   userId: string,
   legacyOwnerId: string,
+  sinceMs: number | null = null,
 ): number {
   let n = 0;
   for (const rep of reps) {
     const runs = rep.runs ?? [];
     if (runs.length > 0) {
-      for (const r of runs) if ((r.user_id || legacyOwnerId) === userId) n++;
-    } else if (rep.session_id) {
+      for (const r of runs) {
+        if ((r.user_id || legacyOwnerId) === userId && inWindow(r.at, sinceMs)) n++;
+      }
+    } else if (rep.session_id && inWindow(rep.created, sinceMs)) {
       n++;
     }
   }
-  for (const it of items) if (it.session_id) n++;
+  for (const it of items) if (it.session_id && inWindow(it.done_at, sinceMs)) n++;
   return n;
 }
 
@@ -158,12 +188,13 @@ export function countBuilds(
   items: CountableItem[],
   userId: string,
   legacyOwnerId: string,
+  sinceMs: number | null = null,
 ): number {
   const kicked = (x: { status?: string; session_id?: string }): boolean =>
     Boolean(x.session_id) || (typeof x.status === 'string' && x.status !== 'pending');
   let n = 0;
-  for (const rep of reps) if (kicked(rep)) n++;
-  for (const it of items) if (kicked(it)) n++;
+  for (const rep of reps) if (kicked(rep) && inWindow(rep.created, sinceMs)) n++;
+  for (const it of items) if (kicked(it) && inWindow(it.done_at, sinceMs)) n++;
   return n;
 }
 
@@ -176,16 +207,24 @@ export function countBuilds(
  * both abuses at once: build-and-never-run is caught by the build count, and
  * repeat-forever is caught by the run count (which never decrements, see
  * countRoundsRun).
+ *
+ * `sinceMs` is the per-billing-period window for SUBSCRIBERS (billing.ts
+ * periodStart). The free tier passes null and counts for a lifetime — a trial
+ * has no period to reset. Exact for runs (.runs.jsonl carries `at`) and rep
+ * builds (Rep.created); plan-queue items have no creation timestamp, so they
+ * window on `done_at` and are undercounted before they finish. The residual is
+ * bounded by the existing daily build caps, which is what those are for.
  */
 export function roundsUsed(
   reps: CountableRep[],
   items: CountableItem[],
   userId: string,
   legacyOwnerId: string,
+  sinceMs: number | null = null,
 ): number {
   return Math.max(
-    countRoundsRun(reps, items, userId, legacyOwnerId),
-    countBuilds(reps, items, userId, legacyOwnerId),
+    countRoundsRun(reps, items, userId, legacyOwnerId, sinceMs),
+    countBuilds(reps, items, userId, legacyOwnerId, sinceMs),
   );
 }
 
@@ -239,6 +278,9 @@ export function gateVerdict(input: {
   used: number;
   free: number;
   priceUsd: number;
+  /** Already paying, and out of this period's allowance. Changes the copy,
+   *  never the verdict — a subscriber past their rounds is still gated. */
+  subscribed?: boolean;
 }): GateView | null {
   if (!input.enabled || input.admin || input.granted) return null;
   if (input.used < input.free) return null;
@@ -247,6 +289,7 @@ export function gateVerdict(input: {
     reason: input.reason,
     used: input.used,
     free: input.free,
+    subscribed: input.subscribed === true,
   };
 }
 

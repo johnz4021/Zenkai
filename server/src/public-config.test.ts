@@ -29,7 +29,15 @@ describe('resolvePublicConfig', () => {
     expect(off.paywall.enabled).toBe(false);
 
     const on = resolvePublicConfig({ IP_PAYWALL_GATE: '1' });
-    expect(on.paywall).toEqual({ enabled: true, priceUsd: 39, freeRounds: 3, freePlans: 3 });
+    expect(on.paywall).toEqual({
+      enabled: true,
+      priceUsd: 39,
+      freeRounds: 3,
+      freePlans: 3,
+      paidRounds: 4,
+    });
+    // Billing is a separate switch: arming the gate sells nothing by itself.
+    expect(on.stripe).toBeNull();
 
     const tuned = resolvePublicConfig({
       IP_PAYWALL_GATE: '1',
@@ -37,7 +45,13 @@ describe('resolvePublicConfig', () => {
       IP_PAYWALL_FREE_ROUNDS: '5',
       IP_PAYWALL_FREE_PLANS: '2',
     });
-    expect(tuned.paywall).toEqual({ enabled: true, priceUsd: 19, freeRounds: 5, freePlans: 2 });
+    expect(tuned.paywall).toEqual({
+      enabled: true,
+      priceUsd: 19,
+      freeRounds: 5,
+      freePlans: 2,
+      paidRounds: 4,
+    });
   });
 
   it('a free allowance of ZERO is honored — intOr would have eaten it', () => {

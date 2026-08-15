@@ -49,6 +49,7 @@ describe('gateVerdict — the three exemptions come first', () => {
       reason: 'rounds',
       used: 3,
       free: 3,
+      subscribed: false,
     });
   });
 
@@ -59,6 +60,14 @@ describe('gateVerdict — the three exemptions come first', () => {
 
   it('carries the reason so the copy can name the right limit', () => {
     expect(gateVerdict({ ...base, reason: 'plans', used: 3, free: 3 })?.reason).toBe('plans');
+  });
+
+  it('a subscriber past their monthly rounds is still gated, with different copy', () => {
+    // Gated, because unlimited would be a liability at ~$2 a round. But the
+    // card must NOT offer them the subscription they already pay for.
+    const v = gateVerdict({ ...base, used: 4, free: 4, subscribed: true });
+    expect(v).not.toBeNull();
+    expect(v?.subscribed).toBe(true);
   });
 
   it("the price is the server's integer, never a caller-supplied string", () => {
@@ -139,6 +148,51 @@ describe('countBuilds / roundsUsed — the money is spent at BUILD time', () => 
     const repeated = [{ status: 'done', session_id: 'sess-b', runs: [run('u2', 'sess-a'), run('u2', 'sess-b')] }];
     expect(countBuilds(repeated, [], 'u2', 'u1')).toBe(1);
     expect(roundsUsed(repeated, [], 'u2', 'u1')).toBe(2); // the run side wins
+  });
+});
+
+describe('per-period windowing — the subscriber allowance resets', () => {
+  const P = Date.parse('2026-08-01T00:00:00.000Z'); // period start
+  const before = '2026-07-20T00:00:00.000Z';
+  const after = '2026-08-05T00:00:00.000Z';
+
+  it('null window counts for a lifetime — the free tier', () => {
+    const reps = [{ status: 'done', created: before, runs: [{ session_id: 's', user_id: 'u2', at: before }] }];
+    expect(roundsUsed(reps, [], 'u2', 'u1', null)).toBe(1);
+  });
+
+  it('a run before the period does not count against this period', () => {
+    const reps = [{ status: 'done', created: before, runs: [{ session_id: 's', user_id: 'u2', at: before }] }];
+    expect(roundsUsed(reps, [], 'u2', 'u1', P)).toBe(0);
+  });
+
+  it('a run inside the period counts', () => {
+    const reps = [{ status: 'done', created: after, runs: [{ session_id: 's', user_id: 'u2', at: after }] }];
+    expect(roundsUsed(reps, [], 'u2', 'u1', P)).toBe(1);
+  });
+
+  it('the boundary is inclusive — a run exactly at period start counts', () => {
+    const at = new Date(P).toISOString();
+    const reps = [{ status: 'done', created: at, runs: [{ session_id: 's', user_id: 'u2', at }] }];
+    expect(roundsUsed(reps, [], 'u2', 'u1', P)).toBe(1);
+  });
+
+  it("last month's builds do not eat this month's allowance", () => {
+    // The whole point of resetting. Four builds last period, none this one.
+    const old = Array.from({ length: 4 }, () => ({ status: 'ready', created: before }));
+    expect(roundsUsed(old, [], 'u2', 'u1', null)).toBe(4); // lifetime
+    expect(roundsUsed(old, [], 'u2', 'u1', P)).toBe(0);    // this period
+  });
+
+  it('a record with no timestamp is EXCLUDED from a window', () => {
+    // Undercounts a subscriber on purpose: wrongly gating someone who paid is
+    // a worse failure than granting them an extra round.
+    expect(roundsUsed([{ status: 'ready' }], [], 'u2', 'u1', P)).toBe(0);
+    expect(roundsUsed([{ status: 'ready' }], [], 'u2', 'u1', null)).toBe(1);
+  });
+
+  it('a garbled timestamp is excluded rather than throwing', () => {
+    expect(roundsUsed([{ status: 'ready', created: 'not-a-date' }], [], 'u2', 'u1', P)).toBe(0);
   });
 });
 
