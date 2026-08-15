@@ -118,6 +118,22 @@ export interface InterviewerContext {
   /** True once the candidate has themselves touched the bug file —
    *  relaxes the location guard for found territory. */
   bugFileVisited?: boolean;
+  /**
+   * Whether `bug` is genuine private answer knowledge (a planted defect) or
+   * the explicit no-knowledge statement. Arms the vocabulary guard: stemming
+   * the no-knowledge text into `forbidden` would ban its own ordinary words
+   * from scaffolding turns while guarding nothing (the old sentinel banned
+   * "plant", "round" and "type" — QA 2026-08-14). Defaults to true so
+   * existing call sites keep today's behavior.
+   */
+  hasAnswerKnowledge?: boolean;
+  /**
+   * Never-name locations beyond `bugFile`, with per-file found-territory
+   * state — a review round plants defects across several files. Session-
+   * derived (files the grading key's description names), per-turn (visited
+   * changes as they work).
+   */
+  protectedExtras?: { file: string; visited: boolean }[];
   /** The problem's six rubric dimension expectations, rendered as a list.
    *  Per-session constant (stable half, cacheable). The judge always had
    *  these; the interviewer probing blind to them was the rubric-blind
@@ -383,9 +399,17 @@ export function guard(
    *  discussing their own changes there is the whole point of the
    *  interviewer having eyes. Unvisited stays redacted exactly as before. */
   bugFileVisited = false,
+  /** Additional never-name locations beyond the primary — a review round
+   *  plants several defects across several files, and a single-string
+   *  `bugFile` could only guard one of them (QA 2026-08-14: rep-mst39p35's
+   *  rollup.py held a planted BLOCKER and was unguarded by design). Each
+   *  entry carries its own found-territory relaxation. */
+  extraProtected: { file: string; visited: boolean }[] = [],
 ): InterviewerTurn {
   if (!turn.say) return turn;
-  const bugLeak = !bugFileVisited && leaksBugLocation(turn.say, bugFile);
+  const bugLeak =
+    (!bugFileVisited && leaksBugLocation(turn.say, bugFile)) ||
+    extraProtected.some((p) => !p.visited && leaksBugLocation(turn.say, p.file));
   // The gap-note guard only arms when a note was actually injected —
   // otherwise a turn like "you tend to..." is just conversation.
   const gapLeak = hasTargetNote && leaksGapNote(turn.say);
@@ -563,6 +587,11 @@ export function stuckVocabOf(
   ctx: InterviewerContext,
 ): { forbidden: string; allowed: string } | undefined {
   if (!ctx.stuckObservation && !ctx.adriftObservation) return undefined;
+  // No answer knowledge → nothing to guard, and stemming the no-knowledge
+  // statement into `forbidden` bans its own ordinary words ("plant",
+  // "round", "type" under the old sentinel) from the one lane this module
+  // exists to serve.
+  if (ctx.hasAnswerKnowledge === false) return undefined;
   const candidateWords = ctx.transcript
     .filter((t) => t.who === 'candidate')
     .map((t) => t.text)
@@ -571,6 +600,16 @@ export function stuckVocabOf(
     forbidden: `${ctx.bug}\n${ctx.bugFile}`,
     allowed: `${ctx.spec}\n${ctx.allowedExtra ?? ''}\n${candidateWords}`,
   };
+}
+
+/** Extra never-name locations with the same publicness relaxations the
+ *  primary gets (found territory, spec-named). Shared by both model paths so
+ *  the two guard calls cannot drift. */
+export function protectionOf(ctx: InterviewerContext): { file: string; visited: boolean }[] {
+  return (ctx.protectedExtras ?? []).map((p) => ({
+    file: p.file,
+    visited: p.visited || specNamesBugFile(ctx.spec, p.file),
+  }));
 }
 
 /** Marker splitting the session-stable prompt half from the per-turn half. */
@@ -615,7 +654,7 @@ export function claudeInterviewer(templatePath: string, model = 'sonnet'): Inter
   const template = readFileSync(templatePath, 'utf8');
   return async (ctx) => {
     const raw = await runClaudeP(render(template, ctx), model, 45_000);
-    return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx), (ctx.bugFileVisited ?? false) || specNamesBugFile(ctx.spec, ctx.bugFile));
+    return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx), (ctx.bugFileVisited ?? false) || specNamesBugFile(ctx.spec, ctx.bugFile), protectionOf(ctx));
   };
 }
 
@@ -664,7 +703,7 @@ export function streamingInterviewer(templatePath: string, model = 'claude-sonne
         // A truncated turn parses to SILENT and vanishes — say so loudly.
         console.warn(`[interviewer] turn TRUNCATED at max_tokens — raw tail: …${raw.slice(-120)}`);
       }
-      return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx), (ctx.bugFileVisited ?? false) || specNamesBugFile(ctx.spec, ctx.bugFile));
+      return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx), (ctx.bugFileVisited ?? false) || specNamesBugFile(ctx.spec, ctx.bugFile), protectionOf(ctx));
     } catch (e) {
       console.warn('[interviewer] streaming failed, this turn is silent:', String(e).slice(0, 200));
       return { say: '', kind: 'silent', nudge: false };
@@ -785,12 +824,74 @@ export function pickIntentCheck(): IntentCheck {
   return process.env.ANTHROPIC_API_KEY ? apiIntentCheck() : claudePIntentCheck();
 }
 
-/** Build the guarded context fields from a problem manifest. */
+/** Build the guarded context fields from a problem manifest.
+ *  @deprecated interviewerGroundTruth is the per-kind replacement — this
+ *  degraded every non-debugging round to a self-contradicting sentinel
+ *  ("(no planted bug for this round type)" under a heading asserting
+ *  private knowledge) and wrapped review rounds' multi-defect key in a
+ *  debugging-shaped "It breaks exactly one test" sentence. Kept only for
+ *  its tests until they migrate. */
 export function bugContext(problem: GeneratedProblem): { bug: string; bugFile: string } {
   const b = problem.planted_bug;
   if (!b) return { bug: '(no planted bug for this round type)', bugFile: '' };
   return {
     bug: `File: ${b.file} (line ${b.line})\n${b.description}\nIt breaks exactly one test: "${b.failing_test}".`,
     bugFile: b.file,
+  };
+}
+
+/**
+ * Per-kind ground truth for the {{BUG}} slot — the interviewer-side
+ * analogue of the judge's groundTruth(), which generalized long ago while
+ * this side kept the debugging shape (QA 2026-08-14):
+ *
+ *  - no planted bug (all_failing, all_passing, and legacy shapes): the old
+ *    sentinel rendered "(no planted bug for this round type)" directly under
+ *    "## What you know that they do not", followed by answer rules asserting
+ *    "You know what the planted defects are". Now the slot says plainly that
+ *    there is NO private answer knowledge and not to pretend otherwise.
+ *  - diff_present with a planted key (the real generated shape —
+ *    rep-mst39p35 carries all four defects, severities, files and lines in
+ *    planted_bug.description): the old text wrapped that key in "It breaks
+ *    exactly one test: (none — …)". Now it is framed as the review's grading
+ *    key, and hasAnswerKnowledge arms the guards for it.
+ *  - one_failing_test: byte-identical to the original debugging text.
+ *
+ * `hasAnswerKnowledge` drives the vocabulary guard: stemming the no-bug
+ * sentinel into `forbidden` used to ban the words "plant", "round" and
+ * "type" from stuck/adrift turns ("You're 20 minutes into this round" —
+ * silenced) while guarding nothing.
+ */
+export function interviewerGroundTruth(
+  problem: Pick<GeneratedProblem, 'planted_bug'>,
+  checkKind: string | undefined,
+): { bug: string; bugFile: string; hasAnswerKnowledge: boolean } {
+  const b = problem.planted_bug;
+  if (!b) {
+    return {
+      bug:
+        'You have NO private answer knowledge in this round — there is no planted ' +
+        'defect and no hidden solution. Do not imply you know the answer, a ' +
+        'location, or an approach. Your only edge over the candidate is the spec, ' +
+        'the suite, and visibility into their work.',
+      bugFile: '',
+      hasAnswerKnowledge: false,
+    };
+  }
+  if (checkKind === 'diff_present') {
+    return {
+      bug:
+        `The diff under review contains planted defects, and you hold the grading ` +
+        `key (PRIVATE — the candidate finds and writes these up themselves):\n` +
+        `${b.description}\n` +
+        `Primary location: ${b.file}${typeof b.line === 'number' ? ` (line ${b.line})` : ''}.`,
+      bugFile: b.file,
+      hasAnswerKnowledge: true,
+    };
+  }
+  return {
+    bug: `File: ${b.file} (line ${b.line})\n${b.description}\nIt breaks exactly one test: "${b.failing_test}".`,
+    bugFile: b.file,
+    hasAnswerKnowledge: true,
   };
 }

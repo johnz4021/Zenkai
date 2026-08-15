@@ -46,9 +46,9 @@ import { extractSection, loadBlueprint } from './blueprint.js';
 import { TraceStore } from './trace-store.js';
 import {
   TurnQueue,
-  bugContext,
   buildTranscript,
   candidateVisitedBugFile,
+  interviewerGroundTruth,
   pickIntentCheck,
   pickInterviewer,
   renderActivity,
@@ -586,12 +586,29 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   let notifyTurn: () => void = () => {};
 
   // ---- interviewer ----
-  const { bug, bugFile } = bugContext(problem);
+  const { bug, bugFile, hasAnswerKnowledge } = interviewerGroundTruth(problem, roundSpec.check.kind);
   // The stable code context (repo map + the failing test verbatim), computed
   // ONCE: it describes the problem as handed out, so the cached system block
   // stays byte-identical across turns.
   const codebaseView = codebaseViewOf(cfg.problemDir, problem.planted_bug?.failing_test ?? null);
   const workspaceFileList = listWorkspaceFiles(cfg.problemDir);
+  // The grading key can span several files — a review round plants defects
+  // across the diff, and the single bugFile field could only ever guard one
+  // of them (QA 2026-08-14: rep-mst39p35's rollup.py held a planted BLOCKER
+  // and was unguarded). Every workspace file the key's description names is
+  // a never-name location; on a debugging round this also protects sibling
+  // files the description cites as answer context.
+  const bugBase = bugFile.split('/').pop() ?? bugFile;
+  const descText = (problem.planted_bug?.description ?? '').toLowerCase();
+  const extraProtectedFiles = hasAnswerKnowledge
+    ? [
+        ...new Set(
+          workspaceFileList
+            .map((p) => p.split('/').pop() ?? p)
+            .filter((base) => base !== bugBase && descText.includes(base.toLowerCase())),
+        ),
+      ]
+    : [];
   // The spec's interviewer:false (an OA) wins over everything: nobody
   // replies, so the intent check has nothing to route to either. The mic
   // stays live — think-aloud is still judge signal.
@@ -845,9 +862,20 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // aliased by describeStuck — identity, never file names.
         stuckObservation: stuck ? describeStuck(stuck, now) : null,
         adriftObservation,
-        allowedExtra: problem.planted_bug?.failing_test ?? '',
+        // Only a debugging round's failing_test is a real test name on the
+        // candidate's screen. On other kinds the field is repurposed prose —
+        // a review round's carried a sentence naming the defect areas, which
+        // whitelisted seven answer stems in the vocabulary guard
+        // (QA 2026-08-14).
+        allowedExtra:
+          roundSpec.check.kind === 'one_failing_test' ? (problem.planted_bug?.failing_test ?? '') : '',
         workspaceView,
         bugFileVisited: candidateVisitedBugFile(events, bugFile),
+        hasAnswerKnowledge,
+        protectedExtras: extraProtectedFiles.map((f) => ({
+          file: f,
+          visited: candidateVisitedBugFile(events, f),
+        })),
         rubric: rubricText,
         engagement,
         momentObservation: moment ? moment.observation : null,
