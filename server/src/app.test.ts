@@ -1152,3 +1152,23 @@ describe('LC binder unification (pinned via source — the 2026-08-15 drift guar
     expect(appSource).not.toContain('buildSourceSet(');
   });
 });
+
+describe('queue-door ownership (the 2026-08-15 doors-QA IDOR pins)', () => {
+  const appSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'app.ts'), 'utf8');
+
+  it('no handler loads a queue straight from the request body — target first, ownership second', () => {
+    // /api/launch and /api/skip shipped as `loadQueue(repoRoot, b.target_id)`
+    // with no ownsTarget — any signed-in user with a target id could consume
+    // or skip another user's queue items.
+    expect(appSource).not.toMatch(/loadQueue\(repoRoot,\s*b\.target_id/);
+  });
+
+  it('every queue-mutating door checks ownsTarget', () => {
+    for (const route of ['/api/generate', '/api/retry', '/api/skip', '/api/launch', '/api/rebuild']) {
+      const start = appSource.indexOf(`url === '${route}' && req.method === 'POST'`);
+      expect(start, route).toBeGreaterThan(-1);
+      const block = appSource.slice(start, appSource.indexOf("if (url === '/api/", start + 40));
+      expect(block, `${route} must gate on ownsTarget`).toContain('ownsTarget(');
+    }
+  });
+});

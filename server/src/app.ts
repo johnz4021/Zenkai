@@ -3252,7 +3252,9 @@ export function runApp(cfg: AppConfig): http.Server {
       }
       if (url === '/api/skip' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
-        const q = b.target_id ? loadQueue(repoRoot, b.target_id) : null;
+        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
+        const q = t ? loadQueue(repoRoot, t.id) : null;
         const item = q?.items.find((i) => i.id === b.item_id);
         if (!q || !item) return json(404, { error: 'no such item' });
         item.status = 'skipped';
@@ -3261,7 +3263,12 @@ export function runApp(cfg: AppConfig): http.Server {
       }
       if (url === '/api/launch' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string; origin?: string };
-        const q = b.target_id ? loadQueue(repoRoot, b.target_id) : null;
+        // Ownership before readiness: without it any signed-in user who knew
+        // a target id could consume someone else's ready round — .used
+        // written, graded into the LAUNCHER's gap graph (2026-08-15 QA).
+        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
+        const q = t ? loadQueue(repoRoot, t.id) : null;
         const item = q?.items.find((i) => i.id === b.item_id);
         if (!q || !item?.problem_dir || item.status !== 'ready') {
           return json(400, { error: 'item is not ready' });
