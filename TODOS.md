@@ -1439,3 +1439,20 @@ invented) vs ~$0.50 (sonnet, LC-sourced), and the round mix is mostly sourced.
 (~50+ active users), or build-queue latency becoming a user complaint.
 **Effort:** CC ~1-2 days including the veto gates. **Priority:** P3 until the
 trigger fires.
+
+## 58. Feedback cards speak about the user in the third person
+
+**What:** the judge writes "The candidate spent under three minutes…" /
+"They opened CHANGE.diff…", and the gap band + feedback cards render that
+prose verbatim on the user's own dashboard — a report about you, addressed
+to someone else. Fix is judge-prompt-side ("you opened…"), not a render
+transform: rewriting pronouns mechanically would corrupt quoted evidence.
+
+**Deferred (2026-08-15 UX pass):** changing the judge prompt bumps its hash,
+which invalidates gauntlet caches and version-splits assessment history — it
+deserves its own gauntlet run, not a copy-fix commit. Every string-level slop
+fix from the same pass shipped separately.
+
+**Trigger:** the next planned judge-prompt revision (ride along with it), or
+a beta user calling the card's voice out. **Effort:** prompt edit + one
+`eval-judge` run. **Priority:** P3.
