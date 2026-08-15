@@ -264,6 +264,40 @@ function hasFailingRun(events: TraceEvent[]): boolean {
   return events.some(isFailingRun);
 }
 
+/** How long silent reading counts as "not underway yet" before the round is
+ *  underway regardless — someone can study a one-shot statement for a while,
+ *  but three minutes in, the interview has started whether or not anything
+ *  ran. */
+export const UNDERWAY_FLOOR_MS = 3 * 60_000;
+
+/**
+ * Is the round genuinely underway — should the interviewer take initiative?
+ *
+ * This used to be `hasFailingRun` alone, which is right for a debugging
+ * round (the kickoff autorun makes it true in the first seconds) and wrong
+ * for every other shape: a one-shot round CANNOT produce a test_run during
+ * the session (the container gets IP_CAN_RUN_TESTS=0 and /api/run refuses;
+ * the only run happens at submit), and an all_passing round starts green.
+ * QA 2026-08-14 measured the result — on 6 of 8 shipped rounds the entire
+ * unprompted interviewer (pressure, moments, stuck, adrift, wrap-up, even
+ * the acks) was unreachable for the whole session; the candidate got an
+ * opening turn and replies, nothing else, for 45-90 minutes.
+ *
+ * Underway now means: a failing run happened (the debugging trigger,
+ * unchanged), OR the candidate started working (an edit or save), OR they
+ * have been in the room past the floor — reading IS working on rounds whose
+ * work starts with reading. Pure over the trace, clock injected.
+ */
+export function roundUnderway(
+  events: TraceEvent[],
+  nowMs: number,
+  sessionStartedAt: number,
+): boolean {
+  if (hasFailingRun(events)) return true;
+  if (events.some((e) => e.type === 'edit' || e.type === 'file_save')) return true;
+  return nowMs - sessionStartedAt >= UNDERWAY_FLOOR_MS;
+}
+
 /** Buffer a small GET from the IDE (used only for the workbench boot HTML,
  *  which is a few hundred KB). Rejects on non-200 so the caller falls back
  *  to the transparent proxy. */
@@ -1578,8 +1612,10 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     server.listen(cfg.port, resolve);
   });
   cfg.onReady?.();
-  // Unprompted turns. Only once the round is genuinely underway — before
-  // the first failing run there is nothing to say. When the stuck detector
+  // Unprompted turns. Only once the round is genuinely underway — a failing
+  // run, a first edit, or the floor elapsing (roundUnderway's header has the
+  // QA incident: the old failing-run-only gate silenced every initiative
+  // lane for whole one-shot and green-start rounds). When the stuck detector
   // fires, the unprompted turn IS the scaffolding move instead of a pressure
   // beat (decision D3): one voice at a time, same 4-minute floor. Pressure
   // aimed at someone already grinding produces flailing, not progress.
@@ -1587,8 +1623,8 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     pressureTimer = setInterval(() => {
       if (ended || interviewerBusy || sessionStartedAt === null) return;
       const events = store.readAll();
-      if (!hasFailingRun(events)) return;
       const now = Date.now();
+      if (!roundUnderway(events, now, sessionStartedAt)) return;
 
       // Wrap signal: checked every tick regardless of clocks, set once.
       if (wrapUpAt === null) {
@@ -1684,7 +1720,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       // the conversation there, and a canned continuer reads as checked-out.
       if (ended || interviewerBusy || sessionStartedAt === null || timeUpAt !== null || wrapUpAt !== null) return;
       const events = store.readAll();
-      if (!hasFailingRun(events)) return; // same "genuinely underway" gate as pressure
+      if (!roundUnderway(events, Date.now(), sessionStartedAt)) return; // same "genuinely underway" gate as pressure
       if (Date.now() - lastUnpromptedTs >= PRESSURE_INTERVAL_MS) return; // a real turn is due — let it speak
       const ack = decideAck(events, Date.now(), { askPending: turnQueue.size > 0 });
       if (!ack) return;
