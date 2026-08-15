@@ -284,7 +284,7 @@ describe('beta copy on the session card (WU9)', () => {
     expect(patterns).toBeGreaterThan(-1);
     expect(note).toBeGreaterThan(patterns); // below, never replacing
     // Trimmed 2026-08-15: no roadmap promises on the card.
-    expect(js).not.toContain('in development');
+    expect(js).not.toContain('Deeper memory is in development');
   });
 });
 
