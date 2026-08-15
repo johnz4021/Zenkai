@@ -147,12 +147,21 @@ export interface InterviewerContext {
    *  the observation text for the per-turn half. */
   momentObservation?: string | null;
   /**
-   * describeAdrift()/describeWarm() output: they have been reading one region
-   * for a long time with nothing moving. Fires the REDIRECT rules (close the
-   * dead end) or, when the answer is inside that region, the encouragement
-   * inversion. Never both with stuckObservation — the tick picks one.
+   * describeAdrift() output: they have been reading one region for a long
+   * time with nothing moving, and the region is verifiably NOT where the
+   * answer lives. Fires the REDIRECT rules (close the dead end). Never both
+   * with stuckObservation — the tick picks one.
    */
   adriftObservation?: string | null;
+  /**
+   * describeWarm() output: same confinement, but the answer is IN the region
+   * with them. Its own slot on purpose — it used to ride `adriftObservation`,
+   * where the prompt's adrift rules instructed "say plainly that it looks
+   * sound — that region is not where the fault is": a direct order to push
+   * the candidate off the bug in the one case the detector exists to invert
+   * (QA 2026-08-14 audit).
+   */
+  warmObservation?: string | null;
   /** The round's check kind — selects the per-kind prompt blocks
    *  (round-rules.ts). Absent = one_failing_test, the legacy resolution. */
   checkKind?: string;
@@ -559,6 +568,9 @@ export function render(template: string, ctx: InterviewerContext): string {
     ADRIFT: ctx.adriftObservation
       ? `ADRIFT — ${ctx.adriftObservation} Follow the adrift rules above: one move, nudge true.`
       : 'no',
+    WARM: ctx.warmObservation
+      ? `WARM — ${ctx.warmObservation} Follow the warm rules above: encourage, never redirect, nudge true.`
+      : 'no',
     AGENDA: ctx.agenda ?? '(no agenda computed for this round)',
     WRAPUP: ctx.wrapState ?? 'no — the working phase is still on.',
     STUCK: ctx.stuckObservation
@@ -586,7 +598,7 @@ export function render(template: string, ctx: InterviewerContext): string {
 export function stuckVocabOf(
   ctx: InterviewerContext,
 ): { forbidden: string; allowed: string } | undefined {
-  if (!ctx.stuckObservation && !ctx.adriftObservation) return undefined;
+  if (!ctx.stuckObservation && !ctx.adriftObservation && !ctx.warmObservation) return undefined;
   // No answer knowledge → nothing to guard, and stemming the no-knowledge
   // statement into `forbidden` bans its own ordinary words ("plant",
   // "round", "type" under the old sentinel) from the one lane this module

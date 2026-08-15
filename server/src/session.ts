@@ -570,7 +570,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // is a location signal, and repeating it turns the round into a guided
   // tour. The warm inversion (they are already in the right place) carries
   // no location content and is deliberately not capped by this.
+  // Set when a redirect turn actually SPEAKS — a guard-silenced attempt
+  // retries (the stuckRedactions pattern), with its own 2-strike budget so
+  // a composition the guard keeps rejecting cannot loop all session.
   let adriftFired = false;
+  let adriftRedactions = 0;
   // Wrap-up phase state (I3): set once by detectWrapSignal; questions are
   // counted by wrap turns that actually SPOKE, and after the closing the
   // interviewer goes quiet for good. All verbal — /api/end is untouched.
@@ -808,6 +812,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     /** Set on wrap-lane turns: this turn asks the next evaluation question
      *  (or delivers the closing). Bookkeeping happens only if it speaks. */
     wrapTopic: string | null = null,
+    /** describeWarm() output — its own lane, no longer riding the adrift
+     *  slot: the ADRIFT prompt rules instruct a redirect ("say plainly that
+     *  it looks sound — that region is not where the fault is"), the exact
+     *  opposite of what a warm observation means (QA 2026-08-14 audit). */
+    warmObservation: string | null = null,
   ): Promise<void> => {
     if (!interviewer || ended) return;
     if (interviewerBusy) {
@@ -862,6 +871,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // aliased by describeStuck — identity, never file names.
         stuckObservation: stuck ? describeStuck(stuck, now) : null,
         adriftObservation,
+        warmObservation,
         // Only a debugging round's failing_test is a real test name on the
         // candidate's screen. On other kinds the field is repurposed prose —
         // a review round's carried a sentence naming the defect areas, which
@@ -902,6 +912,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           stuckRedactions.set(stuck.since_ms, n);
           console.warn(`[interviewer] stuck hint redacted (${n}/2 for this episode)`);
         }
+        if (adriftObservation && !turn.say) {
+          adriftRedactions++;
+          if (adriftRedactions >= 2) adriftFired = true;
+          console.warn(`[interviewer] adrift redirect redacted (${adriftRedactions}/2 — then the lane gives up)`);
+        }
       }
       if (!turn.say) {
         // Silence is a valid turn — but an UNEXPLAINED silence is how three
@@ -919,6 +934,8 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       }
       lastInterviewerTs = Date.now();
       if (candidateMessage === null) lastUnpromptedTs = lastInterviewerTs;
+      // The once-per-session redirect budget burns on a SPOKEN redirect only.
+      if (adriftObservation) adriftFired = true;
       if (wrapTopic !== null) {
         // Count only turns that actually spoke; a silent wrap turn retries.
         if (wrapTopic === CLOSING_TOPIC) {
@@ -1711,7 +1728,13 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // detectStuck is blind to a candidate who only reads (its own doc
         // says reading must never trip it), which left the wrong-file reader
         // with no help at all for 35 minutes in sess-1786072934316.
-        const adrift = detectAdrift(events, now, sessionStartedAt);
+        // EVIDENCE GATE: a redirect asserts "no answer lives where you are
+        // reading", and without a ground-truth location there is nothing to
+        // back that with — the old code always redirected on bugless rounds
+        // (regionContainsAnswer short-circuits false on an empty bugFile),
+        // pushing candidates off regions the system knew nothing about
+        // (QA 2026-08-14). No answer knowledge → no adrift lane at all.
+        const adrift = hasAnswerKnowledge ? detectAdrift(events, now, sessionStartedAt) : null;
         // The once-per-session budget is spent on the REDIRECT only: "the
         // region you are in is spent" is a location signal, and repeating it
         // turns the round into a guided tour. The warm inversion carries no
@@ -1719,17 +1742,25 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // available all session, which is the half the candidate actually
         // asked for ("rarely making me feel like I was on to something").
         if (adrift) {
-          const warm = regionContainsAnswer(adrift, bugFile, problem.planted_bug?.line);
+          // Warm against EVERY protected location: a review round's defects
+          // span files, and reading any of them is the right neighbourhood.
+          const warm =
+            regionContainsAnswer(adrift, bugFile, problem.planted_bug?.line) ||
+            extraProtectedFiles.some((f) => regionContainsAnswer(adrift, f, null));
           const warmCooling = warm && now - lastWarmTs < WARM_COOLDOWN_MS;
           if ((warm && !warmCooling) || (!warm && !adriftFired)) {
             if (warm) lastWarmTs = now;
-            else adriftFired = true;
+            // The redirect budget is burned when the turn actually SPEAKS
+            // (below) — the old pre-dispatch mark spent the once-per-session
+            // slot on turns the guard then silenced.
             console.log(`[adrift] ${warm ? 'WARM — answer is in their region; encouraging, not redirecting' : 'REDIRECT'}`);
             void runInterviewer(
               null,
               null,
               null,
-              warm ? describeWarm(adrift, now) : describeAdrift(adrift, now),
+              warm ? null : describeAdrift(adrift, now),
+              null,
+              warm ? describeWarm(adrift, now) : null,
             );
             return;
           }
