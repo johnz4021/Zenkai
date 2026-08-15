@@ -339,6 +339,19 @@ export function leaksGapNote(text: string): boolean {
  * legitimate spec answers — exactly the over-broadening leaksBugLocation's
  * comment warns about — but a stuck turn is not answering a question, so
  * there is nothing legitimate for it to muzzle.
+ *
+ * DO NOT re-propose arming this (or an allowlist variant) on decline/reply
+ * turns without new evidence. Measured against the six real declines in
+ * traces/sess-qa814-leak.jsonl (2026-08-14): 1-in-6 precision — it flags
+ * "assertion", "eligible", "scenario", "ruled", "mechanism" as leaks, and
+ * the whitelist that would save those IS the abstract interviewer register
+ * ("boundary", "ordering", "edge case") the check exists to catch. It is
+ * also structurally blind to coined synonyms: "boundary minute" appears in
+ * neither the bug text nor the spec, so the stem intersection cannot see
+ * it. Those leak shapes are prompt rules ("A refusal must not re-frame the
+ * question") plus the widened nudge definition, not a mechanical guard.
+ * Named trigger to revisit: a leak shape that survives the prompt rules AND
+ * is mechanically separable from the interviewer register.
  */
 const STEM_STOP = new Set([
   'that', 'this', 'with', 'without', 'from', 'into', 'onto', 'over', 'under',
