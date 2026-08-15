@@ -516,12 +516,39 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       ? 'The suite does NOT run during this round. It runs once, server-side, when they press Submit. There is no run command available to them — say so plainly if asked.'
       : !caps.can_run_tests
       ? 'This round does not allow running the suite at all. There is no run command — say so plainly if asked.'
-      : `They press the **Run Tests** button in the session header (top right, above the editor). It runs \`${testCmd}\` in the workspace and shows the output in the ${surface === 'panes' ? 'test results panel below the editor' : "editor's Test Results panel"}. That is the intended path. No other test runner is installed.`;
+      : `They press the **Run Tests** button in the session header (top right, above the editor). It runs \`${testCmd}\` in the workspace and shows the output in the ${surface === 'panes' ? 'test results panel below the editor' : "editor's Test Results panel"}. That is the intended path${surface === 'ide' ? `; running \`${testCmd}\` in the integrated terminal also works and is observed` : ''}.`;
 
   // What the agenda may treat as reachable: on a one-shot or no-run round
   // the suite cannot run mid-round, so verify/reflect are not-applicable
   // rather than open gaps (agenda.ts AgendaCaps).
   const agendaCaps = { runnable: caps.can_run_tests && caps.submit !== 'one_shot' };
+
+  // The round's mechanics, stated to the interviewer — the axes the prompt
+  // never used to carry (QA 2026-08-14: rules assumed iteration on one-shot
+  // rounds, "Reading their actual work" promised test output that cannot
+  // exist, and nothing named the review round's deliverable). Derived from
+  // the same capabilities the runtime enforces; session-constant → cached.
+  const partCount = problem.source?.parts?.length ?? 0;
+  const roundMechanics = [
+    surface === 'ide'
+      ? 'They work in a full IDE — editor and integrated terminal; terminal test commands are observed.'
+      : 'They work in a lightweight editor with the problem statement docked beside it; there is no terminal.',
+    caps.starts_from === 'blank'
+      ? 'They start from a blank scaffold — the files they create ARE the work.'
+      : caps.starts_from === 'diff'
+        ? 'They are reviewing a change: the diff is the artifact under review, and their WRITTEN review (REVIEW.md) is the deliverable that gets graded. Probe the write-up — coverage, severity calls, evidence — not just the reading.'
+        : 'They work inside an existing repo.',
+    caps.submit === 'one_shot'
+      ? 'ONE graded submission, at the end, when they press Submit. They CANNOT run tests during the round — never ask whether a change worked or what a run showed; nothing has run.'
+      : caps.can_run_tests
+        ? 'They can run the suite anytime and iterate on the results.'
+        : 'Nothing runs in this round at all.',
+    partCount >= 2
+      ? `This is a multi-part set: ${partCount} independent problems (solution_part1 … solution_part${partCount}). Track which part they are on from their activity; progress on one part says nothing about the others.`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   // What a strong candidate does in THIS round — the judge's own grading
   // dimensions, finally shared with the interviewer (the rubric-blind
@@ -864,6 +891,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         bug,
         bugFile,
         howToRun,
+        mechanics: roundMechanics,
         targetNote,
         elapsedMs: now - (sessionStartedAt ?? now),
         remainingMs: remainingMsFor(caps.time_limit_ms, now - (sessionStartedAt ?? now)),

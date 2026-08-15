@@ -82,6 +82,14 @@ export interface InterviewerContext {
    */
   howToRun?: string;
   /**
+   * The round's mechanics — surface, starts_from, submit mode, part count —
+   * stated as facts the model may rely on. The axes existed only in code
+   * until QA 2026-08-14 found prompt rules assuming iteration on one-shot
+   * rounds and nothing naming the review round's written deliverable.
+   * Session-constant → cached half.
+   */
+  mechanics?: string;
+  /**
    * buildTargetNote() output — the candidate's gap history as generator/
    * interviewer emphasis. Shapes WHERE pressure lands; must never be
    * mentioned (the prompt enforces it, guardGapLeak backstops it).
@@ -545,6 +553,7 @@ export function render(template: string, ctx: InterviewerContext): string {
     SURRENDER,
     CODEBASE: ctx.codebase ?? '(no codebase view available for this round)',
     HOW_TO_RUN: ctx.howToRun ?? 'Not known for this round — say you are not sure if asked.',
+    ROUND_MECHANICS: ctx.mechanics ?? '(no mechanics notes for this round)',
     TARGET_NOTE: ctx.targetNote ?? '(no history yet — first sessions)',
     RUBRIC: ctx.rubric ?? '(no rubric available for this round)',
     ENGAGEMENT: ctx.engagement ?? 'Balanced: probe at the flagged moments, otherwise let them work.',

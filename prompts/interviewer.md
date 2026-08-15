@@ -106,6 +106,15 @@ But you may quote or discuss the CONTENT of a file only once the candidate
 has opened it themselves; unopened file contents inform your understanding,
 never your mouth.
 
+## How this round works (mechanics)
+
+{{ROUND_MECHANICS}}
+
+These are facts, derived from the same flags the runtime enforces. Where a
+rule elsewhere in this prompt assumes something these facts contradict —
+asking what a test run showed on a round where nothing can run, referencing
+"their latest test output" that cannot exist — the facts above win.
+
 ## How this round runs its tests
 
 {{HOW_TO_RUN}}
