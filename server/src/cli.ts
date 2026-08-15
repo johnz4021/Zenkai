@@ -232,7 +232,35 @@ async function generateInto(
   // validator's run below re-creates it — only the second sweep decides
   // what the candidate's file tree actually shows.
   removePythonArtifacts(targetDir);
-  const report = validateProblem(targetDir);
+  let report = validateProblem(targetDir);
+  // Strip-and-degrade (decision 2026-08-15, the Palantir chatdelivery
+  // incident): when the ONLY failures are expectation-quality failures —
+  // suite green, manifest otherwise valid — drop the failing sentence(s)
+  // and re-rule instead of discarding a finished build. The judge's
+  // resolveExpectations ladder (manifest → round-type default → generic
+  // anchor) is the documented replacement for an absent expectation; a
+  // build the system can grade must never die over one it can substitute.
+  if (!report.ok) {
+    const { EXPECTATION_FAILURE_RE } = await import('./validate.js');
+    const keys = report.failures.map((f) => EXPECTATION_FAILURE_RE.exec(f)?.[1]).filter((k): k is string => Boolean(k));
+    if (keys.length > 0 && keys.length === report.failures.length) {
+      try {
+        const { writeFileSync: wf, readFileSync: rf } = await import('node:fs');
+        const manifestPath = path.join(targetDir, 'problem.json');
+        const manifest = JSON.parse(rf(manifestPath, 'utf8')) as {
+          rubric?: { dimensions?: Record<string, string> };
+        };
+        for (const k of keys) delete manifest.rubric?.dimensions?.[k];
+        wf(manifestPath, JSON.stringify(manifest, null, 2));
+        console.warn(
+          `[validate] stripped ${keys.length} expectation(s) that failed the quality gate (${[...new Set(keys)].join(', ')}) — the judge falls back to round-type defaults for those dimensions`,
+        );
+        report = validateProblem(targetDir);
+      } catch {
+        // Unreadable manifest — the original report stands and rules below.
+      }
+    }
+  }
   clearGeneratingMarker(targetDir);
   removePythonArtifacts(targetDir);
   console.log(JSON.stringify({ ok: report.ok, failures: report.failures }, null, 2));
