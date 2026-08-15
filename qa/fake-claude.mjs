@@ -174,7 +174,9 @@ function generator() {
   }
   const spec = JSON.parse(prompt.slice(start, end));
   const kind = spec.check?.kind ?? 'one_failing_test';
-  const sourced = prompt.includes('SOURCED PROBLEM');
+  // The rendered source block's heading, not the template preamble's prose
+  // mention of it (every generation prompt contains the bare phrase).
+  const sourced = /^## SOURCED PROBLEM/m.test(prompt);
 
   const plannedTitle = prompt.match(
     /set the manifest "title" to it\): (.*?) — the round description's difficulty/s,
@@ -405,6 +407,7 @@ else if (firstLine.startsWith('# Practice-door clarification'))
 else if (firstLine.startsWith('# Intake clarification'))
   reply('clarify', JSON.stringify({ questions: [], rounds: steeredRounds() }));
 else if (firstLine.startsWith('# Round-spec inference')) reply('infer', JSON.stringify(steeredRounds()[0]));
+else if (firstLine.startsWith('# Blueprint drafter')) blueprint();
 else if (firstLine.startsWith('# Plan topics')) planTopics();
 else if (firstLine.startsWith('# Plan adaptation')) adapt();
 else {

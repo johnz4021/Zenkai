@@ -19,7 +19,9 @@
  *
  * seed.json shape (everything but `rounds` optional):
  *   { "label": "QA plan", "pace_per_week": 4, "summary": "…",
- *     "topics": [{"id":"hash_map_indexing","title":"Hash map indexing"}, …×4-12],
+ *     "topics": ["hash_map_indexing", "two_pointer_scan", …],   // 4-12 snake_case
+ *                                       // slugs — STRINGS (gateConceptTopics'
+ *                                       // tool-schema shape), never objects
  *     "rounds": [{ "id":"qa-oa","label":"QA OA","interviewer":false,
  *       "can_run_tests":true,"time_limit_minutes":60,"starts_from":"blank",
  *       "submit":"one_shot","surface":"panes","check_kind":"all_failing",
@@ -56,7 +58,9 @@ if (!existsSync(targetPath)) {
         id: targetId,
         label: seed.label ?? `QA plan ${targetId}`,
         description: seed.description ?? 'Seeded by qa/seed-conversation.mjs for a doors-QA run.',
-        created_at: new Date().toISOString(),
+        // Field is `created` (intake.ts Target) — `created_at` here once broke
+        // listTargets' sort and 500'd every target-listing door in the app.
+        created: new Date().toISOString(),
         specs: [],
       },
       null,
