@@ -483,8 +483,10 @@ describe('practice door — client surface', () => {
     // text path beside the pills; the input renders only when !closed.
     expect(js).toContain('class="gapinput"');
     expect(js).toMatch(/g\.closed \? '' :/);
-    // Shape answers re-infer, flavor answers settle locally (C2) — one path.
-    expect(js).toMatch(/function answerGap[\s\S]*affects === 'shape'[\s\S]*practiceClarify\(rep\.answers, \{ snapshot \}\)/);
+    // Every answer settles locally; shape answers schedule the background
+    // re-check (owner decision 2026-08-15) — answering never blocks.
+    expect(js).toMatch(/function answerGap[\s\S]*affects === 'shape'[\s\S]*scheduleRecheck\(\)/);
+    expect(js).not.toMatch(/if \(!g \|\| !a \|\| rep\.busy\) return;/);
     // The spec ships verbatim; flavor gaps ride generically as context lines
     // (T3 — the hardcoded {language, difficulty} assembly is dead).
     expect(js).not.toContain('rep.overrides');
@@ -500,6 +502,31 @@ describe('practice door — client surface', () => {
     // No affordance where there is no action: the rail's .tier is a
     // read-only span, unlike the planner's clickable .tier button (ISSUE-003).
     expect(html).toMatch(/#rep-rail \.tier \{ cursor: default/);
+  });
+
+  it('the re-check is background + debounced: answering never blocks, Start never ships stale', () => {
+    // Owner decision 2026-08-15: the per-answer blocking re-infer froze the
+    // screen 8-20s per shape answer. One debounced background re-check
+    // carries all answers; the Start gate is the T3 backstop.
+    expect(js).toContain('RECHECK_DEBOUNCE_MS');
+    expect(js).toContain('function scheduleRecheck');
+    expect(js).toMatch(/if \(rep\.busy\) \{ rep\.recheckDirty = true; return; \}/);
+    // Staleness survives a reload (the fetch does not) — persisted both ways.
+    expect(js).toMatch(/draftsStale: rep\.draftsStale/);
+    expect(js).toMatch(/rep\.draftsStale = Boolean\(s\.draftsStale\)/);
+    // The Start gate: flush, queue, resume at landing — label from state.
+    expect(js).toMatch(/rep\.draftsStale \|\| rep\.busy/);
+    expect(js).toContain('Checking your answers…');
+    // Answer controls stay live while a re-check flies; only the correction
+    // box keeps its blocking apply.
+    expect(js).not.toMatch(/class="qopt" data-gap="' \+ esc\(g\.id\) \+ '" data-o="' \+ oi \+ '"' \+ dis/);
+    expect(js).not.toMatch(/class="gapinput" data-gap="' \+ esc\(g\.id\) \+ '" placeholder="or type your own…"' \+ dis/);
+    expect(js).toMatch(/id="rep-rechecks" class="mini" style="min-height:44px"' \+ dis/);
+    // A background landing never steals focus and never repaints under a
+    // typing user (renderPracticeSafe defers; focusout flushes).
+    expect(js).toMatch(/if \(firstRun\) \{\s*const nextOpen[\s\S]*?rep\.pendingFocus = nextOpen/);
+    expect(js).toContain('function renderPracticeSafe');
+    expect(js).toContain('repRenderPending');
   });
 
   it('the rail is compact: click-to-edit values, editor + why only while editing', () => {

@@ -849,6 +849,11 @@ el('e-file').addEventListener('change', () => {
 const rep = {
   phase: 'input',        // input | clarifying | confirm | started
   busy: false,           // a re-infer is in flight; confirm STAYS rendered
+  draftsStale: false,    // a shape answer settled locally and the drafts don't
+                         // reflect it yet — Start re-checks before shipping (T3)
+  recheckTimer: null,    // debounce handle for the background re-check
+  recheckDirty: false,   // an answer landed mid-flight → re-fire once at landing
+  startQueued: false,    // Start pressed while stale/in-flight — go at landing
   repId: null,           // client-generated at confirm so a double-click
                          // carries the SAME id into the server's mkdir lock
   description: '',
@@ -877,6 +882,8 @@ let lastWaitAnnounced = null;
 
 function resetRep() {
   rep.phase = 'input'; rep.busy = false; rep.repId = null; rep.description = '';
+  rep.draftsStale = false; rep.recheckDirty = false; rep.startQueued = false;
+  if (rep.recheckTimer) { clearTimeout(rep.recheckTimer); rep.recheckTimer = null; }
   rep.drafts = []; rep.questions = []; rep.answers = []; rep.chosen = 0;
   rep.gaps = []; rep.brief = ''; rep.degraded = false;
   rep.sourceText = null; rep.sourceAttachN = 0;
@@ -898,6 +905,7 @@ function saveRep() {
       drafts: rep.drafts, chosen: rep.chosen, gaps: rep.gaps,
       brief: rep.brief, degraded: rep.degraded, answers: rep.answers,
       sourceText: rep.sourceText, sourceAttachN: rep.sourceAttachN,
+      draftsStale: rep.draftsStale,
     }));
   } catch { /* storage full or denied — the feature degrades to pre-T10 */ }
 }
@@ -915,6 +923,9 @@ function hydrateRep() {
     rep.answers = Array.isArray(s.answers) ? s.answers : [];
     rep.sourceText = typeof s.sourceText === 'string' ? s.sourceText : null;
     rep.sourceAttachN = Number.isInteger(s.sourceAttachN) ? s.sourceAttachN : 0;
+    // A reload kills an in-flight re-check, but staleness survives it — the
+    // Start gate re-verifies. Old snapshots hydrate false (they predate this).
+    rep.draftsStale = Boolean(s.draftsStale);
     rep.questions = rep.gaps.filter((g) => g.status === 'open');
     // In-flight states don't survive a reload; clamp to what the data holds.
     rep.phase = s.phase === 'started' ? 'started'
@@ -1104,12 +1115,13 @@ function renderPractice() {
     html += '<div id="rep-confirm">';
     html += '<div id="rep-open"><div class="micro">Needed before I build</div>';
     if (rep.busy) {
-      // A re-infer runs 8-20s. The screen never blanks: the rail stays put,
-      // controls disable, and the wait gets the SAME progress bar the first
-      // inference gets. A 12px grey line alone was invisible — and when the
-      // re-infer was triggered from the correction box at the bottom of this
-      // column, it rendered off-screen above the fold entirely (live report
-      // 2026-08-12: "sudden generation after a wait with no indicator").
+      // A re-infer runs 8-20s — in the BACKGROUND (owner decision
+      // 2026-08-15): the screen never blanks and the controls stay live, so
+      // the user keeps answering while it flies. The wait still gets the
+      // SAME progress bar the first inference gets: a 12px grey line alone
+      // was invisible (live report 2026-08-12: "sudden generation after a
+      // wait with no indicator"). Only the correction box disables — it
+      // rewrites the description and stays a blocking, explicit apply.
       html += '<div class="metaline" style="margin-top:8px">re-checking the shape…</div>' +
         '<div class="progress"><div class="fill"></div></div>';
     }
@@ -1122,7 +1134,7 @@ function renderPractice() {
         '<div class="optdetail">' + esc(g.why) + '</div>' +
         '<div class="askopts">' +
         g.options.map((o, oi) =>
-          '<button type="button" class="qopt" data-gap="' + esc(g.id) + '" data-o="' + oi + '"' + dis + '>' + esc(o.label) +
+          '<button type="button" class="qopt" data-gap="' + esc(g.id) + '" data-o="' + oi + '">' + esc(o.label) +
           (o.detail ? ' <span class="rec">' + esc(o.detail) + '</span>' : '') + '</button>').join('') +
         '</div>' +
         // Options are SHORTCUTS, never a gate (rule 3): every open value
@@ -1130,7 +1142,7 @@ function renderPractice() {
         (g.closed ? '' :
           '<div class="gapinput-row">' +
           '<label for="gapfree-' + esc(g.id) + '" class="rep-srlabel" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">' + esc(g.label) + '</label>' +
-          '<input id="gapfree-' + esc(g.id) + '" class="gapinput" data-gap="' + esc(g.id) + '" placeholder="or type your own…"' + dis + '>' +
+          '<input id="gapfree-' + esc(g.id) + '" class="gapinput" data-gap="' + esc(g.id) + '" placeholder="or type your own…">' +
           '</div>') +
         '</div>';
     }
@@ -1147,7 +1159,7 @@ function renderPractice() {
     // Everything settled: brief + Start render HERE, in the short column,
     // instead of on grid row 2 below the rail (owner report 2026-08-15:
     // the user scrolled the whole confirmed list to reach the button).
-    if (allSettled) html += renderRepCommit(d, startLabel, dis);
+    if (allSettled) html += renderRepCommit(d, startLabel);
     html += '</div>'; // #rep-open
 
     html += '<div id="rep-rail"><div class="micro">Confirmed from your paste</div>';
@@ -1171,14 +1183,14 @@ function renderPractice() {
         ' <span class="tier">' + (tierWord[g.evidence] || 'guessed') + '</span></label>' +
         (editing
           ? (g.closed && g.options.length
-            ? '<select id="gap-' + esc(g.id) + '" class="gapedit" data-gap="' + esc(g.id) + '"' + dis + '>' +
+            ? '<select id="gap-' + esc(g.id) + '" class="gapedit" data-gap="' + esc(g.id) + '">' +
               g.options.map((o) => '<option' + (o.label === g.value ? ' selected' : '') + '>' + esc(o.label) + '</option>').join('') +
               (g.options.some((o) => o.label === g.value) ? '' : '<option selected>' + esc(g.value) + '</option>') +
               '</select>'
-            : '<input id="gap-' + esc(g.id) + '" class="gapedit" data-gap="' + esc(g.id) + '" value="' + esc(g.value) + '"' + dis + '>') +
+            : '<input id="gap-' + esc(g.id) + '" class="gapedit" data-gap="' + esc(g.id) + '" value="' + esc(g.value) + '">') +
             '<div class="gapwhy">' + esc(g.why) + '</div>'
           : '<button type="button" id="gap-' + esc(g.id) + '" class="gapval" data-gap="' + esc(g.id) + '"' +
-            ' aria-label="change ' + esc(g.label) + ' — currently ' + esc(g.value) + '"' + dis + '>' + esc(g.value) + '</button>') +
+            ' aria-label="change ' + esc(g.label) + ' — currently ' + esc(g.value) + '">' + esc(g.value) + '</button>') +
         '</div>';
     }
     html += '<div class="metaline" style="margin-top:10px">' + esc(specShapeLine(d.spec.capabilities)) + '</div>';
@@ -1192,7 +1204,7 @@ function renderPractice() {
     // column is one line then, while the rail is at its longest, and Start
     // on grid row 2 sat below the entire rail (owner report 2026-08-15).
     // Still in flow either way — the sticky slot stays free.
-    if (!allSettled) html += renderRepCommit(d, startLabel, dis);
+    if (!allSettled) html += renderRepCommit(d, startLabel);
     html += '</div>'; // #rep-confirm
   }
   if (rep.phase === 'clarifying') {
@@ -1244,14 +1256,17 @@ function renderPractice() {
 /** The commit block: brief → decline → Start, in reading order. One
  *  builder, two placements — grid row 2 while questions are open, inside
  *  the right column once settled (owner report 2026-08-15). */
-function renderRepCommit(d, startLabel, dis) {
+function renderRepCommit(d, startLabel) {
   let html = '<div id="rep-commit">';
   if (rep.brief) html += '<div id="rep-brief">' + esc(rep.brief) + '</div>';
   if (d.unsupported) {
     // Decision 2B: the decline is visible and the choice is the user's.
     html += '<div id="rep-unsupported">can’t run this honestly: ' + esc(d.unsupported) + '</div>';
   }
-  html += '<div class="rep-actions"><button type="button" class="primary" id="rep-start"' + dis + '>' + startLabel + '</button></div>';
+  // A queued Start survives re-renders: the label comes from state, so the
+  // background landing that resumes it can repaint freely in between.
+  html += '<div class="rep-actions"><button type="button" class="primary" id="rep-start"' +
+    (rep.startQueued ? ' disabled>Checking your answers…' : '>' + startLabel) + '</button></div>';
   return html + '</div>'; // #rep-commit
 }
 
@@ -1348,9 +1363,9 @@ function wirePractice() {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) practiceClarify();
   });
   // Answers key on the gap's STABLE id (T12) — never an array index, which
-  // re-inference is free to reorder. answerGap routes by cost: shape
-  // re-infers (coherence lives in the server's draftToSpec gate), flavor
-  // settles locally with no round trip (C2).
+  // re-inference is free to reorder. Every answer settles locally; shape
+  // answers additionally schedule the background re-check (coherence still
+  // lives in the server's draftToSpec gate — Start ships nothing stale).
   for (const b of f.querySelectorAll('.qopt')) {
     b.addEventListener('click', () => {
       const g = rep.gaps.find((x) => x.id === b.dataset.gap);
@@ -1412,13 +1427,17 @@ function upsertRepAnswer(id, question, answer) {
   if (i >= 0) rep.answers[i] = entry; else rep.answers.push(entry);
 }
 
-/** One answer path for pills, free-text, and rail edits. Shape re-infers;
- *  flavor settles locally and rides along on the next re-infer's ANSWERS
- *  (the server's gate re-settles it), so nothing is ever lost. */
+/** One answer path for pills, free-text, and rail edits. EVERY answer
+ *  settles locally and instantly (owner decision 2026-08-15 — the blocking
+ *  per-answer re-infer froze the screen 8-20s per shape answer). A shape
+ *  answer additionally marks the drafts stale and schedules ONE debounced
+ *  background re-check carrying ALL answers; flavor rides along on that
+ *  re-check's ANSWERS (the server's gate re-settles it). Nothing is lost:
+ *  Start refuses to ship stale drafts (T3). */
 function answerGap(id, answer) {
   const g = rep.gaps.find((x) => x.id === id);
   const a = (answer || '').trim();
-  if (!g || !a || rep.busy) return;
+  if (!g || !a) return;
   upsertRepAnswer(g.id, g.question, a);
   if (g.id === 'named-problem') {
     // The binding is MECHANICAL — a model round trip adds nothing here.
@@ -1431,23 +1450,54 @@ function answerGap(id, answer) {
     renderPractice();
     return;
   }
-  if (g.affects === 'shape') {
-    // Optimistic settle: the answer moves into the rail immediately; the
-    // snapshot restores it if the re-infer fails. Server gaps win on merge —
-    // a model that re-opens this gap does so VISIBLY (diff → flash), never
-    // silently.
-    const snapshot = JSON.parse(JSON.stringify(rep.gaps));
-    g.status = 'settled'; g.value = a; g.evidence = 'answered';
-    rep.questions = rep.gaps.filter((x) => x.status === 'open');
-    practiceClarify(rep.answers, { snapshot });
-    return;
-  }
   g.status = 'settled'; g.value = a; g.evidence = 'answered';
   rep.questions = rep.gaps.filter((x) => x.status === 'open');
   announce(g.label + ' set to ' + a);
   const nextOpen = rep.gaps.find((x) => x.status === 'open');
   rep.pendingFocus = nextOpen ? nextOpen.id : null;
+  if (g.affects === 'shape') {
+    // The spec only learns a shape answer through re-inference — never
+    // client-side patching (T3). Stale until a re-check lands.
+    rep.draftsStale = true;
+    scheduleRecheck();
+  }
   saveRep();
+  renderPractice();
+}
+
+// Long enough to batch a flurry of pill clicks into one model call, short
+// enough that the re-check usually lands while the user answers the rest —
+// so Start stays instant in the common case.
+const RECHECK_DEBOUNCE_MS = 1200;
+
+/** The background re-check (owner decision 2026-08-15): one debounced
+ *  re-infer carries ALL answers so far. While one is in flight another
+ *  answer just marks it dirty — the landing re-fires once with everything. */
+function scheduleRecheck() {
+  if (rep.busy) { rep.recheckDirty = true; return; }
+  if (rep.recheckTimer) clearTimeout(rep.recheckTimer);
+  rep.recheckTimer = setTimeout(runRecheck, RECHECK_DEBOUNCE_MS);
+}
+
+function runRecheck() {
+  if (rep.recheckTimer) { clearTimeout(rep.recheckTimer); rep.recheckTimer = null; }
+  if (rep.busy) { rep.recheckDirty = true; return; }
+  // No snapshot: answers are client-owned (mergeGaps re-seats them), so a
+  // failed round trip has nothing to revert — Start re-verifies instead.
+  practiceClarify(rep.answers);
+}
+
+// A background re-check may land while the user is typing in a gap input or
+// the correction box; renderPractice's innerHTML rebuild would destroy their
+// in-progress text and focus. Same pattern as the poll's pendingState guard.
+let repRenderPending = false;
+
+function renderPracticeSafe() {
+  const a = document.activeElement;
+  if (userIsTyping() && a && a.closest('#practice-flow')) {
+    repRenderPending = true;
+    return;
+  }
   renderPractice();
 }
 
@@ -1474,24 +1524,39 @@ async function practiceClarify(answers, opts) {
   rep.error = ''; rep.answers = answers || [];
   if (firstRun) rep.phase = 'clarifying'; else rep.busy = true;
   renderPractice();
-  const r = await fetch('/api/practice/clarify', {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      description: rep.description,
-      context: buildContext(),
-      answers: rep.answers.length ? rep.answers : undefined,
-      attachments: buildBinaryAttachments(),
-    }),
-  });
-  const s = await r.json();
+  let s;
+  try {
+    const r = await fetch('/api/practice/clarify', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        description: rep.description,
+        context: buildContext(),
+        answers: rep.answers.length ? rep.answers : undefined,
+        attachments: buildBinaryAttachments(),
+      }),
+    });
+    s = await r.json();
+  } catch {
+    // A network drop must never strand busy=true — the background path
+    // would silently stop re-checking and Start would queue forever.
+    s = { error: 'the app server didn’t answer — check the connection' };
+  }
   if (s.error) {
-    // A failed re-infer restores the pre-answer gaps: the optimistic settle
-    // must not survive a round trip that never happened.
-    if (snapshot) { rep.gaps = snapshot; rep.questions = rep.gaps.filter((g) => g.status === 'open'); }
+    // A failed CORRECTION restores the pre-answer gaps: the optimistic
+    // settle must not survive a round trip that never happened.
+    if (snapshot) { rep.gaps = snapshot; rep.questions = rep.gaps.filter((g) => g.status === 'open'); rep.error = s.error; }
+    else if (!firstRun) {
+      // A failed BACKGROUND re-check loses nothing: answers are client-
+      // owned and the drafts stay stale — Start re-verifies them.
+      rep.draftsStale = true;
+      rep.error = 'couldn’t re-check — your answers are kept; Start will verify them';
+    } else {
+      rep.error = s.error;
+    }
     rep.busy = false;
+    rep.startQueued = false;
     rep.phase = rep.drafts.length ? 'confirm' : 'input';
-    rep.error = s.error;
-    renderPractice();
+    if (firstRun || snapshot) renderPractice(); else renderPracticeSafe();
     return;
   }
   const oldGaps = rep.gaps;
@@ -1508,8 +1573,12 @@ async function practiceClarify(answers, opts) {
     rep.flashIds = delta.flash;
     if (delta.sentence) announce(delta.sentence);
   }
-  const nextOpen = rep.gaps.find((g) => g.status === 'open');
-  rep.pendingFocus = nextOpen ? nextOpen.id : null;
+  // Focus follows the task only on the FIRST inference — a background
+  // landing must never steal focus from whatever the user is doing.
+  if (firstRun) {
+    const nextOpen = rep.gaps.find((g) => g.status === 'open');
+    rep.pendingFocus = nextOpen ? nextOpen.id : null;
+  }
   // Stamp what produced these gaps, so step 1 can tell "go back" from
   // "rebuild" without guessing.
   rep.sourceText = basePaste;
@@ -1517,14 +1586,42 @@ async function practiceClarify(answers, opts) {
   // The rep id is minted at confirm-render, ONCE — Start can be mashed and
   // every click carries this same id into the server's mkdir lock.
   rep.repId = rep.repId || 'rep-' + Date.now().toString(36);
-  rep.phase = 'confirm'; rep.busy = false;
+  // Stay-in-input guard: a background landing must not yank the user out
+  // of editing their paste (they pressed ← back mid-flight).
+  if (firstRun || rep.phase !== 'input') rep.phase = 'confirm';
+  rep.busy = false;
+  if (rep.recheckDirty) {
+    // Answers arrived mid-flight: this response is slightly stale (mergeGaps
+    // already re-seated them) — one more re-check carries everything.
+    rep.recheckDirty = false;
+    scheduleRecheck();
+  } else {
+    rep.draftsStale = false; // the drafts now reflect every answer
+  }
   saveRep();
-  renderPractice();
+  if (firstRun) renderPractice(); else renderPracticeSafe();
+  // A Start pressed during the flight resumes the moment the drafts are
+  // verified fresh; if another re-check was scheduled it stays queued.
+  if (rep.startQueued && !rep.draftsStale && !rep.busy) {
+    rep.startQueued = false;
+    const sb = el('rep-start');
+    if (sb) practiceStart(sb);
+  }
 }
 
 async function practiceStart(btn) {
   const d = rep.drafts[rep.chosen];
   if (!d) return;
+  // Stale drafts never ship (T3): a shape answer that hasn't been through
+  // re-inference is missing from the spec. Flush the debounce, queue the
+  // start — the landing calls back here with fresh drafts. In the common
+  // case the background re-check already landed and this gate is free.
+  if (rep.draftsStale || rep.busy) {
+    rep.startQueued = true;
+    btn.disabled = true; btn.textContent = 'Checking your answers…';
+    if (!rep.busy) runRecheck();
+    return;
+  }
   btn.disabled = true; btn.textContent = 'Starting…';
   // The spec ships VERBATIM: every shape answer already landed in it through
   // the server's re-inference, and the client never patches a spec again
@@ -2003,6 +2100,11 @@ document.addEventListener('focusout', () => {
     pendingState = null;
     lastStateJson = s;
     window.setTimeout(() => render(JSON.parse(s)), 50);
+  }
+  // A practice re-render deferred by renderPracticeSafe flushes here too.
+  if (repRenderPending) {
+    repRenderPending = false;
+    window.setTimeout(renderPractice, 50);
   }
 });
 
