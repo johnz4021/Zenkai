@@ -128,6 +128,24 @@ describe('home app page', () => {
     expect(html).toContain('.foldnote');
   });
 
+  it('a declined round is overridable — opt-in checkbox, never a dead end (2B)', () => {
+    // Live report 2026-08-15: an Amazon HM round (half LP conversation,
+    // half live coding) was the plan's only draft; the model's honest
+    // decline left "Confirm 0 rounds" with no way forward. The practice
+    // door already offers "Build the closest version" on the same flag.
+    expect(js).toContain('gaterow gatedecline');
+    expect(js).toContain('tick to build the closest version anyway');
+    // Opt-IN: declined counts only when ticked; usable unless unticked.
+    expect(js).toMatch(/d\.unsupported \? plan\.include\[i\] === true : plan\.include\[i\] !== false/);
+    // The accept handler mirrors the count exactly — what the button says
+    // is what ships.
+    expect(js).toMatch(/d\.unsupported \? plan\.include\[i\] !== true : plan\.include\[i\] === false/);
+    // The all-declined zero explains itself instead of contradicting the
+    // settled note above a disabled button.
+    expect(js).toContain('every round here was declined — tick one above to build its closest version');
+    expect(html).toMatch(/\.gaterow\.gatedecline \{ border-left: 2px solid var\(--weak\)/);
+  });
+
   it('the build button shows readiness and speed-bumps an unsettled build', () => {
     // Owner request 2026-08-15: "I don't like that it's always accessible."
     // Unsettled reads as a steel outline (same language as the practice

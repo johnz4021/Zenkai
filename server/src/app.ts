@@ -1141,7 +1141,11 @@ export function appPage(): string {
   .gaterow .gexpand:hover { color: var(--text-1); }
   .gatedetail { padding: 6px 0 2px 22px; color: var(--text-2); font-size: 12px; line-height: 1.6; }
   .gatedetail b { color: var(--text-1); font-weight: 500; }
-  .gatedecline { color: var(--text-2); font-size: 12px; padding: 8px 14px; border-bottom: 1px solid var(--line-soft); }
+  /* A declined round is a full row with an opt-IN checkbox (2B applied to
+     this door, 2026-08-15) — the weak left border is the verdict color:
+     this IS a verdict about the round's fidelity, not a broken spec. */
+  .gaterow.gatedecline { border-left: 2px solid var(--weak); }
+  .gdeclinewhy { color: var(--text-2); font-size: 12px; margin-top: 4px; }
   .paceline { padding: 10px 14px; font-size: 12px; line-height: 1.5; color: var(--text-2); }
   #plan-panel .pfoot { padding: 12px 14px 14px; border-top: 1px solid var(--line); }
   #plan-panel .pfoot button { width: 100%; padding: 10px; }

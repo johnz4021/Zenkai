@@ -571,8 +571,23 @@ function renderPanel() {
         (open ? '<div class="gatedetail"><b>Why this shape:</b> ' + esc(d.rationale || '') + '</div>' : '') +
         '</div>';
     }
-    for (const { d } of declined) {
-      body += '<div class="gatedecline">' + esc(d.spec.label) + ' — can\'t run honestly: ' + esc(d.unsupported) + '</div>';
+    for (const { d, i } of declined) {
+      // Decision 2B, applied to THIS door (live report 2026-08-15: an
+      // Amazon HM round — half LP conversation, half live coding — was the
+      // plan's ONLY draft, so the model's honest decline left "Confirm 0
+      // rounds" with no way forward; the practice door already offers
+      // "Build the closest version" on the same flag). The decline stays
+      // the DEFAULT: the checkbox is opt-IN, and ticking it means "build
+      // the closest supported version" — the spec beneath is a fully valid
+      // round; unsupported is a caveat about fidelity, not a broken spec.
+      const included = plan.include[i] === true;
+      body += '<div class="gaterow gatedecline' + (plan.flash ? ' flash' : '') + '">' +
+        '<label class="gcheck"><input type="checkbox"' + (included ? ' checked' : '') + ' data-gi="' + i + '" /> ' +
+        '<span style="color:' + (included ? 'var(--text-1)' : 'var(--text-2)') + '">' + esc(d.spec.label) + '</span></label>' +
+        '<div class="gshape">' + specShapeLine(d.spec.capabilities) + '</div>' +
+        '<div class="gdeclinewhy">can\'t run honestly: ' + esc(d.unsupported) +
+        (included ? '' : ' — tick to build the closest version anyway') + '</div>' +
+        '</div>';
     }
     body += '<div class="paceline">' +
       (p.pace_per_week
@@ -586,7 +601,10 @@ function renderPanel() {
         p.topics.map((t) => esc(t.label || t.id)).join(' · ') + '</div>';
     }
   }
-  const n = p ? p.drafts.filter((d, i) => !d.unsupported && plan.include[i] !== false).length : 0;
+  // Usable drafts count unless UNticked; declined drafts count only when
+  // ticked — the model's decline is the default, overriding it is deliberate.
+  const n = p ? p.drafts.filter((d, i) => (d.unsupported ? plan.include[i] === true : plan.include[i] !== false)).length : 0;
+  const declinedOnly = Boolean(p) && n === 0 && p.drafts.some((d) => d.unsupported);
   // Soft readiness (owner decision 2026-08-15): the button never gates on
   // the model — the user outranks it — but the note beneath says whether
   // the shape is still moving. `summary` is the model's own settle signal
@@ -601,6 +619,10 @@ function renderPanel() {
     ? 'Build anyway →'
     : n === 1 ? 'Confirm 1 round and build the plan' : 'Confirm ' + n + ' rounds and build the plan';
   const note = !p ? ''
+    : declinedOnly
+      // Without this line the settled note read "ready when you are" above
+      // a disabled button — a contradiction with no visible cause.
+      ? 'every round here was declined — tick one above to build its closest version'
     : armed
       ? (asks ? asks + ' question' + (asks === 1 ? '' : 's') + ' still open. ' : 'The shape is still moving. ') +
         'Click again to build now, or keep talking to settle it.'
@@ -863,7 +885,9 @@ function wirePlan(f) {
     const p = plan.proposal;
     const kept = [];
     p.drafts.forEach((d, i) => {
-      if (d.unsupported || plan.include[i] === false) return;
+      // Mirror of the panel's count: declined ships only when ticked (2B —
+      // the override is the user's), usable ships unless unticked.
+      if (d.unsupported ? plan.include[i] !== true : plan.include[i] === false) return;
       const tier = plan.tier[i] || d.spec.evidence_tier;
       kept.push(Object.assign({}, d.spec, tier ? { evidence_tier: tier } : {}));
     });
