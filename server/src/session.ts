@@ -518,6 +518,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       ? 'This round does not allow running the suite at all. There is no run command — say so plainly if asked.'
       : `They press the **Run Tests** button in the session header (top right, above the editor). It runs \`${testCmd}\` in the workspace and shows the output in the ${surface === 'panes' ? 'test results panel below the editor' : "editor's Test Results panel"}. That is the intended path. No other test runner is installed.`;
 
+  // What the agenda may treat as reachable: on a one-shot or no-run round
+  // the suite cannot run mid-round, so verify/reflect are not-applicable
+  // rather than open gaps (agenda.ts AgendaCaps).
+  const agendaCaps = { runnable: caps.can_run_tests && caps.submit !== 'one_shot' };
+
   // What a strong candidate does in THIS round — the judge's own grading
   // dimensions, finally shared with the interviewer (the rubric-blind
   // finding: one dimension graded a question "to the interviewer" the
@@ -891,9 +896,12 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         momentObservation: moment ? moment.observation : null,
         checkKind: roundSpec.check.kind,
         codebase: codebaseView,
-        // The evaluation agenda rides on EVERY turn (replies included) so
-        // even a reply can be aimed at an uncovered dimension.
-        agenda: renderAgenda(assessAgenda(events, now)),
+        // The agenda rides UNPROMPTED turns only. It used to ride replies
+        // too, which was one of four instructions mandating a question be
+        // appended to every turn — the same follow-up got bolted onto three
+        // consecutive replies inside 43 seconds (QA 2026-08-14,
+        // sess-qa814-leak). A reply's job is the answer.
+        agenda: candidateMessage === null ? renderAgenda(assessAgenda(events, now, agendaCaps)) : undefined,
         // During wrap-up every turn sees the phase state; the wrap-lane turn
         // additionally carries its assigned topic.
         wrapState:
@@ -1710,7 +1718,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         const topic =
           wrapQuestionsAsked >= WRAP_UP_QUESTIONS
             ? CLOSING_TOPIC
-            : selectWrapTopic(assessAgenda(events, now), wrapQuestionsAsked);
+            : selectWrapTopic(assessAgenda(events, now, agendaCaps), wrapQuestionsAsked);
         void runInterviewer(null, null, null, null, topic);
         return;
       }

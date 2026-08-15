@@ -571,7 +571,9 @@ export function render(template: string, ctx: InterviewerContext): string {
     WARM: ctx.warmObservation
       ? `WARM — ${ctx.warmObservation} Follow the warm rules above: encourage, never redirect, nudge true.`
       : 'no',
-    AGENDA: ctx.agenda ?? '(no agenda computed for this round)',
+    AGENDA:
+      ctx.agenda ??
+      '(none this turn — this is a reply; answer what was asked. The agenda rides unprompted turns.)',
     WRAPUP: ctx.wrapState ?? 'no — the working phase is still on.',
     STUCK: ctx.stuckObservation
       ? `STUCK — ${ctx.stuckObservation} Follow the stuck rules above: one move, their vocabulary only, nudge true.`
