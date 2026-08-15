@@ -2499,8 +2499,11 @@ function gapGlyph(row) {
  *  model-written. */
 function gapStateLine(s) {
   if (!s || s.state === 'no signal') return 'not yet assessable';
+  // Display words, not the shared verdict-history state vocabulary: "still
+  // firing" is detector jargon — a gap doesn't "fire" to a user (QA
+  // 2026-08-15).
   if (s.state === 'still firing') {
-    return s.weak_count === s.informative_count ? 'still firing — every round' : 'still firing';
+    return s.weak_count === s.informative_count ? 'still showing up — every round' : 'still showing up';
   }
   if (s.state === 'improving') return 'improving — ' + s.recent_not_weak + ' of last ' + s.recent_informative + ' adequate or better';
   if (s.state === 'quiet lately') return 'quiet lately — no gap in the last 3';
@@ -2527,7 +2530,9 @@ function renderGapsBand() {
     const pct = (t) => Math.round((100 * t.not_weak) / t.informative);
     // The one defensible claim (judge-measurability moved too): share of
     // ASSESSABLE verdicts that were not weak, early half vs recent half.
-    sub = 'of what could be assessed: ' + pct(h.trend.first) + '% → ' + pct(h.trend.second) + '% not weak (early → recent)';
+    // Said without the hedge-plus-double-negative (QA 2026-08-15): "of what
+    // could be assessed … not weak" made the header unreadable.
+    sub = 'judged solid: ' + pct(h.trend.first) + '% → ' + pct(h.trend.second) + '% of assessable verdicts (early → recent)';
   }
   const bounds = new Set(h.comparability_boundaries || []);
   let html = '<div class="gapsband"><p class="micro">your gaps</p>' +
