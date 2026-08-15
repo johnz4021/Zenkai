@@ -281,9 +281,14 @@ describe('bucketIntoDays — the timeline spine (D2: dated, forward-only)', () =
   it('renders past band, TODAY, future days, and the interview terminal row', () => {
     const q = proposeQueue(dated(), NOW);
     const rows = bucketIntoDays(q, dated(), NOW);
-    const days = rows.filter((r) => r.kind === 'day');
-    expect(days.filter((r) => r.kind === 'day' && r.past)).toHaveLength(4);
-    expect(days.filter((r) => r.kind === 'day' && r.today)).toHaveLength(1);
+    // A fresh queue has no done work: the whole 4-day past band compresses
+    // to one quiet-past row (the dash wall, owner report 2026-08-15).
+    const pastDays = rows.filter((r) => r.kind === 'day' && r.past);
+    const pastQuiet = rows.filter((r) => r.kind === 'quiet' && r.past);
+    expect(pastDays).toHaveLength(0);
+    expect(pastQuiet).toHaveLength(1);
+    expect((pastQuiet[0] as { count: number }).count).toBe(4);
+    expect(rows.filter((r) => r.kind === 'day' && r.today)).toHaveLength(1);
     expect(rows[rows.length - 1]).toEqual({ kind: 'interview', date: '2026-08-15' });
   });
 
@@ -295,11 +300,28 @@ describe('bucketIntoDays — the timeline spine (D2: dated, forward-only)', () =
     expect(today.items[0]!.id).toBe('item-3');
   });
 
-  it('past emptiness is neutral rows, never a warning shape', () => {
+  it('past emptiness is neutral AND compact — quiet runs, never a warning shape', () => {
+    // Band [empty, empty, done, empty]: the run compresses, the done day
+    // keeps its date, the lone trailing empty stays a dated row (D4
+    // symmetry applied to the past band).
     const q = proposeQueue(dated(), NOW);
+    q.items[0]!.status = 'done';
+    q.items[0]!.done_at = localDate(NOW - 2 * 86_400_000);
     const rows = bucketIntoDays(q, dated(), NOW);
-    const pastEmpty = rows.filter((r) => r.kind === 'day' && r.past && r.items.length === 0);
-    expect(pastEmpty.length).toBeGreaterThan(0);
+    const quietPast = rows.find((r) => r.kind === 'quiet' && r.past);
+    expect(quietPast).toBeDefined();
+    expect((quietPast as { count: number }).count).toBe(2);
+    const pastDays = rows.filter((r) => r.kind === 'day' && r.past);
+    expect(pastDays.map((r) => (r.kind === 'day' ? r.items.length : -1))).toEqual([1, 0]);
+    // Never a run of 2+ empty past day rows — that's the dash wall.
+    let emptyRun = 0;
+    for (const r of rows) {
+      if (r.kind === 'day' && r.past && r.items.length === 0) {
+        emptyRun += 1;
+        expect(emptyRun).toBeLessThan(2);
+      } else emptyRun = 0;
+    }
+    // D2 holds: neutral vocabulary, no debt shapes.
     expect(JSON.stringify(rows)).not.toMatch(/overdue|missed|late/);
   });
 
@@ -319,6 +341,20 @@ describe('bucketIntoDays — the timeline spine (D2: dated, forward-only)', () =
     const rows = bucketIntoDays(proposeQueue(t, NOW), t, NOW);
     expect(rows.every((r) => r.kind === 'day')).toBe(true);
     expect(rows.filter((r) => r.kind === 'day' && r.date !== null)).toHaveLength(0);
+    // No calendar → an empty past row is a dateless dash saying nothing;
+    // dropped entirely rather than compressed.
+    expect(rows.filter((r) => r.kind === 'day' && r.past)).toHaveLength(0);
+  });
+
+  it('undated target: a done round still keeps its past row', () => {
+    const t = target();
+    const q = proposeQueue(t, NOW);
+    q.items[0]!.status = 'done';
+    q.items[0]!.done_at = localDate(NOW - 86_400_000);
+    const rows = bucketIntoDays(q, t, NOW);
+    const past = rows.filter((r) => r.kind === 'day' && r.past);
+    expect(past).toHaveLength(1);
+    expect((past[0] as Extract<(typeof rows)[0], { kind: 'day' }>).items[0]!.id).toBe('item-1');
   });
 
   it('rounds finished TODAY pin above the TODAY row — never invisible (QA ISSUE-002)', () => {

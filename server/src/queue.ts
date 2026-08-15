@@ -329,8 +329,11 @@ export type DayRow =
   /** Every item done/skipped — the season's terminal state. Replaces an
    *  empty TODAY row so completion never reads as "nothing scheduled". */
   | { kind: 'complete'; done_count: number }
-  /** A run of ≥2 empty future days compressed to one quiet row (D4). */
-  | { kind: 'quiet'; count: number }
+  /** A run of ≥2 empty days compressed to one quiet row (D4). `past` marks
+   *  a run in the past band (owner report 2026-08-15: four leading "—" rows
+   *  read as a dash wall, not history) — same neutral copy, dimmed like the
+   *  band. */
+  | { kind: 'quiet'; count: number; past?: true }
   | { kind: 'collapsed'; count: number; span_days: number }
   /** Confirmed rounds with no date yet — parked after the runway, honestly
    *  unscheduled rather than guessed onto a day. Followed by their items
@@ -367,14 +370,23 @@ export function bucketIntoDays(queue: Queue, target: Target, now: number): DayRo
   const rows: DayRow[] = [];
 
   // ---- past band: the last few calendar days, done items pinned ----
+  const anyDate = Boolean(target.interview_date) || hasSpecDates(target);
   const done = queue.items.filter((i) => i.status === 'done');
+  const pastRows: Extract<DayRow, { kind: 'day' }>[] = [];
   for (let back = PAST_DAYS_SHOWN; back >= 1; back--) {
     const date = localDate(now - back * 86_400_000);
     const items = done.filter((i) => i.done_at === date);
-    // A past day with nothing is neutral history — rendered, not hidden,
-    // and never red (D2: the failure mode was debt, not dates).
-    rows.push({ kind: 'day', date: target.interview_date ? date : null, today: false, past: true, items });
+    // A past day with nothing is neutral history — never red (D2: the
+    // failure mode was debt, not dates). But neutral ≠ verbose: runs of
+    // empty days compress to one quiet row (dated), and on an undated
+    // target an empty past row is dropped outright — a dateless dash says
+    // nothing at all, and hiding a row that says nothing is not hiding
+    // history (owner report 2026-08-15: the leading dash wall).
+    if (!anyDate && items.length === 0) continue;
+    pastRows.push({ kind: 'day', date: anyDate ? date : null, today: false, past: true, items });
   }
+  if (anyDate) pushWithQuietRuns(rows, pastRows, true);
+  else rows.push(...pastRows);
   // Done work older than the band still counts — the season progress bar
   // carries it; these rows would just be scroll.
 
@@ -393,7 +405,6 @@ export function bucketIntoDays(queue: Queue, target: Target, now: number): DayRo
     return rows;
   }
 
-  const anyDate = Boolean(target.interview_date) || hasSpecDates(target);
   rows.push({ kind: 'day', date: anyDate ? today : null, today: true, past: false, items: todayItem ? [todayItem] : [] });
 
   if (!hasSpecDates(target)) {
@@ -520,17 +531,18 @@ export function bucketIntoDays(queue: Queue, target: Target, now: number): DayRo
   return rows;
 }
 
-/** D4: a run of ≥2 empty future days reads as blank scroll, not a plan —
+/** D4: a run of ≥2 empty days reads as blank scroll, not a plan —
  *  compress each run to one quiet row. Days with items keep their dates,
- *  and a lone empty day stays a dated row. */
-function pushWithQuietRuns(rows: DayRow[], futureRows: Extract<DayRow, { kind: 'day' }>[]): void {
+ *  and a lone empty day stays a dated row. `past` stamps the quiet row so
+ *  the client dims it with the band it stands in for. */
+function pushWithQuietRuns(rows: DayRow[], dayRows: Extract<DayRow, { kind: 'day' }>[], past = false): void {
   let run: Extract<DayRow, { kind: 'day' }>[] = [];
   const flushRun = () => {
-    if (run.length >= 2) rows.push({ kind: 'quiet', count: run.length });
+    if (run.length >= 2) rows.push({ kind: 'quiet', count: run.length, ...(past ? { past: true as const } : {}) });
     else rows.push(...run);
     run = [];
   };
-  for (const r of futureRows) {
+  for (const r of dayRows) {
     if (r.items.length === 0) {
       run.push(r);
       continue;
