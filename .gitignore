@@ -50,3 +50,7 @@ topics/
 
 # git worktrees parked under .claude/ (full repo checkouts, never commit)
 .claude/worktrees/
+
+# qa harness runtime droppings (qa/README.md)
+qa/.shim-log.jsonl
+qa/.shim-control.json
