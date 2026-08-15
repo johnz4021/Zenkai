@@ -22,7 +22,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
 import { isCandidateActivity } from '@interview-prep/shared';
-import { ANSWERABLE, SURRENDER, roundRules } from './round-rules.js';
+import { ANSWERABLE, SURRENDER, roundRules, timeRules } from './round-rules.js';
 
 export type InterviewerKind = 'answer' | 'pressure' | 'probe' | 'decline' | 'silent';
 
@@ -88,7 +88,13 @@ export interface InterviewerContext {
    */
   targetNote?: string;
   elapsedMs: number;
-  remainingMs: number;
+  /** Milliseconds left, or `null` on an UNTIMED round (the DEFAULT_SPEC
+   *  shape). Null is not "unknown" and not "zero" — it means there is no
+   *  deadline, and render() turns it into a positive statement rather than
+   *  a number. Defaulting it to a nominal length is what put "you've got
+   *  45 minutes" into an untimed round's opening turn
+   *  (sess-qa813-panesint-b). */
+  remainingMs: number | null;
   recentActivity: string;
   transcript: { who: 'candidate' | 'interviewer'; text: string }[];
   /** null = unprompted pressure beat rather than a reply. */
@@ -514,7 +520,17 @@ export function render(template: string, ctx: InterviewerContext): string {
       ? `MOMENT — ${ctx.momentObservation} Follow the moment rules above: one focused probe about it, then release.`
       : 'no',
     ELAPSED_MIN: String(Math.round(ctx.elapsedMs / 60_000)),
-    REMAINING_MIN: String(Math.max(0, Math.round(ctx.remainingMs / 60_000))),
+    // Timedness is per-SESSION constant (capabilities.time_limit_ms is read
+    // once from a frozen spec), so TIME_RULES sits in the CACHED half and the
+    // renderSplit byte-identity contract holds as the clock ticks.
+    TIME_RULES: timeRules(ctx.remainingMs !== null),
+    // One token, one meaning. `REMAINING_MIN` is gone on purpose: a bare
+    // number slot can only ever render a number, and on an untimed round
+    // every number is a lie — 0 included, which reads as "time is up".
+    REMAINING:
+      ctx.remainingMs === null
+        ? 'Remaining: UNTIMED — this round has no time limit and no deadline. Nothing is counting down.'
+        : `Remaining: ${Math.max(0, Math.round(ctx.remainingMs / 60_000))} min.`,
     RECENT_ACTIVITY: ctx.recentActivity,
     ADRIFT: ctx.adriftObservation
       ? `ADRIFT — ${ctx.adriftObservation} Follow the adrift rules above: one move, nudge true.`

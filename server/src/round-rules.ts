@@ -79,6 +79,41 @@ export const SURRENDER = `- **When the candidate explicitly gives up, stop coach
   applies only while the give-up stands.`;
 
 /**
+ * The clock — universal, like ANSWERABLE and SURRENDER, and born the same
+ * way. sess-qa813-panesint-b opened "…hit Run Tests up top whenever you want
+ * to check, and you've got 45 minutes" on a round whose spec carries
+ * `time_limit_ms: null` — the DEFAULT_SPEC shape, so most rounds. The
+ * session substituted a nominal 45 minutes for the missing limit and the
+ * prompt printed it as fact, while the candidate's own header clock counted
+ * UP with no deadline (chrome.ts emits `data-limit` only when timed).
+ *
+ * Timedness is per-session constant, which is why this is a stable-half slot
+ * and not per-turn state: the session-state line carries the fact, this
+ * block carries the rules that fact governs.
+ */
+export function timeRules(timed: boolean): string {
+  return timed
+    ? `**The clock.** This round is TIMED. The session state below carries the real
+elapsed and remaining minutes — they are true, and you may use them: say how
+long the round is when you open it, and a time check is one of your pressure
+moves.`
+    : `**The clock.** This round is UNTIMED. There is no time limit, no deadline,
+and nothing counting down — the candidate's own clock counts UP.
+
+- When you open the round, say how it runs (the test affordance) and say
+  NOTHING about how long it lasts. Never name a length, never "you've got N
+  minutes", never imply a budget. You MAY say plainly that this one is not on
+  a timer.
+- If they ask how long they have, tell them the truth: this round has no time
+  limit — they finish when they're done, or when they end the session.
+- A time check is NOT one of your moves here. Pressure is scope and
+  commitment ("What's your leading theory?", "What would you check first?"),
+  never the clock.
+- Nothing about the clock can start a CLOSING. Only the WRAP-UP state in the
+  session state below ends this round.`;
+}
+
+/**
  * The observation/theory line, composed rather than copied.
  *
  * The OBSERVATION half is universal — evidence in front of the candidate is

@@ -91,8 +91,23 @@ export interface SessionConfig {
   onReady?: () => void;
 }
 
-/** Nominal round length — what the interviewer's time pressure counts down. */
-const SESSION_LENGTH_MS = 45 * 60_000;
+/**
+ * What the interviewer is told about the clock. `null` = untimed, all the
+ * way to the prompt.
+ *
+ * It used to be `caps.time_limit_ms ?? SESSION_LENGTH_MS` — a nominal 45
+ * minutes substituted for a missing limit — and the number rode into the
+ * prompt as fact: sess-qa813-panesint-b opened "…and you've got 45 minutes"
+ * on a round whose spec says `time_limit_ms: null`, while the candidate's
+ * own header clock (chrome.ts emits `data-limit` only when timed) counted
+ * UP with no deadline. `time_limit_ms: null` is the DEFAULT_SPEC shape, so
+ * that was most rounds. Rendering 0 instead would be WORSE — "Remaining:
+ * 0 min" reads as "time is up" — so the untimed case is stated positively
+ * in the prompt (round-rules.ts timeRules), never as a number. Pure.
+ */
+export function remainingMsFor(limitMs: number | null, elapsedMs: number): number | null {
+  return limitMs === null ? null : limitMs - elapsedMs;
+}
 /**
  * Initiative clocks (sess-1786220758002 redesign). The old single clock —
  * "5 minutes since ANY spoken turn" — meant every reply reset the initiative
@@ -625,9 +640,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   let interviewerBusy = false;
 
   // Timed rounds: the spec's limit is BOTH the interviewer's countdown and a
-  // hard cap; untimed rounds keep the nominal 45-minute pressure horizon
-  // with no enforcement (exactly today's behavior).
-  const sessionLengthMs = caps.time_limit_ms ?? SESSION_LENGTH_MS;
+  // hard cap. Untimed rounds have NO horizon at all — no default is
+  // substituted anywhere (remainingMsFor's header has the incident: the old
+  // nominal 45 minutes rode into the prompt as a fact the interviewer told
+  // the candidate). The cap timer below already ran only on timed rounds, so
+  // nothing is un-enforced that was enforced before.
   // Set when the cap is reached. /api/messages carries it so the client can
   // end through the normal path (mic released first); the grace timer below
   // is the fallback for a closed tab — the record must close either way.
@@ -818,7 +835,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         howToRun,
         targetNote,
         elapsedMs: now - (sessionStartedAt ?? now),
-        remainingMs: sessionLengthMs - (now - (sessionStartedAt ?? now)),
+        remainingMs: remainingMsFor(caps.time_limit_ms, now - (sessionStartedAt ?? now)),
         recentActivity: renderActivity(events, now),
         // Real lines only; unheard voice segments collapse to a count line
         // instead of eating window slots as empty candidate turns.
@@ -1735,13 +1752,17 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // end first (mic released through the normal path); a 30s grace covers the
   // closed-tab case so the record always closes.
   if (caps.time_limit_ms) {
+    // Bound here, not read through `caps` in the callback: the outer
+    // narrowing does not survive into setInterval, and the cap timer should
+    // read THE CAP, never a shared "session length" that once had a fallback.
+    const limitMs = caps.time_limit_ms;
     let warned = false;
     capTimer = setInterval(() => {
       if (ended || sessionStartedAt === null) return;
       const elapsed = Date.now() - sessionStartedAt;
-      if (!warned && elapsed >= sessionLengthMs * 0.8) {
+      if (!warned && elapsed >= limitMs * 0.8) {
         warned = true;
-        const left = Math.max(1, Math.round((sessionLengthMs - elapsed) / 60_000));
+        const left = Math.max(1, Math.round((limitMs - elapsed) / 60_000));
         store.emitChrome('interviewer', {
           text: `${left} minute${left === 1 ? '' : 's'} remaining.`,
           kind: 'time',
@@ -1749,7 +1770,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         });
         notifyTurn();
       }
-      if (elapsed >= sessionLengthMs && timeUpAt === null) {
+      if (elapsed >= limitMs && timeUpAt === null) {
         timeUpAt = Date.now();
         store.emitChrome('interviewer', {
           text: "Time's up — submitting what's there now.",

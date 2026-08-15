@@ -234,8 +234,8 @@ describe('render (prompt templating)', () => {
   it('substitutes EVERY occurrence, not just the first', () => {
     // The live failure: a variable mentioned earlier in the file ate the value
     // and the real slot stayed literal, so the agent read the wrong clock.
-    const out = render('list: {{REMAINING_MIN}}\n---\nRemaining: {{REMAINING_MIN}} min.', ctx);
-    expect(out).toBe('list: 44\n---\nRemaining: 44 min.');
+    const out = render('list: {{REMAINING}}\n---\n{{REMAINING}}', ctx);
+    expect(out).toBe('list: Remaining: 44 min.\n---\nRemaining: 44 min.');
   });
 
   it('marks an unprompted turn as unprompted rather than faking a message', () => {
