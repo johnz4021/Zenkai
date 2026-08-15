@@ -1698,7 +1698,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
       // Wrap signal: checked every tick regardless of clocks, set once.
       if (wrapUpAt === null) {
-        const sig = detectWrapSignal(events, now);
+        const sig = detectWrapSignal(events, now, { runnable: agendaCaps.runnable });
         if (sig !== null) {
           wrapUpAt = now;
           console.log('[wrapup] working phase over — evaluation questions begin');
@@ -1718,7 +1718,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         const topic =
           wrapQuestionsAsked >= WRAP_UP_QUESTIONS
             ? CLOSING_TOPIC
-            : selectWrapTopic(assessAgenda(events, now, agendaCaps), wrapQuestionsAsked);
+            : selectWrapTopic(assessAgenda(events, now, agendaCaps), wrapQuestionsAsked, roundSpec.check.kind);
         void runInterviewer(null, null, null, null, topic);
         return;
       }
