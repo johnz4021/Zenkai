@@ -107,5 +107,20 @@ Worked examples (from an inventory-holds bug round — match this specificity):
 - verify: "Re-runs the suite after the fix, confirms the extended-hold expiry
   test passes, and checks that partial-shipment release still works."
 
-Output nothing else. When your self-verification holds and problem.json is written,
+## Prove it before you finish
+
+When you believe you are done, run this from the repo root (your working
+directory) — it is the EXACT mechanical check your build will be judged by:
+
+```
+{{VALIDATE_CMD}}
+```
+
+It prints `"ok": true` or the precise failures. Fix anything it reports and
+run it again until it passes. Only if you genuinely cannot make progress on a
+failure, finish anyway and say why in one line. Do not modify the validator
+or anything outside this directory — the pipeline re-runs the same check
+authoritatively after you exit.
+
+Output nothing else. When the validator passes and problem.json is written,
 you are done.

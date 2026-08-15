@@ -168,11 +168,13 @@ async function generateInto(
     // to the validator and let it rule.
     console.error('[generate] run did not exit cleanly — validating the artifact anyway');
   }
-  if (sourced) {
-    // Tamper-proof re-emit: whatever the agent did to the grading contract,
-    // the validated artifact carries the deterministic one. And the manifest
-    // source stamp is patched from the DATASET record, never trusted from
-    // the generator — the topic ledger records truth.
+  // Tamper-proof re-emit: whatever an agent did to the grading contract,
+  // the validated artifact carries the deterministic one. And the manifest
+  // source stamp is patched from the DATASET record, never trusted from
+  // the generator — the topic ledger records truth. A FUNCTION because the
+  // repair pass (below) runs an agent again — every agent exit re-stamps.
+  const restampSourced = async () => {
+    if (!sourced) return;
     const cv = await import('./lc-convert.js');
     const { writeFileSync: wf, readFileSync: rf } = await import('node:fs');
     cv.writeSourcedTests(targetDir, sourced.parts, sourced.mode);
@@ -207,7 +209,8 @@ async function generateInto(
     } catch {
       // Missing/unparseable manifest — the validator reports it properly below.
     }
-  }
+  };
+  await restampSourced();
   // Plan-topic subset filter — same doctrine as the source stamp above: the
   // manifest field is never trusted from the generator. With a frozen list,
   // the declaration is filtered to it (drops logged); without one there is
@@ -232,7 +235,6 @@ async function generateInto(
   // validator's run below re-creates it — only the second sweep decides
   // what the candidate's file tree actually shows.
   removePythonArtifacts(targetDir);
-  let report = validateProblem(targetDir);
   // Strip-and-degrade (decision 2026-08-15, the Palantir chatdelivery
   // incident): when the ONLY failures are expectation-quality failures —
   // suite green, manifest otherwise valid — drop the failing sentence(s)
@@ -240,25 +242,61 @@ async function generateInto(
   // resolveExpectations ladder (manifest → round-type default → generic
   // anchor) is the documented replacement for an absent expectation; a
   // build the system can grade must never die over one it can substitute.
-  if (!report.ok) {
-    const { EXPECTATION_FAILURE_RE } = await import('./validate.js');
-    const keys = report.failures.map((f) => EXPECTATION_FAILURE_RE.exec(f)?.[1]).filter((k): k is string => Boolean(k));
-    if (keys.length > 0 && keys.length === report.failures.length) {
-      try {
-        const { writeFileSync: wf, readFileSync: rf } = await import('node:fs');
-        const manifestPath = path.join(targetDir, 'problem.json');
-        const manifest = JSON.parse(rf(manifestPath, 'utf8')) as {
-          rubric?: { dimensions?: Record<string, string> };
-        };
-        for (const k of keys) delete manifest.rubric?.dimensions?.[k];
-        wf(manifestPath, JSON.stringify(manifest, null, 2));
-        console.warn(
-          `[validate] stripped ${keys.length} expectation(s) that failed the quality gate (${[...new Set(keys)].join(', ')}) — the judge falls back to round-type defaults for those dimensions`,
-        );
-        report = validateProblem(targetDir);
-      } catch {
-        // Unreadable manifest — the original report stands and rules below.
+  // A function because the repair pass gets the same second chance.
+  const ruleOnArtifact = async (): Promise<ReturnType<typeof validateProblem>> => {
+    let report = validateProblem(targetDir);
+    if (!report.ok) {
+      const { EXPECTATION_FAILURE_RE } = await import('./validate.js');
+      const keys = report.failures.map((f) => EXPECTATION_FAILURE_RE.exec(f)?.[1]).filter((k): k is string => Boolean(k));
+      if (keys.length > 0 && keys.length === report.failures.length) {
+        try {
+          const { writeFileSync: wf, readFileSync: rf } = await import('node:fs');
+          const manifestPath = path.join(targetDir, 'problem.json');
+          const manifest = JSON.parse(rf(manifestPath, 'utf8')) as {
+            rubric?: { dimensions?: Record<string, string> };
+          };
+          for (const k of keys) delete manifest.rubric?.dimensions?.[k];
+          wf(manifestPath, JSON.stringify(manifest, null, 2));
+          console.warn(
+            `[validate] stripped ${keys.length} expectation(s) that failed the quality gate (${[...new Set(keys)].join(', ')}) — the judge falls back to round-type defaults for those dimensions`,
+          );
+          report = validateProblem(targetDir);
+        } catch {
+          // Unreadable manifest — the original report stands and rules below.
+        }
       }
+    }
+    return report;
+  };
+  let report = await ruleOnArtifact();
+  // The repair pass (self-heal layer 2b, 2026-08-15): error-as-context, the
+  // mechanism Claude Code heals by. Gated on a PARSEABLE manifest — an
+  // artifact exists worth fixing; an empty dir (the amazon error_max_turns
+  // case) has nothing to repair and falls to the app's blind retry instead.
+  // One attempt, cheap by construction (generate.ts repairProblem: sonnet,
+  // 15 turns, 3 min). The authoritative re-rule below still decides.
+  if (!report.ok) {
+    let manifestParses = false;
+    try {
+      const { readFileSync: rf } = await import('node:fs');
+      JSON.parse(rf(path.join(targetDir, 'problem.json'), 'utf8'));
+      manifestParses = true;
+    } catch { /* nothing to repair */ }
+    if (manifestParses) {
+      console.log(`[repair] one repair pass (${report.failures.length} failure(s))`);
+      const { repairProblem } = await import('./generate.js');
+      const rep = await repairProblem({
+        targetDir,
+        failures: report.failures,
+        spec,
+        sourced: Boolean(sourced),
+        templatePath: path.join(repoRoot, 'prompts', 'repair-round.md'),
+      });
+      console.log(JSON.stringify({ repair_ok: rep.ok, exitCode: rep.exitCode, durationMs: rep.durationMs }, null, 2));
+      // Every agent exit re-stamps the grading contract on sourced builds.
+      await restampSourced();
+      removePythonArtifacts(targetDir);
+      report = await ruleOnArtifact();
     }
   }
   clearGeneratingMarker(targetDir);

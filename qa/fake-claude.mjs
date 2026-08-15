@@ -138,6 +138,13 @@ function steeredRounds() {
 
 function generator() {
   const fail = opt('fail', '');
+  if (fail === 'validate') {
+    // Write the normal artifact but with a spec under the 100-char floor —
+    // validation fails, problem.json parses, and the repair pass (self-heal
+    // layer 2b) triggers deterministically.
+    tokens.fail = '';
+    // fall through to normal generation; spec is shortened below
+  }
   if (fail === 'generate') {
     // In-band failure: real `claude -p` exits 0 on error_max_turns; only the
     // JSON payload says the run died (generate.ts inBandFailure).
@@ -217,7 +224,7 @@ function generator() {
     model_paths: [],
     round_spec: spec,
     title: plannedTitle ?? `${spec.label ?? 'QA round'} (qafixture)`,
-    spec: statement,
+    spec: fail === 'validate' ? 'qafixture stub — deliberately short.' : statement,
     mutations: [],
     rubric: { round_type: 'debugging', dimensions: expectations },
     ...(topicIds?.length ? { topics_exercised: topicIds.slice(0, 2) } : {}),
@@ -376,6 +383,32 @@ function planTopics() {
   reply('plan-topics', JSON.stringify(pool.slice(0, count)));
 }
 
+function repair() {
+  // The repair agent's shim: fix exactly the deterministic breakage the
+  // fail=validate mode plants (short spec). [QA:repair_noop=1] leaves the
+  // artifact broken — exercises the second-failure path.
+  if (opt('repair_noop') === '1') {
+    log('repair', { noop: true });
+    process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, num_turns: 1 }));
+    process.exit(0);
+  }
+  try {
+    const p = path.join(process.cwd(), 'problem.json');
+    const manifest = JSON.parse(readFileSync(p, 'utf8'));
+    if (!manifest.spec || manifest.spec.length < 100) {
+      manifest.spec =
+        'The qafixture reservation ledger records unit holds and releases against a depot inventory; ' +
+        'this statement was repaired in place by the shim to satisfy the validator length floor.';
+    }
+    writeFileSync(p, JSON.stringify(manifest, null, 2) + '\n');
+  } catch {
+    /* nothing to repair — the re-validation will say so */
+  }
+  log('repair');
+  process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, num_turns: 2 }));
+  process.exit(0);
+}
+
 function adapt() {
   // Token: adapt_round=<newId>:<check_kind>:<supersededSpecId>
   const spec = opt('adapt_round', '');
@@ -392,6 +425,7 @@ function adapt() {
 
 // ---- dispatch ----
 if (firstLine.startsWith('# Generator prompt')) generator();
+else if (firstLine.startsWith('# Round repair')) repair();
 else if (firstLine.startsWith('# Session judge')) judge();
 else if (firstLine.startsWith('# Interviewer agent')) interviewer();
 else if (firstLine.startsWith('A candidate is working')) reply('intent', opt('intent', 'no'));

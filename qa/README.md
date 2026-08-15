@@ -81,6 +81,8 @@ env -u ANTHROPIC_API_KEY \
 | `parts=N`, `named=a,b` | stated part count / named problems on the draft |
 | `rounds=N`, `bad_draft=1` | N sibling drafts / add one out-of-vocabulary draft the gate must drop |
 | `fail=generate` / `fail=generate_dead` | generator dies in-band (`error_max_turns`, exit 0) / dies cold (exit 1) |
+| `fail=validate` | generator writes an artifact with a too-short spec — validation fails, the repair pass triggers; the repair handler fixes it in place |
+| `repair_noop=1` (control file only — repair prompts carry no paste tokens) | repair changes nothing, exercising the failed-repair path |
 | `verdicts=weak,adequate,…` (×6), `solved=0` | judge output, in dimension order (clarify, approach, communicate, implement, verify, reflect) |
 | `say=…`, `intent=yes` | interviewer line / route utterances to the interviewer |
 | `adapt_round=<id>:<check_kind>:<supersedes>` | adaptation that re-points a spec |

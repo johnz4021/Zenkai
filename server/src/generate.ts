@@ -15,8 +15,19 @@ import { spawn } from 'node:child_process';
 import { childEnv } from './child-env.js';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { RoundSpec } from '@interview-prep/shared';
 import { DEFAULT_DEBUGGING_SPEC } from '@interview-prep/shared';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(here, '..', '..');
+
+/** The real validator, runnable from inside the agent's cwd. Substituted
+ *  into both prompts so the gate of record is part of the agent's loop
+ *  (self-heal layer 2a, 2026-08-15): the post-exit validateProblem stays
+ *  the authoritative ruling — this is advisory convergence, and an agent
+ *  "gaming" it can only make the artifact conform. */
+export const VALIDATE_CMD = `npx tsx ${path.join(repoRoot, 'server', 'src', 'cli.ts')} validate .`;
 
 /**
  * Per-check-kind mechanical requirements, selected in code — the generator
@@ -152,32 +163,27 @@ export function inBandFailure(stdout: string): string | null {
   }
 }
 
-export async function generateProblem(opts: GenerateOptions): Promise<GenerateResult> {
-  const template = await readFile(opts.templatePath, 'utf8');
-  const spec = opts.spec ?? DEFAULT_DEBUGGING_SPEC;
-  const prompt = template
-    .replace(/\{\{ROUND_BRIEF\}\}/g, opts.brief)
-    .replace(/\{\{SOURCE_BLOCK\}\}/g, opts.sourceBlock ?? '')
-    .replace(/\{\{CHECK_REQUIREMENTS\}\}/g, checkRequirements(spec.check))
-    .replace(/\{\{ROUND_SPEC_JSON\}\}/g, JSON.stringify(spec))
-    .replace(/\{\{TARGET_NOTE\}\}/g, opts.targetNote ?? '');
-
-  await mkdir(opts.targetDir, { recursive: true });
-
+/** The shared agentic spawn — one argv shape for the generator and the
+ *  repair pass, so inBandFailure visibility and the artifact-decides
+ *  doctrine apply to both. */
+function runClaudeAgent(
+  prompt: string,
+  run: { cwd: string; model?: string; maxTurns: number; timeoutMs: number },
+): Promise<GenerateResult> {
   const args = [
     '-p', prompt,
     '--output-format', 'json',
     // The target dir is dedicated and disposable; the agent must be able to
     // write files and run npm without interactive permission prompts.
     '--permission-mode', 'bypassPermissions',
-    '--max-turns', String(opts.maxTurns ?? 80),
+    '--max-turns', String(run.maxTurns),
   ];
-  if (opts.model) args.push('--model', opts.model);
+  if (run.model) args.push('--model', run.model);
 
   const started = Date.now();
   return new Promise<GenerateResult>((resolve) => {
     const child = spawn('claude', args, {
-      cwd: path.resolve(opts.targetDir),
+      cwd: path.resolve(run.cwd),
       // WU8: the agent needs the Anthropic key; it never needs voice or DB
       // credentials, and its brief now carries stranger-authored prose.
       env: childEnv('generator', process.env),
@@ -189,15 +195,9 @@ export async function generateProblem(opts: GenerateOptions): Promise<GenerateRe
     child.stdout.on('data', (d) => (stdout += d));
     child.stderr.on('data', (d) => (stderr += d));
 
-    // 8 minutes was calibrated for a single-module debugging round (~5 min,
-    // per CLAUDE.md). A multi-part OA is roughly triple the work — three
-    // implementation files plus three suites — and two of them died at
-    // EXACTLY 480s with SIGTERM, one of them holding a complete, validating
-    // problem (2026-08-12). Sourced LC builds keep their own tighter 5-min
-    // budget from cli.ts: those are a transform, not invention.
     const timeout = setTimeout(() => {
       child.kill('SIGTERM');
-    }, opts.timeoutMs ?? 15 * 60_000);
+    }, run.timeoutMs);
 
     child.on('close', (code) => {
       clearTimeout(timeout);
@@ -224,5 +224,81 @@ export async function generateProblem(opts: GenerateOptions): Promise<GenerateRe
         stderr: String(err),
       });
     });
+  });
+}
+
+export async function generateProblem(opts: GenerateOptions): Promise<GenerateResult> {
+  const template = await readFile(opts.templatePath, 'utf8');
+  const spec = opts.spec ?? DEFAULT_DEBUGGING_SPEC;
+  const prompt = template
+    .replace(/\{\{ROUND_BRIEF\}\}/g, opts.brief)
+    .replace(/\{\{SOURCE_BLOCK\}\}/g, opts.sourceBlock ?? '')
+    .replace(/\{\{CHECK_REQUIREMENTS\}\}/g, checkRequirements(spec.check))
+    .replace(/\{\{ROUND_SPEC_JSON\}\}/g, JSON.stringify(spec))
+    .replace(/\{\{TARGET_NOTE\}\}/g, opts.targetNote ?? '')
+    .replace(/\{\{VALIDATE_CMD\}\}/g, VALIDATE_CMD);
+
+  await mkdir(opts.targetDir, { recursive: true });
+
+  // 8 minutes was calibrated for a single-module debugging round (~5 min,
+  // per CLAUDE.md). A multi-part OA is roughly triple the work — three
+  // implementation files plus three suites — and two of them died at
+  // EXACTLY 480s with SIGTERM, one of them holding a complete, validating
+  // problem (2026-08-12). Sourced LC builds keep their own tighter 5-min
+  // budget from cli.ts: those are a transform, not invention.
+  return runClaudeAgent(prompt, {
+    cwd: opts.targetDir,
+    model: opts.model,
+    maxTurns: opts.maxTurns ?? 80,
+    timeoutMs: opts.timeoutMs ?? 15 * 60_000,
+  });
+}
+
+/** Build the repair prompt — pure and exported so the substitution is
+ *  testable without a spawn. */
+export function buildRepairPrompt(
+  template: string,
+  inp: { failures: string[]; spec: RoundSpec; sourced: boolean },
+): string {
+  return template
+    .replace(/\{\{FAILURES\}\}/g, inp.failures.map((f) => `- ${f}`).join('\n'))
+    .replace(/\{\{ROUND_SPEC_JSON\}\}/g, JSON.stringify(inp.spec))
+    .replace(/\{\{CHECK_REQUIREMENTS\}\}/g, checkRequirements(inp.spec.check))
+    .replace(
+      /\{\{SOURCED_NOTE\}\}/g,
+      inp.sourced
+        ? 'This is a DATASET-SOURCED round: tests/ and cases files are re-emitted deterministically after you finish — fix ONLY solution files and problem.json, never the tests.'
+        : '',
+    )
+    .replace(/\{\{VALIDATE_CMD\}\}/g, VALIDATE_CMD);
+}
+
+/**
+ * The repair pass (self-heal layer 2b, 2026-08-15): error-as-context, the
+ * mechanism Claude Code itself heals by — the validator's exact failure
+ * lines become the prompt, the agent fixes in place, and the authoritative
+ * re-validation still rules afterward. Cheap on purpose (sonnet, 15 turns,
+ * 3 minutes): this is a fix task, not invention. judge.ts's retry doctrine
+ * applies — every validator class is a stochastic sample, so a named-error
+ * fix converges where a blind re-roll only re-rolls the dice.
+ */
+export async function repairProblem(opts: {
+  targetDir: string;
+  failures: string[];
+  spec?: RoundSpec;
+  sourced?: boolean;
+  templatePath: string;
+}): Promise<GenerateResult> {
+  const template = await readFile(opts.templatePath, 'utf8');
+  const prompt = buildRepairPrompt(template, {
+    failures: opts.failures,
+    spec: opts.spec ?? DEFAULT_DEBUGGING_SPEC,
+    sourced: opts.sourced ?? false,
+  });
+  return runClaudeAgent(prompt, {
+    cwd: opts.targetDir,
+    model: 'sonnet',
+    maxTurns: 15,
+    timeoutMs: 3 * 60_000,
   });
 }

@@ -1958,7 +1958,10 @@ function genProgressLine(item) {
     g.phase === 'finalizing' ? 'finalizing' : 'building',
     g.since ? '<span class="genclock" data-since="' + esc(g.since) + '"></span>' : '',
     g.files ? g.files + ' files written' : '',
-    'usually 5–8 min',
+    // Self-heal honesty (2026-08-15): a failed first attempt repairs or
+    // retries automatically, so a long build is the system working, not
+    // stuck — the bar must not read as a hang at minute 9.
+    'usually 5–8 min — a rough first pass self-repairs, which can add a few',
   ].filter(Boolean);
   return bits.join(' · ');
 }

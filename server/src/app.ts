@@ -16,7 +16,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -483,6 +483,65 @@ function openBuildLog(dir: string): number {
   return openSync(dir + '.build.log', 'w');
 }
 
+/** Rotate the current build log to the next free `.build.N.log` before a
+ *  retry — every attempt's evidence survives. Forced by the 2026-08-15
+ *  audit: the per-attempt truncation above destroyed the diagnoses of both
+ *  morning failures the moment their retries were pressed. */
+function rotateBuildLog(dir: string): void {
+  if (!existsSync(dir + '.build.log')) return;
+  for (let n = 1; n < 20; n++) {
+    if (!existsSync(`${dir}.build.${n}.log`)) {
+      try { renameSync(dir + '.build.log', `${dir}.build.${n}.log`); } catch { /* evidence lost, retry anyway */ }
+      return;
+    }
+  }
+}
+
+/** Which attempt a spawn is, derived from the rotated-log ledger — the
+ *  stateless, restart-safe attempt counter. */
+function buildAttempt(dir: string): number {
+  let n = 1;
+  while (existsSync(`${dir}.build.${n}.log`)) n++;
+  return n;
+}
+
+/** The build-slot cap, published into module scope at runApp (same
+ *  precedent as legacyUserId — the spawn helpers are module-level). */
+let maxBuildsCap = Infinity;
+
+/**
+ * Blind retry-once (self-heal layer 1, 2026-08-15). judge.ts's doctrine,
+ * finally applied to the build path: every validator class is a stochastic
+ * sample of a nondeterministic model call, so one automatic re-roll heals
+ * most of what the repair pass (cli.ts layer 2b) cannot — died-with-nothing,
+ * in-band API errors, SIGTERM mid-write. Exit 64 is the exception: config /
+ * dataset state repeats identically, never retry it. The `.build.1.log`
+ * ledger bounds this to ONE automatic attempt per problem dir, ever —
+ * stateless and restart-safe. Deliberately NOT re-checked: admission and
+ * the paywall (the original admission covered this build; retry-once bounds
+ * worst-case spend at ×2) and the queue's one-at-a-time rule (the item
+ * still holds `generating`, so siblings stay blocked naturally). The slot
+ * check is `>` not `>=`: reconcileWithDisk still counts THIS item as
+ * generating at close time, so it holds its own slot.
+ */
+function autoRetryOnce(dir: string, code: number | null, label: string, respawn: () => void): boolean {
+  if (code === 64) return false;
+  if (existsSync(dir + '.build.1.log')) return false;
+  if (countLiveBuilds() > maxBuildsCap) return false;
+  rotateBuildLog(dir);
+  if (!existsSync(dir + '.build.1.log')) {
+    // No log to rotate (spawn died pre-open) — the ledger must exist or the
+    // retry loops forever.
+    try { writeFileSync(dir + '.build.1.log', `attempt 1: exit ${code}, no log captured\n`); } catch { return false; }
+  }
+  // The generator's contract says the dir "must be empty-ish" — same wipe
+  // as /api/rebuild. Blueprint and pristine/run archives live outside it.
+  rmSync(dir, { recursive: true, force: true });
+  console.warn(`[app] ${label} failed (exit ${code}) — retrying once automatically`);
+  respawn();
+  return true;
+}
+
 /** Generation spawn with failure bookkeeping: a non-zero exit writes a
  *  .failed marker into the item dir so reconcile derives `failed` and the
  *  timeline can offer retry — a silent stuck "generating" row was the
@@ -520,7 +579,7 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
   const logFd = openBuildLog(dir);
   const buildOwner = target.user_id ?? legacyUserId;
   const buildT0 = Date.now();
-  ph.capture(buildOwner, 'build_started', { kind: 'plan', item_id: item.id, sourced: item.source?.kind === 'leetcode' });
+  ph.capture(buildOwner, 'build_started', { kind: 'plan', item_id: item.id, sourced: item.source?.kind === 'leetcode', attempt: buildAttempt(dir) });
   const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), ...args], {
     cwd: repoRoot,
     detached: true,
@@ -537,7 +596,14 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
     closeSync(logFd);
     liveGenerations.delete(dir);
     clearGeneratingMarker(dir);
+    const attempt = buildAttempt(dir);
     if (code !== 0 && !existsSync(path.join(dir, '.validated'))) {
+      if (autoRetryOnce(dir, code, `generation for ${item.id}`, () => spawnGeneration(target, item, dir))) {
+        ph.capture(buildOwner, 'build_failed', {
+          kind: 'plan', item_id: item.id, exit_code: code, duration_ms: Date.now() - buildT0, attempt, auto_retried: true,
+        });
+        return;
+      }
       writeFileSync(path.join(dir, '.failed'), `exit ${code} at ${new Date().toISOString()}; output in ${dir}.build.log\n`);
       console.warn(`[app] generation failed for ${item.id} (exit ${code})`);
     }
@@ -545,7 +611,7 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
     // SIGTERM often lands AFTER the round is finished and validated).
     const ok = existsSync(path.join(dir, '.validated'));
     ph.capture(buildOwner, ok ? 'build_finished' : 'build_failed', {
-      kind: 'plan', item_id: item.id, exit_code: code, duration_ms: Date.now() - buildT0,
+      kind: 'plan', item_id: item.id, exit_code: code, duration_ms: Date.now() - buildT0, attempt,
     });
   });
 }
@@ -560,7 +626,7 @@ function spawnRepBuild(rep: Rep): void {
   const logFd = openBuildLog(dir);
   const buildOwner = rep.user_id ?? legacyUserId;
   const buildT0 = Date.now();
-  ph.capture(buildOwner, 'build_started', { kind: 'rep', rep_id: rep.id });
+  ph.capture(buildOwner, 'build_started', { kind: 'rep', rep_id: rep.id, attempt: buildAttempt(dir) });
   const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), 'rep-build', rep.id], {
     cwd: repoRoot,
     detached: true,
@@ -577,14 +643,24 @@ function spawnRepBuild(rep: Rep): void {
     closeSync(logFd);
     liveGenerations.delete(dir);
     clearGeneratingMarker(dir);
+    const attempt = buildAttempt(dir);
+    // Draft failures (the CLI wrote .failed itself, DRAFT_FAILURE_PREFIX)
+    // keep their distinct manual flow — auto-retry covers only the failures
+    // this handler would have marked.
     if (code !== 0 && !existsSync(path.join(dir, '.validated')) && !existsSync(path.join(dir, '.failed'))) {
+      if (autoRetryOnce(dir, code, `rep ${rep.id} build`, () => spawnRepBuild(rep))) {
+        ph.capture(buildOwner, 'build_failed', {
+          kind: 'rep', rep_id: rep.id, exit_code: code, duration_ms: Date.now() - buildT0, attempt, auto_retried: true,
+        });
+        return;
+      }
       writeFileSync(path.join(dir, '.failed'), `exit ${code} at ${new Date().toISOString()}; output in ${dir}.build.log\n`);
       console.warn(`[app] rep ${rep.id} build failed (exit ${code})`);
     }
     // Same rule as spawnGeneration: the artifact decides, not the exit code.
     const ok = existsSync(path.join(dir, '.validated'));
     ph.capture(buildOwner, ok ? 'build_finished' : 'build_failed', {
-      kind: 'rep', rep_id: rep.id, exit_code: code, duration_ms: Date.now() - buildT0,
+      kind: 'rep', rep_id: rep.id, exit_code: code, duration_ms: Date.now() - buildT0, attempt,
     });
   });
 }
@@ -1540,6 +1616,7 @@ export function runApp(cfg: AppConfig): http.Server {
   const auth = makeAuth(authConfigFromPublic(cfg.pub.supabase, cfg.pub.adminEmails, cfg.userId));
   internalHeaders = auth.internalToken ? { 'x-ip-internal': auth.internalToken } : {};
   legacyUserId = cfg.userId;
+  maxBuildsCap = cfg.pub.caps.maxConcurrentBuilds;
 
   // PostHog (posthog.ts). Everything is derived once at boot: the vendored
   // bundle's on-disk path, its version-stamped URL, and the page snippet.
@@ -2905,7 +2982,17 @@ export function runApp(cfg: AppConfig): http.Server {
         const verdict = retryVerdict(rep, { markerAlive: Boolean(gm && pidAlive(gm.pid)) });
         if (verdict === 'not-failed') return json(400, { error: 'rep is not in a failed state' });
         if (verdict === 'still-running') return json(409, { error: 'that build is actually still running — give it a minute' });
-        rmSync(path.join(dir, '.failed'), { force: true });
+        // Manual retry honors the global slot it used to skip (2026-08-15
+        // audit) — admission stays un-rechecked on purpose: a retry is not a
+        // second spend decision, the original admission covered this build.
+        if (countLiveBuilds() >= cfg.pub.caps.maxConcurrentBuilds) {
+          return json(409, { error: "someone else's round is generating — builds run one at a time in the beta; try again in ~5 minutes" });
+        }
+        // Every attempt's evidence survives, and the generator's "empty-ish
+        // dir" contract holds on attempt 2 — same rotation + wipe as the
+        // automatic retry (blueprint and archives live outside the dir).
+        rotateBuildLog(dir);
+        rmSync(dir, { recursive: true, force: true });
         console.log(`[app] rep ${rep.id} retrying`);
         spawnRepBuild(rep);
         return json(200, { ok: true });
@@ -3359,7 +3446,16 @@ export function runApp(cfg: AppConfig): http.Server {
         if (gm && pidAlive(gm.pid)) {
           return json(409, { error: 'that generation is actually still running — give it a minute' });
         }
-        rmSync(path.join(dir, '.failed'), { force: true });
+        // Manual retry honors the global slot it used to skip (2026-08-15
+        // audit); admission stays un-rechecked — a retry is not a second
+        // spend decision. Rotation + wipe match the automatic retry: every
+        // attempt's evidence survives, and the generator's "empty-ish dir"
+        // contract holds (blueprint and archives live outside the dir).
+        if (countLiveBuilds() >= cfg.pub.caps.maxConcurrentBuilds) {
+          return json(409, { error: "someone else's round is generating — builds run one at a time in the beta; try again in ~5 minutes" });
+        }
+        rotateBuildLog(dir);
+        rmSync(dir, { recursive: true, force: true });
         item.status = 'generating';
         saveQueue(repoRoot, q);
         console.log(`[app] retrying generation for ${t.id}/${item.id}`);
