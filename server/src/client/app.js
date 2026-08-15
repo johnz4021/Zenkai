@@ -290,6 +290,9 @@ const plan = {
   flash: false,            // one render's worth of row-flash after an update
   readOnly: false,         // no API key: replay + confirm, but no sending
   askDismissed: null,      // turn index whose pinned options were waved off
+  buildArmed: false,       // an unsettled build was clicked once; the second
+                           // click ships it (owner request 2026-08-15).
+                           // Transient — any other interaction disarms it.
 };
 
 let renderedTurnCount = 0; // autoscroll fires only when this grows
@@ -299,6 +302,7 @@ function resetPlan() {
   plan.tid = null; plan.turns = []; plan.proposal = null; plan.busy = false;
   plan.error = ''; plan.gateOpen = null; plan.include = {}; plan.tier = {};
   plan.openChips = {}; plan.flash = false; plan.readOnly = false; plan.askDismissed = null;
+  plan.buildArmed = false;
   attachments.length = 0;
 }
 
@@ -364,6 +368,8 @@ function planResume(id) {
 }
 
 function planTurn(message) {
+  // Talking to the planner is the opposite of "build it anyway".
+  plan.buildArmed = false;
   plan.busy = true; plan.error = '';
   renderPlan();
   fetch('/api/plan/turn', {
@@ -586,20 +592,48 @@ function renderPanel() {
   // the shape is still moving. `summary` is the model's own settle signal
   // (prompts/planner.md); open questions keep it honest after a reopener.
   const asks = openAskCount();
-  const settled = Boolean(p && p.summary) && asks === 0;
+  const settled = planSettled();
+  // Armed = an unsettled build was clicked once and is waiting for a second
+  // click. A settle landing in between makes the arming moot — the normal
+  // one-click path is correct again.
+  const armed = plan.buildArmed && !settled;
+  const label = armed
+    ? 'Build anyway →'
+    : n === 1 ? 'Confirm 1 round and build the plan' : 'Confirm ' + n + ' rounds and build the plan';
   const note = !p ? ''
+    : armed
+      ? (asks ? asks + ' question' + (asks === 1 ? '' : 's') + ' still open. ' : 'The shape is still moving. ') +
+        'Click again to build now, or keep talking to settle it.'
     : settled ? 'shape settled — ready when you are'
     : 'still working out the shape' +
-      (asks ? ' — ' + asks + ' open question' + (asks === 1 ? '' : 's') + ' below' : '') +
-      ' · confirm any time';
+      (asks ? ' — ' + asks + ' open question' + (asks === 1 ? '' : 's') + ' below' : '');
+  const noteClass = armed ? ' armed' : settled ? ' settled' : '';
   return '<aside id="plan-panel">' +
     '<div class="phead"><p class="micro">The plan</p>' +
     '<div class="meta">nothing is generated until you confirm</div></div>' +
     '<div class="pbody">' + body + '</div>' +
-    '<div class="pfoot"><button id="gate-confirm" class="primary" type="button" aria-describedby="gate-note"' + (n === 0 ? ' disabled' : '') + '>' +
-    (n === 1 ? 'Confirm 1 round and build the plan' : 'Confirm ' + n + ' rounds and build the plan') + '</button>' +
-    '<div class="meta' + (settled ? ' settled' : '') + '" id="gate-note">' + note + '</div></div>' +
+    '<div class="pfoot"><button id="gate-confirm" class="primary' + (settled ? '' : ' pending') +
+    '" type="button" aria-describedby="gate-note"' + (n === 0 ? ' disabled' : '') + '>' +
+    label + '</button>' +
+    '<div class="meta' + noteClass + '" id="gate-note">' + note + '</div></div>' +
     '</aside>';
+}
+
+/** The model's own settle signal: it writes `summary` once the loop's shape
+ *  stops moving (prompts/planner.md), and no question may still be open.
+ *  A SIGNAL, never a lock — `summary` is prompt-instructed, not enforced, so
+ *  a model that never emits one must not be able to strand the plan. That is
+ *  why the unsettled path is a speed bump (two clicks) and not a disable. */
+function planSettled() {
+  return Boolean(plan.proposal && plan.proposal.summary) && openAskCount() === 0;
+}
+
+/** Any interaction that isn't the build button itself cancels a pending
+ *  "build anyway" — the armed state must survive only deliberate intent. */
+function disarmBuild() {
+  if (!plan.buildArmed) return false;
+  plan.buildArmed = false;
+  return true;
 }
 
 /** Open planner questions after the last user message. Unlike pendingAsk,
@@ -834,6 +868,17 @@ function wirePlan(f) {
       kept.push(Object.assign({}, d.spec, tier ? { evidence_tier: tier } : {}));
     });
     if (!kept.length) return;
+    // Speed bump (owner request 2026-08-15): while the planner is still
+    // clarifying, the first click ARMS rather than builds — the button
+    // relabels to "Build anyway →" and the note says why. The second click
+    // ships it. Never a disable: the settle signal is model-written, so a
+    // planner that forgets it must not be able to strand the plan.
+    if (!planSettled() && !plan.buildArmed) {
+      plan.buildArmed = true;
+      renderPlan();
+      return;
+    }
+    plan.buildArmed = false;
     el('gate-confirm').disabled = true;
     // The accept is SLOW (queue sourcing + one naming call per spec) — the
     // same indeterminate bar the chat's busy state uses, not a bare line.
@@ -2157,6 +2202,19 @@ async function refresh(force) {
     console.error('[zenkai] render failed', e);
   }
 }
+
+// An armed "build anyway" survives only deliberate intent: any click that
+// isn't the build button, and any keystroke in the composer, cancels it.
+// Delegated + bound once — wirePlan rebinds per render and would leak.
+document.addEventListener('click', (e) => {
+  if (!plan.buildArmed) return;
+  if (e.target.closest && e.target.closest('#gate-confirm')) return;
+  if (disarmBuild()) renderPlan();
+});
+document.addEventListener('input', (e) => {
+  if (!plan.buildArmed || e.target.id !== 'plan-msg') return;
+  if (disarmBuild()) renderPlan();
+});
 
 document.addEventListener('focusout', () => {
   if (pendingState) {

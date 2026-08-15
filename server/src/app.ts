@@ -1135,6 +1135,9 @@ export function appPage(): string {
   #plan-panel .pfoot .meta { font-size: 12px; margin-top: 8px; display: block; line-height: 1.5; }
   /* The settle signal is information, not completed work: steel, not --ok. */
   #plan-panel .pfoot .meta.settled { color: var(--steel-text); }
+  /* Armed: the button asked a question and is waiting on an answer, so the
+     note steps up to body white — it is the thing to read right now. */
+  #plan-panel .pfoot .meta.armed { color: var(--text-1); }
   #plan-composer { margin-top: 14px; position: sticky; bottom: 0; background: var(--bg); padding-bottom: 10px; max-width: 62ch; }
   #plan-composer .row { display: flex; gap: 8px; align-items: flex-start; }
   #plan-composer textarea { flex: 1; min-height: 58px; resize: none; }

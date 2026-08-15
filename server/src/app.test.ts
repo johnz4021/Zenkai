@@ -128,18 +128,28 @@ describe('home app page', () => {
     expect(html).toContain('.foldnote');
   });
 
-  it('the build button carries a soft readiness note, never a hard gate', () => {
-    // Owner decision 2026-08-15: the user outranks the model — the button
-    // stays enabled; the note under it says whether the shape still moves.
+  it('the build button shows readiness and speed-bumps an unsettled build', () => {
+    // Owner request 2026-08-15: "I don't like that it's always accessible."
+    // Unsettled reads as a steel outline (same language as the practice
+    // screen's Start) and the first click ARMS rather than builds.
     expect(js).toContain('function openAskCount');
+    expect(js).toContain('function planSettled');
     expect(js).toContain('shape settled — ready when you are');
     expect(js).toContain('still working out the shape');
-    expect(js).toContain('confirm any time');
-    // Readiness must never disable: the only disabled condition stays n===0.
-    expect(js).toMatch(/id="gate-confirm" class="primary" type="button" aria-describedby="gate-note"' \+ \(n === 0 \? ' disabled' : ''\)/);
+    expect(js).toContain('Build anyway →');
+    expect(js).toContain('Click again to build now, or keep talking to settle it.');
+    expect(js).toMatch(/class="primary' \+ \(settled \? '' : ' pending'\)/);
+    expect(js).toMatch(/if \(!planSettled\(\) && !plan\.buildArmed\) \{\s*\n\s*plan\.buildArmed = true;/);
+    // NEVER a disable: `summary` is model-written, so a planner that forgets
+    // it must not be able to strand the plan. n===0 stays the only disable.
+    expect(js).toMatch(/aria-describedby="gate-note"' \+ \(n === 0 \? ' disabled' : ''\)/);
+    // Armed state survives only deliberate intent.
+    expect(js).toContain('function disarmBuild');
+    expect(js).toMatch(/plan\.buildArmed = false;\s*\n\s*plan\.busy = true/); // planTurn
     // The slow accept shows the shared progress bar, not a bare text line.
     expect(js).toMatch(/building your plan…<div class="progress">/);
     expect(html).toMatch(/\.pfoot \.meta\.settled \{ color: var\(--steel-text\)/);
+    expect(html).toMatch(/\.pfoot \.meta\.armed \{ color: var\(--text-1\)/);
   });
 
   it('adaptation is preview-then-apply — the model never writes unapproved', () => {
