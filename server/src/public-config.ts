@@ -116,6 +116,37 @@ export interface PublicConfig {
      *  variants of the same plan (monthly vs annual). */
     priceId: string;
   } | null;
+  /**
+   * PostHog analytics (posthog.ts). null = OFF — no vendor script is served,
+   * no inline init is rendered, no server event is captured; an unset box
+   * stays byte-identical to pre-analytics behaviour, same guarantee as every
+   * other block in this file.
+   *
+   * NOT a secret, deliberately: the project key (phc_) is DESIGNED to sit in
+   * the browser, exactly like the Supabase anon key. It still goes in
+   * child-env.ts GENERATOR_DROP — an agentic `claude -p` run has no use for
+   * it, same noise-reduction reasoning as the anon key — but never in
+   * ALWAYS_DROP, which is for credentials that move money or read the DB.
+   * Session processes DO keep it: they emit round lifecycle events.
+   */
+  posthog: {
+    /** Project API key, phc_ prefix. Public: ships to every browser. */
+    key: string;
+    /** Ingest host, e.g. https://us.i.posthog.com. */
+    host: string;
+    /**
+     * IP_POSTHOG_REPLAY_ROUND=1: session replay records the round's interior
+     * (the IDE iframe, the Monaco pane, the transcript, test output) instead
+     * of blocking it. Default OFF for two reasons that are not both obvious:
+     * rrweb serializes DOM mutations on the MAIN THREAD and a VS Code
+     * workbench is about the heaviest mutation source there is, on the page
+     * that also runs the timer, the voice socket and the trace WS; and the
+     * round page PROMISES "other terminal commands are not observed"
+     * (chrome.ts intro copy) — recording the iframe would falsify it. Flip
+     * only after measuring input latency with it on, and fix the copy.
+     */
+    replayRound: boolean;
+  } | null;
 }
 
 const strip = (u: string): string => u.replace(/\/+$/, '');
@@ -196,6 +227,41 @@ export function resolvePublicConfig(env: Record<string, string | undefined>): Pu
   }
   const stripeCfg =
     sKey && sHook && sPrice ? { apiKey: sKey, webhookSecret: sHook, priceId: sPrice } : null;
+  // PostHog: the key alone is enough (the host has a sane default), but a
+  // host with no key is half a config and refuses, same rule as above. The
+  // prefix checks are the pk_-in-STRIPE_API_KEY lesson applied forward: a
+  // personal API key (phx_) pasted here would ship a SECRET to every
+  // browser, which is strictly worse than a broken integration.
+  const phKey = env.IP_POSTHOG_KEY?.trim();
+  const phHost = env.IP_POSTHOG_HOST?.trim();
+  if (phHost && !phKey) {
+    throw new Error('IP_POSTHOG_HOST is set but IP_POSTHOG_KEY is not — set both or neither');
+  }
+  if (phKey) {
+    expectPrefix(
+      'IP_POSTHOG_KEY',
+      phKey,
+      ['phc_'],
+      'that is not a PROJECT key. phx_ is a personal API key — a real secret ' +
+        'that must never reach a browser, and this one ships to every page. ' +
+        'Use the project key from Settings → Project → Project API key.',
+    );
+    if (phHost) {
+      expectPrefix(
+        'IP_POSTHOG_HOST',
+        phHost,
+        ['https://', 'http://'],
+        'expected an origin like https://us.i.posthog.com (http:// only for a local test relay).',
+      );
+    }
+  }
+  const posthogCfg = phKey
+    ? {
+        key: phKey,
+        host: strip(phHost || 'https://us.i.posthog.com'),
+        replayRound: env.IP_POSTHOG_REPLAY_ROUND === '1',
+      }
+    : null;
   const url = env.IP_SUPABASE_URL?.trim();
   const anonKey = env.IP_SUPABASE_ANON_KEY?.trim();
   const serviceKey = env.IP_SUPABASE_SERVICE_KEY?.trim();
@@ -252,5 +318,6 @@ export function resolvePublicConfig(env: Record<string, string | undefined>): Pu
       paidRounds: zeroOr(env.IP_PAYWALL_PAID_ROUNDS, 4),
     },
     stripe: stripeCfg,
+    posthog: posthogCfg,
   };
 }

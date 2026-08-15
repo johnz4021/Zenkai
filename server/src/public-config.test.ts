@@ -185,3 +185,49 @@ describe('multi-session config (WU-D)', () => {
     expect(c.sessions.maxConcurrentSessions).toBe(3);
   });
 });
+
+describe('posthog config', () => {
+  it('unset means OFF, byte-identical — no key, no analytics, nothing rendered', () => {
+    expect(resolvePublicConfig({}).posthog).toBeNull();
+    // Replay flag alone arms nothing — it modifies a config that must exist.
+    expect(resolvePublicConfig({ IP_POSTHOG_REPLAY_ROUND: '1' }).posthog).toBeNull();
+  });
+
+  it('the key alone is enough; the host defaults and trims its slash', () => {
+    const c = resolvePublicConfig({ IP_POSTHOG_KEY: 'phc_abc123' });
+    expect(c.posthog).toEqual({
+      key: 'phc_abc123',
+      host: 'https://us.i.posthog.com',
+      replayRound: false,
+    });
+    const eu = resolvePublicConfig({
+      IP_POSTHOG_KEY: 'phc_abc123',
+      IP_POSTHOG_HOST: 'https://eu.i.posthog.com/',
+    });
+    expect(eu.posthog?.host).toBe('https://eu.i.posthog.com');
+  });
+
+  it('a host with no key is half a config and refuses to boot', () => {
+    expect(() => resolvePublicConfig({ IP_POSTHOG_HOST: 'https://us.i.posthog.com' })).toThrow(
+      /set both or neither/,
+    );
+  });
+
+  it('REFUSES a personal API key — phx_ is a SECRET and this key ships to every browser', () => {
+    // The pk_-in-STRIPE_API_KEY lesson (2026-08-14) applied forward: presence
+    // checks pass on the wrong key type; only the prefix tells them apart.
+    expect(() => resolvePublicConfig({ IP_POSTHOG_KEY: 'phx_abc123' })).toThrow(/personal API key/);
+    expect(() => resolvePublicConfig({ IP_POSTHOG_KEY: 'garbage' })).toThrow(/IP_POSTHOG_KEY/);
+  });
+
+  it('the round-replay flag rides the block and is off unless explicitly 1', () => {
+    expect(
+      resolvePublicConfig({ IP_POSTHOG_KEY: 'phc_a', IP_POSTHOG_REPLAY_ROUND: '1' }).posthog
+        ?.replayRound,
+    ).toBe(true);
+    expect(
+      resolvePublicConfig({ IP_POSTHOG_KEY: 'phc_a', IP_POSTHOG_REPLAY_ROUND: 'yes' }).posthog
+        ?.replayRound,
+    ).toBe(false);
+  });
+});

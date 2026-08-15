@@ -36,6 +36,21 @@ let loggedOut = false;
 // and lose the mode they picked.
 let loginMode = 'in'; // 'in' | 'up'
 
+/** The ONLY door to PostHog. The vendored bundle is served at a neutral path
+ *  but ad blockers still kill it for a real slice of users, and then
+ *  window.posthog simply does not exist — a bare posthog.* call anywhere in
+ *  this file would throw inside whatever handler made it, breaking the button
+ *  for exactly the users least likely to report it. app.test.ts pins that no
+ *  bare call exists. Usage: track('capture', 'event', {...}),
+ *  track('identify', id). */
+function track(method) {
+  try {
+    if (window.posthog && typeof window.posthog[method] === 'function') {
+      window.posthog[method].apply(window.posthog, [].slice.call(arguments, 1));
+    }
+  } catch (e) { /* analytics never break the app */ }
+}
+
 function jwt() { try { return window.localStorage.getItem('ip_jwt') || ''; } catch { return ''; } }
 function setJwt(t) {
   try { window.localStorage.setItem('ip_jwt', t); } catch { /* private mode */ }
@@ -3029,6 +3044,11 @@ function render(state) {
   // draft restore in planFirstSend's 402 branch. Read for the email address
   // and, once billing is on, the remaining-rounds readout.
   paywallAllowance = state.paywall ? { ...state.paywall, email: state.user && state.user.email } : null;
+  // Analytics identity: the Supabase user id ONLY (never the email — it
+  // stays on the box). posthog-js no-ops a repeat identify with the same id,
+  // so calling on every render is free; track() itself no-ops when the
+  // bundle was blocked or the box has no analytics configured.
+  if (state.user && state.user.id) track('identify', state.user.id);
   // Persistent status lives in the masthead; the banner is for genuine
   // problems only. A full-width bar on every page for a usually-false
   // condition was pure vertical tax.

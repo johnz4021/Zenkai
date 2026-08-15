@@ -59,6 +59,12 @@ export interface SessionPageView {
   /** Whether the voice runtime is actually on. The intro copy must not
    *  promise a live mic on IP_VOICE=0 / no-key rounds (QA 2026-08-14). */
   voice?: boolean;
+  /** Pre-built analytics markup (posthogSnippet — session.ts owns the config
+   *  and the block/replay decision). Absent = nothing rendered, and the page
+   *  is byte-identical to pre-analytics output. Built OUTSIDE this template
+   *  on purpose: the snippet is the one inline script the new Function()
+   *  parse tests don't reach, so it lives where posthog.test.ts parses it. */
+  analytics?: string;
 }
 
 const DEFAULT_VIEW: SessionPageView = {
@@ -158,7 +164,7 @@ export function sessionPage(sessionId: string, partial: Partial<SessionPageView>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
-<style>
+${view.analytics ? view.analytics + '\n' : ''}<style>
   /* Graphite Steel — the SAME token block as the plan app (app.ts). One skin. */
   :root {
     --bg: #0e0e0f; --panel: #151517; --raised: #1d1e20; --sunk: #131314;

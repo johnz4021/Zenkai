@@ -867,8 +867,9 @@ describe('launch origin — the falsifier is durable, not scrollback', () => {
       /origin === 'repeat' \|\| origin === 'plans' \|\| origin === 'practice' \? origin : 'unknown'/,
     );
     // one logLaunch per legacy handler (launch, queue-launch, repeat), after
-    // the session id exists; the multi paths log via out.body.session_id
-    expect(appSource.match(/logLaunch\(b\.origin, sessionId\)/g)).toHaveLength(3);
+    // the session id exists; the multi paths log via out.body.session_id.
+    // Every site passes the user too — that id is the PostHog distinct_id.
+    expect(appSource.match(/logLaunch\(b\.origin, sessionId, user!\.id\)/g)).toHaveLength(3);
   });
 });
 
@@ -1331,5 +1332,79 @@ describe('every 402 caller opens the gate instead of printing the sentence', () 
     expect(body).toContain("intent.kind === 'launch'");
     expect(body).toContain("intent.kind === 'plan'");
     expect(body).toContain("intent.kind === 'clarify'");
+  });
+});
+
+describe('posthog wiring (posthog.ts owns the snippet; this pins the page and the discipline)', () => {
+  const appSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'app.ts'), 'utf8');
+  const js = clientScript('app.js') ?? '';
+
+  it('an unconfigured page carries NO analytics — byte-level absence, not a dead flag', () => {
+    const html = appPage();
+    expect(html).not.toContain('posthog');
+    expect(html).not.toContain('/vendor/insight');
+  });
+
+  it('a configured page carries the snippet, and its inline script PARSES', async () => {
+    const { posthogSnippet, posthogAssetPath } = await import('./posthog.js');
+    const snippet = posthogSnippet(
+      { key: 'phc_test', host: 'https://us.i.posthog.com' },
+      { assetPath: posthogAssetPath('1.0.0'), maskTextSelector: '#history' },
+    );
+    const html = appPage(snippet);
+    expect(html).toContain('/vendor/insight-1.0.0.js');
+    // The inline init is the ONE script the /client/ new Function() tests
+    // never see, and it lives in a TS template literal where a stray ${
+    // interpolates server state into garbage. Parse what actually shipped.
+    const inline = /<script>\n([\s\S]*?)<\/script>/.exec(html)?.[1] ?? '';
+    expect(inline).toContain('window.posthog');
+    expect(() => new Function(inline)).not.toThrow();
+  });
+
+  it('the vendor route sits ABOVE the auth gate, like /client/', () => {
+    const assetAt = appSource.indexOf('isPosthogAssetUrl(url)');
+    const gateAt = appSource.indexOf('const user = await auth.resolve(req);');
+    expect(assetAt).toBeGreaterThan(0);
+    expect(assetAt).toBeLessThan(gateAt);
+  });
+
+  it('client code NEVER touches posthog bare — one guarded door, or a blocked bundle breaks buttons', () => {
+    // window.posthog is undefined for every ad-block user (the bundle is
+    // served at a neutral path, but EasyPrivacy still kills the capture
+    // host). A bare posthog.capture() inside a handler would throw exactly
+    // there. track() is the only permitted touch.
+    expect(js).toMatch(/function track\(/);
+    expect(js).not.toMatch(/(?<!window\.)posthog\.(capture|identify|init|reset)\(/);
+    // Identity: the Supabase uuid only — the email must never ride along.
+    expect(js).toContain("track('identify', state.user.id)");
+    expect(js).not.toMatch(/track\('identify'[^)]*email/);
+  });
+
+  it('the error boundary captures INSIDE its own guard — a 500 must always go out', () => {
+    const at = appSource.indexOf("ph.capture('server', '$exception'");
+    expect(at).toBeGreaterThan(0);
+    const before = appSource.slice(at - 400, at);
+    expect(before).toContain('try {');
+    const after = appSource.slice(at, at + 500);
+    expect(after).toContain("json(500, { error: String(e).slice(0, 300) })");
+  });
+
+  it('every lifecycle emitter goes through ph.* (module client, no-op until runApp arms it)', () => {
+    for (const marker of [
+      "'round_launched'",
+      "'round_crashed'",
+      "'round_abandoned'",
+      "'build_started'",
+      "'build_finished'",
+      "'build_failed'",
+      "'gate_shown'",
+    ]) {
+      expect(appSource).toContain(marker);
+    }
+    // The paywall mirror must never ship the email or the free-text answer.
+    const paywallAt = appSource.indexOf('function logPaywall');
+    const body = appSource.slice(paywallAt, paywallAt + 1400);
+    expect(body).toContain('email: _e');
+    expect(body).toContain('expect: _x');
   });
 });

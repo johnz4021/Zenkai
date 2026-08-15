@@ -35,8 +35,21 @@ const ALWAYS_DROP = [
   'STRIPE_WEBHOOK_SECRET',
 ] as const;
 
-/** Dropped for generators on top of ALWAYS_DROP. */
-const GENERATOR_DROP = ['ELEVENLABS_API_KEY', 'IP_ELEVENLABS_KEY', 'IP_SUPABASE_ANON_KEY'] as const;
+/** Dropped for generators on top of ALWAYS_DROP.
+ *
+ *  The PostHog trio lives HERE and not in ALWAYS_DROP on purpose: the project
+ *  key (phc_) is public by design — it ships to every browser — so it guards
+ *  nothing, and an agentic `claude -p` run simply has no use for it (the anon
+ *  key's reasoning exactly). SESSION children keep it: they emit the round
+ *  lifecycle events and render the session page's analytics snippet. */
+const GENERATOR_DROP = [
+  'ELEVENLABS_API_KEY',
+  'IP_ELEVENLABS_KEY',
+  'IP_SUPABASE_ANON_KEY',
+  'IP_POSTHOG_KEY',
+  'IP_POSTHOG_HOST',
+  'IP_POSTHOG_REPLAY_ROUND',
+] as const;
 
 export type ChildKind = 'sandbox' | 'generator' | 'session';
 
