@@ -23,7 +23,7 @@ import path from 'node:path';
 import httpProxy from 'http-proxy';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
-import { isFailingRun, resolveRoundSpec, resolveSurface } from '@interview-prep/shared';
+import { isFailingRun, resolveRoundSpec, resolveSurface, validateRoundSpec } from '@interview-prep/shared';
 import { makeAuth } from './auth.js';
 import { childEnv } from './child-env.js';
 import { judgeSession } from './judge.js';
@@ -431,6 +431,20 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // The round's shape — everything below renders/enforces from THESE flags,
   // never from a format name (capabilities, not categories).
   const roundSpec = resolveRoundSpec(problem);
+  // Validation ran only at build/intake, never here — so a manifest carrying
+  // an out-of-vocabulary check.kind silently fell through roundRules() to the
+  // DEBUGGING defaults, running "you know where the bug is" rules on a round
+  // with no bug (QA 2026-08-14 audit). A legacy manifest with NO round_spec
+  // still resolves to the default spec above and stays launchable; only an
+  // spec that EXISTS and is invalid refuses to run.
+  if (problem.round_spec) {
+    const specFailures = validateRoundSpec(problem.round_spec);
+    if (specFailures.length > 0) {
+      throw new Error(
+        `problem.json round_spec is invalid — refusing to run a round whose rules would silently default to debugging:\n  - ${specFailures.join('\n  - ')}`,
+      );
+    }
+  }
   const caps = roundSpec.capabilities;
   const surface = resolveSurface(caps);
 
