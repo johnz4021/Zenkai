@@ -54,6 +54,13 @@ import {
 } from './session-registry.js';
 import type { PublicConfig } from './public-config.js';
 import {
+  isHandledEvent,
+  periodStart,
+  rowFromSubscription,
+  subscribed,
+  type SubscriptionRow,
+} from './billing.js';
+import {
   countPlans,
   roundsUsed,
   expectedText,
@@ -343,6 +350,75 @@ function readPaywallRows(): PaywallRow[] {
     }
   }
   return out;
+}
+
+/** One append-only line per subscription state change (billing.ts). Same
+ *  discipline as logPaywall above, and written SYNCHRONOUSLY for a sharper
+ *  reason: confirm-on-return responds the instant this returns and the client
+ *  retries the gated action immediately — an async append would race it. */
+function logSubscription(row: SubscriptionRow): void {
+  try {
+    appendFileSync(path.join(repoRoot, 'subscriptions.jsonl'), JSON.stringify(row) + '\n');
+  } catch (e) {
+    // Unlike a metric, losing this loses a paying customer's entitlement.
+    // Say so loudly rather than swallowing it the way logPaywall does.
+    console.error('[billing] FAILED to record subscription row:', String(e).slice(0, 200));
+  }
+}
+
+/** The subscription ledger, read back. Torn-tail-tolerant, same shape as
+ *  readPaywallRows and readRuns (artifact.ts): an absent file is `[]` and a
+ *  half-written last line is skipped. Absent means nobody is subscribed,
+ *  which is exactly right on a box with billing switched off. */
+function readSubscriptionRows(): SubscriptionRow[] {
+  let raw: string;
+  try {
+    raw = readFileSync(path.join(repoRoot, 'subscriptions.jsonl'), 'utf8');
+  } catch {
+    return [];
+  }
+  const out: SubscriptionRow[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const e = JSON.parse(line) as SubscriptionRow;
+      if (typeof e.user_id === 'string' && typeof e.status === 'string') out.push(e);
+    } catch {
+      /* torn last line from a crash mid-append proves nothing — skip it */
+    }
+  }
+  return out;
+}
+
+/** Raw request bytes, for Stripe webhook signature verification.
+ *
+ *  Deliberately NOT readBody: that accumulates with `body += d`, which decodes
+ *  each chunk as UTF-8. Stripe's payloads are UTF-8 JSON so it would usually
+ *  work — but a signature is computed over BYTES, and "usually" is the wrong
+ *  standard for the check that decides whether a request is genuinely Stripe. */
+function readRawBody(req: http.IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (d: Buffer | string) => chunks.push(Buffer.isBuffer(d) ? d : Buffer.from(d)));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+  });
+}
+
+/** Stable label so these Checkout Sessions group together in the Stripe
+ *  Dashboard. The 8-letter suffix is fixed, not generated per boot — a
+ *  per-restart value would fragment the grouping it exists to provide. */
+const STRIPE_INTEGRATION_ID = 'zenkai-paywall-gate-qkzmwrvp';
+
+/** Lazily loaded and cached. `import()` rather than a top-level import so a
+ *  box with billing off never loads the SDK — the same shape
+ *  `@anthropic-ai/sdk` is used with elsewhere here. */
+let stripeCached: { key: string; client: import('stripe').Stripe } | null = null;
+async function stripeClient(apiKey: string): Promise<import('stripe').Stripe> {
+  if (stripeCached && stripeCached.key === apiKey) return stripeCached.client;
+  const { default: Stripe } = await import('stripe');
+  const client = new Stripe(apiKey, { apiVersion: '2026-07-29.dahlia' });
+  stripeCached = { key: apiKey, client };
+  return client;
 }
 
 function spawnDetached(args: string[], env: Record<string, string> = {}): number | null {
@@ -1504,6 +1580,66 @@ export function runApp(cfg: AppConfig): http.Server {
             : {}),
         });
       }
+      if (url === '/api/stripe/webhook' && req.method === 'POST') {
+        // ABOVE the auth gate on purpose: Stripe sends no JWT, so below this
+        // line it would 401 forever and every subscription change would be
+        // silently lost. The SIGNATURE is the authentication here — which is
+        // why it is verified before anything else touches the payload.
+        const sc = cfg.pub.stripe;
+        if (!sc) return json(200, { ok: true, ignored: 'billing off' });
+        const raw = await readRawBody(req);
+        const sig = req.headers['stripe-signature'];
+        let event: import('stripe').Stripe.Event;
+        try {
+          const stripe = await stripeClient(sc.apiKey);
+          event = stripe.webhooks.constructEvent(raw, String(sig ?? ''), sc.webhookSecret);
+        } catch (e) {
+          // Unverified means not from Stripe. 400 so Stripe surfaces it in the
+          // dashboard rather than retrying a payload we will never accept.
+          console.warn('[billing] webhook signature rejected:', String(e).slice(0, 160));
+          return json(400, { error: 'bad signature' });
+        }
+        try {
+          if (isHandledEvent(event.type)) {
+            const stripe = await stripeClient(sc.apiKey);
+            // Resolve the subscription and OUR user id for each shape. The
+            // user id rides subscription metadata (set at Checkout creation)
+            // rather than being looked up from the customer — a subscription
+            // event carries no client_reference_id, and metadata travels with
+            // every one of them.
+            let sub: import('stripe').Stripe.Subscription | null = null;
+            let userId = '';
+            const obj = event.data.object as unknown as Record<string, unknown>;
+            if (event.type === 'checkout.session.completed') {
+              userId = String(obj.client_reference_id ?? '');
+              const subId = typeof obj.subscription === 'string' ? obj.subscription : '';
+              if (subId) sub = await stripe.subscriptions.retrieve(subId);
+            } else if (String(event.type).startsWith('customer.subscription.')) {
+              sub = obj as unknown as import('stripe').Stripe.Subscription;
+              userId = String((sub.metadata ?? {}).user_id ?? '');
+            } else {
+              const subId = typeof obj.subscription === 'string' ? obj.subscription : '';
+              if (subId) {
+                sub = await stripe.subscriptions.retrieve(subId);
+                userId = String((sub.metadata ?? {}).user_id ?? '');
+              }
+            }
+            if (userId && sub) {
+              logSubscription(
+                rowFromSubscription(userId, sub as unknown as Record<string, never>, Date.now(), event.id),
+              );
+            } else {
+              console.warn(`[billing] ${event.type} with no resolvable user — ignored`);
+            }
+          }
+        } catch (e) {
+          // A 500 makes Stripe retry, which is what we want for a transient
+          // failure — but log it, because a silent retry loop is invisible.
+          console.error('[billing] webhook handling failed:', String(e).slice(0, 200));
+          return json(500, { error: 'handler failed' });
+        }
+        return json(200, { received: true });
+      }
       const user = await auth.resolve(req);
       if (url.startsWith('/api/') && !user) {
         return json(401, { error: 'sign in required' });
@@ -1536,10 +1672,25 @@ export function runApp(cfg: AppConfig): http.Server {
         const pw = cfg.pub.paywall;
         if (!pw.enabled || user!.admin) return null;
         try {
+          // A manual grant still comps forever (append a would_pay row for a
+          // user_id and they are through) — that lever predates billing and
+          // stays, for handing free access to people whose feedback is worth
+          // having.
           if (hasGrant(readPaywallRows(), user!.id)) return null;
+          const subs = readSubscriptionRows();
+          // A SUBSCRIBER is not ungated — they get a per-period allowance.
+          // `since` is their billing period start, so last month's rounds do
+          // not eat this month's. The free tier passes null and counts for a
+          // lifetime: a trial has no period to reset.
+          const since = periodStart(subs, user!.id);
+          const paid = subscribed(subs, user!.id);
           const mine = listTargets(repoRoot).filter(
             (t) => (t.user_id ?? cfg.userId) === user!.id,
           );
+          // Plans are a spend guardrail on the free tier only. A subscriber
+          // paid for the product; rationing which companies they may prep for
+          // would be petty and is not what the money is protecting.
+          if (reason === 'plans' && paid) return null;
           const used =
             reason === 'plans'
               ? countPlans(mine, user!.id, cfg.userId)
@@ -1551,6 +1702,7 @@ export function runApp(cfg: AppConfig): http.Server {
                   }),
                   user!.id,
                   cfg.userId,
+                  since,
                 );
           return gateVerdict({
             enabled: true,
@@ -1558,8 +1710,12 @@ export function runApp(cfg: AppConfig): http.Server {
             granted: false,
             reason,
             used,
-            free: reason === 'plans' ? pw.freePlans : pw.freeRounds,
+            free: reason === 'plans' ? pw.freePlans : paid ? pw.paidRounds : pw.freeRounds,
             priceUsd: pw.priceUsd,
+            // A subscriber who has spent their monthly rounds is NOT sold the
+            // same subscription again — the card says "you have used this
+            // month's rounds", and there is nothing to buy.
+            subscribed: paid,
           });
         } catch {
           return null;
@@ -1830,29 +1986,35 @@ export function runApp(cfg: AppConfig): http.Server {
         sweepSessionsToDb();
         const repsForUser = repsVisibleTo(repStateView(repoRoot, repsFresh), user!, cfg.userId);
         // Willingness-to-pay allowance (paywall.ts). ADVISORY ONLY — the gate
-        // itself is enforced at the four spend routes, which is what makes it
-        // real; this key exists so the client can gate the "new plan" entry
-        // point BEFORE the user types a description. Gating only at the POST
-        // would mean writing out a whole target and then being stopped, and
-        // the composer is cleared before the request with no draft persistence
-        // (client/app.js send()), so the words would be gone.
+        // is enforced at the ten spend routes, which is what makes it real.
+        // This key is what the client renders a remaining-rounds readout and a
+        // "manage billing" affordance from.
         //
-        // Pure arithmetic over arrays this handler already holds, plus one
-        // small ledger read — a route polled every 5s gains no per-target disk
-        // work. ABSENT for admins, a gate-off box, and anyone already granted,
-        // so the client's fail-open default is the only default it has.
+        // Pure arithmetic over arrays this handler already holds, plus two
+        // small ledger reads — a route polled every 5s gains no per-target
+        // disk work. ABSENT for admins, a gate-off box, and anyone comped, so
+        // the client's fail-open default is the only default it has.
+        //
+        // Subscribers are NOT excluded here: they have a per-period allowance
+        // too, and the readout is how they see what is left. Miss that and a
+        // paying customer either sees a free-tier nag or no counter at all.
         const pw = cfg.pub.paywall;
+        const subRows = readSubscriptionRows();
+        const paidNow = subscribed(subRows, user!.id);
         const allowance =
           pw.enabled && !user!.admin && !hasGrant(readPaywallRows(), user!.id)
             ? {
                 price_usd: pw.priceUsd,
+                subscribed: paidNow,
+                billing_enabled: cfg.pub.stripe !== null,
                 rounds_used: roundsUsed(
                   repsForUser,
                   targets.flatMap((t) => t.queue?.items ?? []),
                   user!.id,
                   cfg.userId,
+                  periodStart(subRows, user!.id),
                 ),
-                free_rounds: pw.freeRounds,
+                free_rounds: paidNow ? pw.paidRounds : pw.freeRounds,
                 // `targets` is already owner-filtered above, so its length IS
                 // the plan count — countPlans is for the routes that hold raw
                 // Target records instead.
@@ -1870,6 +2032,90 @@ export function runApp(cfg: AppConfig): http.Server {
           user: { id: user!.id, email: user!.email, admin: user!.admin },
           ...(allowance ? { paywall: allowance } : {}),
         });
+      }
+      if (url === '/api/stripe/checkout' && req.method === 'POST') {
+        // Creates a hosted Checkout Session and hands back its URL. Hosted,
+        // not embedded: no Stripe.js on our page, so no CSP change and no card
+        // field ever touches this origin — the property this flow has had from
+        // the start.
+        const sc = cfg.pub.stripe;
+        if (!sc) return json(503, { error: 'billing is not configured' });
+        try {
+          const stripe = await stripeClient(sc.apiKey);
+          const session = await stripe.checkout.sessions.create({
+            mode: 'subscription',
+            // NO payment_method_types — omitting it lets Stripe pick eligible
+            // methods per customer from Dashboard settings. Hardcoding ['card']
+            // silently locks out everything else.
+            line_items: [{ price: sc.priceId, quantity: 1 }],
+            // Our user id, on both the session and the subscription. The
+            // session's is read on confirm-on-return; the subscription's
+            // metadata is what later lifecycle webhooks resolve by, since they
+            // carry no client_reference_id.
+            client_reference_id: user!.id,
+            subscription_data: { metadata: { user_id: user!.id } },
+            ...(user!.email ? { customer_email: user!.email } : {}),
+            success_url: `${cfg.pub.appPublicUrl}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${cfg.pub.appPublicUrl}/?checkout=cancelled`,
+            integration_identifier: STRIPE_INTEGRATION_ID,
+          });
+          if (!session.url) return json(502, { error: 'stripe returned no checkout url' });
+          return json(200, { url: session.url });
+        } catch (e) {
+          console.error('[billing] checkout create failed:', String(e).slice(0, 200));
+          return json(502, { error: 'could not start checkout — try again' });
+        }
+      }
+      if (url.startsWith('/api/stripe/confirm') && req.method === 'GET') {
+        // Confirm-on-return. The webhook is the durable record, but it can
+        // land after the user is already back — and "I paid and nothing
+        // happened" is the worst first impression a paid product can make.
+        // This writes the entitlement row synchronously so the retry that
+        // follows immediately gets through.
+        const sc = cfg.pub.stripe;
+        if (!sc) return json(503, { error: 'billing is not configured' });
+        const sid = new URL(url, 'http://x').searchParams.get('session_id') ?? '';
+        if (!/^cs_[A-Za-z0-9_]+$/.test(sid)) return json(400, { error: 'bad session id' });
+        try {
+          const stripe = await stripeClient(sc.apiKey);
+          const session = await stripe.checkout.sessions.retrieve(sid);
+          // Ownership: a session id is not a secret, so without this check
+          // anyone holding one could confirm someone else's purchase onto
+          // their own account.
+          if (session.client_reference_id !== user!.id) {
+            return json(403, { error: 'not your checkout session' });
+          }
+          if (session.status !== 'complete') return json(200, { subscribed: false, pending: true });
+          const subId = typeof session.subscription === 'string' ? session.subscription : '';
+          if (!subId) return json(200, { subscribed: false, pending: true });
+          const sub = await stripe.subscriptions.retrieve(subId);
+          logSubscription(
+            rowFromSubscription(user!.id, sub as unknown as Record<string, never>, Date.now()),
+          );
+          return json(200, { subscribed: subscribed(readSubscriptionRows(), user!.id) });
+        } catch (e) {
+          console.error('[billing] confirm failed:', String(e).slice(0, 200));
+          return json(502, { error: 'could not confirm the purchase — refresh in a moment' });
+        }
+      }
+      if (url === '/api/stripe/portal' && req.method === 'POST') {
+        // Cancellation, receipts, payment-method updates — all Stripe's
+        // Customer Portal, none of it ours to build or to get wrong.
+        const sc = cfg.pub.stripe;
+        if (!sc) return json(503, { error: 'billing is not configured' });
+        const row = readSubscriptionRows().filter((r) => r.user_id === user!.id).pop();
+        if (!row?.customer_id) return json(400, { error: 'no billing account yet' });
+        try {
+          const stripe = await stripeClient(sc.apiKey);
+          const portal = await stripe.billingPortal.sessions.create({
+            customer: row.customer_id,
+            return_url: `${cfg.pub.appPublicUrl}/`,
+          });
+          return json(200, { url: portal.url });
+        } catch (e) {
+          console.error('[billing] portal failed:', String(e).slice(0, 200));
+          return json(502, { error: 'could not open billing — try again' });
+        }
       }
       if (url === '/api/paywall/probe' && req.method === 'POST') {
         // The WTP gate's recorder (paywall.ts). This route can return ONLY
@@ -3131,6 +3377,31 @@ export function runApp(cfg: AppConfig): http.Server {
   // IP_APP_BIND=127.0.0.1 in the beta: the tunnel is the only ingress to the
   // app. (The SESSION server must stay on all interfaces — the container's
   // trace WS dials the docker gateway IP, never loopback.)
+  // The gate advertises a price from IP_PAYWALL_PRICE_USD while Stripe charges
+  // whatever STRIPE_PRICE_ID actually costs. If those drift the product lies
+  // about its own price to the person about to pay it — worse than any bug in
+  // here. Read the real amount once at boot and let it win; the env value
+  // stays as the fallback for a box that cannot reach Stripe.
+  if (cfg.pub.stripe) {
+    void (async () => {
+      try {
+        const stripe = await stripeClient(cfg.pub.stripe!.apiKey);
+        const price = await stripe.prices.retrieve(cfg.pub.stripe!.priceId);
+        if (typeof price.unit_amount === 'number') {
+          const real = Math.round(price.unit_amount / 100);
+          if (real !== cfg.pub.paywall.priceUsd) {
+            console.warn(
+              `[billing] IP_PAYWALL_PRICE_USD says $${cfg.pub.paywall.priceUsd} but ` +
+                `${cfg.pub.stripe!.priceId} charges $${real} — using $${real}`,
+            );
+            cfg.pub.paywall.priceUsd = real;
+          }
+        }
+      } catch (e) {
+        console.warn('[billing] could not read the Stripe price:', String(e).slice(0, 160));
+      }
+    })();
+  }
   const announce = () => {
     console.log(`[app] open ${cfg.pub.appPublicUrl}/`);
   };

@@ -46,4 +46,16 @@ describe('childEnv', () => {
       expect(childEnv(kind, BASE).IP_SUPABASE_SERVICE_KEY).toBeUndefined();
     }
   });
+
+  it('Stripe credentials reach NO child kind, ever', () => {
+    // A generator is an agentic claude -p run reading stranger-authored prose.
+    // These lists are DENYLISTS for generator/session, so a new secret leaks
+    // by default — this is the assertion that catches the next one.
+    const withStripe = { ...BASE, STRIPE_API_KEY: 'rk_test_x', STRIPE_WEBHOOK_SECRET: 'whsec_x' };
+    for (const kind of ['sandbox', 'generator', 'session'] as const) {
+      const env = childEnv(kind, withStripe);
+      expect(env.STRIPE_API_KEY).toBeUndefined();
+      expect(env.STRIPE_WEBHOOK_SECRET).toBeUndefined();
+    }
+  });
 });

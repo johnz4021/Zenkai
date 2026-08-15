@@ -412,6 +412,9 @@ async function planFirstSend(text) {
     if (r.status === 402 && sBody.paywall && !paywallOpen) {
       plan.busy = false;
       if (text) plan.turns.pop();
+      // Replay target if this ends in a Checkout redirect. Carries the typed
+      // text, which the composer already cleared and nothing else persists.
+      paywallIntent = { kind: 'plan', text: text };
       let proceed = false;
       try { proceed = await showPaywallGate(sBody.paywall); } catch { proceed = false; }
       if (proceed) { renderPlan(); planFirstSend(text); return; }
@@ -2633,11 +2636,16 @@ function setTitle(r, state) {
 
 function render(state) {
   // WTP allowance (paywall.ts). First statement, before anything that can
-  // throw. ADVISORY ONLY — it pre-gates the "new plan" entry point so nobody
-  // types a description and is then stopped. An absent field means no gate,
-  // which is the safe default for admins, a gate-off server, an already
-  // granted user, and a client newer than its server. Enforcement is the
-  // server's 402, always.
+  // throw. ADVISORY ONLY — enforcement is the server's 402 at ten spend
+  // routes, always. An absent field means no gate, which is the safe default
+  // for admins, a gate-off server, a comped user, and a client newer than its
+  // server.
+  //
+  // NOT a pre-gate: an earlier comment here claimed this gated the "new plan"
+  // entry point before the user types. It never did — nothing reads
+  // plans_used. What actually protects a gated user's typed words is the
+  // draft restore in planFirstSend's 402 branch. Read for the email address
+  // and, once billing is on, the remaining-rounds readout.
   paywallAllowance = state.paywall ? { ...state.paywall, email: state.user && state.user.email } : null;
   // Persistent status lives in the masthead; the banner is for genuine
   // problems only. A full-width bar on every page for a usually-false
@@ -2777,21 +2785,64 @@ function probeBeacon(action, expect) {
   } catch { /* a metric never blocks a launch */ }
 }
 
-/** The ONE beacon that is awaited. The caller retries the gated request the
- *  moment this resolves, so the grant row must already be on disk — a
- *  fire-and-forget POST here would race the retry and re-gate the user on
- *  their own purchase, forever. Returns whether the retry will get through. */
-async function probeGrant(action, expect) {
+// ---- surviving the Checkout redirect ------------------------------------
+// The gate is reached from two places, and BOTH retry via an in-memory
+// continuation: launchCommon closes over endpoint/body and recurses with
+// isRetry; planFirstSend closes over the typed text and re-calls itself.
+// Navigating to checkout.stripe.com destroys the page and both closures, so
+// without persisting the intent a user pays and lands back on a page with
+// nothing to resume — the worst possible first impression of a paid product.
+//
+// Set by whichever caller opened the gate; written to sessionStorage right
+// before the redirect; replayed once on return. sessionStorage (not local)
+// because an intent is meaningless in another tab and must not outlive the
+// tab that formed it.
+var PENDING_INTENT_KEY = 'ip_pending_intent';
+let paywallIntent = null;
+
+function savePendingIntent() {
   try {
-    const r = await fetch('/api/paywall/probe', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(expect ? { action: action, expect: expect } : { action: action }),
-    });
-    const s = await r.json();
-    return Boolean(s && s.granted);
+    if (paywallIntent) window.sessionStorage.setItem(PENDING_INTENT_KEY, JSON.stringify(paywallIntent));
+  } catch { /* private mode: they land on the app, just without the auto-resume */ }
+}
+
+function takePendingIntent() {
+  try {
+    var raw = window.sessionStorage.getItem(PENDING_INTENT_KEY);
+    window.sessionStorage.removeItem(PENDING_INTENT_KEY); // once, never twice
+    return raw ? JSON.parse(raw) : null;
   } catch {
-    return false;
+    return null;
+  }
+}
+
+/**
+ * Returning from Stripe. Confirms server-side rather than trusting the URL —
+ * a success_url is just a link and proves nothing — then replays whatever the
+ * user was doing when they hit the gate.
+ *
+ * Confirm-first matters: the webhook is the durable record but may not have
+ * landed yet, and the replayed action would be gated again if we raced it.
+ */
+async function resumeAfterCheckout() {
+  var params = new URLSearchParams(window.location.search);
+  var outcome = params.get('checkout');
+  if (!outcome) return;
+  var sid = params.get('session_id');
+  // Clean the URL first so a refresh cannot re-run this.
+  try { window.history.replaceState({}, '', window.location.pathname + window.location.hash); } catch { /* ignore */ }
+  var intent = takePendingIntent();
+  if (outcome !== 'success' || !sid) return; // cancelled: nothing to do, nothing lost
+  try {
+    await fetch('/api/stripe/confirm?session_id=' + encodeURIComponent(sid));
+  } catch { /* the webhook is the backstop; the replay below may still gate */ }
+  if (!intent) return;
+  if (intent.kind === 'launch' && intent.endpoint) {
+    launchCommon(intent.endpoint, intent.body || {}, null, intent.idleLabel || 'Start');
+  } else if (intent.kind === 'plan') {
+    var box = el('plan-msg');
+    if (box && intent.text) box.value = intent.text;
+    planFirstSend(intent.text || '');
   }
 }
 
@@ -2830,41 +2881,56 @@ function showPaywallGate(pw) {
 
     // Step 2: the reveal. Reached only by pressing Subscribe, and it always
     // ends in the request going through — nothing here can strand the user.
-    function reveal(granted) {
-      host.dataset.step = 'reveal';
-      var who = (paywallAllowance && paywallAllowance.email) || '';
-      host.innerHTML =
-        '<div class="card" role="dialog" aria-modal="true" aria-labelledby="paywall-h">' +
-          '<h2 id="paywall-h">Payments are not switched on yet</h2>' +
-          '<p>You are early. Nothing has been charged, and your ' +
-            (unit === 'plans' ? 'plan' : 'round') + ' is unlocked either way.</p>' +
-          '<p>Want me to email you' + (who ? ' at ' + esc(who) : '') + ' when they are?</p>' +
-          '<div class="btnrow">' +
-            '<button type="button" class="primary" id="paywall-notify">Yes, tell me</button>' +
-            '<button type="button" id="paywall-nonotify">No thanks</button>' +
-          '</div>' +
-        '</div>';
-      var yes = el('paywall-notify');
-      var no = el('paywall-nonotify');
-      if (!yes || !no) { teardown(granted); return; }
-      yes.addEventListener('click', function () { probeBeacon('would_pay_confirmed'); teardown(granted); });
-      no.addEventListener('click', function () { probeBeacon('notify_declined'); teardown(granted); });
-      if (yes.focus) yes.focus();
-    }
-
     try {
       host.dataset.step = '';
+      // A SUBSCRIBER who has spent this period's rounds gets a different card:
+      // they are still gated (unlimited would be a liability at ~$2 a round),
+      // but selling someone the subscription they already pay for is the
+      // fastest way to lose them. No price, no Subscribe — just when it resets
+      // and a way into billing.
+      if (pw.subscribed) {
+        host.innerHTML =
+          '<div class="card" role="dialog" aria-modal="true" aria-labelledby="paywall-h">' +
+            '<h2 id="paywall-h">You have used this month\\u2019s ' + Number(pw.free) + ' rounds</h2>' +
+            '<p>Your plan renews at the start of your next billing period, and the ' +
+              'count resets then. Nothing is lost in the meantime \\u2014 your plans, ' +
+              'history and gap graph stay where they are.</p>' +
+            '<div class="btnrow">' +
+              '<button type="button" class="primary" id="paywall-close">Got it</button>' +
+              '<button type="button" id="paywall-portal">Manage billing</button>' +
+            '</div>' +
+          '</div>';
+        host.hidden = false;
+        probeBeacon('gated');
+        var close = el('paywall-close');
+        var portal = el('paywall-portal');
+        if (!close) { teardown(false); return; }
+        close.addEventListener('click', function () { teardown(false); });
+        if (portal) {
+          portal.addEventListener('click', async function () {
+            portal.disabled = true;
+            try {
+              var pr = await fetch('/api/stripe/portal', { method: 'POST' });
+              var pb = await pr.json();
+              if (pb && pb.url) { window.location = pb.url; return; }
+              launchStatusInGate(pb && pb.error ? pb.error : 'could not open billing');
+            } catch { launchStatusInGate('could not open billing \\u2014 try again'); }
+            portal.disabled = false;
+          });
+        }
+        window.addEventListener('keydown', onKey);
+        if (close.focus) close.focus();
+        return;
+      }
+
       host.innerHTML =
         '<div class="card" role="dialog" aria-modal="true" aria-labelledby="paywall-h">' +
           '<h2 id="paywall-h">You have used your ' + Number(pw.free) + ' free ' + unit + '</h2>' +
           '<p class="price">' + esc(price) + '</p>' +
-          '<p>Zenkai is ' + esc(price) + ' once the beta ends - plans and rounds included.</p>' +
-          '<div class="ask">' +
-            '<label for="paywall-expect">What would you expect to pay? (optional)</label>' +
-            '<input id="paywall-expect" type="text" maxlength="200" autocomplete="off" />' +
-          '</div>' +
+          '<p>Zenkai is ' + esc(price) + ' \\u2014 plans and rounds included. ' +
+            'Cancel any time from your account.</p>' +
           '<div class="btnrow">' +
-            '<button type="button" class="primary" id="paywall-yes">Subscribe - ' + esc(price) + '</button>' +
+            '<button type="button" class="primary" id="paywall-yes">Subscribe \\u2014 ' + esc(price) + '</button>' +
             '<button type="button" id="paywall-no">Maybe later</button>' +
           '</div>' +
         '</div>';
@@ -2875,28 +2941,38 @@ function showPaywallGate(pw) {
       var no = el('paywall-no');
       if (!yes || !no) { teardown(false); return; }
       no.addEventListener('click', function () {
-        var input = el('paywall-expect');
-        probeBeacon('not_yet', input && input.value ? input.value : '');
+        probeBeacon('not_yet');
         teardown(false);
       });
       yes.addEventListener('click', async function () {
-        var input = el('paywall-expect');
-        var expect = input && input.value ? input.value : '';
         yes.disabled = true;
         no.disabled = true;
-        yes.textContent = 'One moment...';
-        var granted = await probeGrant('would_pay', expect);
-        if (!granted) {
-          // The grant did not land. Say so plainly and let them try again -
-          // launching anyway is not an option, the server would gate the
-          // retry regardless.
+        yes.textContent = 'Opening checkout...';
+        // Record intent BEFORE the beacon, because the redirect below cancels
+        // in-flight requests; probeBeacon uses keepalive for exactly this.
+        probeBeacon('would_pay');
+        try {
+          var r = await fetch('/api/stripe/checkout', { method: 'POST' });
+          var b = await r.json();
+          if (!b || !b.url) {
+            yes.disabled = false;
+            no.disabled = false;
+            yes.textContent = 'Subscribe \\u2014 ' + price;
+            launchStatusInGate(b && b.error ? b.error : 'could not start checkout - try again');
+            return;
+          }
+          // THE CONTINUATION PROBLEM: a full-page redirect destroys the
+          // in-memory closure that would have retried this action. Persist
+          // what they were doing so the return path can replay it; without
+          // this, someone pays and lands back with nothing happening.
+          savePendingIntent();
+          window.location = b.url;
+        } catch {
           yes.disabled = false;
           no.disabled = false;
-          yes.textContent = 'Subscribe - ' + price;
-          launchStatusInGate('that did not go through - try once more');
-          return;
+          yes.textContent = 'Subscribe \\u2014 ' + price;
+          launchStatusInGate('could not reach checkout - try again');
         }
-        reveal(true);
       });
       window.addEventListener('keydown', onKey);
       if (yes.focus) yes.focus();
@@ -2933,14 +3009,19 @@ async function launchCommon(endpoint, body, btn, idleLabel, isRetry) {
   // if some other session happened to be live. The server sends `error` too,
   // so an un-updated call site degrades to a readable sentence.
   if (r.status === 402 && s.paywall && !paywallOpen && !isRetry) {
+    // What to replay if this ends in a Checkout redirect (see
+    // resumeAfterCheckout) — the closure below does not survive navigation.
+    paywallIntent = { kind: 'launch', endpoint: endpoint, body: body, idleLabel: idleLabel };
     let proceed = false;
     try { proceed = await showPaywallGate(s.paywall); } catch { proceed = false; }
     if (!proceed) {
       if (btn) { btn.disabled = false; btn.textContent = idleLabel; }
       return;
     }
-    // Granted. The grant row is already on disk (probeGrant is awaited), so
-    // the retry gets through. isRetry stops any chance of a gate loop.
+    // Through the gate — via a manual comp, or an entitlement already on
+    // disk. (A Checkout purchase never reaches here: it redirects away, and
+    // resumeAfterCheckout replays this call on return.) isRetry stops any
+    // chance of a gate loop.
     return launchCommon(endpoint, body, btn, idleLabel, true);
   }
   if (s.error) {
@@ -2997,4 +3078,8 @@ initAuth().then((ok) => {
   if (!ok) return; // login screen owns the page; success path reloads
   window.setInterval(refresh, 5000);
   refresh(true);
+  // After auth, because confirming a purchase and replaying the gated action
+  // both need a session. Never blocks the app: any failure inside just means
+  // the user lands on a working page and clicks again.
+  resumeAfterCheckout().catch((e) => console.error('[billing] resume failed', e));
 });

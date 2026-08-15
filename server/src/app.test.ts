@@ -788,12 +788,37 @@ describe('paywall gate — a real limit, and the ways it must not misfire', () =
     expect(statusAt).toBeLessThan(errorAt);
   });
 
-  it('the grant beacon is awaited; the rest are fire-and-forget', () => {
-    // A fire-and-forget grant would race the retry and re-gate the user on
-    // their own purchase, forever.
-    expect(js).toContain('await probeGrant(');
-    expect(js).toContain('async function probeGrant');
-    expect(js).toContain('keepalive: true'); // still true for the others
+  it('the pending action survives the Checkout redirect', () => {
+    // THE failure this guards: both retry paths are in-memory closures, and
+    // navigating to Stripe destroys them. Without a persisted intent a user
+    // pays and lands back on a page with nothing happening.
+    expect(js).toContain('savePendingIntent()');
+    expect(js).toContain('sessionStorage');
+    expect(js).toContain('async function resumeAfterCheckout');
+    // Both gate entry points must record what to replay.
+    expect(js).toContain("kind: 'launch'");
+    expect(js).toContain("kind: 'plan'");
+    // Saved BEFORE the navigation, not after.
+    const yesAt = js.indexOf('savePendingIntent()');
+    const navAt = js.indexOf('window.location = b.url');
+    expect(yesAt).toBeGreaterThan(0);
+    expect(yesAt).toBeLessThan(navAt);
+  });
+
+  it('the return path confirms server-side rather than trusting the URL', () => {
+    // A success_url is just a link; it proves nothing. And confirming BEFORE
+    // the replay is what stops the replay racing a webhook that has not
+    // landed yet.
+    const start = js.indexOf('async function resumeAfterCheckout');
+    const body = js.slice(start, start + 1800);
+    expect(body).toContain('/api/stripe/confirm');
+    expect(body.indexOf('/api/stripe/confirm')).toBeLessThan(body.indexOf('launchCommon('));
+    // The intent is consumed once — a refresh must not re-run a purchase flow.
+    expect(js).toContain('removeItem(PENDING_INTENT_KEY)');
+  });
+
+  it('beacons still use keepalive, since the redirect cancels in-flight fetches', () => {
+    expect(js).toContain('keepalive: true');
   });
 
   it('a gated plan restores the words the composer already cleared', () => {
@@ -815,6 +840,54 @@ describe('paywall gate — a real limit, and the ways it must not misfire', () =
     const block = html.slice(html.indexOf('#paywall {'), html.indexOf('#paywall .btnrow button'));
     expect(block.length).toBeGreaterThan(0);
     expect(block).not.toMatch(/box-shadow/); // DESIGN.md rule 1
+  });
+
+  it('the webhook sits ABOVE the auth gate', () => {
+    // Stripe sends no JWT. Below `auth.resolve` this route would 401 forever
+    // and every renewal, cancellation and failed payment would be lost in
+    // silence — the class of bug you only find in a billing dispute.
+    const hookAt = appSource.indexOf("url === '/api/stripe/webhook'");
+    const gateAt = appSource.indexOf('const user = await auth.resolve(req);');
+    expect(hookAt).toBeGreaterThan(0);
+    expect(gateAt).toBeGreaterThan(0);
+    expect(hookAt).toBeLessThan(gateAt);
+  });
+
+  it('the webhook verifies the signature before touching the payload', () => {
+    const start = appSource.indexOf("url === '/api/stripe/webhook'");
+    const body = appSource.slice(start, start + 2600);
+    // constructEvent is the authentication for this route.
+    expect(body).toContain('webhooks.constructEvent');
+    // Raw bytes, not readBody's UTF-8-decoded string — a signature is over bytes.
+    expect(body).toContain('readRawBody(req)');
+    expect(body).not.toContain('readBody(req)');
+    // Verify first: nothing may read event data before constructEvent runs.
+    expect(body.indexOf('constructEvent')).toBeLessThan(body.indexOf('event.data.object'));
+  });
+
+  it('confirm-on-return checks the session belongs to the caller', () => {
+    // A Checkout session id is not a secret. Without this, anyone holding one
+    // could confirm someone else's purchase onto their own account.
+    const start = appSource.indexOf("url.startsWith('/api/stripe/confirm')");
+    const body = appSource.slice(start, start + 1800);
+    expect(body).toContain('session.client_reference_id !== user!.id');
+    expect(body).toContain('json(403');
+  });
+
+  it('checkout never hardcodes payment_method_types', () => {
+    // Omitting it lets Stripe serve eligible methods per customer; hardcoding
+    // ['card'] silently locks out everything else. Comments stripped first —
+    // this asserts about code, and the code's own comment names the field.
+    const code = appSource
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/[^\n]*/g, '');
+    expect(code).not.toContain('payment_method_types');
+  });
+
+  it('the user id rides subscription metadata, not just the session', () => {
+    // Lifecycle webhooks carry no client_reference_id — without metadata a
+    // renewal or cancellation cannot be attributed to anyone.
+    expect(appSource).toContain('subscription_data: { metadata: { user_id: user!.id } }');
   });
 
   it('no card fields anywhere in the flow', () => {

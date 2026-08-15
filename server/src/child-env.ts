@@ -22,8 +22,18 @@
 
 const SANDBOX_KEEP = ['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'SHELL', 'USER'] as const;
 
-/** Never reaches ANY child. */
-const ALWAYS_DROP = ['IP_SUPABASE_SERVICE_KEY'] as const;
+/** Never reaches ANY child.
+ *
+ *  The Stripe pair earns its place the same way the service key did: a
+ *  generator is an agentic `claude -p` run whose brief carries
+ *  stranger-authored prose, and money-moving credentials in its environment
+ *  are one prompt injection away from being exfiltrated. Nothing a child does
+ *  needs them — billing lives entirely in the app process. */
+const ALWAYS_DROP = [
+  'IP_SUPABASE_SERVICE_KEY',
+  'STRIPE_API_KEY',
+  'STRIPE_WEBHOOK_SECRET',
+] as const;
 
 /** Dropped for generators on top of ALWAYS_DROP. */
 const GENERATOR_DROP = ['ELEVENLABS_API_KEY', 'IP_ELEVENLABS_KEY', 'IP_SUPABASE_ANON_KEY'] as const;

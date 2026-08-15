@@ -278,6 +278,18 @@ Two honesty notes for whoever reads it. Every `expect` answer was given
 And a fresh email resets the counter, since signup is open by decision; at
 this size that costs precision, not money.
 
+## 6b. Stripe billing
+
+Setup lives in **`docs/stripe-setup.md`** (product + price, restricted key,
+webhook, portal, tax). Two things to carry in your head from it:
+
+- **Billing off is the safe default.** Unset the three `STRIPE_*` vars and the
+  gate still works, comps still work, nothing can be bought. That is also the
+  rollback.
+- **Tax is a decision, not a flag.** US/EU customers need Stripe Tax *and* an
+  active registration; `automatic_tax` without one collects nothing and reports
+  no error.
+
 ## 7. VPS cutover (supersedes 2, 3 and 5 — rev 2)
 
 Box: **Hetzner CPX31, Ashburn (US East)** — 4 vCPU AMD / 8GB / 160GB NVMe.
