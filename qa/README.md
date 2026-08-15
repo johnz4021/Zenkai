@@ -88,3 +88,24 @@ env -u ANTHROPIC_API_KEY \
 | `adapt_round=<id>:<check_kind>:<supersedes>` | adaptation that re-points a spec |
 
 Tear down: kill the app, `git worktree remove --force /tmp/zenkai-qa`.
+
+## Variance passes (`qa/variance/`) — REAL model calls, real dollars
+
+The generator's gauntlet: adversarial briefs through the REAL pipeline to
+measure first-try and healed rates (first run 2026-08-15: 12/12 healed,
+3 stream-abort retries, ~$25). Unlike everything above, this leg needs a
+valid `ANTHROPIC_API_KEY` in the scratch instance's env and NO shim on PATH.
+
+- `corpus.json` — 80 adversarial briefs (5 lenses: language chaos, obscure
+  domains, contradictory asks, extreme specs, vocabulary/sourcing stress);
+  `ranked.json` — the 30-brief selection + a 12-build assignment.
+- `tier1.mjs` — the 30 briefs through the real clarifier (`QA_APP_URL`
+  override; ~$2, ~10 min). Records drafts, bindings, gaps, degradation.
+- `tier2.mts` — the assigned builds through real generation with heal-layer
+  attribution parsed from build logs (~$20+, ~1 h; run with `npx tsx`, poll
+  ceiling 25 min/build — the builds are detached, so a killed driver loses
+  nothing but rows; re-derive from disk markers).
+
+Run before big prompt/model changes; compare heal attribution, not just
+pass rate. Box-parity leg: clone the checkout on the box, key-only `.env`,
+drive `target add → infer --accept → blueprint → generate-for` per brief.
