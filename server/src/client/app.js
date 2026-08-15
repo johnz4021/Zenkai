@@ -2188,7 +2188,9 @@ function renderIndex(state) {
     if (cardUpcoming.length) {
       left = daysUntil(cardUpcoming[0].date) + ' days to ' + (cardRounds.length > 1 ? 'next round' : 'interview');
     } else if (cardRounds.length) {
-      left = 'interview passed';
+      // "interview passed" read as "you passed the interview" (QA
+      // 2026-08-15) — this states only what the calendar knows.
+      left = 'interview date passed';
     }
     const nextItem = row.next;
     const nextLine = nextItem
