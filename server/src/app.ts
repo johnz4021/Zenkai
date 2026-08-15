@@ -859,15 +859,25 @@ export function appPage(): string {
     gap: 4px 28px; margin-top: 22px; align-items: start;
     margin-inline: calc((720px - 100%) / -2);
   }
-  #rep-rail { grid-column: 1; grid-row: 1; }
-  #rep-open { grid-column: 2; grid-row: 1; }
-  /* Brief + readiness + Start live in the QUESTION column, always (owner
-     report 2026-08-15). The rail is one row per confirmed fact and outgrows
-     the viewport; anything below it is unreachable without scrolling, and a
-     row-2 commit sat below exactly that. At 472px the column still holds the
-     brief's paragraph, which is what drove it out of the 220px rail
-     originally (QA 2026-08-12, ISSUE-004). */
-  #rep-open #rep-commit { margin-top: 18px; border-top: 1px solid var(--rule); padding-top: 14px; }
+  /* Row 2 holds the columns; the commit band takes row 1 (below). The
+     columns are LAST in visual order but the questions stay first in the
+     DOM, so tab order still hits the task before the action (pass 6). */
+  #rep-rail { grid-column: 1; grid-row: 2; }
+  #rep-open { grid-column: 2; grid-row: 2; }
+  /* The commit BAND: spans both columns on grid row 1, above them (owner
+     call 2026-08-15). Anything placed inside a column rides that column's
+     length, and the rail runs ~70px per confirmed fact — eight facts put
+     Start off-screen. Above the grid it costs the columns no width and its
+     position never depends on how long either gets. What you're about to
+     build reads on the left, the action sits right. */
+  #rep-commit {
+    grid-column: 1 / -1; grid-row: 1;
+    display: flex; align-items: flex-end; gap: 24px;
+    padding-bottom: 14px; margin-bottom: 10px; border-bottom: 1px solid var(--rule);
+  }
+  #rep-commit .commit-text { flex: 1; min-width: 0; }
+  #rep-commit .rep-actions { flex: none; margin-top: 0; }
+  #rep-commit #rep-brief { margin-top: 0; }
   /* Readiness is visible, never a gate: ready reads as the loud white
      primary, pending (re-checking, or questions still open) drops to a
      steel outline — still clickable, visibly not-yet-the-moment. */
@@ -877,8 +887,11 @@ export function appPage(): string {
   button.primary.pending { background: transparent; border-color: var(--steel); color: var(--steel-text); font-weight: 500; }
   button.primary.pending:hover { background: transparent; border-color: var(--steel-text); color: var(--text-1); }
   @media (max-width: 760px) {
-    /* Narrow: no breakout (it would overflow the shell), rail above questions. */
+    /* Narrow: no breakout (it would overflow the shell), commit band on top,
+       then the rail, then the questions. The band stacks (text over button)
+       so a 44px Start never squeezes the brief into a column of one word. */
     #rep-confirm { display: flex; flex-direction: column; margin-inline: 0; }
+    #rep-commit { order: -2; flex-direction: column; align-items: stretch; gap: 10px; }
     #rep-rail { order: -1; }
   }
   /* Rail rows are the editable readback (decision 1A) — compact by default

@@ -579,17 +579,21 @@ describe('practice door — client surface', () => {
     expect(html).toMatch(/#rep-rail \.gapval \{[^}]*cursor: pointer/s);
   });
 
-  it('Start is pinned in the question column — never below the rail', () => {
-    // Owner report 2026-08-15: the rail is ~70px per confirmed fact, so a
-    // grid-row-2 commit sat below ALL of it. A settled-only placement still
-    // stranded Start for the whole 8-20s re-check — the exact window the
-    // user hit. ONE unconditional placement, inside #rep-open.
+  it('Start rides a band ABOVE both columns — neither can push it off-screen', () => {
+    // Owner call 2026-08-15: anything inside a column rides that column's
+    // length, and the rail is ~70px per confirmed fact. The band spans both
+    // columns on grid row 1; the columns move to row 2.
     expect(js).toContain('function renderRepCommit');
-    expect(js).toMatch(/html \+= renderRepCommit\(d, startLabel, open\.length\);\s*\n\s*html \+= '<\/div>'; \/\/ #rep-open/);
     expect(js).not.toContain('allSettled');
-    expect(html).toMatch(/#rep-open #rep-commit \{[^}]*border-top/s);
-    // The dead grid rule is gone — nested, it never applied.
-    expect(html).not.toMatch(/#rep-commit \{[^}]*grid-column/);
+    expect(html).toMatch(/#rep-commit \{[^}]*grid-column: 1 \/ -1;\s*grid-row: 1/s);
+    expect(html).toMatch(/#rep-rail \{ grid-column: 1; grid-row: 2; \}/);
+    expect(html).toMatch(/#rep-open \{ grid-column: 2; grid-row: 2; \}/);
+    // Text left, action right — the band never becomes a stacked block.
+    expect(html).toMatch(/#rep-commit \{[^}]*display: flex/s);
+    expect(js).toContain('class="commit-text"');
+    // DOM order keeps the questions first so tab order still hits the task
+    // before the action (pass 6); only CSS rows reorder it visually.
+    expect(js).toMatch(/id="rep-open"[\s\S]*id="rep-rail"[\s\S]*renderRepCommit/);
   });
 
   it('readiness is visible but never a gate (three states, one always-live button)', () => {

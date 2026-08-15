@@ -1254,14 +1254,6 @@ function renderPractice() {
       '<input id="rep-change" placeholder="e.g. actually it’s Rust, and harder" style="flex:1;background:var(--panel);color:var(--text-1);border:1px solid var(--line);border-radius:6px;padding:10px 12px;font:inherit;min-height:44px"' + dis + '>' +
       '<button type="button" id="rep-rechecks" class="mini" style="min-height:44px"' + dis + '>' +
       (rep.busy ? 'applying…' : 'apply') + '</button></div>';
-    // Brief + Start live HERE, always — in the question column, never on a
-    // grid row below the rail. The rail is one ~70px row per confirmed fact
-    // (eight facts ≈ 600px), so a row-2 commit sat below ALL of it; the
-    // earlier settled-only placement still stranded Start for the whole
-    // 8-20s re-check, which is exactly when the user reported hunting for
-    // it (2026-08-15). Pinned here, the rail can grow without ever moving
-    // the page's primary action.
-    html += renderRepCommit(d, startLabel, open.length);
     html += '</div>'; // #rep-open
 
     html += '<div id="rep-rail"><div class="micro">Confirmed from your paste</div>';
@@ -1298,10 +1290,16 @@ function renderPractice() {
     html += '<div class="metaline" style="margin-top:10px">' + esc(specShapeLine(d.spec.capabilities)) + '</div>';
     html += '</div>'; // #rep-rail
 
-    // (The commit block is rendered inside #rep-open above — the 472px
-    // question column is still wide enough for the brief's paragraph, which
-    // is what drove it out of the 220px rail in the first place (QA
-    // 2026-08-12, ISSUE-004). Still in flow — the sticky slot stays free.)
+    // The commit band spans BOTH columns and sits ABOVE them (owner call
+    // 2026-08-15): anything placed inside a column rides that column's
+    // length, and the rail is ~70px per confirmed fact — eight facts put
+    // Start off-screen. A band above the grid costs the columns no space
+    // and its position never depends on how long either one gets.
+    //
+    // It is LAST in the DOM on purpose: the questions are the task and must
+    // keep the first tab stop (tab order, pass 6). CSS grid rows do the
+    // visual reordering, so reading order and tab order stay independent.
+    html += renderRepCommit(d, startLabel, open.length);
     html += '</div>'; // #rep-confirm
   }
   if (rep.phase === 'clarifying') {
@@ -1354,7 +1352,9 @@ function renderPractice() {
  *  builder, two placements — grid row 2 while questions are open, inside
  *  the right column once settled (owner report 2026-08-15). */
 function renderRepCommit(d, startLabel, openCount) {
-  let html = '<div id="rep-commit">';
+  // A band, not a block: what you're about to build on the left, the action
+  // on the right. Sits above both columns so neither can push it off-screen.
+  let html = '<div id="rep-commit"><div class="commit-text">';
   if (rep.brief) html += '<div id="rep-brief">' + esc(rep.brief) + '</div>';
   if (d.unsupported) {
     // Decision 2B: the decline is visible and the choice is the user's.
@@ -1372,6 +1372,7 @@ function renderRepCommit(d, startLabel, openCount) {
       ? openCount + ' question' + (openCount === 1 ? '' : 's') + ' still open — start anyway if you’re happy'
       : 'ready to build';
   html += '<div id="rep-ready" class="' + (ready ? 'is-ready' : 'is-pending') + '">' + note + '</div>';
+  html += '</div>'; // .commit-text
   // A queued Start survives re-renders: the label comes from state, so the
   // background landing that resumes it can repaint freely in between.
   html += '<div class="rep-actions"><button type="button" class="primary' + (ready ? '' : ' pending') + '" id="rep-start"' +
