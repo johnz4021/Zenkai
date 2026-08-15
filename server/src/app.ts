@@ -34,6 +34,14 @@ import { clientScript } from './chrome.js';
 import { authConfigFromPublic, makeAuth } from './auth.js';
 import { childEnv } from './child-env.js';
 import { makeDb, repRow, sessionRow, targetRow, type SessionRow } from './db.js';
+import {
+  isPosthogAssetUrl,
+  makePh,
+  posthogAssetFile,
+  posthogAssetPath,
+  posthogAssetVersion,
+  posthogSnippet,
+} from './posthog.js';
 import { applyReaping, gatherRepDiskFacts, planReaping } from './retention.js';
 import {
   preserveRunTree,
@@ -146,6 +154,11 @@ let internalHeaders: Record<string, string> = {};
 /** The pre-beta/local owner id (cfg.userId), for the module-level spawn
  *  helpers that run outside runApp's closure. Set once in runApp. */
 let legacyUserId = 'u1';
+/** PostHog mirror (posthog.ts). Module-level for the same reason as
+ *  legacyUserId — the spawn/log helpers live outside runApp's closure. The
+ *  default is the no-op; runApp swaps in the real client when configured, so
+ *  every capture below is safe to call unconditionally. */
+let ph = makePh(null);
 
 function probeSession(port: number): Promise<{ reachable: boolean; ended: boolean; session_id: string | null; user_id: string | null }> {
   return new Promise((resolve) => {
@@ -293,7 +306,7 @@ function attachmentBlocksFromDecoded(
  *  values ('repeat' joined them with practice-again, which must be countable
  *  separately from a first run); console scrollback is not a metric, a JSONL
  *  file is. */
-function logLaunch(origin: unknown, sessionId: string): void {
+function logLaunch(origin: unknown, sessionId: string, userId?: string): void {
   const o = origin === 'repeat' || origin === 'plans' || origin === 'practice' ? origin : 'unknown';
   try {
     appendFileSync(
@@ -303,6 +316,9 @@ function logLaunch(origin: unknown, sessionId: string): void {
   } catch {
     /* metrics never block a launch */
   }
+  // Mirrored to PostHog with the same sanitized origin; the JSONL above
+  // stays authoritative (db.ts rule: the mirror can follow, never lead).
+  ph.capture(userId ?? legacyUserId, 'round_launched', { origin: o, session_id: sessionId });
 }
 
 /** One durable line per willingness-to-pay probe event (paywall.ts) — the
@@ -320,6 +336,17 @@ function logPaywall(row: Record<string, unknown>): void {
     appendFileSync(path.join(repoRoot, 'paywall.jsonl'), JSON.stringify(row) + '\n');
   } catch {
     /* metrics never block a launch */
+  }
+  // The WTP funnel, mirrored so it gets cohorts attached: gate_shown →
+  // gate_would_pay → gate_would_pay_confirmed. Identity is the user id ONLY
+  // (owner decision 2026-08-15): `email` stays in the JSONL and off the
+  // wire, and so does `expect` — user-authored free text has no business in
+  // a third party when the authoritative row already carries it.
+  const uid = typeof row.user_id === 'string' ? row.user_id : '';
+  const action = typeof row.action === 'string' ? row.action : 'unknown';
+  if (uid) {
+    const { ts: _ts, user_id: _u, email: _e, expect: _x, action: _a, ...safe } = row;
+    ph.capture(uid, action === 'gated' ? 'gate_shown' : `gate_${action}`, safe);
   }
 }
 
@@ -491,12 +518,15 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
   liveGenerations.add(dir);
   mkdirSync(dir, { recursive: true });
   const logFd = openBuildLog(dir);
+  const buildOwner = target.user_id ?? legacyUserId;
+  const buildT0 = Date.now();
+  ph.capture(buildOwner, 'build_started', { kind: 'plan', item_id: item.id, sourced: item.source?.kind === 'leetcode' });
   const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), ...args], {
     cwd: repoRoot,
     detached: true,
     stdio: ['ignore', logFd, logFd],
     // The generator's targeting note reads the OWNER's gap graph.
-    env: childEnv('generator', process.env, { IP_USER_ID: target.user_id ?? legacyUserId }),
+    env: childEnv('generator', process.env, { IP_USER_ID: buildOwner }),
   });
   child.unref();
   // Disk-derived liveness (ISSUE-003): the marker carries {pid, started_at}
@@ -511,6 +541,12 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
       writeFileSync(path.join(dir, '.failed'), `exit ${code} at ${new Date().toISOString()}; output in ${dir}.build.log\n`);
       console.warn(`[app] generation failed for ${item.id} (exit ${code})`);
     }
+    // The artifact decides success, never the exit code (cli.ts: a timeout
+    // SIGTERM often lands AFTER the round is finished and validated).
+    const ok = existsSync(path.join(dir, '.validated'));
+    ph.capture(buildOwner, ok ? 'build_finished' : 'build_failed', {
+      kind: 'plan', item_id: item.id, exit_code: code, duration_ms: Date.now() - buildT0,
+    });
   });
 }
 
@@ -522,12 +558,15 @@ function spawnRepBuild(rep: Rep): void {
   liveGenerations.add(dir);
   mkdirSync(dir, { recursive: true });
   const logFd = openBuildLog(dir);
+  const buildOwner = rep.user_id ?? legacyUserId;
+  const buildT0 = Date.now();
+  ph.capture(buildOwner, 'build_started', { kind: 'rep', rep_id: rep.id });
   const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), 'rep-build', rep.id], {
     cwd: repoRoot,
     detached: true,
     stdio: ['ignore', logFd, logFd],
     // The rep creator's gap graph steers the blueprint's emphasis.
-    env: childEnv('generator', process.env, { IP_USER_ID: rep.user_id ?? legacyUserId }),
+    env: childEnv('generator', process.env, { IP_USER_ID: buildOwner }),
   });
   child.unref();
   // Marker at REQUEST time with the child's pid — drafting happens inside
@@ -542,6 +581,11 @@ function spawnRepBuild(rep: Rep): void {
       writeFileSync(path.join(dir, '.failed'), `exit ${code} at ${new Date().toISOString()}; output in ${dir}.build.log\n`);
       console.warn(`[app] rep ${rep.id} build failed (exit ${code})`);
     }
+    // Same rule as spawnGeneration: the artifact decides, not the exit code.
+    const ok = existsSync(path.join(dir, '.validated'));
+    ph.capture(buildOwner, ok ? 'build_finished' : 'build_failed', {
+      kind: 'rep', rep_id: rep.id, exit_code: code, duration_ms: Date.now() - buildT0,
+    });
   });
 }
 
@@ -683,7 +727,12 @@ function refreshQueue(target: Target, userId: string, now: number): Queue | null
  * the shipped placeholder-as-label pattern was a hard-rule violation);
  * everything stateful renders client-side from /api/state.
  */
-export function appPage(): string {
+export function appPage(analyticsSnippet = ''): string {
+  // analyticsSnippet: posthogSnippet() markup, or '' (the default keeps every
+  // existing caller — tests included — byte-identical). Built by posthog.ts,
+  // NOT inline here: the inline init is the one script new Function() parse
+  // tests don't reach through /client/, so it is generated where a unit test
+  // can extract and parse it, and a stray \${ can never interpolate.
   return /* html */ `<!doctype html>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -692,7 +741,7 @@ export function appPage(): string {
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
-<style>
+${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   :root {
     /* Graphite Steel (direction 3a). Brand plates survive at full saturation —
        the ONLY branded pixels in a monochrome shell. The mark is one ribbon
@@ -1492,6 +1541,25 @@ export function runApp(cfg: AppConfig): http.Server {
   internalHeaders = auth.internalToken ? { 'x-ip-internal': auth.internalToken } : {};
   legacyUserId = cfg.userId;
 
+  // PostHog (posthog.ts). Everything is derived once at boot: the vendored
+  // bundle's on-disk path, its version-stamped URL, and the page snippet.
+  // Missing bundle (not installed) degrades to NO snippet and a 404ing
+  // vendor route — the page renders untouched, which is the whole contract.
+  ph = makePh(cfg.pub.posthog);
+  const phAssetFile = cfg.pub.posthog ? posthogAssetFile(repoRoot) : null;
+  const phAssetUrl = posthogAssetPath(posthogAssetVersion(repoRoot));
+  // App-page masking: #entry-flow is the plan conversation (pasted recruiter
+  // emails, verbatim), #practice-flow the composer's gap co-authoring
+  // (pasted JDs), #history the feedback cards (verbatim trace quotes —
+  // TODOS #4 territory). Layout and clicks still record; the text shows as
+  // ***. Inputs are masked by maskAllInputs regardless.
+  const appAnalytics = phAssetFile
+    ? posthogSnippet(cfg.pub.posthog, {
+        assetPath: phAssetUrl,
+        maskTextSelector: '#entry-flow, #practice-flow, #history',
+      })
+    : '';
+
   /** Multi-session launch (WU-D): verdict → allocate → spawn → append+persist,
    *  serialized behind launchChain with no awaits inside the critical block —
    *  concurrent launches can't share a slot, and the registry entry exists
@@ -1617,7 +1685,7 @@ export function runApp(cfg: AppConfig): http.Server {
         // markup. A cached copy outlives a deploy exactly like a stale app.js
         // does — and pairs it with fresh JS, which is worse than either alone.
         res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
-        return res.end(appPage());
+        return res.end(appPage(appAnalytics));
       }
       if (url.startsWith('/client/')) {
         const body = clientScript(path.basename(url));
@@ -1631,6 +1699,22 @@ export function runApp(cfg: AppConfig): http.Server {
         // on a new row kind and reported itself as a dead server).
         res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'no-store' });
         return res.end(body);
+      }
+      if (isPosthogAssetUrl(url) && req.method === 'GET') {
+        // The vendored analytics bundle, above the auth gate like /client/
+        // (the page that references it is open too). The ONE cacheable asset
+        // on this server: the no-store rule exists because "no build step
+        // means no cache busting", and here the posthog-js version in the
+        // URL is the cache buster — bumping the dep changes the path.
+        if (!phAssetFile) {
+          res.writeHead(404);
+          return res.end('no such asset');
+        }
+        res.writeHead(200, {
+          'content-type': 'text/javascript',
+          'cache-control': 'public, max-age=31536000, immutable',
+        });
+        return res.end(readFileSync(phAssetFile));
       }
       if (url === '/api/auth-config' && req.method === 'GET') {
         // The one unauthenticated API route: the login screen needs to know
@@ -2636,7 +2720,7 @@ export function runApp(cfg: AppConfig): http.Server {
           if (pre === 'already-used') return json(409, { error: 'that rep already ran — its card is under history, where "practice again" runs it fresh' });
           const out = await multiLaunch({ id: user!.id, admin: user!.admin }, dir);
           if (out.code === 200) {
-            logLaunch(b.origin, String(out.body.session_id));
+            logLaunch(b.origin, String(out.body.session_id), user!.id);
             console.log(`[app] rep ${rep.id} launching as ${String(out.body.session_id)}`);
           }
           return json(out.code, out.body);
@@ -2666,7 +2750,7 @@ export function runApp(cfg: AppConfig): http.Server {
           }
         }
         const sessionId = `sess-${Date.now()}`;
-        logLaunch(b.origin, sessionId);
+        logLaunch(b.origin, sessionId, user!.id);
         spawnDetached(['session', dir], {
           IP_SESSION_ID: sessionId,
           // The person at the keyboard is whose gap graph gets written.
@@ -2763,7 +2847,7 @@ export function runApp(cfg: AppConfig): http.Server {
             beforeSpawn: resetWorkspace,
           });
           if (out.code === 200) {
-            logLaunch(b.origin, String(out.body.session_id));
+            logLaunch(b.origin, String(out.body.session_id), user!.id);
             console.log(`[app] rep ${rep.id} repeating as ${String(out.body.session_id)} (was ${oldSid})`);
           }
           return json(out.code, out.body);
@@ -2786,7 +2870,7 @@ export function runApp(cfg: AppConfig): http.Server {
           });
         }
         const sessionId = `sess-${Date.now()}`;
-        logLaunch(b.origin, sessionId);
+        logLaunch(b.origin, sessionId, user!.id);
         spawnDetached(['session', dir], {
           IP_SESSION_ID: sessionId,
           // The person at the keyboard is whose gap graph gets written.
@@ -3316,7 +3400,7 @@ export function runApp(cfg: AppConfig): http.Server {
         }
         if (cfg.pub.multiSession) {
           const out = await multiLaunch({ id: user!.id, admin: user!.admin }, item.problem_dir);
-          if (out.code === 200) logLaunch(b.origin, String(out.body.session_id));
+          if (out.code === 200) logLaunch(b.origin, String(out.body.session_id), user!.id);
           return json(out.code, out.body);
         }
         const probe = await probeSession(cfg.sessionPort);
@@ -3338,7 +3422,7 @@ export function runApp(cfg: AppConfig): http.Server {
           }
         }
         const sessionId = `sess-${Date.now()}`;
-        logLaunch(b.origin, sessionId);
+        logLaunch(b.origin, sessionId, user!.id);
         // IP_PREPARE_NEXT=0: the queue drives generation now; the legacy
         // post-session prepare would write into the generic pool nobody is
         // drawing from in queue mode.
@@ -3382,6 +3466,19 @@ export function runApp(cfg: AppConfig): http.Server {
           if (!mine) return json(404, { error: 'no live session of yours to end' });
           const rr = await postSession(mine.port, '/api/abandon');
           if (!rr.ok) return json(502, { error: 'the session did not respond — it may already be gone' });
+          // Stamp ended_at NOW: the sweep reads "dropped with no ended_at"
+          // as round_crashed, and abandoning is a choice, not a crash. The
+          // abandoned process exits without ever answering another probe,
+          // so nothing else would stamp it.
+          try {
+            const reg2 = loadRegistry(repoRoot);
+            const hit = reg2.entries.find((e) => e.sid === mine.sid);
+            if (hit && hit.ended_at === undefined) {
+              hit.ended_at = Date.now();
+              saveRegistry(repoRoot, reg2);
+            }
+          } catch { /* worst case: one abandon miscounts as a crash */ }
+          ph.capture(user!.id, 'round_abandoned', { session_id: mine.sid });
           return json(200, { ok: true });
         }
         const owner = await probeSessionOwner(cfg.sessionPort);
@@ -3390,11 +3487,23 @@ export function runApp(cfg: AppConfig): http.Server {
         }
         const r = await postSession(cfg.sessionPort, '/api/abandon');
         if (!r.ok) return json(502, { error: 'no session responded — it may already be gone' });
+        ph.capture(user!.id, 'round_abandoned', {});
         return json(200, { ok: true });
       }
       res.writeHead(404);
       return res.end('not found');
     } catch (e) {
+      // Mirrored to PostHog error tracking before the 500. capture() is
+      // contractually incapable of throwing (posthog.test.ts), and the belt
+      // matters here specifically: a throw inside this catch would swallow
+      // the 500 and hang the request. distinct_id 'server' — the resolved
+      // user is scoped inside the try and may not exist at throw time.
+      try {
+        ph.capture('server', '$exception', {
+          $exception_list: [{ type: 'Error', value: String(e).slice(0, 300) }],
+          url,
+        });
+      } catch { /* never — but this response MUST go out */ }
       return json(500, { error: String(e).slice(0, 300) });
     }
   });
@@ -3415,14 +3524,30 @@ export function runApp(cfg: AppConfig): http.Server {
             const pr = await probeSession(e.port);
             probes.set(e.sid, { reachable: pr.reachable, ended: pr.ended, session_id: pr.session_id });
           }));
-          applySessionSweep(
-            planSessionSweep(reg.entries, probes, pidAlive, listSessionContainers(), Date.now()),
-            {
-              root: repoRoot,
-              save: (entries) => saveRegistry(repoRoot, { entries }),
-              postShutdown: (port) => postSession(port, '/api/shutdown'),
-            },
-          );
+          const plan = planSessionSweep(reg.entries, probes, pidAlive, listSessionContainers(), Date.now());
+          // round_crashed — the record that exists nowhere else: a crashed
+          // session leaves a trace with a session_start and no session_end,
+          // and NOTHING says so. rm-container fires exactly for dropped
+          // registry entries; dropped with ended_at unset = died without
+          // its lifecycle. (A graded round stamps ended_at via its probe; an
+          // abandoned one is stamped by /api/session-kill below — so neither
+          // is miscounted here.) Emitted before apply: the sweep is about to
+          // erase the entry this reads.
+          for (const a of plan) {
+            if (a.kind !== 'rm-container') continue;
+            const dead = reg.entries.find((x) => x.sid === a.sid);
+            if (dead && dead.ended_at === undefined) {
+              ph.capture(dead.user_id, 'round_crashed', {
+                session_id: dead.sid,
+                age_ms: Date.now() - dead.started_at,
+              });
+            }
+          }
+          applySessionSweep(plan, {
+            root: repoRoot,
+            save: (entries) => saveRegistry(repoRoot, { entries }),
+            postShutdown: (port) => postSession(port, '/api/shutdown'),
+          });
         } catch (e) {
           console.warn(`[sweep] session sweep failed: ${String(e).slice(0, 160)}`);
         }

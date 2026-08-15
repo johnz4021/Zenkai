@@ -389,3 +389,37 @@ describe('panes flush completeness (QA ISSUE-002)', () => {
     expect(() => new Function(panes)).not.toThrow();
   });
 });
+
+describe('session page analytics (posthog.ts builds it; this pins the seam)', () => {
+  it('absent = byte-identical: no posthog, no vendor path, anywhere', () => {
+    const html = sessionPage('sess-test');
+    expect(html).not.toContain('posthog');
+    expect(html).not.toContain('/vendor/insight');
+  });
+
+  it('renders the pre-built snippet verbatim in the head, before the stylesheet', async () => {
+    const { posthogSnippet, posthogAssetPath } = await import('./posthog.js');
+    const snippet = posthogSnippet(
+      { key: 'phc_test', host: 'https://us.i.posthog.com' },
+      {
+        assetPath: posthogAssetPath('1.0.0'),
+        // The round-interior block, exactly as session.ts passes it with
+        // IP_POSTHOG_REPLAY_ROUND unset: the same-origin IDE iframe WOULD
+        // be recorded by rrweb by default, and the intro copy promises the
+        // terminal is not observed.
+        blockSelector: 'main iframe, #editor, #log, #runout',
+        distinctId: 'user-1',
+      },
+    );
+    const html = sessionPage('sess-test', { analytics: snippet });
+    expect(html).toContain('/vendor/insight-1.0.0.js');
+    expect(html).toContain('blockSelector');
+    expect(html.indexOf('/vendor/insight')).toBeLessThan(html.indexOf('<style>'));
+    // The auth handoff script must still run FIRST — it sets the cookie
+    // every later request depends on (chrome.ts head comment).
+    expect(html.indexOf('#token=')).toBeLessThan(html.indexOf('/vendor/insight'));
+    const inline = /<script>\n([\s\S]*?)<\/script>/.exec(snippet)?.[1] ?? '';
+    expect(() => new Function(inline)).not.toThrow();
+    expect(inline).toContain('window.posthog.identify("user-1")');
+  });
+});

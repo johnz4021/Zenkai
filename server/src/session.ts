@@ -31,6 +31,15 @@ import { buildAssessmentCard, mergeConfirm } from './feedback.js';
 import { buildGraphView, buildTargetNote, isMemorableSessionId, loadStore, recordAssessment, saveStore } from './gap-graph.js';
 import { attemptsFromSession, recordTopicAttempts } from './topic-graph.js';
 import { clientScript, sessionPage } from './chrome.js';
+import {
+  isPosthogAssetUrl,
+  makePh,
+  posthogAssetFile,
+  posthogAssetPath,
+  posthogAssetVersion,
+  posthogConfigFromEnv,
+  posthogSnippet,
+} from './posthog.js';
 import { injectWorkbenchDefaults } from './workbench-inject.js';
 import { describeStuck, detectStuck, type StuckState } from './stuck.js';
 import { describeAdrift, describeWarm, detectAdrift, regionContainsAnswer } from './adrift.js';
@@ -610,6 +619,31 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // Hoisted install: the workspace root owns node_modules (same assumption
   // the vitest testCmd default makes about problem dirs).
   const monacoRoot = path.join(cfg.repoRoot, 'node_modules', 'monaco-editor', 'min', 'vs');
+
+  // PostHog (posthog.ts) — from env, NOT resolvePublicConfig: a spawned
+  // session deliberately receives a partial Supabase config (no service key,
+  // WU8) and the all-or-nothing rule there would throw. child-env passes the
+  // IP_POSTHOG_* trio to session children; unset = all of this is inert.
+  const phCfg = posthogConfigFromEnv(process.env);
+  const phSession = makePh(phCfg);
+  const phAsset = phCfg ? posthogAssetFile(cfg.repoRoot) : null;
+  // The round page's replay boundary. Default: the ROUND INTERIOR is blocked
+  // — the IDE iframe (same-origin, so rrweb WOULD record into it), the
+  // Monaco pane, the transcript, the test output. Two reasons, both real:
+  // rrweb serializes DOM mutations on the main thread and a VS Code
+  // workbench is the heaviest mutation source there is, on the page that
+  // also runs the timer, voice and the trace WS; and the intro copy above
+  // PROMISES "other terminal commands are not observed". IP_POSTHOG_
+  // REPLAY_ROUND=1 lifts the blocks — measure input latency first, and fix
+  // the copy (public-config.ts has the full note).
+  const sessionAnalytics =
+    phCfg && phAsset
+      ? posthogSnippet(phCfg, {
+          assetPath: posthogAssetPath(posthogAssetVersion(cfg.repoRoot)),
+          distinctId: cfg.userId,
+          ...(phCfg.replayRound ? {} : { blockSelector: 'main iframe, #editor, #log, #runout' }),
+        })
+      : '';
 
   // ---- one server: chrome + api + trace ingest + IDE proxy ----
   const proxy = httpProxy.createProxyServer({
@@ -1204,6 +1238,25 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       ),
     );
 
+    // The round's lifecycle record, mirrored (posthog.ts; the trace stays
+    // authoritative). Plain capture, NOT captureAndWait: finalize's return
+    // value is the card the candidate is actively waiting for, and this
+    // process lingers ≥30 min serving that card (session-sweep
+    // ENDED_LINGER_MS), so the void'ed fetch has all the flush time it
+    // needs at zero added latency. judge_unassessed is its own event — a
+    // judge failure writes no memory and needs its own alarm.
+    if (result.status !== 'assessed') {
+      phSession.capture(cfg.userId, 'judge_unassessed', { session_id: cfg.sessionId });
+    }
+    phSession.capture(cfg.userId, 'round_ended', {
+      session_id: cfg.sessionId,
+      status: result.status,
+      solved: result.status === 'assessed' ? (result.solved ?? null) : null,
+      interviewer: interviewer !== null,
+      surface,
+      duration_ms: sessionStartedAt ? Date.now() - sessionStartedAt : null,
+    });
+
     // Close the memory loop: generate the NEXT problem now, aimed at the gap
     // this session just surfaced. Detached and unwaited — it takes ~5 minutes
     // and nobody is watching, so by the time they come back it is ready.
@@ -1234,7 +1287,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     // server-to-server probes authenticate via x-ip-internal.
     {
       const openPath =
-        url === '/session' || url.startsWith('/client/') || url.startsWith('/vendor/monaco/');
+        url === '/session' || url.startsWith('/client/') || url.startsWith('/vendor/monaco/') ||
+        // The analytics bundle is a page static like the two above — and if
+        // this is missed, the script 404s behind auth and round analytics
+        // die silently (the page itself is built to survive exactly that).
+        isPosthogAssetUrl(url);
       if (!openPath) {
         const viewer = await auth.resolve(req);
         if (!viewer) {
@@ -1270,6 +1327,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           workspace_path: workspacePath,
           elapsed_ms: sessionStartedAt ? Date.now() - sessionStartedAt : 0,
           voice: Boolean(voice),
+          ...(sessionAnalytics ? { analytics: sessionAnalytics } : {}),
         }),
       );
     }
@@ -1449,6 +1507,21 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       writeFileSync(file, JSON.stringify(confirms, null, 2));
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ ok: true }));
+    }
+    if (isPosthogAssetUrl(url) && req.method === 'GET') {
+      // The vendored analytics bundle — same one the app serves, same
+      // immutable caching (the version in the URL is the cache buster; see
+      // app.ts's vendor route for the full note on why this one asset may
+      // diverge from no-store).
+      if (!phAsset) {
+        res.writeHead(404);
+        return res.end('no such asset');
+      }
+      res.writeHead(200, {
+        'content-type': 'text/javascript',
+        'cache-control': 'public, max-age=31536000, immutable',
+      });
+      return res.end(readFileSync(phAsset));
     }
     if (url.startsWith('/vendor/monaco/') && req.method === 'GET') {
       // Monaco's prebuilt AMD tree served straight from node_modules — the

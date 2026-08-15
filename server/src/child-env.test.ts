@@ -58,4 +58,21 @@ describe('childEnv', () => {
       expect(env.STRIPE_WEBHOOK_SECRET).toBeUndefined();
     }
   });
+
+  it('PostHog: sessions keep it (they emit round events); generators and the sandbox never see it', () => {
+    // Deliberately GENERATOR_DROP, not ALWAYS_DROP: phc_ is a public key that
+    // ships to every browser — it guards nothing. Dropping it from generators
+    // is noise reduction (the anon key's reasoning), not secret custody.
+    const withPh = { ...BASE, IP_POSTHOG_KEY: 'phc_x', IP_POSTHOG_HOST: 'https://us.i.posthog.com', IP_POSTHOG_REPLAY_ROUND: '1' };
+    const session = childEnv('session', withPh);
+    expect(session.IP_POSTHOG_KEY).toBe('phc_x');
+    expect(session.IP_POSTHOG_HOST).toBe('https://us.i.posthog.com');
+    expect(session.IP_POSTHOG_REPLAY_ROUND).toBe('1');
+    for (const kind of ['sandbox', 'generator'] as const) {
+      const env = childEnv(kind, withPh);
+      expect(env.IP_POSTHOG_KEY).toBeUndefined();
+      expect(env.IP_POSTHOG_HOST).toBeUndefined();
+      expect(env.IP_POSTHOG_REPLAY_ROUND).toBeUndefined();
+    }
+  });
 });
