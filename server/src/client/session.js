@@ -108,6 +108,21 @@ async function pollMessages() {
         say('you (voice)', h.text);
       }
     }
+    // Interviewer health chip (voicechip's dynamic sibling): a model-path
+    // failure used to be pure silence, indistinguishable from being ignored.
+    const intChip = document.getElementById('intchip');
+    if (intChip) {
+      if (s.interviewer_fault) {
+        intChip.hidden = false;
+        intChip.textContent = 'interviewer: unavailable';
+        intChip.title =
+          'The interviewer hit a model error and may not reply right now. ' +
+          'Your work and words are still recorded and graded — keep going. ' +
+          'It recovers on its own when the model path comes back.';
+      } else if (!intChip.hidden) {
+        intChip.hidden = true;
+      }
+    }
     for (const m of s.messages) {
       lastSeq = Math.max(lastSeq, m.seq);
       if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }

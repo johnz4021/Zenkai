@@ -243,6 +243,7 @@ export function sessionPage(sessionId: string, partial: Partial<SessionPageView>
   <span class="t" id="clock"${view.time_limit_ms ? ` data-limit="${view.time_limit_ms}"` : ''}${view.elapsed_ms ? ` data-elapsed="${view.elapsed_ms}"` : ''}>00:00</span>
   <span class="t" id="status"${view.one_shot ? ' data-one-shot="1"' : ''}${view.interviewer ? ' data-interviewer="1"' : ''}${view.can_run_tests ? '' : ' data-no-run="1"'}>observing: —</span>
   <span class="t" id="voicechip">voice: —</span>
+  ${view.interviewer ? '<span class="t" id="intchip" hidden></span>' : ''}
   ${
     view.can_run_tests && !view.one_shot
       ? `<button id="run" class="primary" data-endpoint="${view.surface === 'panes' ? '/api/run' : '/api/ide-run'}" title="run the test suite">▶ Run Tests</button>`

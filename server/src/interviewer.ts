@@ -848,8 +848,13 @@ export function apiIntentCheck(): IntentCheck {
       // interviewer, can you give me a hand?") came back narration, and this
       // catch ate whatever went wrong, leaving nothing to diagnose. The
       // all-false fallback pathology banned in the judge was alive here.
-      console.warn('[intent] API check ERRORED (treating as narration):', String(e).slice(0, 200));
-      return false;
+      // RETHROWN (not resolved false) since QA 2026-08-14: resolving false
+      // made an auth outage indistinguishable from a genuine narration
+      // judgment at the routing layer, so the session could never surface
+      // interviewer health to the candidate. routeUtterance's catch keeps
+      // the fail-toward-silence behavior AND marks the fault for the chip.
+      console.warn('[intent] API check ERRORED (utterance stays unrouted):', String(e).slice(0, 200));
+      throw e instanceof Error ? e : new Error(String(e));
     }
   };
 }

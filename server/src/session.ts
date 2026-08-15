@@ -628,6 +628,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   let wrapQuestionsAsked = 0;
   let wrapClosed = false;
   let lastWarmTs = 0;
+  // Interviewer health for the chip (owner decision, QA 2026-08-14): a
+  // model-path failure used to be indistinguishable from deliberate silence
+  // — the candidate concluded they were being ignored. Set by the intent
+  // gate's and the turn's failure paths, cleared by the next healthy one.
+  let interviewerFault: 'intent' | 'turn' | null = null;
   // The live extension socket, so the chrome's Run Tests button can reach
   // the IDE's own runner (see /api/ide-run).
   let traceSocket: WebSocket | null = null;
@@ -839,6 +844,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // "Judged not-addressed" and "check crashed" must never look the
         // same in the log (first live session was undebuggable without this).
         console.log(`[intent] ${addressed ? 'ADDRESSED' : 'narration'}: ${text.slice(0, 80)}`);
+        if (interviewerFault === 'intent') interviewerFault = null; // gate healthy again
         if (!addressed) return; // narration: traced, agent stays silent
         turnQueue.push(text);
         notifyTurn();
@@ -846,6 +852,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       })
       .catch((e) => {
         console.warn(`[intent] check FAILED (staying silent): ${String(e).slice(0, 120)}`);
+        interviewerFault = 'intent';
       });
   };
 
@@ -993,10 +1000,15 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
               : (turn.reason ?? '(no reason — parse failure or error, see warnings above)')
           }`,
         );
+        // A reasoned silence proves the model path is healthy; a reasonless,
+        // unredacted one IS the failure shape (parse/call error).
+        if (turn.redacted || turn.reason) interviewerFault = null;
+        else interviewerFault = 'turn';
         return;
       }
       lastInterviewerTs = Date.now();
       if (candidateMessage === null) lastUnpromptedTs = lastInterviewerTs;
+      interviewerFault = null; // a spoken turn is the all-clear
       // The once-per-session redirect budget burns on a SPOKEN redirect only.
       if (adriftObservation) adriftFired = true;
       if (wrapTopic !== null) {
@@ -1023,6 +1035,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       notifyTurn();
     } catch (e) {
       console.warn('[interviewer] turn failed:', String(e));
+      interviewerFault = 'turn';
     } finally {
       interviewerBusy = false;
       // A question may have stacked while this turn was composing.
@@ -1366,6 +1379,12 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           heard,
           thinking: interviewerBusy || turnQueue.size > 0 || settlePending(),
           time_up: timeUpAt !== null,
+          // Interviewer health, the voiceOffReason precedent made dynamic: a
+          // model-path failure used to be COMPLETE silence with no signal of
+          // any kind — the QA candidates concluded they were being ignored
+          // (sess-1786686415240 asked four direct questions into the void).
+          // Cleared by the next healthy turn/intent check; null when off.
+          interviewer_fault: interviewer ? interviewerFault : null,
         }),
       );
     }
