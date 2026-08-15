@@ -105,6 +105,50 @@ export function secondsToMs(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) ? Math.floor(v * 1000) : undefined;
 }
 
+/** The shape this module reads out of a Stripe subscription. Structural, not
+ *  the SDK type, so billing.ts stays dependency-free and unit-testable. */
+export interface SubscriptionLike {
+  id?: string;
+  customer?: unknown;
+  status?: string;
+  /** Pre-2025-03-31.basil location. Absent on current versions — see periodOf. */
+  current_period_start?: number;
+  current_period_end?: number;
+  items?: {
+    data?: {
+      price?: { id?: string };
+      /** Current location. */
+      current_period_start?: number;
+      current_period_end?: number;
+    }[];
+  };
+}
+
+/**
+ * The billing period, wherever this payload happens to keep it.
+ *
+ * Stripe MOVED it: as of 2025-03-31.basil, `current_period_start`/`_end` came
+ * off the Subscription and onto each Subscription ITEM, because one
+ * subscription can now hold items billing on different cadences. On
+ * 2026-07-29.dahlia — the version app.ts pins — the top-level fields are simply
+ * ABSENT. Verified against a live test subscription, 2026-08-14.
+ *
+ * Reading only the old location failed SILENTLY and in the worst direction: the
+ * row landed with no period, periodStart() returned null, and gateFor's window
+ * collapsed to the free tier's LIFETIME count. A customer paying monthly got
+ * paidRounds ONCE, ever, and from month two met a gate offering them the
+ * subscription they already had. No error and no log — the first report would
+ * have been a refund request.
+ *
+ * Item first (where current versions put it), subscription second (what older
+ * API versions and already-stored events carry), so replaying old webhook
+ * payloads keeps working.
+ */
+function periodOf(sub: SubscriptionLike, edge: 'start' | 'end'): number | undefined {
+  const key = edge === 'start' ? 'current_period_start' : 'current_period_end';
+  return secondsToMs(sub.items?.data?.[0]?.[key]) ?? secondsToMs(sub[key]);
+}
+
 /**
  * Flatten a Stripe subscription object into a ledger row.
  *
@@ -115,30 +159,21 @@ export function secondsToMs(v: unknown): number | undefined {
  */
 export function rowFromSubscription(
   userId: string,
-  sub: {
-    id?: string;
-    customer?: unknown;
-    status?: string;
-    current_period_start?: number;
-    current_period_end?: number;
-    items?: { data?: { price?: { id?: string } }[] };
-  },
+  sub: SubscriptionLike,
   nowMs: number,
   eventId?: string,
 ): SubscriptionRow {
   const priceId = sub.items?.data?.[0]?.price?.id;
+  const start = periodOf(sub, 'start');
+  const end = periodOf(sub, 'end');
   return {
     ts: new Date(nowMs).toISOString(),
     user_id: userId,
     ...(sub.id ? { subscription_id: sub.id } : {}),
     ...(typeof sub.customer === 'string' ? { customer_id: sub.customer } : {}),
     status: typeof sub.status === 'string' ? sub.status : 'incomplete',
-    ...(secondsToMs(sub.current_period_start) !== undefined
-      ? { current_period_start: secondsToMs(sub.current_period_start) }
-      : {}),
-    ...(secondsToMs(sub.current_period_end) !== undefined
-      ? { current_period_end: secondsToMs(sub.current_period_end) }
-      : {}),
+    ...(start !== undefined ? { current_period_start: start } : {}),
+    ...(end !== undefined ? { current_period_end: end } : {}),
     ...(priceId ? { price_id: priceId } : {}),
     ...(eventId ? { event_id: eventId } : {}),
   };

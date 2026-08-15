@@ -123,6 +123,63 @@ describe('rowFromSubscription — flattening Stripe into the ledger', () => {
     const r = rowFromSubscription('u2', { status: 'active' }, 0);
     expect(Object.keys(r).sort()).toEqual(['status', 'ts', 'user_id']);
   });
+
+  describe('the billing period, wherever Stripe put it', () => {
+    // Stripe moved current_period_* from the Subscription onto the Subscription
+    // ITEM in 2025-03-31.basil. On 2026-07-29.dahlia (the pinned version) the
+    // top-level fields are ABSENT — verified against a live test subscription
+    // 2026-08-14. Reading only the old spot cost a paying customer their
+    // monthly reset, silently.
+    const item = (extra: Record<string, unknown> = {}) => ({
+      status: 'active',
+      items: {
+        data: [
+          {
+            price: { id: 'price_789' },
+            current_period_start: 1_786_771_422,
+            current_period_end: 1_789_449_822,
+            ...extra,
+          },
+        ],
+      },
+    });
+
+    it('reads the period off the ITEM — the current shape', () => {
+      const r = rowFromSubscription('u2', item(), 0);
+      expect(r.current_period_start).toBe(1_786_771_422_000);
+      expect(r.current_period_end).toBe(1_789_449_822_000);
+      // The point of the whole exercise: a real window, not a lifetime.
+      expect(periodStart([r], 'u2')).toBe(1_786_771_422_000);
+    });
+
+    it('still reads the SUBSCRIPTION — stored rows and older API versions', () => {
+      const r = rowFromSubscription(
+        'u2',
+        { status: 'active', current_period_start: 1_700_000_000, current_period_end: 1_702_592_000 },
+        0,
+      );
+      expect(r.current_period_start).toBe(1_700_000_000_000);
+      expect(periodStart([r], 'u2')).toBe(1_700_000_000_000);
+    });
+
+    it('the item wins when a payload carries both', () => {
+      const r = rowFromSubscription(
+        'u2',
+        { ...item(), current_period_start: 1_700_000_000, current_period_end: 1_702_592_000 },
+        0,
+      );
+      expect(r.current_period_start).toBe(1_786_771_422_000);
+    });
+
+    it('neither location means NO window — and that must be visible, not silent', () => {
+      // periodStart null makes gateFor count for a lifetime. That is the right
+      // fallback (never wrongly gate a payer) but it is also the bug's
+      // signature, so it is pinned deliberately rather than by accident.
+      const r = rowFromSubscription('u2', { status: 'active', items: { data: [{ price: { id: 'p' } }] } }, 0);
+      expect(r.current_period_start).toBeUndefined();
+      expect(periodStart([r], 'u2')).toBeNull();
+    });
+  });
 });
 
 describe('secondsToMs', () => {
