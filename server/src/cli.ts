@@ -179,6 +179,11 @@ async function generateInto(
     try {
       const manifestPath = path.join(targetDir, 'problem.json');
       const manifest = JSON.parse(rf(manifestPath, 'utf8')) as Record<string, unknown>;
+      // The runtime contract is stamped, not trusted: conversion is
+      // python/unittest by construction, and a generator that omits these
+      // fields sends validate (and the session) down the vitest default on
+      // a python workspace (lc-convert.ts SOURCED_RUNTIME has the incident).
+      Object.assign(manifest, cv.SOURCED_RUNTIME);
       const primary = sourced.parts[0]!.problem;
       manifest.source = {
         kind: 'leetcode',

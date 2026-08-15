@@ -276,6 +276,22 @@ export interface SourcedPart {
   cases: SelectedCase[];
 }
 
+/**
+ * The runtime contract every sourced build carries — as mechanical as the
+ * suite itself. Conversion emits python/unittest by construction, so the
+ * manifest must say so; it was left to the generator's initiative (the
+ * source block only ever mandated `source`, which cli.ts overwrites from
+ * the dataset anyway), and a build that omitted both fields (palantir-oa,
+ * live on zenkai.run 2026-08-15) sent the validator down the legacy vitest
+ * default on a python workspace: "vitest produced no JSON report",
+ * deterministically. Stamped in cli.ts's post-generation patch beside the
+ * source stamp, under the same doctrine: never trusted from the generator.
+ */
+export const SOURCED_RUNTIME = {
+  runtime: 'python',
+  test_command: 'python3 -m unittest discover -v',
+} as const;
+
 /** The fs boundary: emit the grading contract into a problem dir. Called
  *  BEFORE generation and again AFTER (tamper-proof re-emit — idempotent,
  *  no timestamps, byte-stable given the same selection). Callers compute
