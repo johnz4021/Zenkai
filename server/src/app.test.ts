@@ -1051,8 +1051,11 @@ describe('beta copy (WU9)', () => {
     const practiceFn = js.slice(js.indexOf('function renderPractice'), js.indexOf('function renderRepWait'));
     expect(practiceFn).not.toContain('in development');
   });
-  it('the history card carries the memory roadmap note', () => {
-    expect(js).toContain('Deeper memory is in development');
+  it('the history card carries the retention line, not a roadmap promise', () => {
+    // Trimmed 2026-08-15: "deeper memory is in development" on every card
+    // read as marketing. The line states only what the system does today.
+    expect(js).toContain('learning your patterns across rounds');
+    expect(js).not.toContain('in development');
   });
 });
 

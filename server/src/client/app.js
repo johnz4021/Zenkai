@@ -2668,7 +2668,7 @@ function renderCardHtml(card, confirms, sid) {
   }
   // Beta (WU9): same memory roadmap note as the live session card — the
   // history tab is where cards get re-read, so the retention line rides here too.
-  html += '<p class="cite">Zenkai is learning your patterns across rounds — this card already aims your next problem. Deeper memory is in development: why a gap happens, not just where it showed.</p>';
+  html += '<p class="cite">Zenkai is learning your patterns across rounds — this card already aims your next problem.</p>';
   return html;
 }
 

@@ -336,11 +336,13 @@ function render(card) {
   if (card.mode === 'observations') {
     html += '<p class="meta">Session ' + (3 - card.sessions_until_patterns) + ' of 3 before patterns emerge. These are single-session observations, not yet patterns.</p>';
   }
-  // Beta (WU9): the memory roadmap note sits BELOW the mechanical line, never
-  // replacing it — the claim with a number in it is the credible one. Kept
-  // off the landing on purpose: before a round it's a reason not to start;
-  // after one it's a reason to come back.
-  html += '<p class="meta">Zenkai is learning your patterns across rounds — this card already aims your next problem. Deeper memory is in development: why a gap happens, not just where it showed.</p>';
+  // Beta (WU9, trimmed 2026-08-15): the retention line sits BELOW the
+  // mechanical line, never replacing it — the claim with a number in it is
+  // the credible one. It states only what the system DOES today; the old
+  // "deeper memory is in development" roadmap sentence read as marketing on
+  // every single card. Kept off the landing on purpose: before a round it's
+  // a reason not to start; after one it's a reason to come back.
+  html += '<p class="meta">Zenkai is learning your patterns across rounds — this card already aims your next problem.</p>';
   html += backLink;
   el.innerHTML = html;
   const sb = document.getElementById('showbug');

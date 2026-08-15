@@ -277,12 +277,14 @@ describe('beta auth — session-origin token handoff (WU4)', () => {
 });
 
 describe('beta copy on the session card (WU9)', () => {
-  it('the memory note rides below the patterns line in the card renderer', () => {
+  it('the retention line rides below the patterns line in the card renderer', () => {
     const js = clientScript('session.js') ?? '';
     const patterns = js.indexOf('before patterns emerge');
-    const note = js.indexOf('Deeper memory is in development');
+    const note = js.indexOf('learning your patterns across rounds');
     expect(patterns).toBeGreaterThan(-1);
     expect(note).toBeGreaterThan(patterns); // below, never replacing
+    // Trimmed 2026-08-15: no roadmap promises on the card.
+    expect(js).not.toContain('in development');
   });
 });
 
