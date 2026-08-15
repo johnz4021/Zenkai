@@ -69,14 +69,26 @@ pollStatus();
 // Interviewer turns arrive here, whether they answer something we asked or
 // land unprompted. Server decides what is said; this only renders it.
 let lastSeq = -1;
+// Solo rounds render NO aside (conversation UI exists iff someone is
+// listening — chrome.ts), so every chat lookup tolerates absence and the
+// aside's other two jobs re-home to the #notice line via notify().
 const log = document.getElementById('log');
 function say(who, text, cls) {
+  if (!log) return null;
   const p = document.createElement('p');
   p.className = 'u' + (cls ? ' ' + cls : '');
   p.innerHTML = '<b>' + who + '</b> ' + text.replace(/</g, '&lt;');
   log.appendChild(p);
   log.scrollTop = log.scrollHeight;
   return p;
+}
+// Time warnings ("2 minutes remaining.", "Time's up — submitting…") and
+// system errors must stay visible without the aside — they overwrite the
+// solo notice line in place.
+function notify(text) {
+  const n = document.getElementById('notice');
+  if (n) n.textContent = text;
+  else say('system', text, 'pending');
 }
 let thinkingEl = null;
 let lastHeardSeq = -1;
@@ -126,7 +138,11 @@ async function pollMessages() {
     for (const m of s.messages) {
       lastSeq = Math.max(lastSeq, m.seq);
       if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
-      say('interviewer', m.text);
+      // On a solo page the only possible turns are the hard time cap's
+      // (session.ts gates every other emitter on the interviewer) — they
+      // land on the notice line instead of a chat that doesn't exist.
+      if (log) say('interviewer', m.text);
+      else notify(m.text);
       // Voice: the turn's audio is fetched from the STORED (guarded) event.
       // Acks are content-free continuers, and they carry a seq like any other
       // turn — which meant an ack could reassign the <audio> src and cut a
@@ -186,7 +202,8 @@ function markEndedChrome() {
   if (mute) mute.disabled = true;
 }
 
-document.getElementById('f').addEventListener('submit', async (e) => {
+const composerForm = document.getElementById('f');
+if (composerForm) composerForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const input = document.getElementById('msg');
   const text = input.value.trim();
@@ -214,16 +231,14 @@ if (runButton && runButton.dataset.endpoint === '/api/ide-run') {
       const r = await fetch('/api/ide-run', { method: 'POST', headers: sidHeaders() });
       const out = await r.json();
       if (out.error) {
-        say(
-          'system',
+        notify(
           out.error === 'ide_not_connected'
             ? 'The editor is not connected yet — give it a moment and try again.'
             : 'Tests cannot be run in this round.',
-          'pending',
         );
       }
     } catch {
-      say('system', 'Could not reach the session server to run tests.', 'pending');
+      notify('Could not reach the session server to run tests.');
     }
     // The IDE panel owns the result; just restore the control.
     setTimeout(() => {
@@ -267,8 +282,10 @@ function render(card) {
   // The container is torn down after grading — the editor pane is dead.
   // The card takes the room, and the way home gets prominent (ISSUE-004).
   document.body.classList.add('ended');
-  document.getElementById('log').style.display = 'none';
-  document.getElementById('f').style.display = 'none';
+  // Solo pages have neither; body.ended CSS hides the aside anyway — the
+  // inline hiding survives for interviewer pages whose CSS is cached.
+  if (log) log.style.display = 'none';
+  if (composerForm) composerForm.style.display = 'none';
   const el = document.getElementById('feedback');
   el.style.display = 'block';
   let html = '';
@@ -297,7 +314,16 @@ function render(card) {
   html += '<h2>' + (card.mode === 'observations' ? 'Session observations' : 'Session findings') + '</h2>';
   if (card.summary) html += '<div class="row"><p class="desc">' + esc(card.summary) + '</p></div>';
 
-  for (const r of card.rows || []) {
+  // Solo cards collapse unassessable rows into one honest line: a column of
+  // grey "not assessable" rows reads as the product failing, when it's the
+  // round's shape — nobody was listening, so talk dimensions have no
+  // evidence class. Interviewer cards keep every row (there, unassessable IS
+  // signal).
+  const allRows = card.rows || [];
+  const soloCard = card.interviewer === false;
+  const shownRows = soloCard ? allRows.filter((r) => r.verdict !== 'unassessable') : allRows;
+
+  for (const r of shownRows) {
     const cls = r.verdict === 'strong' ? 'v-strong' : r.verdict === 'weak' ? 'v-weak' : r.verdict === 'unassessable' ? 'v-none' : '';
     html += '<div class="row ' + cls + '">';
     html += '<p class="desc"><b class="dim">' + esc(r.dimension) + '</b> · ' +
@@ -317,6 +343,11 @@ function render(card) {
         '<button class="cf" data-agree="1">yes</button> <button class="cf" data-agree="0">no</button></p>';
     }
     html += '</div>';
+  }
+
+  if (soloCard && shownRows.length < allRows.length) {
+    const hiddenDims = allRows.filter((r) => r.verdict === 'unassessable').map((r) => esc(r.dimension)).join(' · ');
+    html += '<div class="row v-none"><p class="desc">Not observable this round (no interviewer): ' + hiddenDims + '</p></div>';
   }
 
   // Bug disclosure gated on solved (tension 2): a problem you did not crack

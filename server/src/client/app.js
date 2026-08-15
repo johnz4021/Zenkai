@@ -2759,7 +2759,14 @@ function renderCardHtml(card, confirms, sid) {
     html += '<div class="fbrow closedmark"><p class="desc">Closed: ' + esc(c.description) + '</p></div>';
   }
   if (card.summary) html += '<p class="desc">' + esc(card.summary) + '</p>';
-  for (const r of card.rows || []) {
+  // Solo cards (card.interviewer === false) collapse unassessable rows into
+  // one line — same treatment as the live session card: talk dimensions have
+  // no evidence class when nobody was listening, and a column of grey rows
+  // reads as the product failing.
+  const soloCard = card.interviewer === false;
+  const allRows = card.rows || [];
+  const shownRows = soloCard ? allRows.filter((r) => r.verdict !== 'unassessable') : allRows;
+  for (const r of shownRows) {
     const cls = r.verdict === 'strong' ? 'v-strong' : r.verdict === 'weak' ? 'v-weak' : r.verdict === 'unassessable' ? 'v-none' : '';
     html += '<div class="fbrow ' + cls + '">' +
       '<p class="desc"><b class="dim">' + esc(r.dimension) + '</b> · ' +
@@ -2777,6 +2784,10 @@ function renderCardHtml(card, confirms, sid) {
           '<button class="cf" data-agree="1">yes</button> <button class="cf" data-agree="0">no</button></p>';
     }
     html += '</div>';
+  }
+  if (soloCard && shownRows.length < allRows.length) {
+    const hiddenDims = allRows.filter((r) => r.verdict === 'unassessable').map((r) => esc(r.dimension)).join(' · ');
+    html += '<div class="fbrow v-none"><p class="desc">Not observable this round (no interviewer): ' + hiddenDims + '</p></div>';
   }
   if (card.bug && card.solved) {
     html += '<div class="fbrow"><p class="desc"><b>The bug:</b> ' + esc(card.bug.description) + '</p></div>';

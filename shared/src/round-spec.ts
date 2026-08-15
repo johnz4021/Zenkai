@@ -19,7 +19,10 @@
  */
 
 export interface RoundCapabilities {
-  /** false = OA: nobody replies; the mic stays on (think-aloud is still judge signal). */
+  /** false = OA: nobody replies, and nobody records — no mic, no chat aside
+   *  (conversation UI exists iff someone is listening, 2026-08-15). Talk
+   *  dimensions clamp to unassessable on an utterance-free solo trace
+   *  (judge.ts clampSilentDimensions). */
   interviewer: boolean;
   /** false = no-run round: the Run Tests affordance is absent entirely. */
   can_run_tests: boolean;

@@ -677,13 +677,23 @@ if (cmd === 'generate') {
 
   console.error(`[rejudge] ${sessionId} against ${path.basename(problemDir)}...`);
   console.error(renderTimeline(events).split('\n').slice(0, 3).join('\n') + '\n...');
-  const result = await judgeSession({
-    sessionId,
-    events,
-    problem,
-    problemDir,
-    templatePath: path.join(repoRoot, 'prompts', 'judge-session.md'),
-  });
+  // Same talk-dimension clamp finalize applies (judge.ts): a rejudged solo
+  // trace with zero utterances must not mint communicate/reflect verdicts.
+  const { clampSilentDimensions } = await import('./judge.js');
+  const { resolveRoundSpec: resolveSpecForClamp } = await import('@interview-prep/shared');
+  const result = clampSilentDimensions(
+    await judgeSession({
+      sessionId,
+      events,
+      problem,
+      problemDir,
+      templatePath: path.join(repoRoot, 'prompts', 'judge-session.md'),
+    }),
+    {
+      hasInterviewer: resolveSpecForClamp(problem).capabilities.interviewer,
+      utteranceCount: events.filter((e: { type: string }) => e.type === 'utterance').length,
+    },
+  );
   mkdirSync(path.join(repoRoot, 'assessments'), { recursive: true });
   // A failed judge call must never replace an assessed record with a stub —
   // the same invariant session.ts holds for the gap graph ("a judge failure
@@ -760,6 +770,7 @@ if (cmd === 'generate') {
     buildGraphView(store, sessionId),
     events,
     problem.planted_bug?.description,
+    { interviewer: resolveSpecForClamp(problem).capabilities.interviewer },
   );
   // --record also refreshes the persisted card — the planning page reads
   // feedback/<sid>.json, and a rescued session must show its rescue there,

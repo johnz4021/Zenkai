@@ -1195,6 +1195,12 @@ the QA's phantom turns may partly be the harness's silent-room setup; needs a
 human listen-through before touching thresholds. The health split is mechanical
 but lives in the same file.
 
+**Narrowed 2026-08-15:** solo rounds no longer open a mic at all (the
+`no_interviewer` voice gate, session.ts) — the no-interviewer phantom-turn
+instance above is structurally gone. The energy-gate work remains for
+interviewer rounds, where a quiet candidate still produces ambient
+transcripts.
+
 **Where to start:** `server/src/voice.ts` (energy gate, health events), then
 `judge`'s `isPhantomUtterance` for whether graded traces should drop empties.
 

@@ -218,10 +218,10 @@ describe('panes surface (the HackerRank-classic renderer)', () => {
     expect(html).toContain('Implement the reservation ledger.');
     expect(html).toContain('/vendor/monaco/loader.js');
     expect(html).toContain('<script src="/client/panes.js"></script>');
-    // The shared chrome survives the fork: Submit flow, clock, chat aside.
+    // The shared chrome survives the fork: Submit flow, clock. (The chat
+    // aside is interviewer-only since 2026-08-15 — pinned in its own suite.)
     expect(html).toContain('>Submit</button>');
     expect(html).toContain('data-limit="6300000"');
-    expect(html).toContain('id="log"');
   });
 
   it('the ide surface is byte-for-byte the page the product always had', () => {
@@ -261,6 +261,56 @@ describe('panes surface (the HackerRank-classic renderer)', () => {
 
   it('the ended layout swallows the panes work area like it swallows the iframe', () => {
     expect(oaPanes()).toContain('body.ended main #panes { display: none; }');
+  });
+});
+
+describe('solo rounds — conversation UI exists iff someone is listening (2026-08-15)', () => {
+  const solo = (over = {}) => sessionPage('s', { interviewer: false, ...over });
+  const js = clientScript() ?? '';
+
+  it('no chat aside, no composer, no voice chrome, no voice script on either surface', () => {
+    for (const html of [solo(), solo({ surface: 'panes', statement: 'x' })]) {
+      expect(html).not.toContain('<aside>');
+      expect(html).not.toContain('id="log"');
+      expect(html).not.toContain('id="f"');
+      expect(html).not.toContain('id="msg"');
+      expect(html).not.toContain('id="voicechip"');
+      expect(html).not.toContain('id="mute"');
+      expect(html).not.toContain('id="intchip"');
+      expect(html).not.toContain('startVoice');
+    }
+  });
+
+  it('the notice line re-homes the etiquette, with the one-shot clause when it applies', () => {
+    expect(solo()).toContain('id="notice"');
+    expect(solo()).toContain('nobody replies');
+    expect(solo({ one_shot: true })).toContain('runs ONCE, when you press Submit');
+    expect(solo({ one_shot: true, can_run_tests: false })).toContain('Nothing runs this round');
+    // Interviewer pages never render it — their aside carries the intro.
+    expect(sessionPage('s')).not.toContain('id="notice"');
+  });
+
+  it('#feedback is a main child on EVERY variant — the graded card no longer lives in the aside', () => {
+    for (const html of [solo(), solo({ surface: 'panes', statement: 'x' }), sessionPage('s')]) {
+      expect(html).toContain('<div id="feedback"></div>');
+      expect(html).toContain('body.ended #feedback');
+      expect(html).toContain('body.ended aside { display: none; }');
+    }
+  });
+
+  it('the client tolerates the missing aside and re-homes messages to the notice', () => {
+    // say() must not throw at load, the composer binds conditionally, and
+    // time-cap turns (the only solo-visible messages) reach notify().
+    expect(js).toContain('if (!log) return null;');
+    expect(js).toContain('function notify(');
+    expect(js).toMatch(/if \(log\) say\('interviewer', m\.text\);\s*\n\s*else notify\(m\.text\);/);
+    expect(js).toContain('const composerForm = document.getElementById');
+    expect(js).toMatch(/if \(composerForm\) composerForm\.addEventListener/);
+  });
+
+  it('solo cards collapse unassessable rows into one honest line', () => {
+    expect(js).toContain("card.interviewer === false");
+    expect(js).toContain('Not observable this round (no interviewer)');
   });
 });
 

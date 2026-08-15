@@ -118,13 +118,24 @@ export function sessionPage(sessionId: string, partial: Partial<SessionPageView>
   // debugging round, and a new capability field never breaks old call sites.
   const view: SessionPageView = { ...DEFAULT_VIEW, ...partial };
   const voiceOn = view.voice !== false;
-  const intro = view.interviewer
-    ? voiceOn
-      ? `<p class="u"><b>interviewer</b> — just talk. The mic is live (headphones recommended); think out loud freely — the interviewer only replies when you actually address it, and answers spec questions. Where the bug is, you won't get. Typing here works the same way. Mute is in the header.</p>`
-      : `<p class="u"><b>interviewer</b> — voice is off this round, so type here. The interviewer only replies when you actually address it, and answers spec questions. Where the bug is, you won't get.</p>`
-    : voiceOn
-      ? `<p class="u"><b>no interviewer this round</b> — it runs like an online assessment: nobody replies. The mic stays live and thinking out loud still counts; notes typed here land in your record the same way.</p>`
-      : `<p class="u"><b>no interviewer this round</b> — it runs like an online assessment: nobody replies. Notes typed here still count — they land in your record the same way.</p>`;
+  // Solo rounds have no aside at all — conversation UI exists iff someone is
+  // listening (owner decision 2026-08-15). A live mic recorded silent rooms
+  // (TODOS #49) and a composer with no counterpart invited grader-directed
+  // notes; a real OA is problem + code + clock + submit. The intro therefore
+  // only has interviewer variants; solo etiquette is the #notice line, which
+  // also re-homes the aside's other two jobs (time warnings, system errors).
+  const intro = voiceOn
+    ? `<p class="u"><b>interviewer</b> — just talk. The mic is live (headphones recommended); think out loud freely — the interviewer only replies when you actually address it, and answers spec questions. Where the bug is, you won't get. Typing here works the same way. Mute is in the header.</p>`
+    : `<p class="u"><b>interviewer</b> — voice is off this round, so type here. The interviewer only replies when you actually address it, and answers spec questions. Where the bug is, you won't get.</p>`;
+  const soloNotice = view.interviewer
+    ? ''
+    : `<div id="notice">no interviewer this round — runs like an online assessment: nobody replies.${
+        view.one_shot
+          ? view.can_run_tests
+            ? ' The suite runs ONCE, when you press Submit — make it count.'
+            : ' Nothing runs this round — press Submit when your write-up is ready.'
+          : ''
+      }</div>`;
   const endLabel = view.one_shot ? 'Submit' : 'End session';
   return /* html */ `<!doctype html>
 <meta charset="utf-8" />
@@ -228,11 +239,18 @@ export function sessionPage(sessionId: string, partial: Partial<SessionPageView>
   #runstate.pass { color: var(--ok); }
   #runstate.fail { color: var(--weak-text); }
   #runout { flex: 1; overflow: auto; margin: 0; padding: 8px 12px; font: 12px/1.5 var(--mono); }
-  /* After grading the container is gone — the work pane is dead. The
-     card takes the full width and the way home gets prominent. */
+  /* The solo-round notice: the aside's three jobs (etiquette, time warnings,
+     system errors) re-homed into one quiet static line. Never sticky
+     (DESIGN.md rule 4); utility copy only (rule 10). */
+  #notice { padding: 6px 14px; border-bottom: 1px solid var(--line); color: var(--text-2); font-family: var(--mono); font-size: 12px; }
+  /* After grading the container is gone — the work pane is dead. The card
+     (#feedback, a MAIN child on every variant — solo pages have no aside to
+     host it) takes the full width and the way home gets prominent. */
   body.ended main iframe { display: none; }
   body.ended main #panes { display: none; }
-  body.ended aside { width: auto; flex: 1; border-left: 0; max-width: 720px; margin: 0 auto; }
+  body.ended aside { display: none; }
+  body.ended #notice { display: none; }
+  body.ended #feedback { flex: 1; max-width: 720px; margin: 0 auto; }
   .cardback { display: inline-block; margin-top: 18px; color: var(--text-1); text-decoration: underline; }
   :is(button, input, a):focus-visible { outline: 2px solid var(--steel); outline-offset: 2px; }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
@@ -242,31 +260,38 @@ export function sessionPage(sessionId: string, partial: Partial<SessionPageView>
   <span>session <b id="sid">${sessionId}</b></span>
   <span class="t" id="clock"${view.time_limit_ms ? ` data-limit="${view.time_limit_ms}"` : ''}${view.elapsed_ms ? ` data-elapsed="${view.elapsed_ms}"` : ''}>00:00</span>
   <span class="t" id="status"${view.one_shot ? ' data-one-shot="1"' : ''}${view.interviewer ? ' data-interviewer="1"' : ''}${view.can_run_tests ? '' : ' data-no-run="1"'}>observing: —</span>
-  <span class="t" id="voicechip">voice: —</span>
+  ${view.interviewer ? '<span class="t" id="voicechip">voice: —</span>' : ''}
   ${view.interviewer ? '<span class="t" id="intchip" hidden></span>' : ''}
   ${
     view.can_run_tests && !view.one_shot
       ? `<button id="run" class="primary" data-endpoint="${view.surface === 'panes' ? '/api/run' : '/api/ide-run'}" title="run the test suite">▶ Run Tests</button>`
       : ''
   }
-  <button id="mute" title="mute the mic">mute</button>
+  ${view.interviewer ? '<button id="mute" title="mute the mic">mute</button>' : ''}
   <button id="end">${endLabel}</button>
 </header>
+${soloNotice}
 <main>
   ${view.surface === 'panes' ? panesMain(view) : `<iframe src="/?folder=${view.workspace_path ?? '/home/workspace/problem'}"></iframe>`}
-  <aside>
+  ${
+    view.interviewer
+      ? `<aside>
     <div id="log">
       ${intro}
       ${view.surface === 'panes'
         ? `<p class="u"><b>observed</b> — edits, tab switches, saves (automatic), and this chat${view.can_run_tests && !view.one_shot ? ', and test runs via the <b>Run Tests</b> button' : ''}. Silences ≥20s with no activity anywhere count as going quiet.${view.one_shot ? (view.can_run_tests ? ' The suite runs ONCE, when you press Submit — make it count.' : ' Nothing runs in this round — press Submit when your write-up is ready.') : ''}</p>`
         : `<p class="u"><b>observed</b> — edits, saves, which file is focused and roughly where you're scrolled to, and this chat${view.can_run_tests && !view.one_shot ? ', and test runs (the <b>Run Tests</b> button, or a test command in the terminal). Other terminal commands are not observed' : ''}. Silences ≥20s with no activity anywhere count as going quiet.${view.autorun ? ' The suite runs once automatically at start.' : ''}${view.one_shot ? (view.can_run_tests ? ' The suite runs ONCE, when you press Submit — make it count.' : ' Nothing runs in this round — press Submit when your write-up is ready.') : ''}</p>`}
     </div>
-    <div id="feedback"></div>
     <form id="f"><input id="msg" autocomplete="off" placeholder="ask / note an assumption…" /><button>send</button></form>
-  </aside>
+  </aside>`
+      : ''
+  }
+  <div id="feedback"></div>
 </main>
 <script src="/client/session.js"></script>
-<script type="module">
+${
+  view.interviewer
+    ? `<script type="module">
   import { startVoice } from '/client/voice.js';
   const chip = document.getElementById('voicechip');
   const muteBtn = document.getElementById('mute');
@@ -292,6 +317,8 @@ export function sessionPage(sessionId: string, partial: Partial<SessionPageView>
     window.ipVoice = v;
     muteBtn.addEventListener('click', () => muteBtn.classList.toggle('on', v.toggleMute()));
   });
-</script>
+</script>`
+    : ''
+}
 `;
 }

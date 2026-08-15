@@ -26,7 +26,7 @@ import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
 import { isFailingRun, resolveRoundSpec, resolveSurface, validateRoundSpec } from '@interview-prep/shared';
 import { makeAuth } from './auth.js';
 import { childEnv } from './child-env.js';
-import { judgeSession } from './judge.js';
+import { clampSilentDimensions, judgeSession } from './judge.js';
 import { buildAssessmentCard, mergeConfirm } from './feedback.js';
 import { buildGraphView, buildTargetNote, isMemorableSessionId, loadStore, recordAssessment, saveStore } from './gap-graph.js';
 import { attemptsFromSession, recordTopicAttempts } from './topic-graph.js';
@@ -406,6 +406,25 @@ export function traceUpgradeAllowed(reqUrl: string | undefined, expectedToken: s
   return timingSafeEqual(a, b);
 }
 
+/** Voice-off reason, ordered by product truth: a round with nobody listening
+ *  outranks the session flag, which outranks a missing key. 'no_interviewer'
+ *  exists because a live mic on a solo round records a silent room for a
+ *  consumer that does not exist (TODOS #49's phantom "you (voice)" turns) —
+ *  the mic exists iff someone is listening (owner decision 2026-08-15).
+ *  `hasInterviewer` is the RUNTIME handle (caps.interviewer && the model is
+ *  wired), matching what the page itself keys on — an IP_INTERVIEWER=0 run
+ *  has nobody listening either. */
+export function voiceOffReasonFor(
+  hasInterviewer: boolean,
+  voiceFlag: boolean,
+  hasKey: boolean,
+): 'no_interviewer' | 'disabled' | 'no_key' | null {
+  if (!hasInterviewer) return 'no_interviewer';
+  if (!voiceFlag) return 'disabled';
+  if (!hasKey) return 'no_key';
+  return null;
+}
+
 export async function runSession(cfg: SessionConfig): Promise<void> {
   // First statement in the function, on purpose: everything below this line
   // mutates state the running session owns.
@@ -738,10 +757,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // what made a missing credential look like a broken feature. Each cause
   // gets its own name so the chip can say something actionable.
   const elevenKey = process.env.ELEVENLABS_API_KEY ?? process.env.IP_ELEVENLABS_KEY ?? '';
-  const voiceOffReason: 'disabled' | 'no_key' | null =
-    cfg.voice === false ? 'disabled' : elevenKey.length === 0 ? 'no_key' : null;
+  const voiceOffReason = voiceOffReasonFor(interviewer !== null, cfg.voice !== false, elevenKey.length > 0);
   const voiceEnabled = voiceOffReason === null;
-  if (voiceOffReason === 'no_key') {
+  if (voiceOffReason === 'no_interviewer') {
+    console.log('[session] voice OFF — no interviewer this round (the mic exists iff someone is listening)');
+  } else if (voiceOffReason === 'no_key') {
     console.warn(
       '[session] voice OFF — no ELEVENLABS_API_KEY (or IP_ELEVENLABS_KEY) in this process.\n' +
         '          The interviewer still runs, text-only. Put the key in .env at the repo\n' +
@@ -1095,13 +1115,22 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
     // The judge IS the feedback (2026-07-30 design). Blind to the gap graph;
     // knows the planted bug; failure yields UNASSESSED, never a verdict.
-    const result = await judgeSession({
-      sessionId: cfg.sessionId,
-      events,
-      problem,
-      problemDir: cfg.problemDir,
-      templatePath: path.join(cfg.repoRoot, 'prompts', 'judge-session.md'),
-    });
+    // Talk-dimension clamp BEFORE any write: on a solo round with zero
+    // utterances, communicate/reflect verdicts would be fabricated (see
+    // clampSilentDimensions) — and a fabricated 'weak' becomes a gap.
+    const result = clampSilentDimensions(
+      await judgeSession({
+        sessionId: cfg.sessionId,
+        events,
+        problem,
+        problemDir: cfg.problemDir,
+        templatePath: path.join(cfg.repoRoot, 'prompts', 'judge-session.md'),
+      }),
+      {
+        hasInterviewer: interviewer !== null,
+        utteranceCount: events.filter((e) => e.type === 'utterance').length,
+      },
+    );
 
     mkdirSync(path.join(cfg.repoRoot, 'assessments'), { recursive: true });
     writeFileSync(
@@ -1150,7 +1179,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     }
 
     const view = buildGraphView(gapStore, cfg.sessionId);
-    const card = buildAssessmentCard(result, view, events, problem.planted_bug?.description);
+    const card = buildAssessmentCard(result, view, events, problem.planted_bug?.description, {
+      interviewer: interviewer !== null,
+    });
     mkdirSync(path.join(cfg.repoRoot, 'feedback'), { recursive: true });
     writeFileSync(
       path.join(cfg.repoRoot, 'feedback', `${cfg.sessionId}.json`),
@@ -1308,6 +1339,14 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       }
     }
     if (url === '/api/utterance' && req.method === 'POST') {
+      // Solo rounds have no utterance channel AT ALL (owner decision
+      // 2026-08-15): the client no longer posts, and this guard keeps any
+      // stray caller from planting talk-evidence in a trace the judge would
+      // then grade narration against.
+      if (!interviewer) {
+        res.writeHead(409, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'no interviewer this round' }));
+      }
       const body = JSON.parse((await readBody(req)) || '{}') as { text?: string };
       const ev = store.emitChrome('utterance', { text: body.text ?? '', via: 'text' });
       // Typed and spoken words take the SAME path: trace always, intent

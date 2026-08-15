@@ -221,7 +221,7 @@ export function deliveryNotes(spec: RoundSpec): string {
     : 'the candidate can run the suite and iterate freely';
   const interviewer = caps.interviewer
     ? 'a live interviewer listens and probes'
-    : 'no interviewer — unproctored, think-aloud still recorded';
+    : 'no interviewer — unproctored and autograded, like a real OA';
   const tests = caps.can_run_tests ? '' : '; executing code is not permitted in this round';
   return `Delivered in ${surface}; ${time}; ${submitStyle}; ${interviewer}${tests}.`;
 }

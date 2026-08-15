@@ -64,6 +64,10 @@ export interface AssessmentCard {
   solved?: boolean;
   /** Present when a bug exists; the client gates rendering on `solved`. */
   bug?: { description: string };
+  /** false = solo round (no interviewer): renderers collapse unassessable
+   *  rows into one honest line instead of a column of grey. Absent on
+   *  interviewer rounds and legacy cards — those render every row. */
+  interviewer?: boolean;
   rows?: DimensionRow[];
   newly_closed: { key: string; description: string; fired_count: number }[]; // D3 — leads
   focus: { key: string; description: string } | null;
@@ -134,6 +138,7 @@ export function buildAssessmentCard(
   graph: GraphView,
   events: TraceEvent[],
   bugDescription?: string,
+  opts?: { interviewer?: boolean },
 ): AssessmentCard {
   if (result.status === 'unassessed') {
     // The stored reason can carry a raw provider error blob (QA 2026-08-14:
@@ -169,6 +174,8 @@ export function buildAssessmentCard(
     summary: a.summary,
     solved: a.solved,
     ...(bugDescription ? { bug: { description: bugDescription } } : {}),
+    // Stamped only when false — legacy cards keep their exact shape.
+    ...(opts?.interviewer === false ? { interviewer: false } : {}),
     rows,
     ...graphBits(graph),
   };
