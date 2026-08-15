@@ -2019,7 +2019,14 @@ export function runApp(cfg: AppConfig): http.Server {
                 // the plan count — countPlans is for the routes that hold raw
                 // Target records instead.
                 plans_used: targets.length,
-                free_plans: pw.freePlans,
+                // null = UNLIMITED, and a subscriber really is: gateFor returns
+                // null for `plans` the moment `paid` is true. Reporting
+                // pw.freePlans here regardless would have this advisory
+                // contradict the enforcement it describes — a subscriber shown
+                // "3 of 3 plans used" while the route happily makes a fourth.
+                // Nothing renders this yet; the point is that it cannot lie
+                // when something does.
+                free_plans: paidNow ? null : pw.freePlans,
               }
             : null;
         return json(200, {

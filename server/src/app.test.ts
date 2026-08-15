@@ -776,6 +776,17 @@ describe('paywall gate — a real limit, and the ways it must not misfire', () =
     expect(appSource).toContain('...(allowance ? { paywall: allowance } : {})');
   });
 
+  it('the /api/state advisory never contradicts what gateFor enforces', () => {
+    // Both allowances have to follow the subscriber, not just rounds. gateFor
+    // returns null for `plans` whenever `paid`, so a subscriber's plan
+    // allowance is unlimited — reporting the free-tier number here would tell
+    // a paying customer they were out of plans while the route made another.
+    expect(appSource).toContain('free_rounds: paidNow ? pw.paidRounds : pw.freeRounds');
+    expect(appSource).toContain('free_plans: paidNow ? null : pw.freePlans');
+    // And the enforcement half of the same claim, so the two move together.
+    expect(appSource).toContain("if (reason === 'plans' && paid) return null;");
+  });
+
   it('the client reads r.status BEFORE the error branch', () => {
     // The whole 402 flow hinges on this ordering: launchCommon inspects no
     // status today, so a 402 read as a 200 hangs the button.
