@@ -95,6 +95,68 @@ describe('resolvePublicConfig', () => {
     expect(c.supabase).toEqual({ url: 'https://x.supabase.co', anonKey: 'anon', serviceKey: 'service' });
   });
 
+  describe('stripe config', () => {
+    const good = {
+      STRIPE_API_KEY: 'rk_test_abc',
+      STRIPE_WEBHOOK_SECRET: 'whsec_abc',
+      STRIPE_PRICE_ID: 'price_1abc',
+    };
+
+    it('is all-or-nothing, and absent means billing is simply off', () => {
+      expect(resolvePublicConfig({}).stripe).toBeNull();
+      expect(() => resolvePublicConfig({ STRIPE_API_KEY: 'rk_test_abc' })).toThrow(
+        /must be set together/,
+      );
+      expect(resolvePublicConfig(good).stripe).toEqual({
+        apiKey: 'rk_test_abc',
+        webhookSecret: 'whsec_abc',
+        priceId: 'price_1abc',
+      });
+      expect(resolvePublicConfig({ ...good, STRIPE_API_KEY: 'sk_live_abc' }).stripe?.apiKey).toBe(
+        'sk_live_abc',
+      );
+    });
+
+    it('REFUSES the publishable key — presence alone let a dead Subscribe button ship', () => {
+      // The one that actually happened (2026-08-14): pk_ passed the
+      // all-or-nothing check, billing read as configured, and every server
+      // call came back 403 secret_key_required. The buyer found out, not the
+      // operator. The Dashboard lists the publishable key first and labels it
+      // an API key, so this is a paste away at every key rotation.
+      expect(() => resolvePublicConfig({ ...good, STRIPE_API_KEY: 'pk_test_abc' })).toThrow(
+        /PUBLISHABLE key/,
+      );
+      expect(() => resolvePublicConfig({ ...good, STRIPE_API_KEY: 'pk_live_abc' })).toThrow(
+        /403 secret_key_required/,
+      );
+    });
+
+    it('REFUSES a Product id where a Price belongs — Checkout charges a Price', () => {
+      expect(() => resolvePublicConfig({ ...good, STRIPE_PRICE_ID: 'prod_Uhhj0Z' })).toThrow(
+        /Product id, not a Price/,
+      );
+    });
+
+    it('REFUSES a webhook secret that is not one', () => {
+      // An API key pasted into the webhook slot verifies NOTHING, and the
+      // failure surfaces as "every event is forged" long after go-live.
+      expect(() => resolvePublicConfig({ ...good, STRIPE_WEBHOOK_SECRET: 'sk_test_abc' })).toThrow(
+        /starts with whsec_/,
+      );
+    });
+
+    it('quotes back only the type prefix — the rest of a key never reaches a log', () => {
+      const secret = 'pk_test_51SuperSecretRemainderThatMustNotLeak';
+      try {
+        resolvePublicConfig({ ...good, STRIPE_API_KEY: secret });
+        expect.unreachable('should have thrown');
+      } catch (e) {
+        expect(String(e)).toContain('pk_test_');
+        expect(String(e)).not.toContain('SuperSecretRemainder');
+      }
+    });
+  });
+
   it('admin emails are lowercased and trimmed; caps parse with sane fallbacks', () => {
     const c = resolvePublicConfig({
       IP_AUTH_ADMIN_EMAILS: ' Zhang4021@Gmail.com , ,x@y.z',

@@ -136,6 +136,28 @@ function zeroOr(v: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
 }
 
+/**
+ * Stripe ids and keys have stable, documented prefixes, and checking them is
+ * the whole difference between a boot that refuses and a BUYER who presses
+ * Subscribe and gets a 502.
+ *
+ * Presence is not enough, because both easy mistakes produce three non-empty
+ * values. The Dashboard lists the publishable key first and calls it an API
+ * key; a Product id sits right beside the Price id on the same page. Verified
+ * 2026-08-14 against the live API: a `pk_` key returns
+ * `403 secret_key_required` on EVERY server call, so billing read as
+ * "configured" while being structurally incapable of a single charge — the
+ * exact state the all-or-nothing rule above exists to prevent, walked into
+ * through a different door.
+ *
+ * Only the type prefix is ever quoted back; the rest of the value is a secret
+ * and stays out of the message and the logs.
+ */
+function expectPrefix(name: string, value: string, allowed: readonly string[], hint: string): void {
+  if (allowed.some((p) => value.startsWith(p))) return;
+  throw new Error(`${name} starts with "${value.slice(0, 8)}" — ${hint}`);
+}
+
 export function resolvePublicConfig(env: Record<string, string | undefined>): PublicConfig {
   // Billing is all-or-nothing, same rule and same reasoning as Supabase below:
   // a Subscribe button on a box that cannot complete a purchase is worse than
@@ -146,6 +168,30 @@ export function resolvePublicConfig(env: Record<string, string | undefined>): Pu
   if ((sKey || sHook || sPrice) && !(sKey && sHook && sPrice)) {
     throw new Error(
       'STRIPE_API_KEY, STRIPE_WEBHOOK_SECRET and STRIPE_PRICE_ID must be set together (or none)',
+    );
+  }
+  if (sKey && sHook && sPrice) {
+    expectPrefix(
+      'STRIPE_API_KEY',
+      sKey,
+      ['sk_', 'rk_'],
+      'that is the PUBLISHABLE key, which the server cannot use — every call ' +
+        'returns 403 secret_key_required. Use the secret key (sk_) or, better, ' +
+        'a restricted key (rk_) with write on Checkout Sessions, Customers and ' +
+        'Billing Portal Sessions and read on Subscriptions and Prices.',
+    );
+    expectPrefix(
+      'STRIPE_WEBHOOK_SECRET',
+      sHook,
+      ['whsec_'],
+      'a webhook signing secret starts with whsec_ — take it from `stripe listen` or the endpoint page in the Dashboard.',
+    );
+    expectPrefix(
+      'STRIPE_PRICE_ID',
+      sPrice,
+      ['price_'],
+      'that looks like a Product id, not a Price. A Product is WHAT you sell; ' +
+        'a Price is how much and how often. Checkout charges a Price.',
     );
   }
   const stripeCfg =
