@@ -2868,6 +2868,7 @@ export function runApp(cfg: AppConfig): http.Server {
         // browser edited can invent a binding.
         const namedBySpec = new Map<string, string[]>();
         const partCountBySpec = new Map<string, number>();
+        const taskBySpec = new Map<string, string>();
         try {
           const { loadConversation, latestProposal } = await import('./planner.js');
           const prop = latestProposal(loadConversation(repoRoot, t.id));
@@ -2888,6 +2889,7 @@ export function runApp(cfg: AppConfig): http.Server {
           for (const d of prop?.drafts ?? []) {
             if (d.named_problems?.length) namedBySpec.set(d.spec.id, d.named_problems);
             if (d.part_count && d.part_count >= 2) partCountBySpec.set(d.spec.id, d.part_count);
+            if (d.task) taskBySpec.set(d.spec.id, d.task);
           }
         } catch { /* no conversation — CLI or legacy path */ }
         if (!loadQueue(repoRoot, t.id)) {
@@ -2909,7 +2911,16 @@ export function runApp(cfg: AppConfig): http.Server {
               const bound = new Set<string>();
               const owner = t.user_id ?? legacyUserId;
               for (const spec of t.specs) {
-                if (deriveTaskFromSpec(spec) !== 'algorithmic_set') continue;
+                // The task HYPOTHESIS outranks the capability fallback —
+                // the same gate the intake path has used all along
+                // (d.task ?? deriveTaskFromSpec). Live incident 2026-08-15:
+                // two planner rounds sat exactly in the fallback's
+                // documented blind spot (blank+all_failing+panes ⇒ assumed
+                // algorithmic_set) and got LC problems bound onto a
+                // TypeScript live-design round and an LLD OA — one build
+                // agent faced the contradiction and wrote nothing, the
+                // other shipped a manifest with no runtime contract.
+                if ((taskBySpec.get(spec.id) ?? deriveTaskFromSpec(spec)) !== 'algorithmic_set') continue;
                 const mine = queue.items.filter((i) => i.spec_id === spec.id);
                 if (mine.length === 0) continue;
                 // EVERY item of this spec is one full session of the round,
