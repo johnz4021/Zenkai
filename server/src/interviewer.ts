@@ -151,9 +151,15 @@ export interface InterviewerContext {
   /** The blueprint's "## Interviewer engagement" section (or a per-check
    *  default): how led this round is, what to reward. Stable half. */
   engagement?: string;
-  /** Set when a moment trigger fired ('opening' or a moments.ts detection):
-   *  the observation text for the per-turn half. */
+  /** Set when a moments.ts detection fired: the observation text for the
+   *  per-turn half. The opening does NOT ride this slot (its wrapper says
+   *  "follow the moment rules" — kind probe/nudge true — contradicting the
+   *  OPENING rule's kind answer/nudge false; QA 2026-08-14 audit). */
   momentObservation?: string | null;
+  /** Set exactly once, on candidate arrival: the opening instruction. Its
+   *  own slot so it renders under the OPENING rule, never the moment
+   *  wrapper. */
+  openingObservation?: string | null;
   /**
    * describeAdrift() output: they have been reading one region for a long
    * time with nothing moving, and the region is verifiably NOT where the
@@ -573,6 +579,9 @@ export function render(template: string, ctx: InterviewerContext): string {
     WORKSPACE_VIEW: ctx.workspaceView ?? '(no edits yet this session)',
     MOMENT: ctx.momentObservation
       ? `MOMENT — ${ctx.momentObservation} Follow the moment rules above: one focused probe about it, then release.`
+      : 'no',
+    OPENING: ctx.openingObservation
+      ? `OPENING — ${ctx.openingObservation} Follow the OPENING rule above: kind "answer", nudge false.`
       : 'no',
     ELAPSED_MIN: String(Math.round(ctx.elapsedMs / 60_000)),
     // Timedness is per-SESSION constant (capabilities.time_limit_ms is read

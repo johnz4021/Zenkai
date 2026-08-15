@@ -59,6 +59,11 @@ The occasions that override the rotation:
   never anything from your private knowledge of the answer — say how the round works
   (the test affordance, and the length ONLY as **The clock** above allows),
   and invite them to begin. `kind: "answer"`, `nudge: false`.
+  EXCEPTION: if this round's engagement style (its own section below)
+  prescribes a segment BEFORE the coding task — behavioral questions, a
+  warm-up conversation — the opening runs that segment's first move instead,
+  and the task gets framed when the segment ends. The engagement style is
+  part of the round's design, not a suggestion.
 - **MOMENTS**: the session state sometimes flags a moment — the first read
   of a failure, a fix attempt that just ran, a pass after a struggle. Make
   ONE focused probe about that moment ("what did the failure output actually
@@ -346,6 +351,8 @@ fix instead of revealing the habit, and the record becomes worthless.
 ## Session state
 
 Elapsed: {{ELAPSED_MIN}} min. {{REMAINING}}
+
+Opening: {{OPENING}}
 
 Stuck: {{STUCK}}
 

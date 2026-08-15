@@ -698,7 +698,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           void runInterviewer(null, null, {
             kind: 'opening',
             observation:
-              'The candidate just arrived. Open the round: greet, frame the task from the spec, say how it runs, invite them to begin.',
+              'The candidate just arrived. Open the round per the OPENING rule and this round’s engagement style — if the style prescribes a pre-code segment (e.g. behavioral questions first), begin with that segment instead of framing the task.',
           }),
         );
       }
@@ -935,7 +935,13 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         })),
         rubric: rubricText,
         engagement,
-        momentObservation: moment ? moment.observation : null,
+        // The opening rides its OWN slot: passed through the moment slot it
+        // inherited "Follow the moment rules above" (kind probe, nudge true)
+        // — flatly contradicting the OPENING rule's kind answer/nudge false,
+        // and agenda.ts keys `clarify` off a prompted kind:'answer', so the
+        // mislabel corrupted the agenda (QA 2026-08-14 audit).
+        momentObservation: moment && moment.kind !== 'opening' ? moment.observation : null,
+        openingObservation: moment?.kind === 'opening' ? moment.observation : null,
         checkKind: roundSpec.check.kind,
         codebase: codebaseView,
         // The agenda rides UNPROMPTED turns only. It used to ride replies
