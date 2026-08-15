@@ -1051,7 +1051,7 @@ function renderPractice() {
     // free when nothing changed and an explicit REGENERATE when it did.
     const dirty = repPasteDirty(keep);
     const returning = rep.drafts.length > 0;
-    html += '<h1 class="hero"><label for="rep-paste">What are you preparing for?</label></h1>' +
+    html += '<h1 class="hero"><label for="rep-paste">What do you want to practice right now?</label></h1>' +
       '<div class="composer-frame">' +
       '<textarea id="rep-paste" placeholder="paste a recruiter email, a JD, a friend’s description…"></textarea>' + chips +
       (rep.linkOpen

@@ -652,7 +652,7 @@ describe('composer-first landing — hero + status line (design round2-A-minimal
   const js = clientScript('app.js') ?? '';
 
   it('the hero is the label — heading semantics and a11y in one element', () => {
-    expect(js).toContain('<h1 class="hero"><label for="rep-paste">What are you preparing for?</label></h1>');
+    expect(js).toContain('<h1 class="hero"><label for="rep-paste">What do you want to practice right now?</label></h1>');
     expect(html).toMatch(/#practice-wrap \.hero label \{[\s\S]{0,200}font-size: 38px/);
     // one instrument: frame holds textarea + footer; focus lifts the hairline
     expect(html).toMatch(/\.composer-frame:focus-within \{ border-color: var\(--steel\)/);
