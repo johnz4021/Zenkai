@@ -1231,6 +1231,11 @@ export function appPage(): string {
   .gb { letter-spacing: 0; opacity: .8; }
   .gapstate { color: var(--text-2); font-size: 12px; }
   .gapcite { color: var(--text-3); font-size: 12px; margin: 3px 0 0 104px; }
+  /* Long citations render in FULL and clamp to two lines (QA 2026-08-15:
+     the old 157-char slice cut mid-word with no way to read the rest);
+     click toggles .open. Ellipsis is the affordance, cursor confirms it. */
+  .gapcite.clamped { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+  .gapcite.open { cursor: pointer; }
   .topicband { border: 1px solid var(--line); border-radius: 6px; padding: 8px 14px 10px; margin: 10px 0 4px; }
   .topicrow { display: flex; gap: 10px; align-items: baseline; border-top: 1px solid var(--line-soft); padding: 5px 0; }
   .topicrow:first-of-type { border-top: 0; }

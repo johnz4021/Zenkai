@@ -2549,7 +2549,12 @@ function renderGapsBand() {
       // beside them carry the same information as text.
       '<span class="gapstrip" aria-hidden="true">' + strip + '</span>' +
       '<span class="gapstate">' + esc(gapStateLine(s)) + '</span>' +
-      (s && s.latest_analysis ? '<div class="cite gapcite">' + esc(s.latest_analysis.length > 160 ? s.latest_analysis.slice(0, 157) + '…' : s.latest_analysis) + '</div>' : '') +
+      // Full text, CSS-clamped (QA 2026-08-15): the 157-char slice cut every
+      // judge citation mid-word with no way to read the rest. A long cite
+      // clamps to two lines and toggles open on click (delegated below).
+      (s && s.latest_analysis
+        ? '<div class="cite gapcite' + (s.latest_analysis.length > 160 ? ' clamped" role="button" tabindex="0" aria-expanded="false' : '') + '">' + esc(s.latest_analysis) + '</div>'
+        : '') +
       '</div>';
   }
   if ((h.skipped || 0) + (h.unattributable || 0) > 0) {
@@ -2561,6 +2566,23 @@ function renderGapsBand() {
   }
   return html + '</div>';
 }
+
+// Clamped gap citations toggle open in place — delegated for the same
+// reason as the card confirms below (the band re-renders on each poll).
+document.addEventListener('click', (e) => {
+  const cite = e.target.closest('.gapcite.clamped, .gapcite.open');
+  if (!cite) return;
+  cite.classList.toggle('clamped');
+  cite.classList.toggle('open');
+  cite.setAttribute('aria-expanded', cite.classList.contains('open') ? 'true' : 'false');
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const cite = e.target.closest && e.target.closest('.gapcite.clamped, .gapcite.open');
+  if (!cite) return;
+  e.preventDefault();
+  cite.click();
+});
 
 // One delegated listener for every history/timeline card confirm — panels
 // re-render on each poll, so per-render wiring would leak or miss.
