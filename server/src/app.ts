@@ -72,6 +72,7 @@ import {
   countPlans,
   roundsUsed,
   expectedText,
+  FEEDBACK_MAX,
   gateVerdict,
   grantsAccess,
   hasGrant,
@@ -345,7 +346,9 @@ function logPaywall(row: Record<string, unknown>): void {
   const uid = typeof row.user_id === 'string' ? row.user_id : '';
   const action = typeof row.action === 'string' ? row.action : 'unknown';
   if (uid) {
-    const { ts: _ts, user_id: _u, email: _e, expect: _x, action: _a, ...safe } = row;
+    // value/improve are user-authored free text like expect — JSONL only,
+    // never the wire (same owner decision, 2026-08-15).
+    const { ts: _ts, user_id: _u, email: _e, expect: _x, value: _v, improve: _i, action: _a, ...safe } = row;
     ph.capture(uid, action === 'gated' ? 'gate_shown' : `gate_${action}`, safe);
   }
 }
@@ -1153,6 +1156,9 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   #paywall .ask { margin-top: 18px; }
   #paywall label { display: block; margin: 0 0 6px; color: var(--text-2); }
   #paywall input { width: 100%; min-height: 44px; box-sizing: border-box; background: var(--sunk); border: 1px solid var(--line); border-radius: 6px; color: var(--text-1); font: inherit; padding: 0 12px; }
+  /* Step 3's feedback pair — free-form, so a textarea, not the one-line
+     price box. margin-bottom separates the stacked question blocks. */
+  #paywall textarea { width: 100%; box-sizing: border-box; background: var(--sunk); border: 1px solid var(--line); border-radius: 6px; color: var(--text-1); font: inherit; padding: 10px 12px; resize: vertical; margin-bottom: 12px; }
   #paywall .btnrow { display: flex; gap: 10px; margin-top: 20px; }
   #paywall .btnrow button { flex: 1; min-height: 44px; }
 
@@ -2364,13 +2370,19 @@ export function runApp(cfg: AppConfig): http.Server {
         // responds, because the client retries the launch the moment it
         // resolves. Everything here is synchronous for that reason; an async
         // append would deadlock the user on their own gate.
-        const b = JSON.parse((await readBody(req)) || '{}') as { action?: string; expect?: string };
+        const b = JSON.parse((await readBody(req)) || '{}') as {
+          action?: string; expect?: string; value?: string; improve?: string;
+        };
         const action = probeAction(b.action);
         // Admins and a gate-off box record NOTHING: the founder's own clicks
         // are not signal, and a stale tab must not pollute the log.
         const recorded = cfg.pub.paywall.enabled && !user!.admin;
         if (recorded) {
           const expect = expectedText(b.expect);
+          // The post-reveal feedback pair (owner request 2026-08-15) —
+          // bounded like expect, wider because "any form" is the point.
+          const value = expectedText(b.value, FEEDBACK_MAX);
+          const improve = expectedText(b.improve, FEEDBACK_MAX);
           logPaywall({
             ts: new Date().toISOString(),
             user_id: user!.id,
@@ -2380,6 +2392,8 @@ export function runApp(cfg: AppConfig): http.Server {
             free_rounds: cfg.pub.paywall.freeRounds,
             free_plans: cfg.pub.paywall.freePlans,
             ...(expect ? { expect } : {}),
+            ...(value ? { value } : {}),
+            ...(improve ? { improve } : {}),
           });
         }
         // `granted` tells the client its retry will get through rather than

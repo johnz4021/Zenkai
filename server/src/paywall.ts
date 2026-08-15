@@ -89,6 +89,12 @@ export const PROBE_ACTIONS = [
   'not_yet',
   'would_pay_confirmed',
   'notify_declined',
+  /** The post-reveal favor (owner request 2026-08-15): after the grant is
+   *  already theirs, two optional free-text questions — most valuable part,
+   *  most wanted improvement. Sent only when at least one box has text, so
+   *  the response RATE needs no skip row: the denominator is every
+   *  would_pay_confirmed/notify_declined row (everyone who saw the ask). */
+  'feedback',
 ] as const;
 export type ProbeAction = (typeof PROBE_ACTIONS)[number] | 'unknown';
 
@@ -98,6 +104,9 @@ const GRANTING: readonly string[] = ['would_pay', 'would_pay_confirmed'];
 /** Free-text answers arrive on a route whose body reader has no size cap
  *  (readBody, app.ts) — bounded here, beside the vocabulary it belongs to. */
 export const EXPECTED_MAX = 200;
+/** The feedback answers get more room than a price guess — "any form" is the
+ *  point of asking broadly — but stay bounded for the same reason. */
+export const FEEDBACK_MAX = 500;
 
 /** Minimal shapes this module reads — structural, so RepView, QueueItem and
  *  Target satisfy them without importing any of those types. */
@@ -322,10 +331,11 @@ export function grantsAccess(action: ProbeAction): boolean {
   return GRANTING.includes(action);
 }
 
-/** Trim and bound the "what would you expect to pay?" answer. undefined for
- *  anything empty, so the row omits the key rather than carrying ''. */
-export function expectedText(raw: unknown): string | undefined {
+/** Trim and bound a free-text answer. undefined for anything empty, so the
+ *  row omits the key rather than carrying ''. Default bound fits the
+ *  "expect to pay" box; the feedback pair passes FEEDBACK_MAX. */
+export function expectedText(raw: unknown, max: number = EXPECTED_MAX): string | undefined {
   if (typeof raw !== 'string') return undefined;
-  const s = raw.trim().slice(0, EXPECTED_MAX);
+  const s = raw.trim().slice(0, max);
   return s.length > 0 ? s : undefined;
 }

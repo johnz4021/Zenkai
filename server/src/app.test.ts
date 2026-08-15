@@ -1281,9 +1281,38 @@ describe('the beta measurement mode (gate armed, billing unconfigured)', () => {
 
   it('Escape during step 2 also proceeds — the grant is already spent', () => {
     const start = js.indexOf('function onKey(e)');
-    const fn = js.slice(start, start + 500);
+    const fn = js.slice(start, start + 700);
     expect(fn).toContain("host.dataset.step === '2'");
     expect(fn).toContain('teardown(true)');
+  });
+
+  it('step 3 asks the feedback pair as a favor — optional on every path (owner 2026-08-15)', () => {
+    const start = js.indexOf('function betaFeedback()');
+    expect(start).toBeGreaterThan(0);
+    const fn = js.slice(start, js.indexOf("yes.addEventListener('click'", start));
+    // Both step-2 buttons route here — the ask reaches decliners too.
+    const reveal = js.slice(js.indexOf('function betaReveal()'), start);
+    expect((reveal.match(/betaFeedback\(\)/g) ?? []).length).toBe(2);
+    // The two questions, broad by design.
+    expect(fn).toContain('most valuable part of Zenkai');
+    expect(fn).toContain('most want improved or added');
+    // Sent only with content — an empty Send IS a skip, never an empty row.
+    expect(fn).toMatch(/if \(value \|\| improve\) probeBeacon\('feedback'/);
+    // Every way out proceeds; a survey must never cost the round.
+    expect(fn).not.toContain('teardown(false)');
+    expect((fn.match(/teardown\(true\)/g) ?? []).length).toBeGreaterThanOrEqual(3);
+    // Escape at step 3 is a silent skip.
+    const key = js.slice(js.indexOf('function onKey(e)'), js.indexOf('function onKey(e)') + 700);
+    expect(key).toContain("host.dataset.step === '3'");
+  });
+
+  it('feedback free text stays in the JSONL and off the analytics wire', () => {
+    const appSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'app.ts'), 'utf8');
+    // Bounded like expect, wider because the answers are free-form.
+    expect(appSource).toContain('expectedText(b.value, FEEDBACK_MAX)');
+    expect(appSource).toContain('expectedText(b.improve, FEEDBACK_MAX)');
+    // The PostHog mirror strips value/improve exactly like expect.
+    expect(appSource).toMatch(/expect: _x, value: _v, improve: _i/);
   });
 });
 

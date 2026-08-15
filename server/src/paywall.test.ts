@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   EXPECTED_MAX,
+  FEEDBACK_MAX,
   countBuilds,
   countPlans,
   countRoundsRun,
@@ -248,8 +249,8 @@ describe('hasGrant — derived from the event log, not stored', () => {
 });
 
 describe('probeAction / grantsAccess — the closed vocabulary', () => {
-  it('passes the five known actions', () => {
-    for (const a of ['gated', 'would_pay', 'not_yet', 'would_pay_confirmed', 'notify_declined']) {
+  it('passes the six known actions', () => {
+    for (const a of ['gated', 'would_pay', 'not_yet', 'would_pay_confirmed', 'notify_declined', 'feedback']) {
       expect(probeAction(a)).toBe(a);
     }
   });
@@ -263,7 +264,8 @@ describe('probeAction / grantsAccess — the closed vocabulary', () => {
   it('only the two paying actions grant access', () => {
     expect(grantsAccess('would_pay')).toBe(true);
     expect(grantsAccess('would_pay_confirmed')).toBe(true);
-    for (const a of ['gated', 'not_yet', 'notify_declined', 'unknown'] as const) {
+    // feedback especially: answering a survey must never mint a grant.
+    for (const a of ['gated', 'not_yet', 'notify_declined', 'feedback', 'unknown'] as const) {
       expect(grantsAccess(a)).toBe(false);
     }
   });
@@ -276,6 +278,12 @@ describe('expectedText — bounded free text', () => {
 
   it('caps length — the route has no body cap of its own', () => {
     expect(expectedText('x'.repeat(5000))).toHaveLength(EXPECTED_MAX);
+  });
+
+  it('the feedback pair gets the wider bound, same trim rules', () => {
+    expect(expectedText('x'.repeat(5000), FEEDBACK_MAX)).toHaveLength(FEEDBACK_MAX);
+    expect(expectedText('  the gap graph  ', FEEDBACK_MAX)).toBe('the gap graph');
+    expect(expectedText('   ', FEEDBACK_MAX)).toBeUndefined();
   });
 
   it('empty and non-strings are undefined, so the row omits the key', () => {

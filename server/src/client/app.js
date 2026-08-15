@@ -3179,13 +3179,15 @@ let paywallOpen = false;
 /** Fire-and-forget. keepalive is load-bearing on paths that navigate away:
  *  a plain in-flight fetch is cancelled by a same-tab navigation, and we
  *  would lose exactly the events we are here to measure. */
-function probeBeacon(action, expect) {
+function probeBeacon(action, fields) {
   try {
+    // JSON.stringify drops undefined-valued keys, so empty optional answers
+    // never ride as '' — the server-side trim is the backstop, not the norm.
     fetch('/api/paywall/probe', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       keepalive: true,
-      body: JSON.stringify(expect ? { action: action, expect: expect } : { action: action }),
+      body: JSON.stringify(Object.assign({ action: action }, fields || {})),
     }).catch(() => {});
   } catch { /* a metric never blocks a launch */ }
 }
@@ -3289,9 +3291,12 @@ function showPaywallGate(pw) {
     }
     function onKey(e) {
       if (e.key !== 'Escape') return;
-      // Step 2 is PAST the decision: they already pressed Subscribe, the
-      // grant is already recorded, and the action goes through either way.
-      // Escaping out of a follow-up question must never cost them the round.
+      // Steps 2 and 3 are PAST the decision: they already pressed Subscribe,
+      // the grant is already recorded, and the action goes through either
+      // way. Escaping out of a follow-up must never cost them the round.
+      // Step 3 records nothing — an escape IS a skip, and skips are the
+      // denominator's silence, not a row.
+      if (host.dataset.step === '3') { teardown(true); return; }
       if (host.dataset.step === '2') { probeBeacon('notify_declined'); teardown(true); return; }
       probeBeacon('not_yet');
       teardown(false);
@@ -3401,7 +3406,7 @@ function showPaywallGate(pw) {
           '</div>';
         var expect = function () {
           var box = el('paywall-expect');
-          return box && box.value ? box.value : undefined;
+          return box && box.value ? { expect: box.value } : undefined;
         };
         var notify = el('paywall-notify');
         var nothanks = el('paywall-nothanks');
@@ -3409,13 +3414,57 @@ function showPaywallGate(pw) {
         if (!notify || !nothanks) { teardown(true); return; }
         notify.addEventListener('click', function () {
           probeBeacon('would_pay_confirmed', expect());
-          teardown(true);
+          betaFeedback();
         });
         nothanks.addEventListener('click', function () {
           probeBeacon('notify_declined', expect());
-          teardown(true);
+          betaFeedback();
         });
         if (notify.focus) notify.focus();
+      }
+
+      /**
+       * Step 3, the favor (owner request 2026-08-15). The round is already
+       * granted and the email decision already recorded — this card asks the
+       * two questions worth the most from someone who just tried to PAY:
+       * what earned that click, and what would make it worth more. Broad on
+       * purpose, both optional, and every way out (Send with empty boxes,
+       * Skip, Escape) proceeds identically. Skips write nothing: the response
+       * rate reads against the step-2 rows, so silence needs no row.
+       */
+      function betaFeedback() {
+        host.dataset.step = '3';
+        host.innerHTML =
+          '<div class="card" role="dialog" aria-modal="true" aria-labelledby="paywall-h">' +
+            '<h2 id="paywall-h">Two quick questions?</h2>' +
+            '<p>Your round is going ahead either way — but these two answers ' +
+              'genuinely steer what gets built next.</p>' +
+            '<label class="sub" for="paywall-value">What’s the most valuable part of Zenkai for you so far?</label>' +
+            '<textarea id="paywall-value" rows="2" maxlength="500"></textarea>' +
+            '<label class="sub" for="paywall-improve">What’s the one thing you’d most want improved or added?</label>' +
+            '<textarea id="paywall-improve" rows="2" maxlength="500"></textarea>' +
+            '<div class="btnrow">' +
+              '<button type="button" class="primary" id="paywall-send">Send</button>' +
+              '<button type="button" id="paywall-skip">Skip</button>' +
+            '</div>' +
+          '</div>';
+        var send = el('paywall-send');
+        var skip = el('paywall-skip');
+        // Defensive: a broken card still yields the round.
+        if (!send || !skip) { teardown(true); return; }
+        send.addEventListener('click', function () {
+          var v = el('paywall-value');
+          var im = el('paywall-improve');
+          var value = v && v.value.trim() ? v.value : undefined;
+          var improve = im && im.value.trim() ? im.value : undefined;
+          // Send with both boxes empty IS a skip — never a 'feedback' row
+          // with nothing in it.
+          if (value || improve) probeBeacon('feedback', { value: value, improve: improve });
+          teardown(true);
+        });
+        skip.addEventListener('click', function () { teardown(true); });
+        var first = el('paywall-value');
+        if (first && first.focus) first.focus();
       }
 
       yes.addEventListener('click', async function () {
