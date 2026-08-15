@@ -128,6 +128,30 @@ export interface GenerateResult {
   stderr: string;
 }
 
+/**
+ * The in-band failure `--output-format json` reports even on exit 0 —
+ * claude -p exits 0 on error_max_turns, and `ok: code === 0` masked it: a
+ * sourced build burned its whole 40-turn budget without writing a single
+ * file, reported ok, and the payload carrying the real cause (subtype,
+ * is_error, num_turns) was discarded because generateInto only prints it
+ * on !ok (zenkai.run 2026-08-15, amazon item-1 — "problem.json missing"
+ * was the validator meeting an empty dir, not the failure). Unparseable
+ * stdout is NOT a failure here: older CLI output shapes fall through to
+ * the validator, which rules on the artifact. Pure; exported for tests.
+ */
+export function inBandFailure(stdout: string): string | null {
+  try {
+    const p = JSON.parse(stdout) as { is_error?: boolean; subtype?: string; num_turns?: number };
+    if (p.is_error) return `is_error (subtype: ${p.subtype ?? 'unknown'}, turns: ${p.num_turns ?? '?'})`;
+    if (typeof p.subtype === 'string' && p.subtype !== 'success') {
+      return `subtype ${p.subtype} (turns: ${p.num_turns ?? '?'})`;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function generateProblem(opts: GenerateOptions): Promise<GenerateResult> {
   const template = await readFile(opts.templatePath, 'utf8');
   const spec = opts.spec ?? DEFAULT_DEBUGGING_SPEC;
@@ -177,8 +201,13 @@ export async function generateProblem(opts: GenerateOptions): Promise<GenerateRe
 
     child.on('close', (code) => {
       clearTimeout(timeout);
+      // A clean exit still fails when the payload says so — the artifact
+      // remains the final judge (generateInto falls through to the
+      // validator either way); !ok's job is making the payload VISIBLE.
+      const inBand = code === 0 ? inBandFailure(stdout) : null;
+      if (inBand) console.error(`[generate] claude -p reported in-band failure: ${inBand}`);
       resolve({
-        ok: code === 0,
+        ok: code === 0 && inBand === null,
         exitCode: code,
         durationMs: Date.now() - started,
         stdout,
