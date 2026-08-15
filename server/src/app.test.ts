@@ -96,7 +96,12 @@ describe('home app page', () => {
     }
     expect(html).not.toContain('Build my plan');
     expect(js).toContain('Describe the interview — paste everything you have');
-    expect(js).toContain('Correct me where I am wrong. What you saw yourself outranks anything I find.');
+    // The correction invitation renders only once a conversation exists —
+    // before the first reply it read as noise (QA 2026-08-15).
+    expect(js).toMatch(/plan\.tid \? '<div class="helper">Correct me where I am wrong/);
+    // The intro is one sentence + the trust line, not a briefing.
+    expect(js).toContain('Nothing is generated until you confirm the plan.');
+    expect(js).not.toContain('what a friend told you, a screenshot of the assessment preview');
     expect(js).toContain('function planFirstSend');
     // The file input survives as the composer's Attach target.
     expect(html).toContain('id="e-file"');

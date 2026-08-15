@@ -666,7 +666,10 @@ function renderComposer() {
     '<button id="plan-send" type="button"' + (plan.busy || plan.readOnly ? ' disabled' : '') + '>Send</button></div>' +
     '<div class="linkrow"><input id="plan-link" placeholder="add a link (optional) — a repo, a thread, a writeup" aria-label="Add a link (optional)" />' +
     '<button id="plan-addlink" type="button">add</button></div>' +
-    '<div class="helper">Correct me where I am wrong. What you saw yourself outranks anything I find.</div>' +
+    // The correction invitation earns its place only once there is
+    // something to correct — before the first reply it read as noise
+    // (QA 2026-08-15).
+    (plan.tid ? '<div class="helper">Correct me where I am wrong. What you saw yourself outranks anything I find.</div>' : '') +
     '</div>';
 }
 
@@ -680,9 +683,11 @@ function renderPlan() {
 
   let chat = '';
   if (!plan.tid && plan.turns.length === 0) {
-    chat = '<div id="plan-intro">Describe the interview you\'re preparing for — company, what the recruiter said, ' +
-      'what a friend told you, a screenshot of the assessment preview. Paste everything; I\'ll sort out what matters ' +
-      'and build a practice plan you confirm before anything is generated.</div>' +
+    // One sentence, not a briefing (QA 2026-08-15): the placeholder already
+    // shows what to paste, and the trust line ('nothing generated until you
+    // confirm') is the part worth saying twice.
+    chat = '<div id="plan-intro">Describe the interview you\'re preparing for — paste everything you have ' +
+      '(recruiter email, JD, screenshots). Nothing is generated until you confirm the plan.</div>' +
       (plan.error ? '<p class="err">' + esc(plan.error) + '</p>' : '');
   } else {
     chat = renderTurns();
