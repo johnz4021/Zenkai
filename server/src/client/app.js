@@ -862,6 +862,9 @@ const rep = {
   sourceText: null, sourceAttachN: 0,
   flashIds: [],          // gap ids to .flash after the next render, then cleared
   pendingFocus: null,    // gap id whose first control gets focus post-render
+  editingGap: null,      // rail gap id whose editor is open (compact readback,
+                         // owner report 2026-08-15) — transient, never persisted
+  pendingEditFocus: null, // one-shot: focus that editor after the next render
   linkOpen: false,       // the link input appears on request, not by default
   error: '',
 };
@@ -878,6 +881,7 @@ function resetRep() {
   rep.gaps = []; rep.brief = ''; rep.degraded = false;
   rep.sourceText = null; rep.sourceAttachN = 0;
   rep.flashIds = []; rep.pendingFocus = null;
+  rep.editingGap = null; rep.pendingEditFocus = null;
   rep.linkOpen = false;
   rep.error = '';
   lastWaitAnnounced = null;
@@ -1094,6 +1098,9 @@ function renderPractice() {
     // the grid places the rail visually left, and narrow widths stack the
     // rail above via order:-1.
     const dis = rep.busy ? ' disabled' : '';
+    // Settled = zero open questions, no re-infer in flight: the moment the
+    // commit block may move into the right column (see below).
+    const allSettled = open.length === 0 && !rep.busy;
     html += '<div id="rep-confirm">';
     html += '<div id="rep-open"><div class="micro">Needed before I build</div>';
     if (rep.busy) {
@@ -1137,6 +1144,10 @@ function renderPractice() {
       '<input id="rep-change" placeholder="e.g. actually it’s Rust, and harder" style="flex:1;background:var(--panel);color:var(--text-1);border:1px solid var(--line);border-radius:6px;padding:10px 12px;font:inherit;min-height:44px"' + dis + '>' +
       '<button type="button" id="rep-rechecks" class="mini" style="min-height:44px"' + dis + '>' +
       (rep.busy ? 'applying…' : 'apply') + '</button></div>';
+    // Everything settled: brief + Start render HERE, in the short column,
+    // instead of on grid row 2 below the rail (owner report 2026-08-15:
+    // the user scrolled the whole confirmed list to reach the button).
+    if (allSettled) html += renderRepCommit(d, startLabel, dis);
     html += '</div>'; // #rep-open
 
     html += '<div id="rep-rail"><div class="micro">Confirmed from your paste</div>';
@@ -1149,34 +1160,39 @@ function renderPractice() {
         ' rounds — building “' + esc(d.spec.label) + '”</div>';
     }
     for (const g of settled) {
+      // Compact readback (owner report 2026-08-15): the always-open 44px
+      // controls made the rail outgrow the viewport — every answer moved a
+      // full edit box + why-line into this column, and Start (grid row 2)
+      // sank below all of it. The value is now a click-to-edit button; the
+      // control and its why-line render only for the row being edited.
+      const editing = g.id === rep.editingGap;
       html += '<div class="gaterow" data-gap="' + esc(g.id) + '">' +
         '<label class="micro" for="gap-' + esc(g.id) + '">' + esc(g.label) +
         ' <span class="tier">' + (tierWord[g.evidence] || 'guessed') + '</span></label>' +
-        (g.closed && g.options.length
-          ? '<select id="gap-' + esc(g.id) + '" class="gapedit" data-gap="' + esc(g.id) + '"' + dis + '>' +
-            g.options.map((o) => '<option' + (o.label === g.value ? ' selected' : '') + '>' + esc(o.label) + '</option>').join('') +
-            (g.options.some((o) => o.label === g.value) ? '' : '<option selected>' + esc(g.value) + '</option>') +
-            '</select>'
-          : '<input id="gap-' + esc(g.id) + '" class="gapedit" data-gap="' + esc(g.id) + '" value="' + esc(g.value) + '"' + dis + '>') +
-        '<div class="gapwhy">' + esc(g.why) + '</div>' +
+        (editing
+          ? (g.closed && g.options.length
+            ? '<select id="gap-' + esc(g.id) + '" class="gapedit" data-gap="' + esc(g.id) + '"' + dis + '>' +
+              g.options.map((o) => '<option' + (o.label === g.value ? ' selected' : '') + '>' + esc(o.label) + '</option>').join('') +
+              (g.options.some((o) => o.label === g.value) ? '' : '<option selected>' + esc(g.value) + '</option>') +
+              '</select>'
+            : '<input id="gap-' + esc(g.id) + '" class="gapedit" data-gap="' + esc(g.id) + '" value="' + esc(g.value) + '"' + dis + '>') +
+            '<div class="gapwhy">' + esc(g.why) + '</div>'
+          : '<button type="button" id="gap-' + esc(g.id) + '" class="gapval" data-gap="' + esc(g.id) + '"' +
+            ' aria-label="change ' + esc(g.label) + ' — currently ' + esc(g.value) + '"' + dis + '>' + esc(g.value) + '</button>') +
         '</div>';
     }
     html += '<div class="metaline" style="margin-top:10px">' + esc(specShapeLine(d.spec.capabilities)) + '</div>';
     html += '</div>'; // #rep-rail
 
-    // The commit block spans BOTH columns. The brief is a paragraph meant to
-    // be read right before an irreversible build; in the 220px rail it
-    // rendered as a twelve-line sliver (QA 2026-08-12, ISSUE-004). Full width
-    // here also puts Start below everything it is committing, which is what
-    // the approved mockup showed. Still in flow — the sticky slot stays free.
-    html += '<div id="rep-commit">';
-    if (rep.brief) html += '<div id="rep-brief">' + esc(rep.brief) + '</div>';
-    if (d.unsupported) {
-      // Decision 2B: the decline is visible and the choice is the user's.
-      html += '<div id="rep-unsupported">can’t run this honestly: ' + esc(d.unsupported) + '</div>';
-    }
-    html += '<div class="rep-actions"><button type="button" class="primary" id="rep-start"' + dis + '>' + startLabel + '</button></div>';
-    html += '</div>'; // #rep-commit
+    // The commit block spans BOTH columns while questions are open — the
+    // brief is a paragraph meant to be read right before an irreversible
+    // build; in the 220px rail it rendered as a twelve-line sliver (QA
+    // 2026-08-12, ISSUE-004). Once everything is settled it moves INSIDE
+    // the right column instead (see the allSettled branch above): the open
+    // column is one line then, while the rail is at its longest, and Start
+    // on grid row 2 sat below the entire rail (owner report 2026-08-15).
+    // Still in flow either way — the sticky slot stays free.
+    if (!allSettled) html += renderRepCommit(d, startLabel, dis);
     html += '</div>'; // #rep-confirm
   }
   if (rep.phase === 'clarifying') {
@@ -1215,7 +1231,28 @@ function renderPractice() {
       if (ctl) ctl.focus();
       rep.pendingFocus = null;
     }
+    // The just-opened rail editor gets focus — one-shot, so later renders
+    // never steal it back while the editor stays open.
+    if (rep.pendingEditFocus) {
+      const ctl = host.querySelector('.gaterow[data-gap="' + CSS.escape(rep.pendingEditFocus) + '"] .gapedit');
+      if (ctl) ctl.focus();
+      rep.pendingEditFocus = null;
+    }
   }
+}
+
+/** The commit block: brief → decline → Start, in reading order. One
+ *  builder, two placements — grid row 2 while questions are open, inside
+ *  the right column once settled (owner report 2026-08-15). */
+function renderRepCommit(d, startLabel, dis) {
+  let html = '<div id="rep-commit">';
+  if (rep.brief) html += '<div id="rep-brief">' + esc(rep.brief) + '</div>';
+  if (d.unsupported) {
+    // Decision 2B: the decline is visible and the choice is the user's.
+    html += '<div id="rep-unsupported">can’t run this honestly: ' + esc(d.unsupported) + '</div>';
+  }
+  html += '<div class="rep-actions"><button type="button" class="primary" id="rep-start"' + dis + '>' + startLabel + '</button></div>';
+  return html + '</div>'; // #rep-commit
 }
 
 /** The wait state (design 4A): honest elapsed from the .generating marker,
@@ -1325,17 +1362,30 @@ function wirePractice() {
       if (e.key === 'Enter') { e.preventDefault(); answerGap(input.dataset.gap, input.value); }
     });
   }
+  // Compact rail: the value button opens that row's editor (one at a time).
+  for (const b of f.querySelectorAll('.gapval')) {
+    b.addEventListener('click', () => {
+      rep.editingGap = b.dataset.gap;
+      rep.pendingEditFocus = b.dataset.gap;
+      renderPractice();
+    });
+  }
   for (const ctl of f.querySelectorAll('.gapedit')) {
     // Rail rows are the editable readback (decision 1A) — committing a
     // change routes through the same answer path as the question column.
+    // Commit and Escape both close the editor back to the compact row.
     const commit = () => {
       const g = rep.gaps.find((x) => x.id === ctl.dataset.gap);
-      if (!g || !ctl.value.trim() || ctl.value.trim() === g.value) return;
+      if (!g) return;
+      const v = ctl.value.trim();
+      rep.editingGap = null;
+      if (!v || v === g.value) { renderPractice(); return; } // never mind
       answerGap(g.id, ctl.value);
     };
     ctl.addEventListener('change', commit);
     ctl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      if (e.key === 'Escape') { rep.editingGap = null; renderPractice(); }
     });
   }
   const recheck = el('rep-rechecks');

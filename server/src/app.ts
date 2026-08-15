@@ -864,15 +864,31 @@ export function appPage(): string {
   /* Brief + decline + Start span both columns: the brief is prose to read
      before an irreversible build, and the rail is 220px. */
   #rep-commit { grid-column: 1 / -1; grid-row: 2; margin-top: 8px; border-top: 1px solid var(--rule); padding-top: 14px; }
+  /* Once everything is settled the commit block renders INSIDE the right
+     column (renderRepCommit) so Start is reachable without scrolling the
+     rail (owner report 2026-08-15). Nested, the grid rule above is inert;
+     this restores the separator it loses. */
+  #rep-open #rep-commit { margin-top: 18px; border-top: 1px solid var(--rule); padding-top: 14px; }
   @media (max-width: 760px) {
     /* Narrow: no breakout (it would overflow the shell), rail above questions. */
     #rep-confirm { display: flex; flex-direction: column; margin-inline: 0; }
     #rep-rail { order: -1; }
   }
-  /* Rail rows are the editable readback (decision 1A): 44px controls with
-     real labels; .gaterow/.tier reuse the planner's chips and flash. */
-  #rep-rail .gaterow { padding: 10px 2px; }
+  /* Rail rows are the editable readback (decision 1A) — compact by default
+     (owner report 2026-08-15): always-open 44px controls made the rail
+     outgrow the viewport and pushed Start below it. The value is a
+     click-to-edit button; the boxed .gapedit control appears per-row on
+     demand. .gaterow/.tier reuse the planner's chips and flash. */
+  #rep-rail .gaterow { padding: 6px 2px; }
   #rep-rail .gaterow label { display: block; }
+  /* Dotted underline = the clickability a borderless value would lack. */
+  #rep-rail .gapval {
+    display: block; width: 100%; text-align: left; background: none; border: 0;
+    padding: 3px 0; min-height: 32px; font: inherit; font-size: 13px; color: var(--text-1);
+    cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px;
+    text-decoration-color: var(--line);
+  }
+  #rep-rail .gapval:hover { text-decoration-color: var(--steel); }
   /* The planner's .tier is a BUTTON that cycles evidence, so it carries
      cursor: pointer. On the rail it is a read-only span stating provenance —
      inheriting the pointer made it look clickable and do nothing (QA

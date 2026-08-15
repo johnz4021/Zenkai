@@ -502,6 +502,26 @@ describe('practice door — client surface', () => {
     expect(html).toMatch(/#rep-rail \.tier \{ cursor: default/);
   });
 
+  it('the rail is compact: click-to-edit values, editor + why only while editing', () => {
+    // Owner report 2026-08-15: always-open 44px controls made the rail
+    // outgrow the viewport and pushed Start below it.
+    expect(js).toContain('class="gapval"');
+    expect(js).toContain('rep.editingGap');
+    expect(js).toMatch(/g\.id === rep\.editingGap/);
+    // The why-line renders only in the editing branch — one gapwhy site.
+    expect((js.match(/class="gapwhy"/g) || []).length).toBe(1);
+    expect(html).toMatch(/#rep-rail \.gapval \{[^}]*cursor: pointer/s);
+  });
+
+  it('the commit block moves into the settled column — Start without scrolling', () => {
+    // One builder, two placements: grid row 2 while questions are open,
+    // inside #rep-open once allSettled (owner report 2026-08-15).
+    expect(js).toContain('function renderRepCommit');
+    expect(js).toMatch(/if \(allSettled\) html \+= renderRepCommit/);
+    expect(js).toMatch(/if \(!allSettled\) html \+= renderRepCommit/);
+    expect(html).toMatch(/#rep-open #rep-commit \{[^}]*border-top/s);
+  });
+
   it('the brief, the honest decline, and the multi-draft disclosure render (3A/2B/T14)', () => {
     expect(js).toContain('id="rep-brief"');
     // Brief + decline + Start span BOTH columns: the brief is prose read
