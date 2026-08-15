@@ -1255,6 +1255,15 @@ export function appPage(): string {
   .runway li.today.complete .dot { border-color: var(--ok); background: var(--ok); }
   .runway button.mini { background: none; border: 1px solid var(--line); color: var(--text-2); padding: 2px 9px; font: inherit; font-size: 11px; cursor: pointer; margin-left: 10px; border-radius: 6px; }
   .runway button.mini:hover { color: var(--text-1); border-color: #3c3d40; }
+  /* Future-row build affordance: a text link, not a second Generate button —
+     TODAY's primary is the page's one big action (owner report 2026-08-15).
+     Dotted underline = the clickability a borderless gray word lacks. */
+  .runway button.quietgen { background: none; border: 0; min-height: 0; padding: 0; margin-left: 10px; font: inherit; font-size: 12px; color: var(--text-2); text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; }
+  .runway button.quietgen:hover { color: var(--text-1); }
+  .runway button.quietgen:disabled { opacity: .5; cursor: default; }
+  /* The runway's caption — names the row unit (a practice day / a queued
+     round) so the spine reads as a plan, not a list. */
+  .season .runwaykey { margin: 20px 0 8px; }
   .runway li.future.empty .dot { width: 5px; height: 5px; border-width: 1px; left: 2px; }
   .runway li.collapsed .body { color: var(--text-2); }
   .runway li.collapsed .dot { border-style: dashed; background: transparent; }

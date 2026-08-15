@@ -1736,6 +1736,17 @@ function renderSeason(row, state) {
     html += '</div>';
   }
 
+  // The runway's caption (owner report 2026-08-15: nothing said the rows
+  // were practice DAYS, so the timeline read as an undifferentiated list).
+  // Dated plans name the row unit; undated plans own up to having no
+  // calendar — counts/pace stay on the paceline, never repeated here.
+  if (rounds.length) {
+    html += '<p class="micro runwaykey">one row = one practice day</p>';
+  } else {
+    const left = row.queue ? row.queue.items.filter((i) => i.status !== 'done' && i.status !== 'skipped').length : 0;
+    html += '<p class="micro runwaykey">your queue, in order — no dates yet' +
+      (left ? ' · ' + left + ' round' + (left === 1 ? '' : 's') + ' left' : '') + '</p>';
+  }
   html += '<ol class="runway">';
   for (const d of days) {
     if (d.kind === 'interview') {
@@ -1773,7 +1784,8 @@ function renderSeason(row, state) {
       continue;
     }
     if (d.kind === 'quiet') {
-      html += '<li class="quiet"><span class="date"></span><span class="dot"></span>' +
+      // A past quiet run dims with the band it stands in for.
+      html += '<li class="quiet' + (d.past ? ' past' : '') + '"><span class="date"></span><span class="dot"></span>' +
         '<span class="body">· ' + d.count + ' quiet days ·</span></li>';
       continue;
     }
@@ -1861,10 +1873,13 @@ function renderSeason(row, state) {
     }
     // future — actionable (QA D3): build tomorrow's problem tonight. The
     // server's one-at-a-time and session-live 409s still guard everything.
+    // The affordance is a quiet text link, not a second "Generate": the
+    // duplicated label made TODAY's primary read as one of a crowd (friend
+    // walkthrough 2026-08-15). Same .gen wiring, same endpoint.
     if (item) {
       let action = '';
       if (item.status === 'pending') {
-        action = ' <button class="mini gen" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">Generate</button>';
+        action = ' <button class="quietgen gen" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">build ahead</button>';
       } else if (item.status === 'ready' && !state.session_live) {
         action = ' <button class="mini start" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">Start</button>';
       } else if (item.status === 'failed') {

@@ -296,6 +296,20 @@ describe('home app page', () => {
     expect(js).toContain('ol class="runway"');
   });
 
+  it('future rows say "build ahead" — TODAY owns the only Generate', () => {
+    // The duplicated small "Generate" buttons made TODAY's primary read as
+    // one of a crowd (owner report 2026-08-15). Same .gen wiring/endpoint.
+    expect(js).toContain('quietgen gen');
+    expect(js).toContain('>build ahead</button>');
+    expect(js).not.toContain('mini gen');
+  });
+
+  it('the runway carries a caption naming its row unit', () => {
+    expect(js).toContain('one row = one practice day');
+    expect(js).toContain('your queue, in order — no dates yet');
+    expect(html).toContain('.season .runwaykey');
+  });
+
   it('the client never renders the label — round N string as a title', () => {
     // itemTitle falls through title → planned_title → label; the label is
     // last resort only, and nothing else may synthesize "round N" text.
