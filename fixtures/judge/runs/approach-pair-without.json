@@ -1,11 +1,11 @@
 {
   "session_id": "gauntlet-approach-pair-without",
   "status": "assessed",
-  "judged_at": 1785437072228,
+  "judged_at": 1786910619406,
   "model": "claude-sonnet-5 (api)",
-  "prompt_hash": "7111192943bf",
+  "prompt_hash": "c2c4526143c3",
   "schema_version": 1,
-  "renderer_version": 1,
+  "renderer_version": 3,
   "expectations_used": {
     "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
     "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
@@ -15,39 +15,38 @@
     "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
   },
   "solved": true,
-  "summary": "The candidate quickly diagnosed the symptom (shipped units reappearing in stock) from the test diff, made a single edit to sweep.ts, and confirmed the suite passed before ending the session. The session was very short, with minimal narration of the actual fix and no post-fix reflection on why it worked.",
+  "summary": "The candidate quickly located and fixed the sweep bug (tests went from failing to passing) but did so with almost no narration, no stated mechanism-level hypothesis, and no closing explanation of why the fix worked — a fast but opaque path to a correct fix.",
   "dimensions": [
     {
       "dimension": "clarify",
       "verdict": "weak",
-      "analysis": "The candidate opened the failing test and paraphrased the diff (shipped units returning), which is useful groundwork, but never posed a question about whether partially-shipped holds should retain their shipped-unit deduction before diving into the sweep code. They moved straight from reading the diff to editing without checking the assumption against the test's intent.",
+      "analysis": "The candidate read the failing test output and noted the discrepancy between expected and actual units, but never posed a question or explicit hypothesis about what a partially-shipped hold should return before editing the code. They moved straight from noting the symptom to vague exploration.",
       "evidence": [
-        15,
         30,
-        85
+        60
       ]
     },
     {
       "dimension": "approach",
       "verdict": "weak",
-      "analysis": "The stated plan at the point of committing to a direction was to 'dig around' the release path and watch hold-state fields — a location and vague intent, not a mechanism. Despite the earlier diagnostic remark hinting at the right symptom, no explicit hypothesis like 'sweep releases original count instead of remaining' was voiced before editing.",
+      "analysis": "Their stated plan was to dig around in the release path and watch hold state fields — this names a location, not a mechanism. They never articulated that the sweep was releasing the original count instead of the remaining count before making the edit.",
       "evidence": [
         60
       ]
     },
     {
       "dimension": "communicate",
-      "verdict": "adequate",
-      "analysis": "The candidate narrated the failure diff and a loose plan to investigate the sweep and hold-state fields, giving an interviewer a rough sense of direction. However, no narration accompanied the actual edit or the reasoning behind the specific code change, leaving a gap in the transcript's explanatory power.",
+      "verdict": "weak",
+      "analysis": "There are only two speech lines in the whole session, and neither one narrates what was found while reading the code or explains the specific fix being made; the actual edit and save happen with no narration at all.",
       "evidence": [
-        30,
-        60
+        85,
+        95
       ]
     },
     {
       "dimension": "implement",
       "verdict": "adequate",
-      "analysis": "A single, targeted edit was made to src/sweep.ts and saved, consistent with the stated (if vague) intent to work in the release path, with no thrashing or contradictory changes observed. The execution was efficient and resulted in a passing suite, though the sparse planning makes it hard to judge precision against a stated mechanism.",
+      "analysis": "The edit to src/sweep.ts was made quickly and did in fact resolve the failing test, so the fix was scoped correctly even though the reasoning behind it was never verbalized. There is no evidence of thrashing or unrelated edits.",
       "evidence": [
         85,
         95
@@ -56,7 +55,7 @@
     {
       "dimension": "verify",
       "verdict": "adequate",
-      "analysis": "The candidate re-ran the test suite after the edit and confirmed a pass before ending the session, meeting the baseline expectation of checking work rather than declaring success blindly. There is no evidence of deeper edge-case checking (e.g. confirming full-release holds still behave correctly) beyond the aggregate suite result.",
+      "analysis": "After editing, they reran the full test suite and confirmed it passed before ending the session, which is the minimum verification step expected.",
       "evidence": [
         130
       ]
@@ -64,7 +63,7 @@
     {
       "dimension": "reflect",
       "verdict": "weak",
-      "analysis": "Immediately after the suite passed, the candidate ended the session with no stated explanation of why the original fix addressed the phantom-stock mechanism or how it relates to the remaining-vs-original count issue. The session ends without any articulation connecting the fix to the root cause.",
+      "analysis": "The session ended immediately after the tests passed with no explanation of why releasing the original count caused phantom stock or why the remaining-count fix addresses it; the candidate simply ended the session on green.",
       "evidence": [
         140
       ]

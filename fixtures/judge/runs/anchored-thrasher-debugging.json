@@ -1,0 +1,80 @@
+{
+  "session_id": "gauntlet-anchored-thrasher-debugging",
+  "status": "assessed",
+  "judged_at": 1786910514426,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "c2c4526143c3",
+  "schema_version": 1,
+  "renderer_version": 3,
+  "expectations_used": {
+    "clarify": "Reads the failing test body and asks whether partially shipped holds should return only unshipped units before editing.",
+    "approach": "Names the mechanism — the sweep releasing the original count rather than the remaining count — not merely \"something in the sweep\".",
+    "communicate": "Narrates what the failure diff shows and which hold-state fields are being traced.",
+    "implement": "Changes the sweep's released-quantity computation to test the stated hypothesis.",
+    "verify": "Re-runs the suite and confirms the partially-shipped expiry test passes without breaking full-release behavior.",
+    "reflect": "Explains why releasing the original count created phantom stock and how the remaining-count fix prevents it."
+  },
+  "solved": false,
+  "summary": "The candidate made three blind trial-and-error edits to src/sweep.ts, each time flipping a condition or trying \"another branch\" without ever reading the failing test or naming the actual mechanism (releasing original count vs. remaining units). All three attempts left the test suite failing, and the candidate ended the session without a fix or a diagnosis.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "weak",
+      "analysis": "The candidate never read the failing test body or asked any question about what 'remaining units' versus 'original count' should mean for a partially shipped hold. They went straight from a failed test run to guessing at condition flips in sweep.ts without articulating what the test actually expected.",
+      "evidence": [
+        6,
+        20,
+        40
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "weak",
+      "analysis": "No mechanism was ever named. The candidate's stated plan was to flip a condition, then try the other branch, then try one more idea — these are trial-and-error guesses at a location, not hypotheses about why the sweep was releasing the wrong quantity.",
+      "evidence": [
+        40,
+        120,
+        200
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "weak",
+      "analysis": "The few narration lines present are terse status updates ('nope, trying the other branch', 'still eight, one more idea') that report outcomes but never explain what in the code or test output led to each guess. An interviewer following along would not understand the reasoning behind any edit.",
+      "evidence": [
+        40,
+        120,
+        200
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "weak",
+      "analysis": "Three consecutive edit-save-test cycles targeted the same file with no stated hypothesis behind any of them, and all three failed to fix the test — this is classic thrashing rather than execution of a coherent plan.",
+      "evidence": [
+        60,
+        140,
+        220
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "adequate",
+      "analysis": "The candidate did re-run the test suite after each edit rather than declaring success blindly, which is the right instinct even though the edits themselves were unmotivated. However the process stalled after the third failure with no further attempt or diagnosis.",
+      "evidence": [
+        100,
+        180,
+        260
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "weak",
+      "analysis": "The session ended with tests still failing and no articulation of what was actually wrong; the candidate clicked End Session without ever landing on or stating the root cause of the phantom stock from releasing the original count instead of the remaining count.",
+      "evidence": [
+        260,
+        420
+      ]
+    }
+  ]
+}

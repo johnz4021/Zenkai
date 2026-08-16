@@ -1,11 +1,11 @@
 {
   "session_id": "gauntlet-sim-recoverer-dsa",
   "status": "assessed",
-  "judged_at": 1785436322854,
+  "judged_at": 1786910683942,
   "model": "claude-sonnet-5 (api)",
-  "prompt_hash": "7111192943bf",
+  "prompt_hash": "c2c4526143c3",
   "schema_version": 1,
-  "renderer_version": 1,
+  "renderer_version": 3,
   "expectations_used": {
     "clarify": "Establishes how duplicate values and reused indices behave in findPairs before designing.",
     "approach": "States the algorithm and its complexity — e.g. a hashmap pass making it O(n) versus the naive O(n^2) — BEFORE writing code.",
@@ -15,12 +15,12 @@
     "reflect": "Restates the complexity and where the hashmap approach would break."
   },
   "solved": true,
-  "summary": "Candidate started with a brute-force nested loop, confirmed the pairing/dedup contract by checking the test file, then diagnosed the large-input timeout as O(n^2) and rewrote to a hashmap-based O(n) solution. They dry-ran the new algorithm on a duplicate-containing example before saving, hit one failing edge case (complement equal to current value), fixed the insertion order, and verified all tests passed.",
+  "summary": "The candidate iterated from a brute-force O(n^2) solution to a hashmap-based O(n) approach after correctly diagnosing a timeout on the large-input test, verified the fix with a manual dry run and a full green test run, and clearly narrated their reasoning throughout. This is a clean, well-communicated build-round session with strong process across nearly every dimension.",
   "dimensions": [
     {
       "dimension": "clarify",
-      "verdict": "strong",
-      "analysis": "After writing the initial brute-force loop, the candidate paused to resolve exactly the ambiguity the problem calls out — whether pairs or indices needed deduping, and how duplicate values interact with index reuse — by reading the test file rather than guessing. They then explicitly reconciled this with their existing implementation.",
+      "verdict": "adequate",
+      "analysis": "The candidate did not ask clarifying questions upfront, but before committing to the dedup logic, they checked the test file to confirm how duplicates and index reuse should behave, resolving the ambiguity themselves rather than guessing blind. This was a bit late (after already writing a brute force pass) but it was a real self-directed check of the spec before finalizing logic.",
       "evidence": [
         95,
         108,
@@ -30,7 +30,7 @@
     {
       "dimension": "approach",
       "verdict": "strong",
-      "analysis": "The first pass was only a vague 'brute force first' intent, but once the timing failure surfaced, the candidate explicitly named the mechanism (nested loop is O(n^2) over ~10k elements) and stated the replacement algorithm and its complexity (hashmap of value-to-indices, O(n) single pass) before writing any code.",
+      "analysis": "After the brute force solution timed out on the large input, the candidate explicitly diagnosed the O(n^2) mechanism as the cause, then stated a concrete hashmap-based O(n) algorithm — storing value-to-indices and checking for the complement — before writing any code for it. This is a mechanism-level plan, not just a vague location or intent.",
       "evidence": [
         165,
         178,
@@ -40,39 +40,41 @@
     {
       "dimension": "communicate",
       "verdict": "strong",
-      "analysis": "The candidate narrated almost every step: the initial loop logic, the complexity diagnosis, the hashmap design, and a full manual dry run with concrete values, giving a transcript that fully explains the path taken.",
+      "analysis": "The candidate narrated their thinking almost continuously: describing the brute force loop before writing it, flagging the complexity concern, stating the hashmap plan, and then narrating a full dry run step by step with concrete values. The transcript alone makes their path easy to follow.",
       "evidence": [
         63,
         178,
-        230,
-        285
+        275,
+        285,
+        305
       ]
     },
     {
       "dimension": "implement",
       "verdict": "strong",
-      "analysis": "Edits tracked the stated plans in order: brute force first, then a full rewrite to the hashmap approach, then a targeted fix for the complement-equals-self edge case discovered during testing, with no unexplained scope changes.",
+      "analysis": "Implementation tracked the stated plans at each stage: brute force loop matched the stated pseudocode, and the rewrite matched the stated hashmap approach. When a bug surfaced (complement-equals-self edge case), they diagnosed it precisely and fixed the check-before-insert ordering rather than thrashing.",
       "evidence": [
+        40,
         205,
-        248,
         348
       ]
     },
     {
       "dimension": "verify",
       "verdict": "strong",
-      "analysis": "Before trusting the hashmap rewrite, the candidate manually traced it against a duplicate-containing example, then ran the full suite, and after a failure diagnosed and fixed the bug before re-running to confirm a full green pass including the large-input test.",
+      "analysis": "Before even running the suite the final time, the candidate manually dry-ran the hashmap algorithm against a concrete example with duplicate values, tracing index-by-index behavior, and only then reran the full test suite including the large-input case to confirm the fix.",
       "evidence": [
         265,
-        325,
+        305,
         378
       ]
     },
     {
       "dimension": "reflect",
       "verdict": "strong",
-      "analysis": "The candidate correctly identified the root cause of the failing edge case (checking the map before inserting the current value, not after) and closed with a correct restatement of the algorithm's time and space complexity, tying the fix to the underlying mechanism rather than just citing green tests.",
+      "analysis": "At the end the candidate restated the complexity characteristics of the final solution (O(n) time and space) and earlier had already articulated why the initial approach failed and why the map ordering bug occurred, connecting cause to fix rather than treating the green run as magic.",
       "evidence": [
+        165,
         362,
         383
       ]
