@@ -32,11 +32,28 @@ const repoRoot = path.resolve(here, '..', '..');
  */
 const envFile = path.join(repoRoot, '.env');
 if (existsSync(envFile)) {
+  const inheritedKey = process.env.ANTHROPIC_API_KEY;
   try {
     process.loadEnvFile(envFile);
   } catch (e) {
     console.warn(`[cli] .env present but unreadable: ${String(e).slice(0, 160)}`);
   }
+  // The key-shadow trap (TODOS #45, bitten live 2026-08-16): a shell-profile
+  // export wins over .env by design, and a STALE one 401s every interviewer
+  // turn and judge call with nothing naming the cause — the owner practiced
+  // through several "interviewer: unavailable" sessions before the 401
+  // surfaced in a log. Name it at boot, where it costs one line.
+  try {
+    const envKey = /^ANTHROPIC_API_KEY=(.+)$/m.exec(readFileSync(envFile, 'utf8'))?.[1]?.trim();
+    if (inheritedKey && envKey && inheritedKey !== envKey) {
+      console.warn(
+        '[cli] WARNING: the shell-inherited ANTHROPIC_API_KEY differs from .env’s and WINS.\n' +
+          '      If model calls 401 (interviewer unavailable, unassessed cards), run\n' +
+          '      `unset ANTHROPIC_API_KEY` in this shell and restart, or remove the\n' +
+          '      export from your shell profile.',
+      );
+    }
+  } catch { /* the warning must never break boot */ }
 }
 const problemsRoot = path.join(repoRoot, 'problems');
 const templatePath = path.join(repoRoot, 'prompts', 'generate-round.md');

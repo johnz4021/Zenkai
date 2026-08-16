@@ -1114,6 +1114,15 @@ silent-failure class found in the full-surface QA.
 
 ---
 
+
+**Narrowed 2026-08-16:** the boot warning shipped — cli.ts names a
+shell-inherited key that differs from .env's at startup, with the unset
+remedy in the message (the owner hit the full silent-degradation chain
+live: stale .zshrc export → interviewer 401 on every turn → 'interviewer:
+unavailable' chips and unassessed cards, no cause named anywhere). The
+remaining #45 scope is the deeper preflight: probe the key with a cheap
+model call at app boot and refuse/flag sessions when it fails.
+
 ## 46. CLI `generate-for` is a second, poorer generation path
 
 **What:** the CLI path is queue-blind: it drops a queue item's bound LC
