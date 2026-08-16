@@ -335,7 +335,7 @@ function specShapeLine(c) {
   return (c.interviewer ? 'live interviewer' : 'no interviewer (OA)') + ' · ' +
     (c.time_limit_ms ? Math.round(c.time_limit_ms / 60000) + ' min' : 'untimed') + ' · ' +
     'starts from ' + esc(c.starts_from) + ' · ' +
-    (c.submit === 'one_shot' ? 'graded once at submit' : 'iterate freely');
+    (c.submit === 'one_shot' ? 'graded once at submit' : 'graded as you go');
 }
 
 /** Same vocabulary as specShapeLine, compressed for the landing readout —
@@ -1938,7 +1938,7 @@ function metaLine(caps) {
   return [
     caps.time_limit_ms ? Math.round(caps.time_limit_ms / 60000) + ' min' : 'untimed',
     caps.interviewer ? 'live interviewer' : 'no interviewer',
-    caps.submit === 'one_shot' ? 'one shot' : 'iterate freely',
+    caps.submit === 'one_shot' ? 'graded once at submit' : 'graded as you go',
   ].join(' · ');
 }
 

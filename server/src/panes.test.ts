@@ -2,8 +2,10 @@
  * The panes helpers stand between the browser and the host filesystem —
  * safeWorkspacePath is the only thing stopping a crafted ?path= from
  * reading or writing outside the problem directory, and runGuard is the
- * only thing keeping one-shot OA rounds one-shot. Both get the paranoid
- * treatment.
+ * only thing keeping no-run rounds no-run (since the 2026-08-15
+ * un-conflation, one-shot rounds run freely — the read-only suite plus the
+ * Submit-time graded run carry the autograding contract instead). Both get
+ * the paranoid treatment.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -76,7 +78,7 @@ describe('summarizeTail', () => {
   });
 });
 
-describe('runGuard — one_shot stays one_shot', () => {
+describe('runGuard — can_run_tests alone governs the run loop', () => {
   const caps = (over: Partial<RoundCapabilities> = {}): RoundCapabilities => ({
     interviewer: false,
     can_run_tests: true,
@@ -90,8 +92,10 @@ describe('runGuard — one_shot stays one_shot', () => {
     expect(runGuard(caps(), false, false)).toBeNull();
   });
 
-  it('a one_shot round may NEVER run outside Submit', () => {
-    expect(runGuard(caps({ submit: 'one_shot' }), false, false)).toBe('one_shot');
+  it('a one_shot round runs freely — grading, not running, is what Submit owns', () => {
+    // Un-conflation 2026-08-15: a live round's own blueprint promised
+    // HackerRank's run-freely-graded-once semantics and this guard broke it.
+    expect(runGuard(caps({ submit: 'one_shot' }), false, false)).toBeNull();
   });
 
   it('no-run rounds, ended sessions, and in-flight runs are refused by name', () => {

@@ -52,8 +52,9 @@ function isGreenRun(e: TraceEvent): boolean {
 }
 
 export interface AgendaCaps {
-  /** Can the candidate run the suite during the round at all? False on
-   *  one_shot and can_run_tests:false rounds — where `verify` and `reflect`
+  /** Can the candidate run the suite during the round at all? False only
+   *  on can_run_tests:false rounds (one-shot rounds run freely since the
+   *  2026-08-15 un-conflation) — where `verify` and `reflect`
    *  must be 'na', not 'none': the old always-runnable assumption printed
    *  "they have edited but not run the suite since" on EVERY turn of a
    *  round whose Run button does not exist, and the prompt told the

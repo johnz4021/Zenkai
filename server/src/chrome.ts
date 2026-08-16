@@ -37,8 +37,9 @@ export interface SessionPageView {
   /** Which renderer fills the main pane: the nested VS Code workbench or
    *  the HackerRank-style panes layout. From resolveSurface(caps). */
   surface: 'ide' | 'panes';
-  /** Drives the panes Run button (absent on no-run and one-shot rounds —
-   *  the same condition that hides the IDE's Run Tests affordance). */
+  /** Drives the Run button on BOTH surfaces — alone (un-conflation
+   *  2026-08-15): `one_shot` is the autograding contract and never hides
+   *  the run loop; a visible suite is a runnable suite. */
   can_run_tests: boolean;
   /** The problem spec, panes only: rendered server-side into the statement
    *  pane. LLM-generated text — escaped before it touches markup. */
@@ -133,14 +134,18 @@ export function sessionPage(sessionId: string, partial: Partial<SessionPageView>
   const intro = voiceOn
     ? `<p class="u"><b>interviewer</b> — just talk. The mic is live (headphones recommended); think out loud freely — the interviewer only replies when you actually address it, and answers spec questions. Where the bug is, you won't get. Typing here works the same way. Mute is in the header.</p>`
     : `<p class="u"><b>interviewer</b> — voice is off this round, so type here. The interviewer only replies when you actually address it, and answers spec questions. Where the bug is, you won't get.</p>`;
+  // Three independent facts, three independent clauses (un-conflation
+  // 2026-08-15): etiquette (always), the run loop (can_run_tests), the
+  // grading contract (one_shot). The old fused ternary could not express
+  // "autograded AND runnable", which is what a real OA is.
   const soloNotice = view.interviewer
     ? ''
     : `<div id="notice">no interviewer this round — runs like an online assessment: nobody replies.${
-        view.one_shot
-          ? view.can_run_tests
-            ? ' The suite runs ONCE, when you press Submit — make it count.'
-            : ' Nothing runs this round — press Submit when your write-up is ready.'
-          : ''
+        view.can_run_tests
+          ? view.one_shot
+            ? ' Run the suite as often as you like — the graded run happens ONCE, when you press Submit.'
+            : ''
+          : ` Nothing runs this round — press ${view.one_shot ? 'Submit' : 'End session'} when your write-up is ready.`
       }</div>`;
   const endLabel = view.one_shot ? 'Submit' : 'End session';
   return /* html */ `<!doctype html>
@@ -269,7 +274,7 @@ ${view.analytics ? view.analytics + '\n' : ''}<style>
   ${view.interviewer ? '<span class="t" id="voicechip">voice: —</span>' : ''}
   ${view.interviewer ? '<span class="t" id="intchip" hidden></span>' : ''}
   ${
-    view.can_run_tests && !view.one_shot
+    view.can_run_tests
       ? `<button id="run" class="primary" data-endpoint="${view.surface === 'panes' ? '/api/run' : '/api/ide-run'}" title="run the test suite">▶ Run Tests</button>`
       : ''
   }
@@ -285,8 +290,8 @@ ${soloNotice}
     <div id="log">
       ${intro}
       ${view.surface === 'panes'
-        ? `<p class="u"><b>observed</b> — edits, tab switches, saves (automatic), and this chat${view.can_run_tests && !view.one_shot ? ', and test runs via the <b>Run Tests</b> button' : ''}. Silences ≥20s with no activity anywhere count as going quiet.${view.one_shot ? (view.can_run_tests ? ' The suite runs ONCE, when you press Submit — make it count.' : ' Nothing runs in this round — press Submit when your write-up is ready.') : ''}</p>`
-        : `<p class="u"><b>observed</b> — edits, saves, which file is focused and roughly where you're scrolled to, and this chat${view.can_run_tests && !view.one_shot ? ', and test runs (the <b>Run Tests</b> button, or a test command in the terminal). Other terminal commands are not observed' : ''}. Silences ≥20s with no activity anywhere count as going quiet.${view.autorun ? ' The suite runs once automatically at start.' : ''}${view.one_shot ? (view.can_run_tests ? ' The suite runs ONCE, when you press Submit — make it count.' : ' Nothing runs in this round — press Submit when your write-up is ready.') : ''}</p>`}
+        ? `<p class="u"><b>observed</b> — edits, tab switches, saves (automatic), and this chat${view.can_run_tests ? ', and test runs via the <b>Run Tests</b> button' : ''}. Silences ≥20s with no activity anywhere count as going quiet.${view.one_shot ? (view.can_run_tests ? ' Run the suite as often as you like — the graded run happens ONCE, when you press Submit.' : ' Nothing runs in this round — press Submit when your write-up is ready.') : ''}</p>`
+        : `<p class="u"><b>observed</b> — edits, saves, which file is focused and roughly where you're scrolled to, and this chat${view.can_run_tests ? ', and test runs (the <b>Run Tests</b> button, or a test command in the terminal). Other terminal commands are not observed' : ''}. Silences ≥20s with no activity anywhere count as going quiet.${view.autorun ? ' The suite runs once automatically at start.' : ''}${view.one_shot ? (view.can_run_tests ? ' Run the suite as often as you like — the graded run happens ONCE, when you press Submit.' : ' Nothing runs in this round — press Submit when your write-up is ready.') : ''}</p>`}
     </div>
     <form id="f"><input id="msg" autocomplete="off" placeholder="ask / note an assumption…" /><button>send</button></form>
   </aside>`

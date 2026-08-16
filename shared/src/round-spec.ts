@@ -30,7 +30,12 @@ export interface RoundCapabilities {
   time_limit_ms: number | null;
   /** What the candidate opens to: an existing codebase, a scaffold, or a change to review. */
   starts_from: 'repo' | 'blank' | 'diff';
-  /** one_shot = graded once at submit; the suite is not an iteration tool. */
+  /** one_shot = the AUTOGRADING contract: one authoritative server-side
+   *  run of a read-only suite at Submit is the verdict — no re-grade, no
+   *  iterating after. It says NOTHING about running while working;
+   *  `can_run_tests` alone governs the run loop (un-conflation 2026-08-15:
+   *  a round's own blueprint promised HackerRank's run-freely-graded-once
+   *  semantics and the old fused meaning made that unexpressible). */
   submit: 'iterate' | 'one_shot';
   /**
    * Which renderer the session page mounts — presentation, not round

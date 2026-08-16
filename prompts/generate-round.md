@@ -97,7 +97,8 @@ Rules:
   BANNED stems: "understands...", "thinks about...", "is aware of...".
 - For `approach`, demand a MECHANISM or a stated design, not a location or a vibe.
 - Write them for the round's shape: on a one-shot autograded round, `verify` means
-  dry-running before submit, not re-running a suite; with no interviewer, `clarify`
+  running the suite and reading the result before pressing Submit; on a no-run
+  round it means dry-running an example by hand; with no interviewer, `clarify`
   means pinning down the spec from the visible tests, not asking questions.
 
 Worked examples (from an inventory-holds bug round — match this specificity):

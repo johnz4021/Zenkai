@@ -67,7 +67,8 @@ CANDIDATE_MATERIAL>>>
   single Python file of roughly 200-300 lines", not "a small program".
 - Stay consistent with the mechanical spec: if it says no interviewer, do not
   describe interviewer interaction; if submit is one_shot, describe the
-  no-iteration reality.
+  single-graded-submission reality (the visible suite stays runnable while
+  working unless the spec says tests cannot run).
 - Do not invent company facts that are not in the candidate's words or
   material. When the material is thin, describe the most representative
   version of the round and keep claims generic rather than fabricated.

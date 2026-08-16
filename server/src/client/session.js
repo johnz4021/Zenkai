@@ -45,15 +45,15 @@ async function pollStatus() {
     const c = s.counts || {};
     const n = (k) => c[k] || 0;
     const el = document.getElementById('status');
-    // A one-shot round has no Run Tests button, so the debugging-round
-    // trigger ("first failing test run") can NEVER arm — the candidate
-    // would read a status describing an impossible event for the whole
-    // round. State the rule that actually governs their round instead.
-    // No-interviewer rounds get no trigger clause at all: "trigger armed"
-    // describes someone who is not there (QA 2026-08-14). No-run rounds
-    // have nothing to run, at submit or otherwise.
-    const trigger = el.dataset.oneShot === '1'
-      ? (el.dataset.noRun === '1' ? 'nothing runs this round' : 'suite runs once at submit')
+    // Branch on the run loop FIRST (un-conflation 2026-08-15): a no-run
+    // round reads a status describing an impossible event otherwise. A
+    // runnable one-shot round states its grading contract; interviewer
+    // rounds keep the trigger clause; no-interviewer rounds get none —
+    // "trigger armed" describes someone who is not there (QA 2026-08-14).
+    const trigger = el.dataset.noRun === '1'
+      ? 'nothing runs this round'
+      : el.dataset.oneShot === '1'
+      ? 'graded once at Submit'
       : (el.dataset.interviewer === '1'
           ? (s.trigger_armed ? 'trigger armed ✓' : 'waiting for first failing test run')
           : '');

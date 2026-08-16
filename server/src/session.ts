@@ -299,9 +299,10 @@ export const UNDERWAY_FLOOR_MS = 3 * 60_000;
  *
  * This used to be `hasFailingRun` alone, which is right for a debugging
  * round (the kickoff autorun makes it true in the first seconds) and wrong
- * for every other shape: a one-shot round CANNOT produce a test_run during
- * the session (the container gets IP_CAN_RUN_TESTS=0 and /api/run refuses;
- * the only run happens at submit), and an all_passing round starts green.
+ * for every other shape: a no-run round produces no test_run at all, an
+ * all_passing round starts green, and (pre-un-conflation, 2026-08-15)
+ * one-shot rounds could not run either — they now can, but a candidate who
+ * simply hasn't run yet must still count as underway.
  * QA 2026-08-14 measured the result — on 6 of 8 shipped rounds the entire
  * unprompted interviewer (pressure, moments, stuck, adrift, wrap-up, even
  * the acks) was unreachable for the whole session; the candidate got an
@@ -537,10 +538,10 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     // (learned the hard way). Other check kinds start green or blank — an
     // opening wall of red is noise, not a trigger.
     ...(cfg.autorunTests && roundSpec.check.kind === 'one_failing_test' ? [] : ['-e', 'IP_AUTORUN_TESTS=0']),
-    // No-run rounds and one-shot rounds both hide the Run Tests affordance:
-    // in one case the suite is off-limits, in the other it is not an
-    // iteration tool (it runs once, server-side, at submit).
-    ...(caps.can_run_tests && caps.submit !== 'one_shot' ? [] : ['-e', 'IP_CAN_RUN_TESTS=0']),
+    // can_run_tests ALONE governs the run loop (un-conflation 2026-08-15):
+    // one_shot is the autograding contract — the graded run at Submit —
+    // and a visible suite stays runnable while working, like a real OA.
+    ...(caps.can_run_tests ? [] : ['-e', 'IP_CAN_RUN_TESTS=0']),
     '-v', `${extDist}:/ext`,
     '-v', `${ideDataDir}:/ipdata`,
     '-v', `${cfg.problemDir}:${workspacePath}`,
@@ -554,16 +555,15 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // Derived from the same facts the runtime enforces, so it can never drift
   // into a runner that is not installed.
   const howToRun =
-    caps.submit === 'one_shot'
-      ? 'The suite does NOT run during this round. It runs once, server-side, when they press Submit. There is no run command available to them — say so plainly if asked.'
-      : !caps.can_run_tests
+    !caps.can_run_tests
       ? 'This round does not allow running the suite at all. There is no run command — say so plainly if asked.'
-      : `They press the **Run Tests** button in the session header (top right, above the editor). It runs \`${testCmd}\` in the workspace and shows the output in the ${surface === 'panes' ? 'test results panel below the editor' : "editor's Test Results panel"}. That is the intended path${surface === 'ide' ? `; running \`${testCmd}\` in the integrated terminal also works and is observed` : ''}.`;
+      : `They press the **Run Tests** button in the session header (top right, above the editor). It runs \`${testCmd}\` in the workspace and shows the output in the ${surface === 'panes' ? 'test results panel below the editor' : "editor's Test Results panel"}. That is the intended path${surface === 'ide' ? `; running \`${testCmd}\` in the integrated terminal also works and is observed` : ''}.${caps.submit === 'one_shot' ? ' The GRADED run is separate: it happens once, server-side, when they press Submit.' : ''}`;
 
-  // What the agenda may treat as reachable: on a one-shot or no-run round
-  // the suite cannot run mid-round, so verify/reflect are not-applicable
-  // rather than open gaps (agenda.ts AgendaCaps).
-  const agendaCaps = { runnable: caps.can_run_tests && caps.submit !== 'one_shot' };
+  // What the agenda may treat as reachable: on a no-run round the suite
+  // cannot run mid-round, so verify/reflect are not-applicable rather than
+  // open gaps (agenda.ts AgendaCaps). One-shot rounds run freely since the
+  // un-conflation (2026-08-15) — only can_run_tests decides.
+  const agendaCaps = { runnable: caps.can_run_tests };
 
   // The round's mechanics, stated to the interviewer — the axes the prompt
   // never used to carry (QA 2026-08-14: rules assumed iteration on one-shot
@@ -580,11 +580,14 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       : caps.starts_from === 'diff'
         ? 'They are reviewing a change: the diff is the artifact under review, and their WRITTEN review (REVIEW.md) is the deliverable that gets graded. Probe the write-up — coverage, severity calls, evidence — not just the reading.'
         : 'They work inside an existing repo.',
+    // Two independent axes, two independent sentences (un-conflation
+    // 2026-08-15): the run loop and the grading contract.
+    caps.can_run_tests
+      ? 'They can run the suite anytime and read the results.'
+      : 'Nothing runs in this round at all — never ask whether a change worked or what a run showed; nothing has run.',
     caps.submit === 'one_shot'
-      ? 'ONE graded submission, at the end, when they press Submit. They CANNOT run tests during the round — never ask whether a change worked or what a run showed; nothing has run.'
-      : caps.can_run_tests
-        ? 'They can run the suite anytime and iterate on the results.'
-        : 'Nothing runs in this round at all.',
+      ? 'ONE graded submission, at the end, when they press Submit — the authoritative graded run happens there, and there is no iterating after it.'
+      : '',
     partCount >= 2
       ? `This is a multi-part set: ${partCount} independent problems (solution_part1 … solution_part${partCount}). Track which part they are on from their activity; progress on one part says nothing about the others.`
       : '',

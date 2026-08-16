@@ -49,7 +49,7 @@ function isGreenRun(e: TraceEvent): boolean {
  *  - the candidate said a done-phrase after real work started. On a
  *    runnable round "work started" means at least one completed run ("we
  *    good?" in minute one is a mic check, not a surrender). On a no-run
- *    round (one_shot / can_run_tests:false) no run can EVER exist during
+ *    round (can_run_tests:false) no run can EVER exist during
  *    the session, which used to make the wrap-up — evaluation questions,
  *    closing, all of it — unreachable even when the candidate said "I'm
  *    done" (QA 2026-08-14; the exact round-just-stops failure this module

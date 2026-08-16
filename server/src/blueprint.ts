@@ -217,8 +217,8 @@ export function deliveryNotes(spec: RoundSpec): string {
     ? 'no fixed time limit'
     : `a single ${Math.round(caps.time_limit_ms / 60_000)}-minute clock`;
   const submitStyle = caps.submit === 'one_shot'
-    ? 'graded once at submit — no feedback until then'
-    : 'the candidate can run the suite and iterate freely';
+    ? `graded once at submit${caps.can_run_tests ? ' — the visible suite stays runnable while working' : ''}`
+    : 'graded on how they work — the suite is their own tool';
   const interviewer = caps.interviewer
     ? 'a live interviewer listens and probes'
     : 'no interviewer — unproctored and autograded, like a real OA';

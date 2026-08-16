@@ -140,7 +140,9 @@ describe('spec-driven session page (capabilities, not format branches)', () => {
     expect(html).not.toContain('the interviewer only replies');
     expect(html).toContain('>Submit</button>');
     expect(html).toContain('data-limit="1200000"');
-    expect(html).toContain('runs ONCE, when you press Submit');
+    // Un-conflation 2026-08-15: the graded run is once; RUNNING is free.
+    expect(html).toContain('the graded run happens ONCE, when you press Submit');
+    expect(html).toContain('Run the suite as often as you like');
     expect(html).not.toContain('runs once automatically at start');
   });
 
@@ -186,10 +188,11 @@ describe('Run Tests lives in our header, not inside the editor', () => {
     expect(html.indexOf('id="run"')).toBeLessThan(html.indexOf('<main>'));
   });
 
-  it('rounds that cannot iterate have no run button on either surface', () => {
-    expect(sessionPage('s', { one_shot: true })).not.toContain('id="run"');
+  it('only can_run_tests hides the Run button — one-shot rounds run freely (2026-08-15)', () => {
+    expect(sessionPage('s', { one_shot: true })).toContain('id="run"');
     expect(sessionPage('s', { can_run_tests: false })).not.toContain('id="run"');
-    expect(sessionPage('s', { surface: 'panes', one_shot: true, statement: 'x' })).not.toContain('id="run"');
+    expect(sessionPage('s', { surface: 'panes', one_shot: true, statement: 'x' })).toContain('id="run"');
+    expect(sessionPage('s', { surface: 'panes', can_run_tests: false, statement: 'x' })).not.toContain('id="run"');
   });
 
   it('the IDE run path asks the extension to run, never a second runner', () => {
@@ -231,8 +234,11 @@ describe('panes surface (the HackerRank-classic renderer)', () => {
     expect(html).not.toContain('monaco');
   });
 
-  it('one_shot and no-run panes rounds have NO Run button; iterate rounds do', () => {
-    expect(oaPanes()).not.toContain('id="run"');
+  it('a one_shot OA keeps its Run button AND its Submit contract; only no-run rounds lose it', () => {
+    // Un-conflation 2026-08-15: the OA's designed loop is run-freely,
+    // graded-once — the old page severed it.
+    expect(oaPanes()).toContain('id="run"');
+    expect(oaPanes()).toContain('>Submit</button>');
     const noRun = sessionPage('s', { surface: 'panes', can_run_tests: false, statement: 'x' });
     expect(noRun).not.toContain('id="run"');
     const iterate = sessionPage('s', { surface: 'panes', can_run_tests: true, statement: 'x' });
@@ -284,8 +290,12 @@ describe('solo rounds — conversation UI exists iff someone is listening (2026-
   it('the notice line re-homes the etiquette, with the one-shot clause when it applies', () => {
     expect(solo()).toContain('id="notice"');
     expect(solo()).toContain('nobody replies');
-    expect(solo({ one_shot: true })).toContain('runs ONCE, when you press Submit');
-    expect(solo({ one_shot: true, can_run_tests: false })).toContain('Nothing runs this round');
+    expect(solo({ one_shot: true })).toContain('the graded run happens ONCE, when you press Submit');
+    expect(solo({ one_shot: true })).toContain('Run the suite as often as you like');
+    // The no-run clause rides can_run_tests alone (un-conflation 2026-08-15)
+    // and names the button the round actually has.
+    expect(solo({ one_shot: true, can_run_tests: false })).toContain('Nothing runs this round — press Submit');
+    expect(solo({ can_run_tests: false })).toContain('Nothing runs this round — press End session');
     // Interviewer pages never render it — their aside carries the intro.
     expect(sessionPage('s')).not.toContain('id="notice"');
   });
@@ -355,7 +365,9 @@ describe('one-shot status copy (QA ISSUE-001)', () => {
 
   it('the client branches the trigger phrase on that attribute', () => {
     const js = clientScript() ?? '';
-    expect(js).toContain('suite runs once at submit');
+    // Run loop first, then the grading contract (un-conflation 2026-08-15).
+    expect(js).toContain('graded once at Submit');
+    expect(js).toContain("dataset.noRun === '1'");
     expect(js).toContain('oneShot');
     // The debugging-round phrase must survive for rounds that can arm it.
     expect(js).toContain('waiting for first failing test run');
