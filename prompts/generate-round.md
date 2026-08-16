@@ -58,7 +58,7 @@ Write `problem.json` at the repo root:
   "model_paths": ["<files defining the data model, if any>"],
   "round_spec": {{ROUND_SPEC_JSON}},
   "title": "<short human name for this problem, 3-8 words naming the system and its mechanism, e.g. 'Field depot reservation ledger'. If the round brief includes a planned title, this must match it.>",
-  "spec": "<150-300 words: the problem statement handed to the candidate. Describe intended behavior and what they must do. Never reveal solution structure or (for bug rounds) the bug's location.>",
+  "spec": "<the problem statement handed to the candidate — write it per '## Writing the problem statement' below. Never reveal solution structure or (for bug rounds) the bug's location.>",
   "mutations": [],
   "rubric": {
     "round_type": "debugging",
@@ -83,6 +83,25 @@ the 1-3 topic ids this problem genuinely tests, copied EXACTLY from that list
 (the build drops anything outside it). Topics never appear in candidate-visible
 files — the manifest is the only place they are written. Omit the field when
 the brief lists no topics.
+
+## Writing the problem statement (the candidate reads this cold, under a clock)
+
+A real interview statement is plain, short, and starts with the task. Every
+statement failure mode below shipped to a real candidate and made a round feel
+unreadable — these rules are hard requirements:
+
+1. The FIRST sentence says what the candidate does ("Implement…", "Find and
+   fix…", "Review…"). World-building never comes before the ask.
+2. Short paragraphs — one per stage, rule, or concern. Never a single block.
+3. Plain words. Introduce at most TWO invented proper nouns in the whole
+   statement; prefer role-descriptive names a reader parses instantly
+   (`ResponseCorrelator` over an invented brand like `girder.Gate`). Domain
+   flavor seasons the statement; it never carries it.
+4. 120-250 words, and shorter is better when the round is simple — never pad
+   toward a target length.
+5. The statement is the contract's ONE home. Scaffold docstrings, READMEs,
+   and comments POINT here ("see the statement for stage rules"); they never
+   restate it. One system, described once.
 
 ## Writing the dimension expectations (this is graded feedback material — be exact)
 

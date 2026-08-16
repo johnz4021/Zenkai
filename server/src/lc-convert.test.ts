@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { LcProblem } from './lc-source.js';
 import {
-  CASE_TARGET, partNames, renderOracleSolution, renderRaisingStub, renderTestFile,
-  selectCases, sourceRequirements, starterParams,
+  CASE_TARGET, partNames, renameCaseKeys, renderOracleSolution, renderRaisingStub,
+  renderTestFile, selectCases, sourceRequirements, starterParams,
 } from './lc-convert.js';
 
 const PROBLEM: LcProblem = {
@@ -185,5 +185,22 @@ describe('multi-part sets (plural sources, 2026-08-13)', () => {
     expect(single).toContain('## SOURCED PROBLEM (skinned) — this section is authoritative');
     expect(single).toContain('exactly ONE file, solution.py');
     expect(single).toContain('tests/test_solution.py, tests/cases.json');
+  });
+});
+
+describe('renameCaseKeys — skinned cases speak the skin (#43, 2026-08-15)', () => {
+  it('renames top-level keys in order, leaving values byte-identical', () => {
+    expect(renameCaseKeys('low = 3, high = 1000, zero = 1, one = 2', ['min_gems', 'max_gems', 'small_pack', 'big_pack']))
+      .toBe('low = 3, high = 1000, zero = 1, one = 2'.replace('low', 'min_gems').replace('high', 'max_gems').replace('zero', 'small_pack').replace('one', 'big_pack'));
+  });
+
+  it('commas inside brackets and quotes never split a value', () => {
+    expect(renameCaseKeys('n = 7, queries = [[0,5],[1,"a,b"]], name = "x, y"', ['count', 'windows', 'label']))
+      .toBe('count = 7, windows = [[0,5],[1,"a,b"]], label = "x, y"');
+  });
+
+  it('a key-count mismatch or unparseable segment returns the input untouched — never corrupt grading', () => {
+    expect(renameCaseKeys('a = 1, b = 2', ['only_one'])).toBe('a = 1, b = 2');
+    expect(renameCaseKeys('a = 1, 2', ['x', 'y'])).toBe('a = 1, 2');
   });
 });

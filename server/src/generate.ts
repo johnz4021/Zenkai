@@ -46,12 +46,21 @@ export function checkRequirements(check: RoundSpec['check']): string {
   const maxFiles = check.max_source_files
     ? `\n   - At most ${check.max_source_files} source file${check.max_source_files === 1 ? '' : 's'} (tests excluded) — the validator counts them and rejects more.`
     : '';
+  // Shared across ALL check kinds (2026-08-15): this line lived only in the
+  // debugging block, and the audit's correlation was exact — every round
+  // kind that never saw it shipped prose-bloated scaffolds (the limit case:
+  // 105 docstring lines, 0 code lines), while every round kind that did
+  // stayed ≤0.19 comment-to-code. Same interpolated-fragment pattern as
+  // maxFiles above.
+  const codeStyle = `\n   - Written like production code by a competent team: consistent style, no
+     tutorial comments, realistic naming. No banner comments, no ASCII
+     diagrams, no narrative backstory in headers. Docstrings are ONE line
+     naming the behavior — the statement and the tests carry the contract;
+     never restate it in source files.`;
   const blocks: Record<RoundSpec['check']['kind'], string> = {
     one_failing_test: `1. A realistic module set for the round's domain, sized per the round
    description above. Pure logic + in-memory state. No HTTP server, no
-   database, no external services.${maxFiles}
-   - Written like production code by a competent team: consistent style, no
-     tutorial comments, realistic naming.
+   database, no external services.${maxFiles}${codeStyle}
 2. A behavioral test suite with at least ${check.min_tests ?? 8} tests describing real behavior
    ("reserving more units than available rejects"), not implementation details.
 3. Plant EXACTLY ONE subtle bug in the source.
@@ -74,11 +83,11 @@ Self-verification (do this before you finish — it is the whole point):
 - If anything is off, fix the problem set and re-verify.`,
 
     all_failing: `1. A build-from-scratch task: a scaffold (function/class signatures with
-   docstrings or interface stubs, raising/throwing "not implemented") plus a VISIBLE
-   behavioral test suite the candidate implements against.
+   one-line docstrings or interface stubs, raising/throwing "not implemented") plus a
+   VISIBLE behavioral test suite the candidate implements against.
    - The suite IS the spec made precise: name tests after behaviors, cover the core
      path, the rejection paths, and at least two edge cases.
-   - Scope the work to fit the round's time limit for a strong college senior.${maxFiles}
+   - Scope the work to fit the round's time limit for a strong college senior.${maxFiles}${codeStyle}
 2. At least ${check.min_tests ?? 5} tests (more is better).
 3. EVERY test must fail on the untouched scaffold — the candidate starts from zero.
    No hidden tests: what they see is what grades them.
@@ -90,7 +99,7 @@ Self-verification (do this before you finish — it is the whole point):
   would pass against it, then make sure no trace of it remains in the repo.`,
 
     all_passing: `1. An existing, working module set relevant to the round, with a green
-   behavioral test suite (at least ${check.min_tests ?? 5} tests).${maxFiles}
+   behavioral test suite (at least ${check.min_tests ?? 5} tests).${maxFiles}${codeStyle}
 2. The candidate's task (stated in the manifest spec) is to EXTEND or REFACTOR —
    the repo must be green before their work starts, and the spec must say clearly
    what "done" looks like.
@@ -100,7 +109,7 @@ Self-verification: run the suite; every test passes on the repo as shipped.`,
 
     diff_present: `1. A base module set plus a CHANGE to review: the changed files listed in
    the round spec's check.files_changed must exist and contain a realistic diff-worth
-   of modifications (a mix of sound decisions and 2-4 genuine defects worth catching).
+   of modifications (a mix of sound decisions and 2-4 genuine defects worth catching).${codeStyle}
 2. Include a REVIEW.md template the candidate writes their review into.
 3. The manifest spec describes what the change claims to do; the defects must be
    discoverable by reading, not by running.`,

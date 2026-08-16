@@ -21,8 +21,8 @@ same count of parts, same escalation, each part's statement standing alone.
 
 Python (stdlib only, unittest) unless the candidate's material pins another
 language. Each problem is self-contained: a solution file with function stubs
-and docstrings, and a test file defining the contract from the statement's
-sample cases plus edge cases.
+(one-line docstrings — the statement carries the contract), and a test file
+defining the contract from the statement's sample cases plus edge cases.
 
 ## Repo shape
 

@@ -1056,33 +1056,17 @@ logs), or Meta/Google expanding the pilots beyond select orgs.
 
 ---
 
-## 43. Skinned LC rounds de-skin themselves through the cases files
+## 43. Skinned LC rounds de-skin themselves through the cases files — SHIPPED (option b, 2026-08-15)
 
-**What:** `tests/cases.json` / `cases_partN.json` carry the dataset's raw kwarg
-strings verbatim — original LeetCode parameter names (`low`, `high`, `zero`,
-`one`) — and the panes file strip lists them, so one tab-click reveals the
-problem's real identity on every skinned round (single AND multi-part; 2026-08-14
-full-surface QA hit it on `count-ways-to-build-good-strings` and all 3 parts of
-rep-set67388).
-
-**Why it's a decision, not just a fix:** the harness already passes case values
-POSITIONALLY (lc-convert.ts header: "a skinned scaffold may rename parameters
-freely as long as order and meaning hold"), so the kwarg NAMES in cases files are
-display-only. Two viable shapes: (a) hide cases/tests files from the panes list
-on one-shot rounds — matches real OAs, which never show the grading suite, and
-the in-session PUT block for the grading contract already landed (2026-08-14);
-(b) re-emit cases keys renamed to the skinned scaffold's own signature (parse the
-generated `def`). (a) is 10 lines in `listWorkspaceFiles`; (b) preserves
-inspectability. Pick one deliberately — (a) changes what a candidate sees.
-
-**Where to start:** `server/src/panes.ts` `listWorkspaceFiles` for (a);
-`server/src/lc-convert.ts` `renderCasesJson` + a signature parse for (b).
-
-**Effort:** (a) CC ~15 min / (b) CC ~1-2 hr. **Priority:** P1 — it defeats the
-skinned-mode policy on every sourced round.
-
----
-
+Resolved with the statement-quality pass: `writeSourcedTests` now re-emits
+skinned cases with top-level input keys renamed to the generated scaffold's own
+parameter names (`renameCaseKeys` + `scaffoldParams`, lc-convert.ts) — the
+post-generation re-emit sees the scaffold on disk, the pre-generation emit and
+verbatim mode keep raw keys, and a key-count mismatch falls back untouched so
+grading can never corrupt (the harness calls positionally). Inspectability
+preserved; the cases file now speaks the statement's vocabulary. Option (a)
+(hiding the files on one-shot rounds) stays available if reading expected
+outputs ever proves to distort one-shot scores — see the hidden-test-split note.
 ## 44. Multi-part rounds: per-part outcomes for the topic ledger and the judge
 
 **What:** a multi-part set records the whole-session `solved` boolean on every

@@ -29,7 +29,7 @@
  *     meaning hold (which the source block mandates).
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { LcProblem } from './lc-source.js';
 
@@ -99,6 +99,64 @@ export function selectCases(
 
 export function renderCasesJson(cases: SelectedCase[]): string {
   return JSON.stringify(cases, null, 1) + '\n';
+}
+
+/**
+ * TODOS #43 (closed 2026-08-15): skinned cases speak the skin. The dataset's
+ * raw kwarg names (`low`, `high`, `zero`) sat in tests/cases.json beside a
+ * statement telling a different story — a vocabulary split in the two files
+ * the candidate reads side by side. Rename each input's top-level keys to
+ * the skinned scaffold's parameter names, IN ORDER. Grade-safe by
+ * construction: the harness calls positionally (dict(...).values()), so key
+ * names are presentation. Pure; returns the input unchanged when the key
+ * count does not match the parameter count (never corrupt grading).
+ */
+export function renameCaseKeys(input: string, params: string[]): string {
+  // Split on top-level commas only — values carry commas inside [] {} () "".
+  const segments: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let start = 0;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i]!;
+    if (quote) {
+      if (ch === quote && input[i - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === '[' || ch === '{' || ch === '(') depth++;
+    else if (ch === ']' || ch === '}' || ch === ')') depth--;
+    else if (ch === ',' && depth === 0) {
+      segments.push(input.slice(start, i));
+      start = i + 1;
+    }
+  }
+  segments.push(input.slice(start));
+  if (segments.length !== params.length) return input;
+  const renamed = segments.map((seg, i) => {
+    const m = /^(\s*)[A-Za-z_]\w*(\s*=\s*)([\s\S]*)$/.exec(seg);
+    return m ? `${m[1]}${params[i]}${m[2]}${m[3]}` : null;
+  });
+  if (renamed.some((s) => s === null)) return input;
+  return renamed.join(',');
+}
+
+/** The skinned scaffold's parameter names, parsed from the generated
+ *  solution file — null when absent/unparseable (pre-generation emit, or a
+ *  scaffold shape we don't recognize; callers fall back to raw keys). */
+export function scaffoldParams(dir: string, moduleName: string): string[] | null {
+  try {
+    const src = readFileSync(path.join(dir, `${moduleName}.py`), 'utf8');
+    const m = /^def\s+\w+\s*\(([^)]*)\)/m.exec(src);
+    if (!m) return null;
+    const params = m[1]!
+      .split(',')
+      .map((p) => p.split(/[:=]/)[0]!.trim())
+      .filter((p) => p && p !== 'self' && !p.startsWith('*'));
+    return params.length ? params : null;
+  } catch {
+    return null;
+  }
 }
 
 /** One part's emission naming. Part 0 (single) = today's names, byte-stable;
@@ -310,7 +368,14 @@ export function writeSourcedTests(
   let large = 0;
   parts.forEach((part, i) => {
     const names = partNames(i, parts.length);
-    writeFileSync(path.join(testsDir, names.casesFile), renderCasesJson(part.cases));
+    // Skinned cases speak the skin (#43): on the POST-generation re-emit the
+    // scaffold exists, so its parameter names replace the dataset's raw
+    // kwargs. Pre-generation (no scaffold yet) and verbatim mode emit raw.
+    const params = mode === 'skinned' ? scaffoldParams(dir, names.module) : null;
+    const cases = params
+      ? part.cases.map((c) => ({ ...c, input: renameCaseKeys(c.input, params) }))
+      : part.cases;
+    writeFileSync(path.join(testsDir, names.casesFile), renderCasesJson(cases));
     writeFileSync(path.join(testsDir, names.testFile), renderTestFile(mode, part.problem.method, names));
     count += part.cases.length;
     large += part.cases.filter((c) => c.large).length;
@@ -400,6 +465,12 @@ export function sourceRequirements(parts: SourcedPart[], mode: SourceMode): stri
     `Rewrite ALL surface expression: story, entity and variable names,`,
     `statement prose, example narrative. No sentence, identifier, or story`,
     `element from the reference may appear in any candidate-visible file.`,
+    `The skin must stay PLAIN (2026-08-15 audit: a skin that renames every`,
+    `variable into brand vocabulary turns solving into translation): use an`,
+    `everyday setting and everyday nouns, at most TWO invented proper nouns,`,
+    `identifiers that say what they hold (weights, capacity — not coined`,
+    `words), and short sentences. The story serves the problem, never the`,
+    `reverse.`,
     ``,
     shared,
     ``,
@@ -441,6 +512,9 @@ function setRequirements(parts: SourcedPart[], mode: SourceMode): string {
     `entity and variable names, statement prose, example narrative. Parts may`,
     `share one story world or stand alone — but no sentence, identifier, or`,
     `story element from any reference may appear in any candidate-visible file.`,
+    `Every skin stays PLAIN: everyday settings and nouns, at most TWO invented`,
+    `proper nouns across the whole set, identifiers that say what they hold,`,
+    `short sentences — the story serves the problem, never the reverse.`,
     ``,
     `Your scaffold: exactly ${n} files — ${files} — nothing else. Each defines`,
     `  def solve(...)  — that part's reference arity, renamed to fit YOUR story,`,
