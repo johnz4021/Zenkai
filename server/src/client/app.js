@@ -3058,6 +3058,15 @@ function render(state) {
   el('nav-live').classList.toggle('on', Boolean(state.session_live));
   el('nav-live').href = state.session_url ? sessionHref(state.session_url) : '#/';
   el('nav-kill').classList.toggle('on', Boolean(state.session_live));
+  // Sign out appears only where there is a session to leave (auth off = the
+  // local single-user box). The email rides in the tooltip rather than the
+  // masthead: useful when you need it, never a permanent chrome tax.
+  const signout = el('nav-signout');
+  if (signout) {
+    signout.classList.toggle('on', Boolean(authCfg && authCfg.enabled));
+    const who = state.user && state.user.email;
+    signout.title = who ? 'Signed in as ' + who + ' — sign out' : 'Sign out';
+  }
   el('banner').innerHTML = '';
 
   const boot = el('boot');
@@ -3601,6 +3610,37 @@ el('nav-kill').addEventListener('click', async (e) => {
   const s = await r.json();
   if (s.error) el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>';
   refresh(true);
+});
+
+/**
+ * Sign out. Clears the token and hands the page to the login screen — the
+ * same landing a 401 produces, so there is one signed-out surface, not two.
+ *
+ * Local-only by design: the app stores an access token and no refresh token
+ * (setJwt), so there is nothing server-side to revoke — the token simply
+ * stops being sent and expires on its own (max-age 86400). Worth knowing
+ * rather than assuming: this frees the BROWSER, it does not kill a token
+ * someone already copied.
+ *
+ * A live round is the one case worth a confirm. Signing out does NOT end it
+ * (the session is its own process on its own port, and its tab carries its
+ * own token in the fragment), so someone could sign out believing they had
+ * abandoned a graded round and be wrong in the expensive direction.
+ */
+el('nav-signout').addEventListener('click', (e) => {
+  e.preventDefault();
+  // nav-kill carries the live flag already (render toggles both from
+  // state.session_live) — no second copy of that truth to drift.
+  const live = el('nav-kill').classList.contains('on');
+  if (live && !window.confirm(
+    'Sign out? Your round keeps running and is still graded — this only signs this page out.',
+  )) return;
+  track('capture', 'signed_out');
+  clearJwt();
+  // reset() so posthog stops attributing the next person on this browser to
+  // the account that just left.
+  track('reset');
+  renderLogin('signed out');
 });
 
 initAuth().then((ok) => {

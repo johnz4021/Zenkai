@@ -82,6 +82,28 @@ describe('home app page', () => {
     expect(js).toContain("nav .navright");
   });
 
+  it('sign out exists, hides where there is no session to leave, and lands on the login screen', () => {
+    expect(html).toContain('id="nav-signout"');
+    // Same show-on-demand pattern as nav-live/nav-kill: hidden by default,
+    // revealed only when /api/auth-config says auth is on. A sign-out on a
+    // no-auth box would sign you out of nothing.
+    expect(html).toMatch(/#nav-signout \{[^}]*display: none/);
+    expect(html).toMatch(/#nav-signout\.on \{ display: inline; \}/);
+    expect(js).toMatch(/signout\.classList\.toggle\('on', Boolean\(authCfg && authCfg\.enabled\)\)/);
+    // One signed-out surface: sign-out lands exactly where a 401 lands.
+    const start = js.indexOf("el('nav-signout').addEventListener");
+    expect(start).toBeGreaterThan(0);
+    const fn = js.slice(start, start + 900);
+    expect(fn).toContain('clearJwt()');
+    expect(fn).toContain("renderLogin('signed out')");
+    // A live round is the one case worth confirming — signing out does not
+    // end it, and believing otherwise is expensive.
+    expect(fn).toContain("el('nav-kill').classList.contains('on')");
+    expect(fn).toContain('window.confirm');
+    // Analytics identity must not follow the account that just left.
+    expect(fn).toContain("track('reset')");
+  });
+
   it('the hidden attribute actually hides — CSS display must not outrank it', () => {
     // `hidden` is only a UA display:none. #practice sets display:flex to
     // center its hero, so a hidden #practice still held 411px above the login

@@ -895,6 +895,13 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   #nav-kill { display: none; color: var(--text-2); font-size: 12px; }
   #nav-kill.on { display: inline; }
   #nav-kill:hover { color: var(--weak-text); }
+  /* Hidden until /api/auth-config says auth is ON: with Supabase unset there
+     is no session to leave, and a sign-out that signs you out of nothing is
+     a dead affordance. Quieter than the tabs — leaving is not a destination.
+     Its title names the account, so "am I in the right one?" needs no click. */
+  #nav-signout { display: none; color: var(--text-3); font-size: 12px; }
+  #nav-signout.on { display: inline; }
+  #nav-signout:hover { color: var(--text-1); }
   #nav-live .pulse { width: 6px; height: 6px; background: var(--steel-text); animation: pulse 1.8s ease-in-out infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
   /* The tabs (composer-first IA, 2026-08-10). The daily action IS the page
@@ -1562,6 +1569,7 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
       <a href="#/" id="nav-practice">practice</a>
       <a href="#/plans" id="nav-plans">plans</a>
       <a href="#/history" id="nav-history">history</a>
+      <a href="#" id="nav-signout">sign out</a>
     </span>
   </nav>
   <div id="banner" aria-live="polite"></div>
