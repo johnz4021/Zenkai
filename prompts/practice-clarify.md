@@ -74,6 +74,10 @@ A round is described by:
 - `check_kind` — how a generated problem proves itself: `one_failing_test` (find-and-
   fix in a repo), `all_failing` (build against a visible suite), `all_passing`
   (extend/refactor a green repo), `diff_present` (review).
+- `min_tests` — the suite-size floor the generated round must meet, scaled to the
+  round's scope: a staged 60-90-minute build warrants ~12-20 behavioral tests; a
+  short single-function sprint the default floor. OMIT when the material gives no
+  signal about scope — never guess a number.
 - `unsupported` — ONE sentence when a round fundamentally needs something outside
   this vocabulary (system-design canvas, multi-day take-home, pure conversation);
   empty otherwise. The product tells the candidate honestly and builds the closest

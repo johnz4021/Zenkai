@@ -411,3 +411,34 @@ describe('kickoff rendering — prompt plumbing never reaches the candidate', ()
     expect(r[0]?.prose).toBe('learning round, futures in python');
   });
 });
+
+describe('gateProposal — task + min_tests ride the plans door (2026-08-15)', () => {
+  it('a coherent task lands on the draft and min_tests lands in the check', () => {
+    const p = gateProposal({
+      rounds: [{
+        ...ROUND, id: 'amazon-lld', label: 'Amazon LLD OA', interviewer: false,
+        starts_from: 'blank' as const, submit: 'one_shot' as const,
+        check_kind: 'all_failing' as const, surface: 'panes',
+        task: 'practical_build', min_tests: 14,
+      }],
+    });
+    // The exact incident shape: without the hypothesis, deriveTaskFromSpec
+    // routes this to the algorithmic skeleton AND the binder sources it.
+    expect(p.drafts[0]!.task).toBe('practical_build');
+    expect(p.drafts[0]!.spec.check.min_tests).toBe(14);
+  });
+
+  it('the blank+all_passing kind coercion re-runs the task gate so the pair stays coherent', () => {
+    const p = gateProposal({
+      rounds: [{
+        ...ROUND, id: 'green-build', label: 'Green build', starts_from: 'blank' as const,
+        check_kind: 'all_passing' as const, submit: 'one_shot' as const,
+        task: 'extend_keep_green',
+      }],
+    });
+    // kind flipped to all_failing; extend_keep_green is incoherent with it,
+    // so the ONE gate re-derives rather than shipping a stale hypothesis.
+    expect(p.drafts[0]!.spec.check.kind).toBe('all_failing');
+    expect(p.drafts[0]!.task).not.toBe('extend_keep_green');
+  });
+});

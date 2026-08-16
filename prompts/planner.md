@@ -186,6 +186,14 @@ NOTHING is generated until they confirm. Rules:
 - `part_count`: when the candidate states how many separate problems a round
   holds ("the OA is three problems"), record the number on that round. Only
   explicit statements; omit otherwise.
+- `task`: what the candidate DOES in the round, decided from the material and
+  never the platform — escalating stages of ONE system = `practical_build`
+  (decomp/LLD rounds are this even as an "OA"); separate independent problems
+  = `algorithmic_set`. Omit only when the material cannot say; this routes
+  which generation recipe runs and whether real problems get bound.
+- `min_tests`: suite-size floor scaled to the round's scope (staged 60-90-min
+  build ≈ 12-20 behavioral tests; short sprint = default). Omit without a
+  scope signal.
 - `summary`: once the loop's shape is settled (typically when the candidate
   seems ready to confirm), write the settled facts — company, rounds, dates,
   formats, anything from their material that generation should honor. This
