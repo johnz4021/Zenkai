@@ -1562,20 +1562,6 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   #login-msg.bad { color: var(--weak-text); }
   #login-msg.good { color: var(--steel-text); }
   .loginfine { color: var(--text-3); font-size: 12px; line-height: 1.6; margin: 0; }
-  /* What a round actually costs you, before you commit to 45 minutes. */
-  .expect {
-    border-top: 1px solid var(--line-soft); margin: 34px 0 0; padding-top: 16px;
-    display: flex; flex-direction: column; gap: 9px; max-width: 52ch;
-  }
-  /* Grid, not flex with a min-width: THE INTERVIEWER is wider than any min
-     that suits the other two, so a flex row pushed its value out of the
-     column and the three descriptions no longer shared a left edge. */
-  .expect > div { display: grid; grid-template-columns: 136px 1fr; gap: 14px; align-items: baseline; }
-  .expect dt {
-    font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: .18em;
-    text-transform: uppercase; color: var(--text-3);
-  }
-  .expect dd { margin: 0; color: var(--text-2); font-size: 13px; }
   @media (max-width: 1099px) {
     .loginpane { grid-template-columns: 1fr; gap: 40px; max-width: 460px; }
     .loginsay h1 { font-size: 28px; }

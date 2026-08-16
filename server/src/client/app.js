@@ -105,11 +105,12 @@ function renderLogin(msg) {
     '<p class="desc">You describe the round you are facing. Zenkai generates a real repo with a real bug, ' +
     'sits an interviewer beside you who listens while you work, then grades the trace and aims the next ' +
     'one at what you missed.</p>' +
-    '<dl class="expect">' +
-    '<div><dt>The round</dt><dd>A real editor in your browser. About 45 minutes.</dd></div>' +
-    '<div><dt>The interviewer</dt><dd>Speaks and listens. Asks why, not just what.</dd></div>' +
-    '<div><dt>After</dt><dd>A graded card quoting what you actually said and did.</dd></div>' +
-    '</dl></div>' +
+    // The three-term "what a round costs you" list lived here and was cut
+    // (owner call 2026-08-16): a signed-out visitor is deciding whether to
+    // make an account, not budgeting 45 minutes for a round they cannot
+    // reach yet. The paragraph above already says what the product does; the
+    // detail belongs where someone is actually about to start a round.
+    '</div>' +
     '<div class="loginbox">' +
     '<div class="modes" role="tablist">' +
     '<button class="mode" id="mode-in" type="button" role="tab" aria-selected="' + (signUp ? 'false' : 'true') + '">Sign in</button>' +
