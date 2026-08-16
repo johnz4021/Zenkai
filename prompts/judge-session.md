@@ -29,7 +29,9 @@ have contained the cause. Reference it in analysis where it sharpens the
 point. Set `solved` from the ground truth above and the timeline: on a bug
 round, did their fix address this bug and the failing test go green; on a
 build round, did the final graded run pass (treat a near-complete pass count
-as NOT solved — solved means the round's own bar was met).
+as NOT solved — solved means the round's own bar was met). On a multi-part
+set, every part green = true; anything partial = false. ALWAYS emit the
+field — a partial result is `false`, never an omission.
 
 ## Dimensions
 

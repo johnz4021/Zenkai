@@ -310,6 +310,15 @@ function generator() {
 function judge() {
   const order = ['clarify', 'approach', 'communicate', 'implement', 'verify', 'reflect'];
   const verdicts = String(opt('verdicts', '')).split(',').filter(Boolean);
+  if (opt('solved_omit') === '1') {
+    // Evidence-scoped judging QA: emit a full assessment with NO solved
+    // field — the runSolvedFromTrace ladder must fill/override it.
+    const order = ['clarify', 'approach', 'communicate', 'implement', 'verify', 'reflect'];
+    reply('judge', JSON.stringify({
+      summary: 'QA-shim assessment with solved omitted.',
+      dimensions: order.map((dimension) => ({ dimension, verdict: 'adequate', analysis: 'QA-shim canned analysis.', evidence: [] })),
+    }));
+  }
   const out = {
     solved: opt('solved', '1') === '1',
     summary: 'Deterministic QA-shim assessment: the candidate worked the qafixture round end to end.',

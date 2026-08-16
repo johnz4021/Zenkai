@@ -84,6 +84,7 @@ env -u ANTHROPIC_API_KEY \
 | `fail=validate` | generator writes an artifact with a too-short spec — validation fails, the repair pass triggers; the repair handler fixes it in place |
 | `repair_noop=1` (control file only — repair prompts carry no paste tokens) | repair changes nothing, exercising the failed-repair path |
 | `verdicts=weak,adequate,…` (×6), `solved=0` | judge output, in dimension order (clarify, approach, communicate, implement, verify, reflect) |
+| `solved_omit=1` | judge emits a full assessment with NO solved field — exercises the trace-derivation ladder |
 | `say=…`, `intent=yes` | interviewer line / route utterances to the interviewer |
 | `adapt_round=<id>:<check_kind>:<supersedes>` | adaptation that re-points a spec |
 

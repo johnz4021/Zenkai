@@ -1166,6 +1166,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       {
         hasInterviewer: interviewer !== null,
         utteranceCount: events.filter((e) => e.type === 'utterance').length,
+        // Panes-solo clamps clarify/approach too — tab-switching is not
+        // evidence (owner decision 2026-08-16); IDE-solo keeps them.
+        surface,
       },
     );
 

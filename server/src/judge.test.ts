@@ -9,6 +9,7 @@ import {
   groundTruth,
   judgeSession,
   parseAssessmentOutput,
+  runSolvedFromTrace,
   promptHash,
   verifyCitations,
 } from './judge.js';
@@ -337,5 +338,43 @@ describe('groundTruth — the {{BUG}} slot per round shape', () => {
     expect(out).toContain('suite green');
     expect(groundTruth({ planted_bug: undefined }, [ev('session_start', 0)]))
       .toContain('never graded');
+  });
+});
+
+describe('evidence-scoped solved — the trace outranks the model (2026-08-16)', () => {
+  const run = (payload: Record<string, unknown>) =>
+    ({ type: 'test_run', seq: 1, at: 1, payload }) as never;
+  const GOOD_NO_SOLVED =
+    '{"summary":"x.","dimensions":[' +
+    ['clarify', 'approach', 'communicate', 'implement', 'verify', 'reflect']
+      .map((d) => `{"dimension":"${d}","verdict":"adequate","analysis":"a.","evidence":[]}`)
+      .join(',') +
+    ']}';
+
+  it('runSolvedFromTrace: submit run wins, counts beat exit code, no runs = undefined', () => {
+    expect(runSolvedFromTrace([run({ via: 'panes', passed: 3, total: 9 }), run({ via: 'submit', passed: 9, total: 9 })])).toBe(true);
+    expect(runSolvedFromTrace([run({ via: 'submit', passed: 12, total: 36 })])).toBe(false);
+    expect(runSolvedFromTrace([run({ via: 'panes', exit_code: 0 })])).toBe(true);
+    expect(runSolvedFromTrace([run({ via: 'panes', exit_code: 1 })])).toBe(false);
+    expect(runSolvedFromTrace([run({ via: 'submit', passed: 0, total: 0 })])).toBe(false);
+    expect(runSolvedFromTrace([])).toBeUndefined();
+  });
+
+  it('fallback fills ONLY an omitted field — the sess-1786901438316 pin', () => {
+    // The Goldman judge wrote full analysis and dodged solved on 12/36;
+    // the schema throw turned a machine-known score into an unassessed card.
+    expect(parseAssessmentOutput(GOOD_NO_SOLVED, { fallback: false }).solved).toBe(false);
+    const withSolved = GOOD_NO_SOLVED.replace('{"summary"', '{"solved":true,"summary"');
+    expect(parseAssessmentOutput(withSolved, { fallback: false }).solved).toBe(true); // model field kept
+  });
+
+  it('override makes the graded run authoritative — one-shot rounds, TODOS "exit code beats the judge"', () => {
+    const modelSaysTrue = GOOD_NO_SOLVED.replace('{"summary"', '{"solved":true,"summary"');
+    expect(parseAssessmentOutput(modelSaysTrue, { override: false }).solved).toBe(false);
+    expect(parseAssessmentOutput(GOOD_NO_SOLVED, { override: true }).solved).toBe(true);
+  });
+
+  it('with no opts the strict contract stands — review rounds keep the throw', () => {
+    expect(() => parseAssessmentOutput(GOOD_NO_SOLVED)).toThrow(/missing\/invalid solved/);
   });
 });
