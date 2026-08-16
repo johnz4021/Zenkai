@@ -1,0 +1,83 @@
+{
+  "session_id": "sess-qa814-leak",
+  "status": "assessed",
+  "judged_at": 1786723296599,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "45bab0da9f82",
+  "schema_version": 1,
+  "renderer_version": 3,
+  "expectations_used": {
+    "clarify": "Pins down what the failing test actually asserts before editing — that a ticket arriving at the first minute of the evening belongs to the incoming agent — and asks the interviewer which shift owns a minute that two windows appear to share, rather than assuming the test is wrong.",
+    "approach": "Names a mechanism out loud before changing code — e.g. that the outgoing agent survives the on-shift filter at the boundary minute and then beats the incoming agent on the fewest-open-tickets rank key — instead of pointing vaguely at 'the shift code'.",
+    "communicate": "Keeps a running account while reading roster.py, policy.py and router.py, saying which candidate explanation each observation rules out — skill match, concurrency cap, tenure bar, rank ordering — and announcing each move from the failing test to the filter to the ranking rather than working silently.",
+    "implement": "Corrects the boundary in minutes_into_shift so an agent stops being eligible at their shift end minute, matching the half-open Shift.covers, and leaves the rank key, the tenure bar and the tests untouched.",
+    "verify": "Re-runs the full suite after the fix, confirms the evening-handover test passes, and checks the wrap-past-midnight and coverage-report tests still pass rather than stopping at the one assertion.",
+    "reflect": "Explains that the defect was a disagreement between two on-shift implementations — the inclusive comparison in policy versus the half-open Shift.covers — and why the load-based ranking is what turned that overlap into the wrong agent, not merely that the assertion is now green."
+  },
+  "solved": false,
+  "summary": "The candidate spent the first five minutes trying to get the interviewer to hand them the file, function, or line rather than reasoning through the failing test, and only after an explicit interviewer nudge about half-open shift semantics did they articulate the correct root-cause mechanism at 405s. They never actually edited any code or re-ran the suite afterward, instead trying once more to get the line number confirmed before ending the session, so despite a strong final diagnosis the round was not solved.</summary>\n</invoke>",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "weak",
+      "analysis": "For the first several minutes the candidate repeatedly asked the interviewer to simply name the file, function, or line rather than working the failing assertion themselves, which is asking to be handed the answer rather than resolving genuine ambiguity. Only much later (370s-375s) did they ask a substantive clarifying question about whether shift windows are inclusive or half-open and whether the outgoing agent should be eligible at the handover minute, which is exactly the right ambiguity to resolve, but by then the interviewer had already had to push them there.",
+      "evidence": [
+        23,
+        51,
+        140,
+        167,
+        370,
+        375
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "weak",
+      "analysis": "Before the second session restart, the candidate wandered through roster.py, router.py, and the ranking helper without ever stating a hypothesis about the mechanism, and even declared the ranking helper looked fine without explaining what check ruled it out. The actual mechanism (inclusive vs half-open shift boundary check) was only articulated at 405s, directly after the interviewer's explicit nudge at 380s handed them the half-open rule and told them to go check the on-shift code, so the strong mechanism statement was prompted rather than self-directed.",
+      "evidence": [
+        205,
+        231,
+        253,
+        405
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "weak",
+      "analysis": "For roughly the first 300 seconds the candidate's narration was thin and mostly consisted of asking the interviewer to shortcut the search rather than explaining what each file read ruled in or out; the interviewer explicitly called this out at 266s. The one clear, well-narrated moment is the mechanism explanation at 405s, but it followed direct interviewer prompting rather than an unbroken account of their reasoning process.",
+      "evidence": [
+        120,
+        140,
+        405
+      ],
+      "stripped_evidence": [
+        266
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "unassessable",
+      "analysis": "The candidate stated the fix conceptually at 405s and was told to go make the change and run the suite at 595s, but the timeline shows no subsequent file edit before the session ended, and at 621s they were still asking the interviewer to confirm a line number rather than executing. There is no editing action visible to assess implementation quality against the stated plan.",
+      "evidence": []
+    },
+    {
+      "dimension": "verify",
+      "verdict": "weak",
+      "analysis": "The candidate ran the test suite twice early on but never ran it again after articulating the fix; instead of implementing and re-verifying, they asked the interviewer to confirm a colleague-supplied line number and then ended the session without making or checking any change.",
+      "evidence": [
+        3,
+        321,
+        621,
+        666
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "adequate",
+      "analysis": "At 405s the candidate gave a genuinely accurate account of the root cause — the inclusive offset<=span check disagreeing with the half-open Shift.covers, and the load-based rank key turning that overlap into the wrong winner — which matches the ground truth almost exactly. However this explanation came only after the interviewer supplied the half-open rule and handover expectation as a nudge, so it reflects understanding demonstrated under guidance rather than independently derived insight, and no verification followed to confirm the explanation held up in practice.",
+      "evidence": [
+        405
+      ]
+    }
+  ]
+}

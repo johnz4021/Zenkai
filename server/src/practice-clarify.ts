@@ -47,7 +47,7 @@ import { readFileSync } from 'node:fs';
 import { deriveMemoryTags, validateRoundSpec, type RoundSpec } from '@interview-prep/shared';
 import { draftToSpec, type DraftToolOutput, type SpecDraft } from './intake.js';
 import { ROUND_FIELDS, coerceArray } from './clarify.js';
-import { REQUIRED_HEADINGS, ROUND_TASKS, deriveTaskFromSpec, type RoundTask } from './blueprint.js';
+import { REQUIRED_HEADINGS, ROUND_TASKS, coerceTask, deriveTaskFromSpec, type RoundTask } from './blueprint.js';
 
 /** The section vocabulary — REQUIRED_HEADINGS plus the optional engagement
  *  section, '## ' stripped. Derived so blueprint.ts and this module cannot
@@ -97,33 +97,11 @@ export const TASK_LABELS: Record<RoundTask, string> = {
   review_diff: 'Review a change',
 };
 
-/** Which check kinds a task can honestly pair with. Deliberately permissive
- *  (plan risk #2): only impossible combos are out. A mismatch never sinks a
- *  draft — coerceTask falls back to the capability derivation. */
-const TASK_CHECK_KINDS: Record<RoundTask, ReadonlyArray<RoundSpec['check']['kind']>> = {
-  algorithmic_set: ['all_failing'],
-  debug: ['one_failing_test'],
-  // all_passing is legal here: a staged build whose part 1 ships working and
-  // later waves extend it IS a practical build the model correctly named —
-  // a live run said practical_build ("requirements escalate", its words) with
-  // all_passing and the old single-pair table silently overrode the
-  // classification to extend_keep_green (QA 2026-08-13).
-  practical_build: ['all_failing', 'all_passing'],
-  comprehend: ['one_failing_test', 'all_passing', 'all_failing'],
-  extend_keep_green: ['all_passing'],
-  review_diff: ['diff_present'],
-};
-
-/** The task hypothesis, trusted only when valid AND coherent with the
- *  check kind the draft itself carries; otherwise derived from capability
- *  facts. Never fatal — the same never-sink philosophy as affects/target. */
-export function coerceTask(raw: unknown, spec: RoundSpec): { task: RoundTask; coerced: boolean } {
-  const t = text(raw) as RoundTask;
-  if ((ROUND_TASKS as readonly string[]).includes(t) && TASK_CHECK_KINDS[t].includes(spec.check.kind)) {
-    return { task: t, coerced: false };
-  }
-  return { task: deriveTaskFromSpec(spec), coerced: true };
-}
+// coerceTask + its coherence table moved to blueprint.ts (2026-08-15) so the
+// wizard door (clarify.ts) and the planner can consult the same hypothesis
+// gate without an import cycle — re-exported here for the door's existing
+// consumers and tests.
+export { coerceTask };
 
 export interface PracticeGap {
   id: string;
@@ -365,13 +343,13 @@ export function namedProblemGap(
   const namedText = named.map((p) => `${p.title} · ${p.difficulty}`).join(', ');
   let value: string;
   if (named.length && autoCount) {
-    value = `${namedText} + ${autoCount} picked — hidden until the round`;
+    value = `${namedText} + ${autoCount} picked — revealed when the round starts`;
   } else if (named.length) {
     value = `${namedText} — from the real set`;
   } else {
     value = parts.length > 1
-      ? `${parts.length} picked from the real set — hidden until the round`
-      : 'picked from the real set — hidden until the round';
+      ? `${parts.length} picked from the real set — revealed when the round starts`
+      : 'picked from the real set — revealed when the round starts';
   }
   const plural = parts.length > 1;
   return {

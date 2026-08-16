@@ -16,7 +16,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,7 +34,22 @@ import { clientScript } from './chrome.js';
 import { authConfigFromPublic, makeAuth } from './auth.js';
 import { childEnv } from './child-env.js';
 import { makeDb, repRow, sessionRow, targetRow, type SessionRow } from './db.js';
+import {
+  isPosthogAssetUrl,
+  makePh,
+  posthogAssetFile,
+  posthogAssetPath,
+  posthogAssetVersion,
+  posthogSnippet,
+} from './posthog.js';
 import { applyReaping, gatherRepDiskFacts, planReaping } from './retention.js';
+import {
+  preserveRunTree,
+  pristineArchivePath,
+  restorability,
+  restoreFromSnapshot,
+  restorePristine,
+} from './artifact.js';
 import { makeSessionRouter } from './session-router.js';
 import { applySessionSweep, listSessionContainers, planSessionSweep } from './session-sweep.js';
 import {
@@ -47,6 +62,25 @@ import {
 } from './session-registry.js';
 import type { PublicConfig } from './public-config.js';
 import {
+  isHandledEvent,
+  periodStart,
+  rowFromSubscription,
+  subscribed,
+  type SubscriptionRow,
+} from './billing.js';
+import {
+  countPlans,
+  roundsUsed,
+  expectedText,
+  FEEDBACK_MAX,
+  gateVerdict,
+  grantsAccess,
+  hasGrant,
+  probeAction,
+  type GateView,
+  type PaywallRow,
+} from './paywall.js';
+import {
   acquireRepLock,
   admissionVerdict,
   createRepRecord,
@@ -56,6 +90,7 @@ import {
   launchVerdict,
   loadReps,
   REP_ID_RE,
+  repeatVerdict,
   repProblemDir,
   repStateView,
   retryVerdict,
@@ -120,6 +155,11 @@ let internalHeaders: Record<string, string> = {};
 /** The pre-beta/local owner id (cfg.userId), for the module-level spawn
  *  helpers that run outside runApp's closure. Set once in runApp. */
 let legacyUserId = 'u1';
+/** PostHog mirror (posthog.ts). Module-level for the same reason as
+ *  legacyUserId — the spawn/log helpers live outside runApp's closure. The
+ *  default is the no-op; runApp swaps in the real client when configured, so
+ *  every capture below is safe to call unconditionally. */
+let ph = makePh(null);
 
 function probeSession(port: number): Promise<{ reachable: boolean; ended: boolean; session_id: string | null; user_id: string | null }> {
   return new Promise((resolve) => {
@@ -263,10 +303,12 @@ function attachmentBlocksFromDecoded(
 
 /** One durable line per session launch — the falsifier's data (2026-08-10
  *  CEO review: if plan-queue launches dominate, the composer landing is
- *  optimizing for the wrong user). Origin is sanitized to the two call-site
- *  values; console scrollback is not a metric, a JSONL file is. */
-function logLaunch(origin: unknown, sessionId: string): void {
-  const o = origin === 'plans' || origin === 'practice' ? origin : 'unknown';
+ *  optimizing for the wrong user). Origin is sanitized to the known call-site
+ *  values ('repeat' joined them with practice-again, which must be countable
+ *  separately from a first run); console scrollback is not a metric, a JSONL
+ *  file is. */
+function logLaunch(origin: unknown, sessionId: string, userId?: string): void {
+  const o = origin === 'repeat' || origin === 'plans' || origin === 'practice' ? origin : 'unknown';
   try {
     appendFileSync(
       path.join(repoRoot, 'launches.jsonl'),
@@ -275,6 +317,138 @@ function logLaunch(origin: unknown, sessionId: string): void {
   } catch {
     /* metrics never block a launch */
   }
+  // Mirrored to PostHog with the same sanitized origin; the JSONL above
+  // stays authoritative (db.ts rule: the mirror can follow, never lead).
+  ph.capture(userId ?? legacyUserId, 'round_launched', { origin: o, session_id: sessionId });
+}
+
+/** One durable line per willingness-to-pay probe event (paywall.ts) — the
+ *  same falsifier discipline as logLaunch above, and for the same reason:
+ *  scrollback is not a metric.
+ *
+ *  Two deliberate divergences from logLaunch. It records `user_id` (and the
+ *  email, at n≈10, because you will want to follow up): the unit of analysis
+ *  is a PERSON, so one user shown the price four times is one data point, not
+ *  four, and only an identity makes that dedup possible at read time. And the
+ *  price and threshold come from the SERVER's own config, never the request
+ *  body, so a crafted POST cannot fabricate a data point. */
+function logPaywall(row: Record<string, unknown>): void {
+  try {
+    appendFileSync(path.join(repoRoot, 'paywall.jsonl'), JSON.stringify(row) + '\n');
+  } catch {
+    /* metrics never block a launch */
+  }
+  // The WTP funnel, mirrored so it gets cohorts attached: gate_shown →
+  // gate_would_pay → gate_would_pay_confirmed. Identity is the user id ONLY
+  // (owner decision 2026-08-15): `email` stays in the JSONL and off the
+  // wire, and so does `expect` — user-authored free text has no business in
+  // a third party when the authoritative row already carries it.
+  const uid = typeof row.user_id === 'string' ? row.user_id : '';
+  const action = typeof row.action === 'string' ? row.action : 'unknown';
+  if (uid) {
+    // value/improve are user-authored free text like expect — JSONL only,
+    // never the wire (same owner decision, 2026-08-15).
+    const { ts: _ts, user_id: _u, email: _e, expect: _x, value: _v, improve: _i, action: _a, ...safe } = row;
+    ph.capture(uid, action === 'gated' ? 'gate_shown' : `gate_${action}`, safe);
+  }
+}
+
+/** The grant ledger, read back. Same torn-tail-tolerant shape as readRuns
+ *  (artifact.ts:272) and loadConversation (planner.ts:57): an absent file is
+ *  `[]`, and a half-written last line from a crash mid-append is skipped
+ *  rather than throwing.
+ *
+ *  Note what "absent is []" means here: a lost paywall.jsonl reads as NO
+ *  grants, so a previously-granted user is gated again. That is not fail-open,
+ *  it is recoverable-closed — they press Subscribe a second time, and
+ *  dedup-by-user_id at read time absorbs the duplicate row. */
+function readPaywallRows(): PaywallRow[] {
+  let raw: string;
+  try {
+    raw = readFileSync(path.join(repoRoot, 'paywall.jsonl'), 'utf8');
+  } catch {
+    return [];
+  }
+  const out: PaywallRow[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const e = JSON.parse(line) as PaywallRow;
+      if (typeof e.action === 'string') out.push(e);
+    } catch {
+      /* torn last line from a crash mid-append proves nothing — skip it */
+    }
+  }
+  return out;
+}
+
+/** One append-only line per subscription state change (billing.ts). Same
+ *  discipline as logPaywall above, and written SYNCHRONOUSLY for a sharper
+ *  reason: confirm-on-return responds the instant this returns and the client
+ *  retries the gated action immediately — an async append would race it. */
+function logSubscription(row: SubscriptionRow): void {
+  try {
+    appendFileSync(path.join(repoRoot, 'subscriptions.jsonl'), JSON.stringify(row) + '\n');
+  } catch (e) {
+    // Unlike a metric, losing this loses a paying customer's entitlement.
+    // Say so loudly rather than swallowing it the way logPaywall does.
+    console.error('[billing] FAILED to record subscription row:', String(e).slice(0, 200));
+  }
+}
+
+/** The subscription ledger, read back. Torn-tail-tolerant, same shape as
+ *  readPaywallRows and readRuns (artifact.ts): an absent file is `[]` and a
+ *  half-written last line is skipped. Absent means nobody is subscribed,
+ *  which is exactly right on a box with billing switched off. */
+function readSubscriptionRows(): SubscriptionRow[] {
+  let raw: string;
+  try {
+    raw = readFileSync(path.join(repoRoot, 'subscriptions.jsonl'), 'utf8');
+  } catch {
+    return [];
+  }
+  const out: SubscriptionRow[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const e = JSON.parse(line) as SubscriptionRow;
+      if (typeof e.user_id === 'string' && typeof e.status === 'string') out.push(e);
+    } catch {
+      /* torn last line from a crash mid-append proves nothing — skip it */
+    }
+  }
+  return out;
+}
+
+/** Raw request bytes, for Stripe webhook signature verification.
+ *
+ *  Deliberately NOT readBody: that accumulates with `body += d`, which decodes
+ *  each chunk as UTF-8. Stripe's payloads are UTF-8 JSON so it would usually
+ *  work — but a signature is computed over BYTES, and "usually" is the wrong
+ *  standard for the check that decides whether a request is genuinely Stripe. */
+function readRawBody(req: http.IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (d: Buffer | string) => chunks.push(Buffer.isBuffer(d) ? d : Buffer.from(d)));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+  });
+}
+
+/** Stable label so these Checkout Sessions group together in the Stripe
+ *  Dashboard. The 8-letter suffix is fixed, not generated per boot — a
+ *  per-restart value would fragment the grouping it exists to provide. */
+const STRIPE_INTEGRATION_ID = 'zenkai-paywall-gate-qkzmwrvp';
+
+/** Lazily loaded and cached. `import()` rather than a top-level import so a
+ *  box with billing off never loads the SDK — the same shape
+ *  `@anthropic-ai/sdk` is used with elsewhere here. */
+let stripeCached: { key: string; client: import('stripe').Stripe } | null = null;
+async function stripeClient(apiKey: string): Promise<import('stripe').Stripe> {
+  if (stripeCached && stripeCached.key === apiKey) return stripeCached.client;
+  const { default: Stripe } = await import('stripe');
+  const client = new Stripe(apiKey, { apiVersion: '2026-07-29.dahlia' });
+  stripeCached = { key: apiKey, client };
+  return client;
 }
 
 function spawnDetached(args: string[], env: Record<string, string> = {}): number | null {
@@ -312,6 +486,65 @@ function openBuildLog(dir: string): number {
   return openSync(dir + '.build.log', 'w');
 }
 
+/** Rotate the current build log to the next free `.build.N.log` before a
+ *  retry — every attempt's evidence survives. Forced by the 2026-08-15
+ *  audit: the per-attempt truncation above destroyed the diagnoses of both
+ *  morning failures the moment their retries were pressed. */
+function rotateBuildLog(dir: string): void {
+  if (!existsSync(dir + '.build.log')) return;
+  for (let n = 1; n < 20; n++) {
+    if (!existsSync(`${dir}.build.${n}.log`)) {
+      try { renameSync(dir + '.build.log', `${dir}.build.${n}.log`); } catch { /* evidence lost, retry anyway */ }
+      return;
+    }
+  }
+}
+
+/** Which attempt a spawn is, derived from the rotated-log ledger — the
+ *  stateless, restart-safe attempt counter. */
+function buildAttempt(dir: string): number {
+  let n = 1;
+  while (existsSync(`${dir}.build.${n}.log`)) n++;
+  return n;
+}
+
+/** The build-slot cap, published into module scope at runApp (same
+ *  precedent as legacyUserId — the spawn helpers are module-level). */
+let maxBuildsCap = Infinity;
+
+/**
+ * Blind retry-once (self-heal layer 1, 2026-08-15). judge.ts's doctrine,
+ * finally applied to the build path: every validator class is a stochastic
+ * sample of a nondeterministic model call, so one automatic re-roll heals
+ * most of what the repair pass (cli.ts layer 2b) cannot — died-with-nothing,
+ * in-band API errors, SIGTERM mid-write. Exit 64 is the exception: config /
+ * dataset state repeats identically, never retry it. The `.build.1.log`
+ * ledger bounds this to ONE automatic attempt per problem dir, ever —
+ * stateless and restart-safe. Deliberately NOT re-checked: admission and
+ * the paywall (the original admission covered this build; retry-once bounds
+ * worst-case spend at ×2) and the queue's one-at-a-time rule (the item
+ * still holds `generating`, so siblings stay blocked naturally). The slot
+ * check is `>` not `>=`: reconcileWithDisk still counts THIS item as
+ * generating at close time, so it holds its own slot.
+ */
+function autoRetryOnce(dir: string, code: number | null, label: string, respawn: () => void): boolean {
+  if (code === 64) return false;
+  if (existsSync(dir + '.build.1.log')) return false;
+  if (countLiveBuilds() > maxBuildsCap) return false;
+  rotateBuildLog(dir);
+  if (!existsSync(dir + '.build.1.log')) {
+    // No log to rotate (spawn died pre-open) — the ledger must exist or the
+    // retry loops forever.
+    try { writeFileSync(dir + '.build.1.log', `attempt 1: exit ${code}, no log captured\n`); } catch { return false; }
+  }
+  // The generator's contract says the dir "must be empty-ish" — same wipe
+  // as /api/rebuild. Blueprint and pristine/run archives live outside it.
+  rmSync(dir, { recursive: true, force: true });
+  console.warn(`[app] ${label} failed (exit ${code}) — retrying once automatically`);
+  respawn();
+  return true;
+}
+
 /** Generation spawn with failure bookkeeping: a non-zero exit writes a
  *  .failed marker into the item dir so reconcile derives `failed` and the
  *  timeline can offer retry — a silent stuck "generating" row was the
@@ -347,12 +580,15 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
   liveGenerations.add(dir);
   mkdirSync(dir, { recursive: true });
   const logFd = openBuildLog(dir);
+  const buildOwner = target.user_id ?? legacyUserId;
+  const buildT0 = Date.now();
+  ph.capture(buildOwner, 'build_started', { kind: 'plan', item_id: item.id, sourced: item.source?.kind === 'leetcode', attempt: buildAttempt(dir) });
   const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), ...args], {
     cwd: repoRoot,
     detached: true,
     stdio: ['ignore', logFd, logFd],
     // The generator's targeting note reads the OWNER's gap graph.
-    env: childEnv('generator', process.env, { IP_USER_ID: target.user_id ?? legacyUserId }),
+    env: childEnv('generator', process.env, { IP_USER_ID: buildOwner }),
   });
   child.unref();
   // Disk-derived liveness (ISSUE-003): the marker carries {pid, started_at}
@@ -363,10 +599,23 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
     closeSync(logFd);
     liveGenerations.delete(dir);
     clearGeneratingMarker(dir);
+    const attempt = buildAttempt(dir);
     if (code !== 0 && !existsSync(path.join(dir, '.validated'))) {
+      if (autoRetryOnce(dir, code, `generation for ${item.id}`, () => spawnGeneration(target, item, dir))) {
+        ph.capture(buildOwner, 'build_failed', {
+          kind: 'plan', item_id: item.id, exit_code: code, duration_ms: Date.now() - buildT0, attempt, auto_retried: true,
+        });
+        return;
+      }
       writeFileSync(path.join(dir, '.failed'), `exit ${code} at ${new Date().toISOString()}; output in ${dir}.build.log\n`);
       console.warn(`[app] generation failed for ${item.id} (exit ${code})`);
     }
+    // The artifact decides success, never the exit code (cli.ts: a timeout
+    // SIGTERM often lands AFTER the round is finished and validated).
+    const ok = existsSync(path.join(dir, '.validated'));
+    ph.capture(buildOwner, ok ? 'build_finished' : 'build_failed', {
+      kind: 'plan', item_id: item.id, exit_code: code, duration_ms: Date.now() - buildT0, attempt,
+    });
   });
 }
 
@@ -378,12 +627,15 @@ function spawnRepBuild(rep: Rep): void {
   liveGenerations.add(dir);
   mkdirSync(dir, { recursive: true });
   const logFd = openBuildLog(dir);
+  const buildOwner = rep.user_id ?? legacyUserId;
+  const buildT0 = Date.now();
+  ph.capture(buildOwner, 'build_started', { kind: 'rep', rep_id: rep.id, attempt: buildAttempt(dir) });
   const child = spawn('npx', ['tsx', path.join(repoRoot, 'server', 'src', 'cli.ts'), 'rep-build', rep.id], {
     cwd: repoRoot,
     detached: true,
     stdio: ['ignore', logFd, logFd],
     // The rep creator's gap graph steers the blueprint's emphasis.
-    env: childEnv('generator', process.env, { IP_USER_ID: rep.user_id ?? legacyUserId }),
+    env: childEnv('generator', process.env, { IP_USER_ID: buildOwner }),
   });
   child.unref();
   // Marker at REQUEST time with the child's pid — drafting happens inside
@@ -394,10 +646,25 @@ function spawnRepBuild(rep: Rep): void {
     closeSync(logFd);
     liveGenerations.delete(dir);
     clearGeneratingMarker(dir);
+    const attempt = buildAttempt(dir);
+    // Draft failures (the CLI wrote .failed itself, DRAFT_FAILURE_PREFIX)
+    // keep their distinct manual flow — auto-retry covers only the failures
+    // this handler would have marked.
     if (code !== 0 && !existsSync(path.join(dir, '.validated')) && !existsSync(path.join(dir, '.failed'))) {
+      if (autoRetryOnce(dir, code, `rep ${rep.id} build`, () => spawnRepBuild(rep))) {
+        ph.capture(buildOwner, 'build_failed', {
+          kind: 'rep', rep_id: rep.id, exit_code: code, duration_ms: Date.now() - buildT0, attempt, auto_retried: true,
+        });
+        return;
+      }
       writeFileSync(path.join(dir, '.failed'), `exit ${code} at ${new Date().toISOString()}; output in ${dir}.build.log\n`);
       console.warn(`[app] rep ${rep.id} build failed (exit ${code})`);
     }
+    // Same rule as spawnGeneration: the artifact decides, not the exit code.
+    const ok = existsSync(path.join(dir, '.validated'));
+    ph.capture(buildOwner, ok ? 'build_finished' : 'build_failed', {
+      kind: 'rep', rep_id: rep.id, exit_code: code, duration_ms: Date.now() - buildT0, attempt,
+    });
   });
 }
 
@@ -493,13 +760,13 @@ function resolveTitle(item: QueueItem): string | null {
     if (parts.length === 1) {
       return item.source.picked_by === 'user'
         ? `${item.source.title} · ${item.source.difficulty} · from the real set`
-        : `sourced · ${item.source.difficulty} — hidden until the round`;
+        : `sourced · ${item.source.difficulty} — revealed when the round starts`;
     }
     if (named.length) {
       const extra = parts.length - named.length;
       return `${named.map((p) => p.title).join(', ')}${extra ? ` + ${extra} more` : ''} · from the real set`;
     }
-    return `${parts.length} from the real set — hidden until the round`;
+    return `${parts.length} from the real set — revealed when the round starts`;
   }
   return item.planned_title ?? null;
 }
@@ -539,7 +806,12 @@ function refreshQueue(target: Target, userId: string, now: number): Queue | null
  * the shipped placeholder-as-label pattern was a hard-rule violation);
  * everything stateful renders client-side from /api/state.
  */
-export function appPage(): string {
+export function appPage(analyticsSnippet = ''): string {
+  // analyticsSnippet: posthogSnippet() markup, or '' (the default keeps every
+  // existing caller — tests included — byte-identical). Built by posthog.ts,
+  // NOT inline here: the inline init is the one script new Function() parse
+  // tests don't reach through /client/, so it is generated where a unit test
+  // can extract and parse it, and a stray \${ can never interpolate.
   return /* html */ `<!doctype html>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -548,7 +820,7 @@ export function appPage(): string {
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet" />
-<style>
+${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   :root {
     /* Graphite Steel (direction 3a). Brand plates survive at full saturation —
        the ONLY branded pixels in a monochrome shell. The mark is one ribbon
@@ -623,6 +895,13 @@ export function appPage(): string {
   #nav-kill { display: none; color: var(--text-2); font-size: 12px; }
   #nav-kill.on { display: inline; }
   #nav-kill:hover { color: var(--weak-text); }
+  /* Hidden until /api/auth-config says auth is ON: with Supabase unset there
+     is no session to leave, and a sign-out that signs you out of nothing is
+     a dead affordance. Quieter than the tabs — leaving is not a destination.
+     Its title names the account, so "am I in the right one?" needs no click. */
+  #nav-signout { display: none; color: var(--text-3); font-size: 12px; }
+  #nav-signout.on { display: inline; }
+  #nav-signout:hover { color: var(--text-1); }
   #nav-live .pulse { width: 6px; height: 6px; background: var(--steel-text); animation: pulse 1.8s ease-in-out infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
   /* The tabs (composer-first IA, 2026-08-10). The daily action IS the page
@@ -715,20 +994,56 @@ export function appPage(): string {
     gap: 4px 28px; margin-top: 22px; align-items: start;
     margin-inline: calc((720px - 100%) / -2);
   }
-  #rep-rail { grid-column: 1; grid-row: 1; }
-  #rep-open { grid-column: 2; grid-row: 1; }
-  /* Brief + decline + Start span both columns: the brief is prose to read
-     before an irreversible build, and the rail is 220px. */
-  #rep-commit { grid-column: 1 / -1; grid-row: 2; margin-top: 8px; border-top: 1px solid var(--rule); padding-top: 14px; }
+  /* Row 2 holds the columns; the commit band takes row 1 (below). The
+     columns are LAST in visual order but the questions stay first in the
+     DOM, so tab order still hits the task before the action (pass 6). */
+  #rep-rail { grid-column: 1; grid-row: 2; }
+  #rep-open { grid-column: 2; grid-row: 2; }
+  /* The commit BAND: spans both columns on grid row 1, above them (owner
+     call 2026-08-15). Anything placed inside a column rides that column's
+     length, and the rail runs ~70px per confirmed fact — eight facts put
+     Start off-screen. Above the grid it costs the columns no width and its
+     position never depends on how long either gets. What you're about to
+     build reads on the left, the action sits right. */
+  #rep-commit {
+    grid-column: 1 / -1; grid-row: 1;
+    display: flex; align-items: flex-end; gap: 24px;
+    padding-bottom: 14px; margin-bottom: 10px; border-bottom: 1px solid var(--rule);
+  }
+  #rep-commit .commit-text { flex: 1; min-width: 0; }
+  #rep-commit .rep-actions { flex: none; margin-top: 0; }
+  #rep-commit #rep-brief { margin-top: 0; }
+  /* Readiness is visible, never a gate: ready reads as the loud white
+     primary, pending (re-checking, or questions still open) drops to a
+     steel outline — still clickable, visibly not-yet-the-moment. */
+  #rep-ready { font-size: 12px; margin-top: 12px; }
+  #rep-ready.is-ready { color: var(--ok); }
+  #rep-ready.is-pending { color: var(--steel-text); }
+  button.primary.pending { background: transparent; border-color: var(--steel); color: var(--steel-text); font-weight: 500; }
+  button.primary.pending:hover { background: transparent; border-color: var(--steel-text); color: var(--text-1); }
   @media (max-width: 760px) {
-    /* Narrow: no breakout (it would overflow the shell), rail above questions. */
+    /* Narrow: no breakout (it would overflow the shell), commit band on top,
+       then the rail, then the questions. The band stacks (text over button)
+       so a 44px Start never squeezes the brief into a column of one word. */
     #rep-confirm { display: flex; flex-direction: column; margin-inline: 0; }
+    #rep-commit { order: -2; flex-direction: column; align-items: stretch; gap: 10px; }
     #rep-rail { order: -1; }
   }
-  /* Rail rows are the editable readback (decision 1A): 44px controls with
-     real labels; .gaterow/.tier reuse the planner's chips and flash. */
-  #rep-rail .gaterow { padding: 10px 2px; }
+  /* Rail rows are the editable readback (decision 1A) — compact by default
+     (owner report 2026-08-15): always-open 44px controls made the rail
+     outgrow the viewport and pushed Start below it. The value is a
+     click-to-edit button; the boxed .gapedit control appears per-row on
+     demand. .gaterow/.tier reuse the planner's chips and flash. */
+  #rep-rail .gaterow { padding: 6px 2px; }
   #rep-rail .gaterow label { display: block; }
+  /* Dotted underline = the clickability a borderless value would lack. */
+  #rep-rail .gapval {
+    display: block; width: 100%; text-align: left; background: none; border: 0;
+    padding: 3px 0; min-height: 32px; font: inherit; font-size: 13px; color: var(--text-1);
+    cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px;
+    text-decoration-color: var(--line);
+  }
+  #rep-rail .gapval:hover { text-decoration-color: var(--steel); }
   /* The planner's .tier is a BUTTON that cycles evidence, so it carries
      cursor: pointer. On the rail it is a read-only span stating provenance —
      inheriting the pointer made it look clickable and do nothing (QA
@@ -826,6 +1141,34 @@ export function appPage(): string {
   label { display: block; margin: 18px 0 5px; font-weight: 500; }
   .banner { border: 1px solid var(--steel); background: rgba(53, 112, 143, .08); padding: 10px 14px; margin: 0 0 20px; border-radius: 6px; }
 
+  /* WTP gate (paywall.ts). An OVERLAY: the app stays visible and dimmed
+     behind it, so the gate reads as an interruption of work in progress
+     rather than a page you navigated to — which is what it is.
+     Still no shadow and no glow (DESIGN.md rule 1): the card separates from
+     the scrim the system's way, by one tone-step (--raised) plus a 1px
+     hairline. The scrim is a dimming layer, not elevation.
+     z-index clears the sticky nav (z-index 10); overflow-y keeps a tall card
+     reachable on a short viewport. */
+  #paywall {
+    position: fixed; inset: 0; z-index: 20;
+    background: rgba(14, 14, 15, .78);
+    backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+    display: flex; align-items: center; justify-content: center;
+    padding: 20px; overflow-y: auto;
+  }
+  #paywall .card { width: 100%; max-width: 460px; background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 24px 26px; }
+  #paywall h2 { margin: 0 0 12px; font-size: 17px; font-weight: 600; }
+  #paywall p { margin: 0 0 14px; color: var(--text-2); }
+  #paywall .price { font-family: var(--mono); font-size: 22px; color: var(--text-1); margin: 0 0 14px; }
+  #paywall .ask { margin-top: 18px; }
+  #paywall label { display: block; margin: 0 0 6px; color: var(--text-2); }
+  #paywall input { width: 100%; min-height: 44px; box-sizing: border-box; background: var(--sunk); border: 1px solid var(--line); border-radius: 6px; color: var(--text-1); font: inherit; padding: 0 12px; }
+  /* Step 3's feedback pair — free-form, so a textarea, not the one-line
+     price box. margin-bottom separates the stacked question blocks. */
+  #paywall textarea { width: 100%; box-sizing: border-box; background: var(--sunk); border: 1px solid var(--line); border-radius: 6px; color: var(--text-1); font: inherit; padding: 10px 12px; resize: vertical; margin-bottom: 12px; }
+  #paywall .btnrow { display: flex; gap: 10px; margin-top: 20px; }
+  #paywall .btnrow button { flex: 1; min-height: 44px; }
+
   /* ---- entrance choreography: one orchestrated load per page, never on
          polls; fully off under reduced motion ---- */
   @keyframes rise { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
@@ -886,6 +1229,10 @@ export function appPage(): string {
      dominate the viewport (live-screenshot finding, 2026-08-07). */
   .pastechip { display: flex; gap: 10px; width: 100%; text-align: left; background: none; border: 0; border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); padding: 7px 0; min-height: 0; color: var(--text-2); font-size: 12px; cursor: pointer; font-family: var(--mono); }
   .pastechip:hover { color: var(--text-1); }
+  /* Folded planner notes reuse the pastechip chrome but read as prose, not
+     mono — the summary IS the note's first sentence, not metadata. */
+  .foldnote { font-family: inherit; font-size: 13px; align-items: baseline; }
+  .foldnote .foldmeta { color: var(--text-3); white-space: nowrap; }
   .pastebody { margin: 0; padding: 4px 0 10px 20px; font-size: 13px; line-height: 1.6; color: var(--text-2); white-space: pre-wrap; }
   #plan-intro { color: var(--text-2); margin: 28px 0; line-height: 1.65; }
   /* An unreadable link: a fact about the plan's evidence, not an app error
@@ -932,11 +1279,20 @@ export function appPage(): string {
   .gaterow .gexpand:hover { color: var(--text-1); }
   .gatedetail { padding: 6px 0 2px 22px; color: var(--text-2); font-size: 12px; line-height: 1.6; }
   .gatedetail b { color: var(--text-1); font-weight: 500; }
-  .gatedecline { color: var(--text-2); font-size: 12px; padding: 8px 14px; border-bottom: 1px solid var(--line-soft); }
+  /* A declined round is a full row with an opt-IN checkbox (2B applied to
+     this door, 2026-08-15) — the weak left border is the verdict color:
+     this IS a verdict about the round's fidelity, not a broken spec. */
+  .gaterow.gatedecline { border-left: 2px solid var(--weak); }
+  .gdeclinewhy { color: var(--text-2); font-size: 12px; margin-top: 4px; }
   .paceline { padding: 10px 14px; font-size: 12px; line-height: 1.5; color: var(--text-2); }
   #plan-panel .pfoot { padding: 12px 14px 14px; border-top: 1px solid var(--line); }
   #plan-panel .pfoot button { width: 100%; padding: 10px; }
   #plan-panel .pfoot .meta { font-size: 12px; margin-top: 8px; display: block; line-height: 1.5; }
+  /* The settle signal is information, not completed work: steel, not --ok. */
+  #plan-panel .pfoot .meta.settled { color: var(--steel-text); }
+  /* Armed: the button asked a question and is waiting on an answer, so the
+     note steps up to body white — it is the thing to read right now. */
+  #plan-panel .pfoot .meta.armed { color: var(--text-1); }
   #plan-composer { margin-top: 14px; position: sticky; bottom: 0; background: var(--bg); padding-bottom: 10px; max-width: 62ch; }
   #plan-composer .row { display: flex; gap: 8px; align-items: flex-start; }
   #plan-composer textarea { flex: 1; min-height: 58px; resize: none; }
@@ -1040,6 +1396,11 @@ export function appPage(): string {
   .gb { letter-spacing: 0; opacity: .8; }
   .gapstate { color: var(--text-2); font-size: 12px; }
   .gapcite { color: var(--text-3); font-size: 12px; margin: 3px 0 0 104px; }
+  /* Long citations render in FULL and clamp to two lines (QA 2026-08-15:
+     the old 157-char slice cut mid-word with no way to read the rest);
+     click toggles .open. Ellipsis is the affordance, cursor confirms it. */
+  .gapcite.clamped { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+  .gapcite.open { cursor: pointer; }
   .topicband { border: 1px solid var(--line); border-radius: 6px; padding: 8px 14px 10px; margin: 10px 0 4px; }
   .topicrow { display: flex; gap: 10px; align-items: baseline; border-top: 1px solid var(--line-soft); padding: 5px 0; }
   .topicrow:first-of-type { border-top: 0; }
@@ -1086,6 +1447,15 @@ export function appPage(): string {
   .runway li.today.complete .dot { border-color: var(--ok); background: var(--ok); }
   .runway button.mini { background: none; border: 1px solid var(--line); color: var(--text-2); padding: 2px 9px; font: inherit; font-size: 11px; cursor: pointer; margin-left: 10px; border-radius: 6px; }
   .runway button.mini:hover { color: var(--text-1); border-color: #3c3d40; }
+  /* Future-row build affordance: a text link, not a second Generate button —
+     TODAY's primary is the page's one big action (owner report 2026-08-15).
+     Dotted underline = the clickability a borderless gray word lacks. */
+  .runway button.quietgen { background: none; border: 0; min-height: 0; padding: 0; margin-left: 10px; font: inherit; font-size: 12px; color: var(--text-2); text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; }
+  .runway button.quietgen:hover { color: var(--text-1); }
+  .runway button.quietgen:disabled { opacity: .5; cursor: default; }
+  /* The runway's caption — names the row unit (a practice day / a queued
+     round) so the spine reads as a plan, not a list. */
+  .season .runwaykey { margin: 20px 0 8px; }
   .runway li.future.empty .dot { width: 5px; height: 5px; border-width: 1px; left: 2px; }
   .runway li.collapsed .body { color: var(--text-2); }
   .runway li.collapsed .dot { border-style: dashed; background: transparent; }
@@ -1199,6 +1569,7 @@ export function appPage(): string {
       <a href="#/" id="nav-practice">practice</a>
       <a href="#/plans" id="nav-plans">plans</a>
       <a href="#/history" id="nav-history">history</a>
+      <a href="#" id="nav-signout">sign out</a>
     </span>
   </nav>
   <div id="banner" aria-live="polite"></div>
@@ -1240,6 +1611,13 @@ export function appPage(): string {
 
   <section id="timeline" hidden></section>
 </div>
+<!-- Willingness-to-pay probe host (paywall.ts). OUTSIDE every repainted
+     region: render() clears #banner and rewrites #timeline/#index,
+     renderPractice() rewrites #practice-flow, renderHistory() rewrites
+     #history — an inline card anywhere would be wiped by the 5s poll
+     mid-read. A div, not a section, so renderLogin's section sweep does not
+     own it. Empty and hidden until showPaywallProbe paints it. -->
+<div id="paywall" hidden></div>
 <script src="/client/app.js"></script>
 `;
 }
@@ -1252,14 +1630,42 @@ export function runApp(cfg: AppConfig): http.Server {
   const auth = makeAuth(authConfigFromPublic(cfg.pub.supabase, cfg.pub.adminEmails, cfg.userId));
   internalHeaders = auth.internalToken ? { 'x-ip-internal': auth.internalToken } : {};
   legacyUserId = cfg.userId;
+  maxBuildsCap = cfg.pub.caps.maxConcurrentBuilds;
+
+  // PostHog (posthog.ts). Everything is derived once at boot: the vendored
+  // bundle's on-disk path, its version-stamped URL, and the page snippet.
+  // Missing bundle (not installed) degrades to NO snippet and a 404ing
+  // vendor route — the page renders untouched, which is the whole contract.
+  ph = makePh(cfg.pub.posthog);
+  const phAssetFile = cfg.pub.posthog ? posthogAssetFile(repoRoot) : null;
+  const phAssetUrl = posthogAssetPath(posthogAssetVersion(repoRoot));
+  // App-page masking: #entry-flow is the plan conversation (pasted recruiter
+  // emails, verbatim), #practice-flow the composer's gap co-authoring
+  // (pasted JDs), #history the feedback cards (verbatim trace quotes —
+  // TODOS #4 territory). Layout and clicks still record; the text shows as
+  // ***. Inputs are masked by maskAllInputs regardless.
+  const appAnalytics = phAssetFile
+    ? posthogSnippet(cfg.pub.posthog, {
+        assetPath: phAssetUrl,
+        maskTextSelector: '#entry-flow, #practice-flow, #history',
+      })
+    : '';
 
   /** Multi-session launch (WU-D): verdict → allocate → spawn → append+persist,
    *  serialized behind launchChain with no awaits inside the critical block —
    *  concurrent launches can't share a slot, and the registry entry exists
-   *  before the container it names. Returns the HTTP response to send. */
+   *  before the container it names. Returns the HTTP response to send.
+   *
+   *  `beforeSpawn` is the repeat path's workspace reset (preserve the old run
+   *  tree, restore pristine). It runs INSIDE the serialized block, after the
+   *  verdict and the slot both hold and before the container is spawned, so a
+   *  double-click can never re-wipe a dir mid-boot. It must stay synchronous:
+   *  an await here would reopen the slot race the chain exists to close. A
+   *  throw aborts the launch with no registry entry and no container. */
   const multiLaunch = async (
     who: { id: string; admin: boolean },
     problemDirArg: string,
+    opts?: { ignoreEndedOnSameDir?: boolean; beforeSpawn?: () => void },
   ): Promise<{ code: number; body: Record<string, unknown> }> => {
     await reconcileRegistryNow();
     let result: { code: number; body: Record<string, unknown> } = {
@@ -1271,7 +1677,7 @@ export function runApp(cfg: AppConfig): http.Server {
     };
     await (launchChain = launchChain.then(() => {
       const reg = loadRegistry(repoRoot);
-      const verdict = launchVerdict2(reg.entries, who.id, who.admin, problemDirArg, cfg.pub.sessions);
+      const verdict = launchVerdict2(reg.entries, who.id, who.admin, problemDirArg, cfg.pub.sessions, opts);
       if (verdict === 'your-session-live') {
         result = { code: 409, body: { error: 'your session is live — finish or end it first' } };
         return;
@@ -1283,6 +1689,22 @@ export function runApp(cfg: AppConfig): http.Server {
       if (verdict === 'all-slots-busy') { result = busy; return; }
       const slot = allocateSlot(reg.entries, cfg.pub.sessions.maxConcurrentSessions);
       if (!slot) { result = busy; return; }
+      if (opts?.beforeSpawn) {
+        try {
+          opts.beforeSpawn();
+        } catch (e) {
+          // The slot was never persisted, so returning here releases it —
+          // nothing was spawned and no entry names a container that will
+          // not exist. Loud on purpose: a half-restored workspace must not
+          // become a session.
+          console.error(`[app] launch aborted before spawn: ${String(e)}`);
+          result = {
+            code: 500,
+            body: { error: `could not reset the workspace: ${String(e instanceof Error ? e.message : e).slice(0, 200)}` },
+          };
+          return;
+        }
+      }
       const sid = newSessionId(Date.now());
       const pid = spawnDetached(['session', problemDirArg], {
         IP_SESSION_ID: sid,
@@ -1354,7 +1776,7 @@ export function runApp(cfg: AppConfig): http.Server {
         // markup. A cached copy outlives a deploy exactly like a stale app.js
         // does — and pairs it with fresh JS, which is worse than either alone.
         res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
-        return res.end(appPage());
+        return res.end(appPage(appAnalytics));
       }
       if (url.startsWith('/client/')) {
         const body = clientScript(path.basename(url));
@@ -1369,6 +1791,22 @@ export function runApp(cfg: AppConfig): http.Server {
         res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'no-store' });
         return res.end(body);
       }
+      if (isPosthogAssetUrl(url) && req.method === 'GET') {
+        // The vendored analytics bundle, above the auth gate like /client/
+        // (the page that references it is open too). The ONE cacheable asset
+        // on this server: the no-store rule exists because "no build step
+        // means no cache busting", and here the posthog-js version in the
+        // URL is the cache buster — bumping the dep changes the path.
+        if (!phAssetFile) {
+          res.writeHead(404);
+          return res.end('no such asset');
+        }
+        res.writeHead(200, {
+          'content-type': 'text/javascript',
+          'cache-control': 'public, max-age=31536000, immutable',
+        });
+        return res.end(readFileSync(phAssetFile));
+      }
       if (url === '/api/auth-config' && req.method === 'GET') {
         // The one unauthenticated API route: the login screen needs to know
         // whether auth is on and where to send the OTP/OAuth calls. Anon key
@@ -1380,6 +1818,66 @@ export function runApp(cfg: AppConfig): http.Server {
             : {}),
         });
       }
+      if (url === '/api/stripe/webhook' && req.method === 'POST') {
+        // ABOVE the auth gate on purpose: Stripe sends no JWT, so below this
+        // line it would 401 forever and every subscription change would be
+        // silently lost. The SIGNATURE is the authentication here — which is
+        // why it is verified before anything else touches the payload.
+        const sc = cfg.pub.stripe;
+        if (!sc) return json(200, { ok: true, ignored: 'billing off' });
+        const raw = await readRawBody(req);
+        const sig = req.headers['stripe-signature'];
+        let event: import('stripe').Stripe.Event;
+        try {
+          const stripe = await stripeClient(sc.apiKey);
+          event = stripe.webhooks.constructEvent(raw, String(sig ?? ''), sc.webhookSecret);
+        } catch (e) {
+          // Unverified means not from Stripe. 400 so Stripe surfaces it in the
+          // dashboard rather than retrying a payload we will never accept.
+          console.warn('[billing] webhook signature rejected:', String(e).slice(0, 160));
+          return json(400, { error: 'bad signature' });
+        }
+        try {
+          if (isHandledEvent(event.type)) {
+            const stripe = await stripeClient(sc.apiKey);
+            // Resolve the subscription and OUR user id for each shape. The
+            // user id rides subscription metadata (set at Checkout creation)
+            // rather than being looked up from the customer — a subscription
+            // event carries no client_reference_id, and metadata travels with
+            // every one of them.
+            let sub: import('stripe').Stripe.Subscription | null = null;
+            let userId = '';
+            const obj = event.data.object as unknown as Record<string, unknown>;
+            if (event.type === 'checkout.session.completed') {
+              userId = String(obj.client_reference_id ?? '');
+              const subId = typeof obj.subscription === 'string' ? obj.subscription : '';
+              if (subId) sub = await stripe.subscriptions.retrieve(subId);
+            } else if (String(event.type).startsWith('customer.subscription.')) {
+              sub = obj as unknown as import('stripe').Stripe.Subscription;
+              userId = String((sub.metadata ?? {}).user_id ?? '');
+            } else {
+              const subId = typeof obj.subscription === 'string' ? obj.subscription : '';
+              if (subId) {
+                sub = await stripe.subscriptions.retrieve(subId);
+                userId = String((sub.metadata ?? {}).user_id ?? '');
+              }
+            }
+            if (userId && sub) {
+              logSubscription(
+                rowFromSubscription(userId, sub as unknown as Record<string, never>, Date.now(), event.id),
+              );
+            } else {
+              console.warn(`[billing] ${event.type} with no resolvable user — ignored`);
+            }
+          }
+        } catch (e) {
+          // A 500 makes Stripe retry, which is what we want for a transient
+          // failure — but log it, because a silent retry loop is invisible.
+          console.error('[billing] webhook handling failed:', String(e).slice(0, 200));
+          return json(500, { error: 'handler failed' });
+        }
+        return json(200, { received: true });
+      }
       const user = await auth.resolve(req);
       if (url.startsWith('/api/') && !user) {
         return json(401, { error: 'sign in required' });
@@ -1390,6 +1888,113 @@ export function runApp(cfg: AppConfig): http.Server {
         Boolean(t && (user!.admin || (t.user_id ?? cfg.userId) === user!.id));
       const ownsRep = (r: { user_id?: string }): boolean =>
         user!.admin || repOwnedBy(r, user!.id, cfg.userId);
+
+      /**
+       * The willingness-to-pay gate (paywall.ts). Returns a GateView to refuse
+       * with, or null to proceed. THIS ONE REALLY DENIES — see the module
+       * header for why that is deliberate.
+       *
+       * FAILS OPEN on any throw. A broken counter, an unreadable target dir, a
+       * corrupt queue — all let the round start. What is lost is the
+       * measurement, which is the right thing to lose. The try/catch wraps the
+       * WHOLE body rather than each call, so a disk read added here later
+       * cannot quietly become the exception.
+       *
+       * Uses loadQueue + reconcileWithDisk WITHOUT saving: refreshQueue writes
+       * (app.ts saveQueue) and pulls in the gap graph, and a launch must not
+       * mutate state just to count. Reconciling matters even so — session_id
+       * is re-pointed from the .used marker there, so a raw loadQueue would
+       * count differently from the number /api/state already showed the user.
+       */
+      const gateFor = (reason: 'rounds' | 'plans'): GateView | null => {
+        const pw = cfg.pub.paywall;
+        if (!pw.enabled || user!.admin) return null;
+        try {
+          // A manual grant still comps forever (append a would_pay row for a
+          // user_id and they are through) — that lever predates billing and
+          // stays, for handing free access to people whose feedback is worth
+          // having.
+          if (hasGrant(readPaywallRows(), user!.id)) return null;
+          const subs = readSubscriptionRows();
+          // A SUBSCRIBER is not ungated — they get a per-period allowance.
+          // `since` is their billing period start, so last month's rounds do
+          // not eat this month's. The free tier passes null and counts for a
+          // lifetime: a trial has no period to reset.
+          const since = periodStart(subs, user!.id);
+          const paid = subscribed(subs, user!.id);
+          const mine = listTargets(repoRoot).filter(
+            (t) => (t.user_id ?? cfg.userId) === user!.id,
+          );
+          // Plans are a spend guardrail on the free tier only. A subscriber
+          // paid for the product; rationing which companies they may prep for
+          // would be petty and is not what the money is protecting.
+          if (reason === 'plans' && paid) return null;
+          const used =
+            reason === 'plans'
+              ? countPlans(mine, user!.id, cfg.userId)
+              : roundsUsed(
+                  repsVisibleTo(repStateView(repoRoot, loadReps(repoRoot)), user!, cfg.userId),
+                  mine.flatMap((t) => {
+                    const q = loadQueue(repoRoot, t.id);
+                    return q ? (reconcileWithDisk(repoRoot, q).items ?? []) : [];
+                  }),
+                  user!.id,
+                  cfg.userId,
+                  since,
+                );
+          return gateVerdict({
+            enabled: true,
+            admin: false,
+            granted: false,
+            reason,
+            used,
+            free: reason === 'plans' ? pw.freePlans : paid ? pw.paidRounds : pw.freeRounds,
+            priceUsd: pw.priceUsd,
+            // A subscriber who has spent their monthly rounds is NOT sold the
+            // same subscription again — the card says "you have used this
+            // month's rounds", and there is nothing to buy.
+            subscribed: paid,
+            // Travels with the 402 because the gate card is painted from this
+            // object alone. False = the beta measurement mode: Subscribe
+            // records the intent and reveals that the round is free, rather
+            // than calling a checkout route that can only answer 503.
+            billingEnabled: cfg.pub.stripe !== null,
+          });
+        } catch {
+          return null;
+        }
+      };
+
+      /**
+       * Refuse, and record that we did. The `error` string is load-bearing:
+       * every existing client call site branches on `s.error` and none read
+       * `r.status` (the 429 build-cap precedent, app.ts admissionVerdict), so
+       * a body without it would fall through into the launch poll loop and
+       * hang on "Starting…" for 180s. Updated call sites read the richer
+       * `paywall` object; un-updated ones degrade to a readable sentence.
+       */
+      const refuse = (g: GateView): { code: number; body: Record<string, unknown> } => {
+        logPaywall({
+          ts: new Date().toISOString(),
+          user_id: user!.id,
+          email: user!.email,
+          action: 'gated',
+          reason: g.reason,
+          used: g.used,
+          free: g.free,
+          price_usd: g.price_usd,
+        });
+        return {
+          code: 402,
+          body: {
+            error:
+              g.reason === 'plans'
+                ? `You have used your ${g.free} free plans. Zenkai is $${g.price_usd}/mo after the beta.`
+                : `You have used your ${g.free} free rounds. Zenkai is $${g.price_usd}/mo after the beta.`,
+            paywall: g,
+          },
+        };
+      };
       if (url === '/api/memory' && req.method === 'GET') {
         // The Gaps band's data: every assessed session the caller owns, full
         // verdict rows, trend, per-dimension states — read fresh from disk
@@ -1622,17 +2227,202 @@ export function runApp(cfg: AppConfig): http.Server {
           db.upsertUsers([{ id: user!.id, email: user!.email, is_admin: user!.admin }]);
         }
         sweepSessionsToDb();
+        const repsForUser = repsVisibleTo(repStateView(repoRoot, repsFresh), user!, cfg.userId);
+        // Willingness-to-pay allowance (paywall.ts). ADVISORY ONLY — the gate
+        // is enforced at the ten spend routes, which is what makes it real.
+        // This key is what the client renders a remaining-rounds readout and a
+        // "manage billing" affordance from.
+        //
+        // Pure arithmetic over arrays this handler already holds, plus two
+        // small ledger reads — a route polled every 5s gains no per-target
+        // disk work. ABSENT for admins, a gate-off box, and anyone comped, so
+        // the client's fail-open default is the only default it has.
+        //
+        // Subscribers are NOT excluded here: they have a per-period allowance
+        // too, and the readout is how they see what is left. Miss that and a
+        // paying customer either sees a free-tier nag or no counter at all.
+        const pw = cfg.pub.paywall;
+        const subRows = readSubscriptionRows();
+        const paidNow = subscribed(subRows, user!.id);
+        const allowance =
+          pw.enabled && !user!.admin && !hasGrant(readPaywallRows(), user!.id)
+            ? {
+                price_usd: pw.priceUsd,
+                subscribed: paidNow,
+                billing_enabled: cfg.pub.stripe !== null,
+                rounds_used: roundsUsed(
+                  repsForUser,
+                  targets.flatMap((t) => t.queue?.items ?? []),
+                  user!.id,
+                  cfg.userId,
+                  periodStart(subRows, user!.id),
+                ),
+                free_rounds: paidNow ? pw.paidRounds : pw.freeRounds,
+                // `targets` is already owner-filtered above, so its length IS
+                // the plan count — countPlans is for the routes that hold raw
+                // Target records instead.
+                plans_used: targets.length,
+                // null = UNLIMITED, and a subscriber really is: gateFor returns
+                // null for `plans` the moment `paid` is true. Reporting
+                // pw.freePlans here regardless would have this advisory
+                // contradict the enforcement it describes — a subscriber shown
+                // "3 of 3 plans used" while the route happily makes a fourth.
+                // Nothing renders this yet; the point is that it cannot lie
+                // when something does.
+                free_plans: paidNow ? null : pw.freePlans,
+              }
+            : null;
         return json(200, {
           targets,
-          reps: repsVisibleTo(repStateView(repoRoot, repsFresh), user!, cfg.userId),
+          reps: repsForUser,
           focus,
           today: new Date(now).toISOString(),
           session_live: live,
           session_url: sessionUrl,
           user: { id: user!.id, email: user!.email, admin: user!.admin },
+          ...(allowance ? { paywall: allowance } : {}),
         });
       }
+      if (url === '/api/stripe/checkout' && req.method === 'POST') {
+        // Creates a hosted Checkout Session and hands back its URL. Hosted,
+        // not embedded: no Stripe.js on our page, so no CSP change and no card
+        // field ever touches this origin — the property this flow has had from
+        // the start.
+        const sc = cfg.pub.stripe;
+        if (!sc) return json(503, { error: 'billing is not configured' });
+        try {
+          const stripe = await stripeClient(sc.apiKey);
+          const session = await stripe.checkout.sessions.create({
+            mode: 'subscription',
+            // NO payment_method_types — omitting it lets Stripe pick eligible
+            // methods per customer from Dashboard settings. Hardcoding ['card']
+            // silently locks out everything else.
+            line_items: [{ price: sc.priceId, quantity: 1 }],
+            // Our user id, on both the session and the subscription. The
+            // session's is read on confirm-on-return; the subscription's
+            // metadata is what later lifecycle webhooks resolve by, since they
+            // carry no client_reference_id.
+            client_reference_id: user!.id,
+            subscription_data: { metadata: { user_id: user!.id } },
+            ...(user!.email ? { customer_email: user!.email } : {}),
+            success_url: `${cfg.pub.appPublicUrl}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${cfg.pub.appPublicUrl}/?checkout=cancelled`,
+            integration_identifier: STRIPE_INTEGRATION_ID,
+          });
+          if (!session.url) return json(502, { error: 'stripe returned no checkout url' });
+          return json(200, { url: session.url });
+        } catch (e) {
+          console.error('[billing] checkout create failed:', String(e).slice(0, 200));
+          return json(502, { error: 'could not start checkout — try again' });
+        }
+      }
+      if (url.startsWith('/api/stripe/confirm') && req.method === 'GET') {
+        // Confirm-on-return. The webhook is the durable record, but it can
+        // land after the user is already back — and "I paid and nothing
+        // happened" is the worst first impression a paid product can make.
+        // This writes the entitlement row synchronously so the retry that
+        // follows immediately gets through.
+        const sc = cfg.pub.stripe;
+        if (!sc) return json(503, { error: 'billing is not configured' });
+        const sid = new URL(url, 'http://x').searchParams.get('session_id') ?? '';
+        if (!/^cs_[A-Za-z0-9_]+$/.test(sid)) return json(400, { error: 'bad session id' });
+        try {
+          const stripe = await stripeClient(sc.apiKey);
+          const session = await stripe.checkout.sessions.retrieve(sid);
+          // Ownership: a session id is not a secret, so without this check
+          // anyone holding one could confirm someone else's purchase onto
+          // their own account.
+          if (session.client_reference_id !== user!.id) {
+            return json(403, { error: 'not your checkout session' });
+          }
+          if (session.status !== 'complete') return json(200, { subscribed: false, pending: true });
+          const subId = typeof session.subscription === 'string' ? session.subscription : '';
+          if (!subId) return json(200, { subscribed: false, pending: true });
+          const sub = await stripe.subscriptions.retrieve(subId);
+          logSubscription(
+            rowFromSubscription(user!.id, sub as unknown as Record<string, never>, Date.now()),
+          );
+          return json(200, { subscribed: subscribed(readSubscriptionRows(), user!.id) });
+        } catch (e) {
+          console.error('[billing] confirm failed:', String(e).slice(0, 200));
+          return json(502, { error: 'could not confirm the purchase — refresh in a moment' });
+        }
+      }
+      if (url === '/api/stripe/portal' && req.method === 'POST') {
+        // Cancellation, receipts, payment-method updates — all Stripe's
+        // Customer Portal, none of it ours to build or to get wrong.
+        const sc = cfg.pub.stripe;
+        if (!sc) return json(503, { error: 'billing is not configured' });
+        const row = readSubscriptionRows().filter((r) => r.user_id === user!.id).pop();
+        if (!row?.customer_id) return json(400, { error: 'no billing account yet' });
+        try {
+          const stripe = await stripeClient(sc.apiKey);
+          const portal = await stripe.billingPortal.sessions.create({
+            customer: row.customer_id,
+            return_url: `${cfg.pub.appPublicUrl}/`,
+          });
+          return json(200, { url: portal.url });
+        } catch (e) {
+          console.error('[billing] portal failed:', String(e).slice(0, 200));
+          return json(502, { error: 'could not open billing — try again' });
+        }
+      }
+      if (url === '/api/paywall/probe' && req.method === 'POST') {
+        // The WTP gate's recorder (paywall.ts). This route can return ONLY
+        // 200 — the client awaits it on the grant path, and a 4xx/5xx here
+        // would strand a user who just pressed Subscribe.
+        //
+        // It is also where a grant is MINTED: pressing Subscribe writes the
+        // row that hasGrant() reads at every gate. That makes the write
+        // ordering load-bearing — the row must be on disk before this
+        // responds, because the client retries the launch the moment it
+        // resolves. Everything here is synchronous for that reason; an async
+        // append would deadlock the user on their own gate.
+        const b = JSON.parse((await readBody(req)) || '{}') as {
+          action?: string; expect?: string; value?: string; improve?: string;
+        };
+        const action = probeAction(b.action);
+        // Admins and a gate-off box record NOTHING: the founder's own clicks
+        // are not signal, and a stale tab must not pollute the log.
+        const recorded = cfg.pub.paywall.enabled && !user!.admin;
+        if (recorded) {
+          const expect = expectedText(b.expect);
+          // The post-reveal feedback pair (owner request 2026-08-15) —
+          // bounded like expect, wider because "any form" is the point.
+          const value = expectedText(b.value, FEEDBACK_MAX);
+          const improve = expectedText(b.improve, FEEDBACK_MAX);
+          logPaywall({
+            ts: new Date().toISOString(),
+            user_id: user!.id,
+            email: user!.email,
+            action,
+            price_usd: cfg.pub.paywall.priceUsd,
+            free_rounds: cfg.pub.paywall.freeRounds,
+            free_plans: cfg.pub.paywall.freePlans,
+            ...(expect ? { expect } : {}),
+            ...(value ? { value } : {}),
+            ...(improve ? { improve } : {}),
+          });
+        }
+        // `granted` tells the client its retry will get through rather than
+        // looping on the same gate. True for an admin/gate-off box too — they
+        // were never gated in the first place.
+        return json(200, { ok: true, granted: !recorded || grantsAccess(action) });
+      }
       if (url === '/api/target' && req.method === 'POST') {
+        // The plan guardrail, checked FIRST — before label validation, before
+        // decodeAttachments, before any byte hits disk. This handler makes no
+        // model call (that is /api/plan/turn, which planFirstSend fires right
+        // after), so refusing here costs the user nothing but a message.
+        // The client gates the entry point earlier so nobody types a whole
+        // description first; this is the backstop that makes it real.
+        {
+          const g = gateFor('plans');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         const b = JSON.parse((await readBody(req)) || '{}') as {
           label?: string; date?: string; description?: string; context?: string;
           attachments?: { name?: string; media_type?: string; data?: string }[];
@@ -1711,6 +2501,13 @@ export function runApp(cfg: AppConfig): http.Server {
         }
       }
       if (url === '/api/practice/clarify' && req.method === 'POST') {
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         // The practice door's inference: the gap-deriving clarifier (design
         // review 2026-08-12) — material arrives INLINE, a rep has no target
         // to read from. Same fallback ladder shape as /api/clarify; failures
@@ -1777,7 +2574,8 @@ export function runApp(cfg: AppConfig): http.Server {
             const lc = await import('./lc-source.js');
             if (lc.lcReady(repoRoot).ok) {
               const { resolveProblemRef } = await import('./lc-refs.js');
-              const { buildSourceSet } = await import('./lc-pick.js');
+              const { autoSourceEligible, composeSourceBinding, resolveNamedRefs, sourceSetSize } =
+                await import('./lc-bind.js');
               const { recentlyAttemptedSlugs } = await import('./topic-graph.js');
               const { namedProblemGap } = await import('./practice-clarify.js');
               const index = lc.loadLcIndex(repoRoot);
@@ -1789,51 +2587,39 @@ export function runApp(cfg: AppConfig): http.Server {
               const srcAnswer = answers.find((a) => a.id === 'named-problem')?.answer.trim() ?? null;
               const srcInvent = srcAnswer !== null && /^invent/i.test(srcAnswer);
               for (const d of result.drafts) {
-                const task = d.task ?? deriveTaskFromSpec(d.spec);
-                if (task !== 'algorithmic_set' || srcInvent) continue;
-                // Named refs resolve mechanically; the recency window does
-                // NOT apply to them (re-doing a problem you asked for is
-                // fine) — blocklist and eligibility always do. An answered
-                // row is the strongest ref and must not be silently
-                // substituted when it fails to resolve.
-                const named: import('./lc-source.js').LcIndexEntry[] = [];
+                if (!autoSourceEligible(d.task, d.spec) || srcInvent) continue;
+                // An answered row is the strongest ref and must not be
+                // silently substituted when it fails to resolve — door-level
+                // strictness, checked BEFORE the shared lenient resolution.
                 if (srcAnswer) {
                   const hit = resolveProblemRef(srcAnswer, index);
                   if (!hit || blocked.has(hit.slug) || !lc.eligibleForSourcing(hit)) continue;
-                  named.push(hit);
                 }
-                for (const ref of d.named_problems ?? []) {
-                  const hit = resolveProblemRef(ref, index);
-                  if (hit && !blocked.has(hit.slug) && lc.eligibleForSourcing(hit)) named.push(hit);
-                }
-                // Set size: the stated part count, never below what was
-                // named, capped by the enforceable size knob and 4.
-                const count = Math.min(
-                  Math.max(d.part_count ?? named.length, named.length, 1),
-                  d.spec.check.max_source_files ?? 4,
-                  4,
+                const named = resolveNamedRefs(
+                  [...(srcAnswer ? [srcAnswer] : []), ...(d.named_problems ?? [])],
+                  { index, blocked },
                 );
-                const set = buildSourceSet({
+                const { binding } = composeSourceBinding({
                   index,
                   named,
-                  count,
+                  count: sourceSetSize(d.part_count, named.length, d.spec),
                   excludeSlugs: new Set([
                     ...recentlyAttemptedSlugs(repoRoot, user!.id, Date.now()),
                     ...blocked,
                   ]),
                   // Seeded on user+spec: re-clarifying the same round deals
-                  // the same set (stable confirm screen).
+                  // the same set (stable confirm screen). Deliberately no
+                  // cross-draft dedup on this door — accept-spec's `bound`
+                  // accumulator is the door that must not repeat.
                   seed: `${user!.id}:${d.spec.id}`,
                 });
-                if (set.length === 0) continue;
-                const toPart = (x: (typeof set)[number]) => ({
-                  slug: x.entry.slug, title: x.entry.title, difficulty: x.entry.difficulty, picked_by: x.picked_by,
-                });
-                d.source = {
-                  ...toPart(set[0]!),
-                  ...(set.length > 1 ? { parts: set.map(toPart) } : {}),
-                };
-                result.gaps.push(namedProblemGap(set.map((x) => ({ title: x.entry.title, difficulty: x.entry.difficulty, picked_by: x.picked_by }))));
+                if (!binding) continue;
+                d.source = binding;
+                result.gaps.push(
+                  namedProblemGap(
+                    (binding.parts ?? [binding]).map((p) => ({ title: p.title, difficulty: p.difficulty, picked_by: p.picked_by })),
+                  ),
+                );
               }
             }
           } catch (e) {
@@ -1877,6 +2663,13 @@ export function runApp(cfg: AppConfig): http.Server {
         }
       }
       if (url === '/api/practice' && req.method === 'POST') {
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         // Start a rep build. Gate order matters: identity, vocabulary,
         // size, THEN the lock — nothing is created until every check holds,
         // and the mkdir lock is what makes a double-click spawn exactly one
@@ -2005,6 +2798,15 @@ export function runApp(cfg: AppConfig): http.Server {
         const rep = views.find((r) => r.id === b.rep_id);
         if (!rep) return json(404, { error: 'no such rep' });
         if (!ownsRep(rep)) return json(403, { error: 'not your rep' });
+        // WTP gate, above the mode fork so one check covers both session
+        // modes. After ownership so a stranger still gets 403, not a price.
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         const dir = repProblemDir(repoRoot, rep.id);
         if (cfg.pub.multiSession) {
           // Ready/used checks still apply; liveness verdicts live in the
@@ -2014,10 +2816,10 @@ export function runApp(cfg: AppConfig): http.Server {
             sessionLive: false,
           });
           if (pre === 'not-ready') return json(400, { error: 'rep is not ready' });
-          if (pre === 'already-used') return json(409, { error: 'that rep already ran — its card is under history' });
+          if (pre === 'already-used') return json(409, { error: 'that rep already ran — its card is under history, where "practice again" runs it fresh' });
           const out = await multiLaunch({ id: user!.id, admin: user!.admin }, dir);
           if (out.code === 200) {
-            logLaunch(b.origin, String(out.body.session_id));
+            logLaunch(b.origin, String(out.body.session_id), user!.id);
             console.log(`[app] rep ${rep.id} launching as ${String(out.body.session_id)}`);
           }
           return json(out.code, out.body);
@@ -2028,7 +2830,7 @@ export function runApp(cfg: AppConfig): http.Server {
           sessionLive: probe.reachable && !probe.ended,
         });
         if (verdict === 'not-ready') return json(400, { error: 'rep is not ready' });
-        if (verdict === 'already-used') return json(409, { error: 'that rep already ran — its card is under history' });
+        if (verdict === 'already-used') return json(409, { error: 'that rep already ran — its card is under history, where "practice again" runs it fresh' });
         if (verdict === 'session-live') {
           const owner = await probeSessionOwner(cfg.sessionPort);
           return json(409, {
@@ -2047,7 +2849,7 @@ export function runApp(cfg: AppConfig): http.Server {
           }
         }
         const sessionId = `sess-${Date.now()}`;
-        logLaunch(b.origin, sessionId);
+        logLaunch(b.origin, sessionId, user!.id);
         spawnDetached(['session', dir], {
           IP_SESSION_ID: sessionId,
           // The person at the keyboard is whose gap graph gets written.
@@ -2061,7 +2863,134 @@ export function runApp(cfg: AppConfig): http.Server {
         console.log(`[app] rep ${rep.id} launching as ${sessionId}`);
         return json(200, { session_id: sessionId, url: `${cfg.pub.sessionPublicUrl}/session` });
       }
+      if (url === '/api/practice/repeat' && req.method === 'POST') {
+        // "Practice again" (artifact.ts / TODOS #48): preserve the finished
+        // run's tree, reset the workspace to pristine, launch a fresh
+        // session on the same rep. Same request/response shape as
+        // /api/practice/launch — the client's launchCommon drives both.
+        //
+        // Still DELIBERATELY no admissionVerdict: a repeat spends zero
+        // GENERATION budget (no opus build, no new problem dir), so the build
+        // caps have nothing to protect here.
+        //
+        // The WTP gate below is the opposite case, and the distinction is the
+        // point: that reasoning is build-cost-based, and a repeat still spends
+        // full SESSION cost — interviewer turns, judge, voice, container time
+        // — and is a round the user experiences. Leaving repeats ungated would
+        // also make the whole gate bypassable: use your free rounds, then
+        // repeat forever.
+        const b = JSON.parse((await readBody(req)) || '{}') as { rep_id?: string; origin?: string };
+        if (typeof b.rep_id !== 'string' || !REP_ID_RE.test(b.rep_id)) {
+          return json(400, { error: 'bad rep id' });
+        }
+        const views = repStateView(repoRoot, loadReps(repoRoot));
+        const rep = views.find((r) => r.id === b.rep_id);
+        if (!rep) return json(404, { error: 'no such rep' });
+        if (!ownsRep(rep)) return json(403, { error: 'not your rep' });
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
+        const dir = repProblemDir(repoRoot, rep.id);
+        const usedFile = path.join(dir, '.used');
+        const restorable = restorability({
+          hasPristine: existsSync(pristineArchivePath(dir)),
+          hasSnapshot: existsSync(path.join(dir, '.session-snapshot')),
+        });
+        // Liveness is per-DIR here, not per-user: the danger is restoring
+        // files out from under a container that has them bind-mounted.
+        const probe = cfg.pub.multiSession ? null : await probeSession(cfg.sessionPort);
+        const sessionLiveOnDir = cfg.pub.multiSession
+          ? (await reconcileRegistryNow()).entries.some(
+              (e) => e.problem_dir === dir && e.ended_at === undefined,
+            )
+          : probe!.reachable && !probe!.ended;
+        const verdict = repeatVerdict(rep, {
+          usedExists: existsSync(usedFile),
+          sessionLiveOnDir,
+          restorable,
+        });
+        if (verdict === 'not-done') {
+          return json(409, { error: "that round hasn't finished — its session is still live or unjudged" });
+        }
+        if (verdict === 'not-consumed') {
+          return json(409, { error: "that rep hasn't run yet — use start" });
+        }
+        if (verdict === 'session-live') {
+          const owner = cfg.pub.multiSession ? null : await probeSessionOwner(cfg.sessionPort);
+          return json(409, {
+            error: owner === null || owner === user!.id || user!.admin
+              ? 'a session is already running — finish or end it first'
+              : 'someone is mid-round — sessions run one at a time in the beta; check back in ~45 minutes',
+          });
+        }
+        if (verdict === 'not-repeatable') {
+          return json(409, { error: 'this round predates repeatable artifacts and its pristine copy is gone' });
+        }
+        // `.used` is overwrite-latest and two lines (`sid\nISO\n`) — the
+        // first line names the run whose tree we are about to replace.
+        const oldSid = readFileSync(usedFile, 'utf8').split('\n')[0]!;
+        const resetWorkspace = (): void => {
+          preserveRunTree(dir, oldSid); // non-fatal insurance
+          if (restorable === 'pristine') restorePristine(dir);
+          else restoreFromSnapshot(dir);
+        };
+        if (cfg.pub.multiSession) {
+          // ignoreEndedOnSameDir: the round we are repeating just ended and
+          // its entry lingers to serve its card — that must not 409 us.
+          const out = await multiLaunch({ id: user!.id, admin: user!.admin }, dir, {
+            ignoreEndedOnSameDir: true,
+            beforeSpawn: resetWorkspace,
+          });
+          if (out.code === 200) {
+            logLaunch(b.origin, String(out.body.session_id), user!.id);
+            console.log(`[app] rep ${rep.id} repeating as ${String(out.body.session_id)} (was ${oldSid})`);
+          }
+          return json(out.code, out.body);
+        }
+        if (probe!.reachable && probe!.ended) {
+          // Reap a graded session's lingering card server (the /api/launch
+          // pattern, verbatim) so port 3200 frees up for the new session.
+          await postSession(cfg.sessionPort, '/api/shutdown');
+          for (let i = 0; i < 10; i++) {
+            if (!(await probeSession(cfg.sessionPort)).reachable) break;
+            await new Promise((r) => setTimeout(r, 500));
+          }
+        }
+        try {
+          resetWorkspace();
+        } catch (e) {
+          console.error(`[app] repeat aborted before spawn: ${String(e)}`);
+          return json(500, {
+            error: `could not reset the workspace: ${String(e instanceof Error ? e.message : e).slice(0, 200)}`,
+          });
+        }
+        const sessionId = `sess-${Date.now()}`;
+        logLaunch(b.origin, sessionId, user!.id);
+        spawnDetached(['session', dir], {
+          IP_SESSION_ID: sessionId,
+          // The person at the keyboard is whose gap graph gets written.
+          IP_USER_ID: user!.id,
+          IP_PREPARE_NEXT: '0',
+          IP_APP_URL: cfg.pub.appPublicUrl,
+          ...(internalHeaders['x-ip-internal']
+            ? { IP_INTERNAL_TOKEN: internalHeaders['x-ip-internal'] }
+            : {}),
+        });
+        console.log(`[app] rep ${rep.id} repeating as ${sessionId} (was ${oldSid})`);
+        return json(200, { session_id: sessionId, url: `${cfg.pub.sessionPublicUrl}/session` });
+      }
       if (url === '/api/practice/retry' && req.method === 'POST') {
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         const b = JSON.parse((await readBody(req)) || '{}') as { rep_id?: string };
         if (typeof b.rep_id !== 'string' || !REP_ID_RE.test(b.rep_id)) {
           return json(400, { error: 'bad rep id' });
@@ -2075,7 +3004,17 @@ export function runApp(cfg: AppConfig): http.Server {
         const verdict = retryVerdict(rep, { markerAlive: Boolean(gm && pidAlive(gm.pid)) });
         if (verdict === 'not-failed') return json(400, { error: 'rep is not in a failed state' });
         if (verdict === 'still-running') return json(409, { error: 'that build is actually still running — give it a minute' });
-        rmSync(path.join(dir, '.failed'), { force: true });
+        // Manual retry honors the global slot it used to skip (2026-08-15
+        // audit) — admission stays un-rechecked on purpose: a retry is not a
+        // second spend decision, the original admission covered this build.
+        if (countLiveBuilds() >= cfg.pub.caps.maxConcurrentBuilds) {
+          return json(409, { error: "someone else's round is generating — builds run one at a time in the beta; try again in ~5 minutes" });
+        }
+        // Every attempt's evidence survives, and the generator's "empty-ish
+        // dir" contract holds on attempt 2 — same rotation + wipe as the
+        // automatic retry (blueprint and archives live outside the dir).
+        rotateBuildLog(dir);
+        rmSync(dir, { recursive: true, force: true });
         console.log(`[app] rep ${rep.id} retrying`);
         spawnRepBuild(rep);
         return json(200, { ok: true });
@@ -2179,6 +3118,7 @@ export function runApp(cfg: AppConfig): http.Server {
         // browser edited can invent a binding.
         const namedBySpec = new Map<string, string[]>();
         const partCountBySpec = new Map<string, number>();
+        const taskBySpec = new Map<string, string>();
         try {
           const { loadConversation, latestProposal } = await import('./planner.js');
           const prop = latestProposal(loadConversation(repoRoot, t.id));
@@ -2198,7 +3138,10 @@ export function runApp(cfg: AppConfig): http.Server {
           }
           for (const d of prop?.drafts ?? []) {
             if (d.named_problems?.length) namedBySpec.set(d.spec.id, d.named_problems);
-            if (d.part_count && d.part_count >= 2) partCountBySpec.set(d.spec.id, d.part_count);
+            // Raw stated count — no >=2 filter; sourceSetSize's floor makes a
+            // stated 1 identical to undefined (the old filter was drift).
+            if (d.part_count) partCountBySpec.set(d.spec.id, d.part_count);
+            if (d.task) taskBySpec.set(d.spec.id, d.task);
           }
         } catch { /* no conversation — CLI or legacy path */ }
         if (!loadQueue(repoRoot, t.id)) {
@@ -2210,36 +3153,37 @@ export function runApp(cfg: AppConfig): http.Server {
           // unbound and they invent, the pre-sourcing path — never an error.
           try {
             const lc = await import('./lc-source.js');
-            const { deriveTaskFromSpec } = await import('./blueprint.js');
             if (lc.lcReady(repoRoot).ok) {
-              const { resolveProblemRef } = await import('./lc-refs.js');
-              const { buildSourceSet } = await import('./lc-pick.js');
+              const { autoSourceEligible, composeSourceBinding, resolveNamedRefs, sourceSetSize } =
+                await import('./lc-bind.js');
               const { recentlyAttemptedSlugs } = await import('./topic-graph.js');
               const index = lc.loadLcIndex(repoRoot);
               const blocked = lc.blocklistedSlugs(repoRoot);
               const bound = new Set<string>();
               const owner = t.user_id ?? legacyUserId;
               for (const spec of t.specs) {
-                if (deriveTaskFromSpec(spec) !== 'algorithmic_set') continue;
+                // The eligibility gate is the shared module's — the 2026-08-15
+                // incident was exactly this door running the capability
+                // fallback alone while the practice door consulted the
+                // hypothesis; lc-bind.ts carries the incident record and the
+                // matrix test.
+                if (!autoSourceEligible(taskBySpec.get(spec.id), spec)) continue;
                 const mine = queue.items.filter((i) => i.spec_id === spec.id);
                 if (mine.length === 0) continue;
                 // EVERY item of this spec is one full session of the round,
-                // so a 3-part OA spec means a 3-part SET per item. Named
-                // problems land in the FIRST item's set; later items are
-                // all-auto. `bound` accumulates so no slug repeats across
-                // the queue.
-                const named: import('./lc-source.js').LcIndexEntry[] = [];
-                for (const ref of namedBySpec.get(spec.id) ?? []) {
-                  const hit = resolveProblemRef(ref, index);
-                  if (hit && !blocked.has(hit.slug) && !bound.has(hit.slug) && lc.eligibleForSourcing(hit)) named.push(hit);
-                }
-                const count = Math.min(
-                  Math.max(partCountBySpec.get(spec.id) ?? named.length, named.length, 1),
-                  spec.check.max_source_files ?? 4,
-                  4,
-                );
+                // so a 3-part OA spec means a 3-part SET per item — size is
+                // computed ONCE per spec. Named problems land in the FIRST
+                // item's set; later items are all-auto. `bound` accumulates
+                // so no slug repeats across the queue (it gates named refs
+                // AND auto picks; the recency window gates picks only).
+                const named = resolveNamedRefs(namedBySpec.get(spec.id) ?? [], {
+                  index,
+                  blocked,
+                  excludeSlugs: bound,
+                });
+                const count = sourceSetSize(partCountBySpec.get(spec.id), named.length, spec);
                 mine.forEach((item, itemIdx) => {
-                  const set = buildSourceSet({
+                  const { binding, boundSlugs } = composeSourceBinding({
                     index,
                     named: itemIdx === 0 ? named : [],
                     count,
@@ -2250,16 +3194,9 @@ export function runApp(cfg: AppConfig): http.Server {
                     ]),
                     seed: `${t.id}:${spec.id}:${item.id}`,
                   });
-                  if (set.length === 0) return;
-                  for (const x of set) bound.add(x.entry.slug);
-                  const toPart = (x: (typeof set)[number]) => ({
-                    slug: x.entry.slug, title: x.entry.title, difficulty: x.entry.difficulty, picked_by: x.picked_by,
-                  });
-                  item.source = {
-                    kind: 'leetcode',
-                    ...toPart(set[0]!),
-                    ...(set.length > 1 ? { parts: set.map(toPart) } : {}),
-                  };
+                  if (!binding) return;
+                  for (const s of boundSlugs) bound.add(s);
+                  item.source = binding;
                 });
               }
             }
@@ -2436,6 +3373,13 @@ export function runApp(cfg: AppConfig): http.Server {
         return json(200, { ok: true, record });
       }
       if (url === '/api/rebuild' && req.method === 'POST') {
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         // A stale READY item: built under a superseded shape, never
         // launched — no candidate work exists in it, so regenerating in
         // place is safe. The dir is wiped so the old .validated marker
@@ -2471,6 +3415,13 @@ export function runApp(cfg: AppConfig): http.Server {
         return json(200, { ok: true });
       }
       if (url === '/api/generate' && req.method === 'POST') {
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
         if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
@@ -2494,6 +3445,13 @@ export function runApp(cfg: AppConfig): http.Server {
         return json(200, { ok: true });
       }
       if (url === '/api/retry' && req.method === 'POST') {
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
         if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
@@ -2510,7 +3468,16 @@ export function runApp(cfg: AppConfig): http.Server {
         if (gm && pidAlive(gm.pid)) {
           return json(409, { error: 'that generation is actually still running — give it a minute' });
         }
-        rmSync(path.join(dir, '.failed'), { force: true });
+        // Manual retry honors the global slot it used to skip (2026-08-15
+        // audit); admission stays un-rechecked — a retry is not a second
+        // spend decision. Rotation + wipe match the automatic retry: every
+        // attempt's evidence survives, and the generator's "empty-ish dir"
+        // contract holds (blueprint and archives live outside the dir).
+        if (countLiveBuilds() >= cfg.pub.caps.maxConcurrentBuilds) {
+          return json(409, { error: "someone else's round is generating — builds run one at a time in the beta; try again in ~5 minutes" });
+        }
+        rotateBuildLog(dir);
+        rmSync(dir, { recursive: true, force: true });
         item.status = 'generating';
         saveQueue(repoRoot, q);
         console.log(`[app] retrying generation for ${t.id}/${item.id}`);
@@ -2519,7 +3486,9 @@ export function runApp(cfg: AppConfig): http.Server {
       }
       if (url === '/api/skip' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string };
-        const q = b.target_id ? loadQueue(repoRoot, b.target_id) : null;
+        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
+        const q = t ? loadQueue(repoRoot, t.id) : null;
         const item = q?.items.find((i) => i.id === b.item_id);
         if (!q || !item) return json(404, { error: 'no such item' });
         item.status = 'skipped';
@@ -2528,14 +3497,28 @@ export function runApp(cfg: AppConfig): http.Server {
       }
       if (url === '/api/launch' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { target_id?: string; item_id?: string; origin?: string };
-        const q = b.target_id ? loadQueue(repoRoot, b.target_id) : null;
+        // Ownership before readiness: without it any signed-in user who knew
+        // a target id could consume someone else's ready round — .used
+        // written, graded into the LAUNCHER's gap graph (2026-08-15 QA).
+        const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
+        if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
+        const q = t ? loadQueue(repoRoot, t.id) : null;
         const item = q?.items.find((i) => i.id === b.item_id);
         if (!q || !item?.problem_dir || item.status !== 'ready') {
           return json(400, { error: 'item is not ready' });
         }
+        // WTP gate, above the mode fork. After the readiness check so a
+        // not-ready item still reports that rather than a price.
+        {
+          const g = gateFor('rounds');
+          if (g) {
+            const out = refuse(g);
+            return json(out.code, out.body);
+          }
+        }
         if (cfg.pub.multiSession) {
           const out = await multiLaunch({ id: user!.id, admin: user!.admin }, item.problem_dir);
-          if (out.code === 200) logLaunch(b.origin, String(out.body.session_id));
+          if (out.code === 200) logLaunch(b.origin, String(out.body.session_id), user!.id);
           return json(out.code, out.body);
         }
         const probe = await probeSession(cfg.sessionPort);
@@ -2557,7 +3540,7 @@ export function runApp(cfg: AppConfig): http.Server {
           }
         }
         const sessionId = `sess-${Date.now()}`;
-        logLaunch(b.origin, sessionId);
+        logLaunch(b.origin, sessionId, user!.id);
         // IP_PREPARE_NEXT=0: the queue drives generation now; the legacy
         // post-session prepare would write into the generic pool nobody is
         // drawing from in queue mode.
@@ -2601,6 +3584,19 @@ export function runApp(cfg: AppConfig): http.Server {
           if (!mine) return json(404, { error: 'no live session of yours to end' });
           const rr = await postSession(mine.port, '/api/abandon');
           if (!rr.ok) return json(502, { error: 'the session did not respond — it may already be gone' });
+          // Stamp ended_at NOW: the sweep reads "dropped with no ended_at"
+          // as round_crashed, and abandoning is a choice, not a crash. The
+          // abandoned process exits without ever answering another probe,
+          // so nothing else would stamp it.
+          try {
+            const reg2 = loadRegistry(repoRoot);
+            const hit = reg2.entries.find((e) => e.sid === mine.sid);
+            if (hit && hit.ended_at === undefined) {
+              hit.ended_at = Date.now();
+              saveRegistry(repoRoot, reg2);
+            }
+          } catch { /* worst case: one abandon miscounts as a crash */ }
+          ph.capture(user!.id, 'round_abandoned', { session_id: mine.sid });
           return json(200, { ok: true });
         }
         const owner = await probeSessionOwner(cfg.sessionPort);
@@ -2609,11 +3605,23 @@ export function runApp(cfg: AppConfig): http.Server {
         }
         const r = await postSession(cfg.sessionPort, '/api/abandon');
         if (!r.ok) return json(502, { error: 'no session responded — it may already be gone' });
+        ph.capture(user!.id, 'round_abandoned', {});
         return json(200, { ok: true });
       }
       res.writeHead(404);
       return res.end('not found');
     } catch (e) {
+      // Mirrored to PostHog error tracking before the 500. capture() is
+      // contractually incapable of throwing (posthog.test.ts), and the belt
+      // matters here specifically: a throw inside this catch would swallow
+      // the 500 and hang the request. distinct_id 'server' — the resolved
+      // user is scoped inside the try and may not exist at throw time.
+      try {
+        ph.capture('server', '$exception', {
+          $exception_list: [{ type: 'Error', value: String(e).slice(0, 300) }],
+          url,
+        });
+      } catch { /* never — but this response MUST go out */ }
       return json(500, { error: String(e).slice(0, 300) });
     }
   });
@@ -2634,14 +3642,30 @@ export function runApp(cfg: AppConfig): http.Server {
             const pr = await probeSession(e.port);
             probes.set(e.sid, { reachable: pr.reachable, ended: pr.ended, session_id: pr.session_id });
           }));
-          applySessionSweep(
-            planSessionSweep(reg.entries, probes, pidAlive, listSessionContainers(), Date.now()),
-            {
-              root: repoRoot,
-              save: (entries) => saveRegistry(repoRoot, { entries }),
-              postShutdown: (port) => postSession(port, '/api/shutdown'),
-            },
-          );
+          const plan = planSessionSweep(reg.entries, probes, pidAlive, listSessionContainers(), Date.now());
+          // round_crashed — the record that exists nowhere else: a crashed
+          // session leaves a trace with a session_start and no session_end,
+          // and NOTHING says so. rm-container fires exactly for dropped
+          // registry entries; dropped with ended_at unset = died without
+          // its lifecycle. (A graded round stamps ended_at via its probe; an
+          // abandoned one is stamped by /api/session-kill below — so neither
+          // is miscounted here.) Emitted before apply: the sweep is about to
+          // erase the entry this reads.
+          for (const a of plan) {
+            if (a.kind !== 'rm-container') continue;
+            const dead = reg.entries.find((x) => x.sid === a.sid);
+            if (dead && dead.ended_at === undefined) {
+              ph.capture(dead.user_id, 'round_crashed', {
+                session_id: dead.sid,
+                age_ms: Date.now() - dead.started_at,
+              });
+            }
+          }
+          applySessionSweep(plan, {
+            root: repoRoot,
+            save: (entries) => saveRegistry(repoRoot, { entries }),
+            postShutdown: (port) => postSession(port, '/api/shutdown'),
+          });
         } catch (e) {
           console.warn(`[sweep] session sweep failed: ${String(e).slice(0, 160)}`);
         }
@@ -2665,6 +3689,31 @@ export function runApp(cfg: AppConfig): http.Server {
   // IP_APP_BIND=127.0.0.1 in the beta: the tunnel is the only ingress to the
   // app. (The SESSION server must stay on all interfaces — the container's
   // trace WS dials the docker gateway IP, never loopback.)
+  // The gate advertises a price from IP_PAYWALL_PRICE_USD while Stripe charges
+  // whatever STRIPE_PRICE_ID actually costs. If those drift the product lies
+  // about its own price to the person about to pay it — worse than any bug in
+  // here. Read the real amount once at boot and let it win; the env value
+  // stays as the fallback for a box that cannot reach Stripe.
+  if (cfg.pub.stripe) {
+    void (async () => {
+      try {
+        const stripe = await stripeClient(cfg.pub.stripe!.apiKey);
+        const price = await stripe.prices.retrieve(cfg.pub.stripe!.priceId);
+        if (typeof price.unit_amount === 'number') {
+          const real = Math.round(price.unit_amount / 100);
+          if (real !== cfg.pub.paywall.priceUsd) {
+            console.warn(
+              `[billing] IP_PAYWALL_PRICE_USD says $${cfg.pub.paywall.priceUsd} but ` +
+                `${cfg.pub.stripe!.priceId} charges $${real} — using $${real}`,
+            );
+            cfg.pub.paywall.priceUsd = real;
+          }
+        }
+      } catch (e) {
+        console.warn('[billing] could not read the Stripe price:', String(e).slice(0, 160));
+      }
+    })();
+  }
   const announce = () => {
     console.log(`[app] open ${cfg.pub.appPublicUrl}/`);
   };

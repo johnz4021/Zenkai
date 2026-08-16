@@ -25,6 +25,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import path from 'node:path';
 import type { RoundSpec } from '@interview-prep/shared';
 import { deriveMemoryTags, validateRoundSpec } from '@interview-prep/shared';
+import { coerceTask } from './blueprint.js';
 
 export interface Target {
   id: string;
@@ -155,8 +156,11 @@ export interface SpecDraft {
   part_count?: number;
   /** Set by the route after mechanical resolution/auto-pick — the binding
    *  the confirm screen displays and the start call commits. Top-level =
-   *  part 1; `parts` present only for sets of >=2. */
+   *  part 1; `parts` present only for sets of >=2. Carries the same kinded
+   *  shape queue items store (lc-bind.ts SourceBinding) since the binder
+   *  unification; the client reads only slug/parts. */
   source?: {
+    kind?: 'leetcode';
     slug: string; title: string; difficulty: 'easy' | 'medium' | 'hard'; picked_by: 'user' | 'auto';
     parts?: { slug: string; title: string; difficulty: 'easy' | 'medium' | 'hard'; picked_by: 'user' | 'auto' }[];
   };
@@ -230,6 +234,10 @@ export interface DraftToolOutput {
   surface?: RoundSpec['capabilities']['surface'];
   check_kind: RoundSpec['check']['kind'];
   max_source_files?: number;
+  /** Suite-size floor scaled to the round's scope; omit when unsignaled. */
+  min_tests?: number;
+  /** The task hypothesis (ROUND_TASKS vocabulary); omit when unsayable. */
+  task?: string;
   emphasis?: string;
   /** ISO date this round happens, ONLY when the material states it. */
   date?: string;
@@ -268,6 +276,12 @@ export function draftToSpec(out: DraftToolOutput): SpecDraft {
   };
   const emphasis = asText(out.emphasis);
   const maxFiles = Number(out.max_source_files);
+  // min_tests finally has a producer (2026-08-15): the field's validators,
+  // prompt interpolation, and case selection were all wired with nothing
+  // emitting it, so every round rode the hardcoded 8/5 floors regardless of
+  // scope. Same pass-through shape as max_source_files; the round-spec gate
+  // rules on it.
+  const minTests = Number(out.min_tests);
   const date = asText(out.date);
   const spec: RoundSpec = {
     id: slugify(asText(out.id) || asText(out.label)),
@@ -276,6 +290,7 @@ export function draftToSpec(out: DraftToolOutput): SpecDraft {
     check: {
       kind: out.check_kind,
       ...(Number.isInteger(maxFiles) && maxFiles >= 1 ? { max_source_files: maxFiles } : {}),
+      ...(Number.isInteger(minTests) && minTests >= 1 ? { min_tests: minTests } : {}),
     },
     memory_tags: deriveMemoryTags(capabilities),
     ...(emphasis ? { emphasis } : {}),
@@ -297,10 +312,18 @@ export function draftToSpec(out: DraftToolOutput): SpecDraft {
       throw new Error(`inferred spec failed the vocabulary gate: ${failures.join('; ')}`);
     }
   }
+  // The task hypothesis rides EVERY door through this one seam (2026-08-15):
+  // the wizard and planner used to drop it, sending their LLD OAs to the
+  // algorithmic skeleton via deriveTaskFromSpec's documented blind spot —
+  // and the binder's eligibility fallback with it. Same never-sink coherence
+  // gate as the practice door (blueprint.ts coerceTask); practice-clarify
+  // re-coerces with its own evidence bookkeeping, which harmlessly repeats.
+  const rawTask = asText((out as { task?: unknown }).task);
   return {
     spec,
     rationale: asText(out.rationale),
     ...(unsupported ? { unsupported } : {}),
+    ...(rawTask && !unsupported ? { task: coerceTask(rawTask, spec).task } : {}),
   };
 }
 
@@ -334,7 +357,7 @@ export function claudePSpecInferrer(templatePath: string, model = 'sonnet'): Spe
     new Promise<SpecDraft>((resolve, reject) => {
       const prompt =
         buildInferencePrompt(templatePath, description, context) +
-        '\n\nReply with ONLY a JSON object with keys: id, label, interviewer, can_run_tests, time_limit_minutes (number or null), starts_from, submit, check_kind, emphasis, rationale, unsupported.';
+        '\n\nReply with ONLY a JSON object with keys: id, label, interviewer, can_run_tests, time_limit_minutes (number or null), starts_from, submit, check_kind, min_tests (omit when unsignaled), task (omit when the material cannot say), emphasis, rationale, unsupported.';
       const child = spawn('claude', ['-p', prompt, '--output-format', 'text', '--model', model], {
         stdio: ['ignore', 'pipe', 'pipe'],
       });

@@ -262,10 +262,11 @@ export function activate(context: vscode.ExtensionContext): void {
     });
   };
 
-  // IP_CAN_RUN_TESTS=0: the round's spec says the suite is not an iteration
-  // tool here (no-run rounds; one-shot rounds grade server-side at submit).
-  // The affordance is ABSENT, not disabled — a greyed-out button reads as
-  // broken, an absent one reads as the rules.
+  // IP_CAN_RUN_TESTS=0: the round's spec says nothing runs here at all
+  // (can_run_tests:false — since the 2026-08-15 un-conflation one-shot
+  // rounds run freely and grade server-side at submit). The affordance is
+  // ABSENT, not disabled — a greyed-out button reads as broken, an absent
+  // one reads as the rules.
   const canRunTests = process.env.IP_CAN_RUN_TESTS !== '0';
   // The editor-title Run button (manifest.mjs menus contribution) is gated
   // by this context key — manifest `when` clauses cannot read env. Same

@@ -15,8 +15,19 @@ import { spawn } from 'node:child_process';
 import { childEnv } from './child-env.js';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { RoundSpec } from '@interview-prep/shared';
 import { DEFAULT_DEBUGGING_SPEC } from '@interview-prep/shared';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(here, '..', '..');
+
+/** The real validator, runnable from inside the agent's cwd. Substituted
+ *  into both prompts so the gate of record is part of the agent's loop
+ *  (self-heal layer 2a, 2026-08-15): the post-exit validateProblem stays
+ *  the authoritative ruling — this is advisory convergence, and an agent
+ *  "gaming" it can only make the artifact conform. */
+export const VALIDATE_CMD = `npx tsx ${path.join(repoRoot, 'server', 'src', 'cli.ts')} validate .`;
 
 /**
  * Per-check-kind mechanical requirements, selected in code — the generator
@@ -35,12 +46,21 @@ export function checkRequirements(check: RoundSpec['check']): string {
   const maxFiles = check.max_source_files
     ? `\n   - At most ${check.max_source_files} source file${check.max_source_files === 1 ? '' : 's'} (tests excluded) — the validator counts them and rejects more.`
     : '';
+  // Shared across ALL check kinds (2026-08-15): this line lived only in the
+  // debugging block, and the audit's correlation was exact — every round
+  // kind that never saw it shipped prose-bloated scaffolds (the limit case:
+  // 105 docstring lines, 0 code lines), while every round kind that did
+  // stayed ≤0.19 comment-to-code. Same interpolated-fragment pattern as
+  // maxFiles above.
+  const codeStyle = `\n   - Written like production code by a competent team: consistent style, no
+     tutorial comments, realistic naming. No banner comments, no ASCII
+     diagrams, no narrative backstory in headers. Docstrings are ONE line
+     naming the behavior — the statement and the tests carry the contract;
+     never restate it in source files.`;
   const blocks: Record<RoundSpec['check']['kind'], string> = {
     one_failing_test: `1. A realistic module set for the round's domain, sized per the round
    description above. Pure logic + in-memory state. No HTTP server, no
-   database, no external services.${maxFiles}
-   - Written like production code by a competent team: consistent style, no
-     tutorial comments, realistic naming.
+   database, no external services.${maxFiles}${codeStyle}
 2. A behavioral test suite with at least ${check.min_tests ?? 8} tests describing real behavior
    ("reserving more units than available rejects"), not implementation details.
 3. Plant EXACTLY ONE subtle bug in the source.
@@ -63,11 +83,11 @@ Self-verification (do this before you finish — it is the whole point):
 - If anything is off, fix the problem set and re-verify.`,
 
     all_failing: `1. A build-from-scratch task: a scaffold (function/class signatures with
-   docstrings or interface stubs, raising/throwing "not implemented") plus a VISIBLE
-   behavioral test suite the candidate implements against.
+   one-line docstrings or interface stubs, raising/throwing "not implemented") plus a
+   VISIBLE behavioral test suite the candidate implements against.
    - The suite IS the spec made precise: name tests after behaviors, cover the core
      path, the rejection paths, and at least two edge cases.
-   - Scope the work to fit the round's time limit for a strong college senior.${maxFiles}
+   - Scope the work to fit the round's time limit for a strong college senior.${maxFiles}${codeStyle}
 2. At least ${check.min_tests ?? 5} tests (more is better).
 3. EVERY test must fail on the untouched scaffold — the candidate starts from zero.
    No hidden tests: what they see is what grades them.
@@ -79,7 +99,7 @@ Self-verification (do this before you finish — it is the whole point):
   would pass against it, then make sure no trace of it remains in the repo.`,
 
     all_passing: `1. An existing, working module set relevant to the round, with a green
-   behavioral test suite (at least ${check.min_tests ?? 5} tests).${maxFiles}
+   behavioral test suite (at least ${check.min_tests ?? 5} tests).${maxFiles}${codeStyle}
 2. The candidate's task (stated in the manifest spec) is to EXTEND or REFACTOR —
    the repo must be green before their work starts, and the spec must say clearly
    what "done" looks like.
@@ -89,7 +109,7 @@ Self-verification: run the suite; every test passes on the repo as shipped.`,
 
     diff_present: `1. A base module set plus a CHANGE to review: the changed files listed in
    the round spec's check.files_changed must exist and contain a realistic diff-worth
-   of modifications (a mix of sound decisions and 2-4 genuine defects worth catching).
+   of modifications (a mix of sound decisions and 2-4 genuine defects worth catching).${codeStyle}
 2. Include a REVIEW.md template the candidate writes their review into.
 3. The manifest spec describes what the change claims to do; the defects must be
    discoverable by reading, not by running.`,
@@ -128,32 +148,51 @@ export interface GenerateResult {
   stderr: string;
 }
 
-export async function generateProblem(opts: GenerateOptions): Promise<GenerateResult> {
-  const template = await readFile(opts.templatePath, 'utf8');
-  const spec = opts.spec ?? DEFAULT_DEBUGGING_SPEC;
-  const prompt = template
-    .replace(/\{\{ROUND_BRIEF\}\}/g, opts.brief)
-    .replace(/\{\{SOURCE_BLOCK\}\}/g, opts.sourceBlock ?? '')
-    .replace(/\{\{CHECK_REQUIREMENTS\}\}/g, checkRequirements(spec.check))
-    .replace(/\{\{ROUND_SPEC_JSON\}\}/g, JSON.stringify(spec))
-    .replace(/\{\{TARGET_NOTE\}\}/g, opts.targetNote ?? '');
+/**
+ * The in-band failure `--output-format json` reports even on exit 0 —
+ * claude -p exits 0 on error_max_turns, and `ok: code === 0` masked it: a
+ * sourced build burned its whole 40-turn budget without writing a single
+ * file, reported ok, and the payload carrying the real cause (subtype,
+ * is_error, num_turns) was discarded because generateInto only prints it
+ * on !ok (zenkai.run 2026-08-15, amazon item-1 — "problem.json missing"
+ * was the validator meeting an empty dir, not the failure). Unparseable
+ * stdout is NOT a failure here: older CLI output shapes fall through to
+ * the validator, which rules on the artifact. Pure; exported for tests.
+ */
+export function inBandFailure(stdout: string): string | null {
+  try {
+    const p = JSON.parse(stdout) as { is_error?: boolean; subtype?: string; num_turns?: number };
+    if (p.is_error) return `is_error (subtype: ${p.subtype ?? 'unknown'}, turns: ${p.num_turns ?? '?'})`;
+    if (typeof p.subtype === 'string' && p.subtype !== 'success') {
+      return `subtype ${p.subtype} (turns: ${p.num_turns ?? '?'})`;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
-  await mkdir(opts.targetDir, { recursive: true });
-
+/** The shared agentic spawn — one argv shape for the generator and the
+ *  repair pass, so inBandFailure visibility and the artifact-decides
+ *  doctrine apply to both. */
+function runClaudeAgent(
+  prompt: string,
+  run: { cwd: string; model?: string; maxTurns: number; timeoutMs: number },
+): Promise<GenerateResult> {
   const args = [
     '-p', prompt,
     '--output-format', 'json',
     // The target dir is dedicated and disposable; the agent must be able to
     // write files and run npm without interactive permission prompts.
     '--permission-mode', 'bypassPermissions',
-    '--max-turns', String(opts.maxTurns ?? 80),
+    '--max-turns', String(run.maxTurns),
   ];
-  if (opts.model) args.push('--model', opts.model);
+  if (run.model) args.push('--model', run.model);
 
   const started = Date.now();
   return new Promise<GenerateResult>((resolve) => {
     const child = spawn('claude', args, {
-      cwd: path.resolve(opts.targetDir),
+      cwd: path.resolve(run.cwd),
       // WU8: the agent needs the Anthropic key; it never needs voice or DB
       // credentials, and its brief now carries stranger-authored prose.
       env: childEnv('generator', process.env),
@@ -165,20 +204,19 @@ export async function generateProblem(opts: GenerateOptions): Promise<GenerateRe
     child.stdout.on('data', (d) => (stdout += d));
     child.stderr.on('data', (d) => (stderr += d));
 
-    // 8 minutes was calibrated for a single-module debugging round (~5 min,
-    // per CLAUDE.md). A multi-part OA is roughly triple the work — three
-    // implementation files plus three suites — and two of them died at
-    // EXACTLY 480s with SIGTERM, one of them holding a complete, validating
-    // problem (2026-08-12). Sourced LC builds keep their own tighter 5-min
-    // budget from cli.ts: those are a transform, not invention.
     const timeout = setTimeout(() => {
       child.kill('SIGTERM');
-    }, opts.timeoutMs ?? 15 * 60_000);
+    }, run.timeoutMs);
 
     child.on('close', (code) => {
       clearTimeout(timeout);
+      // A clean exit still fails when the payload says so — the artifact
+      // remains the final judge (generateInto falls through to the
+      // validator either way); !ok's job is making the payload VISIBLE.
+      const inBand = code === 0 ? inBandFailure(stdout) : null;
+      if (inBand) console.error(`[generate] claude -p reported in-band failure: ${inBand}`);
       resolve({
-        ok: code === 0,
+        ok: code === 0 && inBand === null,
         exitCode: code,
         durationMs: Date.now() - started,
         stdout,
@@ -195,5 +233,81 @@ export async function generateProblem(opts: GenerateOptions): Promise<GenerateRe
         stderr: String(err),
       });
     });
+  });
+}
+
+export async function generateProblem(opts: GenerateOptions): Promise<GenerateResult> {
+  const template = await readFile(opts.templatePath, 'utf8');
+  const spec = opts.spec ?? DEFAULT_DEBUGGING_SPEC;
+  const prompt = template
+    .replace(/\{\{ROUND_BRIEF\}\}/g, opts.brief)
+    .replace(/\{\{SOURCE_BLOCK\}\}/g, opts.sourceBlock ?? '')
+    .replace(/\{\{CHECK_REQUIREMENTS\}\}/g, checkRequirements(spec.check))
+    .replace(/\{\{ROUND_SPEC_JSON\}\}/g, JSON.stringify(spec))
+    .replace(/\{\{TARGET_NOTE\}\}/g, opts.targetNote ?? '')
+    .replace(/\{\{VALIDATE_CMD\}\}/g, VALIDATE_CMD);
+
+  await mkdir(opts.targetDir, { recursive: true });
+
+  // 8 minutes was calibrated for a single-module debugging round (~5 min,
+  // per CLAUDE.md). A multi-part OA is roughly triple the work — three
+  // implementation files plus three suites — and two of them died at
+  // EXACTLY 480s with SIGTERM, one of them holding a complete, validating
+  // problem (2026-08-12). Sourced LC builds keep their own tighter 5-min
+  // budget from cli.ts: those are a transform, not invention.
+  return runClaudeAgent(prompt, {
+    cwd: opts.targetDir,
+    model: opts.model,
+    maxTurns: opts.maxTurns ?? 80,
+    timeoutMs: opts.timeoutMs ?? 15 * 60_000,
+  });
+}
+
+/** Build the repair prompt — pure and exported so the substitution is
+ *  testable without a spawn. */
+export function buildRepairPrompt(
+  template: string,
+  inp: { failures: string[]; spec: RoundSpec; sourced: boolean },
+): string {
+  return template
+    .replace(/\{\{FAILURES\}\}/g, inp.failures.map((f) => `- ${f}`).join('\n'))
+    .replace(/\{\{ROUND_SPEC_JSON\}\}/g, JSON.stringify(inp.spec))
+    .replace(/\{\{CHECK_REQUIREMENTS\}\}/g, checkRequirements(inp.spec.check))
+    .replace(
+      /\{\{SOURCED_NOTE\}\}/g,
+      inp.sourced
+        ? 'This is a DATASET-SOURCED round: tests/ and cases files are re-emitted deterministically after you finish — fix ONLY solution files and problem.json, never the tests.'
+        : '',
+    )
+    .replace(/\{\{VALIDATE_CMD\}\}/g, VALIDATE_CMD);
+}
+
+/**
+ * The repair pass (self-heal layer 2b, 2026-08-15): error-as-context, the
+ * mechanism Claude Code itself heals by — the validator's exact failure
+ * lines become the prompt, the agent fixes in place, and the authoritative
+ * re-validation still rules afterward. Cheap on purpose (sonnet, 15 turns,
+ * 3 minutes): this is a fix task, not invention. judge.ts's retry doctrine
+ * applies — every validator class is a stochastic sample, so a named-error
+ * fix converges where a blind re-roll only re-rolls the dice.
+ */
+export async function repairProblem(opts: {
+  targetDir: string;
+  failures: string[];
+  spec?: RoundSpec;
+  sourced?: boolean;
+  templatePath: string;
+}): Promise<GenerateResult> {
+  const template = await readFile(opts.templatePath, 'utf8');
+  const prompt = buildRepairPrompt(template, {
+    failures: opts.failures,
+    spec: opts.spec ?? DEFAULT_DEBUGGING_SPEC,
+    sourced: opts.sourced ?? false,
+  });
+  return runClaudeAgent(prompt, {
+    cwd: opts.targetDir,
+    model: 'sonnet',
+    maxTurns: 15,
+    timeoutMs: 3 * 60_000,
   });
 }

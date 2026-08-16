@@ -23,21 +23,30 @@ import path from 'node:path';
 import httpProxy from 'http-proxy';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
-import { isFailingRun, resolveRoundSpec, resolveSurface } from '@interview-prep/shared';
+import { isFailingRun, resolveRoundSpec, resolveSurface, validateRoundSpec } from '@interview-prep/shared';
 import { makeAuth } from './auth.js';
 import { childEnv } from './child-env.js';
-import { judgeSession } from './judge.js';
+import { clampSilentDimensions, judgeSession } from './judge.js';
 import { buildAssessmentCard, mergeConfirm } from './feedback.js';
 import { buildGraphView, buildTargetNote, isMemorableSessionId, loadStore, recordAssessment, saveStore } from './gap-graph.js';
 import { attemptsFromSession, recordTopicAttempts } from './topic-graph.js';
 import { clientScript, sessionPage } from './chrome.js';
+import {
+  isPosthogAssetUrl,
+  makePh,
+  posthogAssetFile,
+  posthogAssetPath,
+  posthogAssetVersion,
+  posthogConfigFromEnv,
+  posthogSnippet,
+} from './posthog.js';
 import { injectWorkbenchDefaults } from './workbench-inject.js';
 import { describeStuck, detectStuck, type StuckState } from './stuck.js';
 import { describeAdrift, describeWarm, detectAdrift, regionContainsAnswer } from './adrift.js';
 import { assessAgenda, renderAgenda } from './agenda.js';
 import { CLOSING_TOPIC, WRAP_UP_QUESTIONS, detectWrapSignal, renderWrapState, selectWrapTopic } from './wrapup.js';
 import { isModelPath, listWorkspaceFiles, parseRunCounts, runGuard, safeWorkspacePath, shadowsTestRunner, summarizeTail } from './panes.js';
-import { isCorrectionFollowUp, isExplicitAsk } from './addressing.js';
+import { isAnswerToPendingQuestion, isCorrectionFollowUp, isExplicitAsk } from './addressing.js';
 import { decideAck } from './ack.js';
 import { renderWorkspaceView, selectRecentlyEdited, snapshotWorkspace } from './workspace-view.js';
 import { codebaseViewOf, focusViewOf, namedOutOfContextFiles, toRel } from './problem-view.js';
@@ -46,9 +55,9 @@ import { extractSection, loadBlueprint } from './blueprint.js';
 import { TraceStore } from './trace-store.js';
 import {
   TurnQueue,
-  bugContext,
   buildTranscript,
   candidateVisitedBugFile,
+  interviewerGroundTruth,
   pickIntentCheck,
   pickInterviewer,
   renderActivity,
@@ -91,8 +100,23 @@ export interface SessionConfig {
   onReady?: () => void;
 }
 
-/** Nominal round length — what the interviewer's time pressure counts down. */
-const SESSION_LENGTH_MS = 45 * 60_000;
+/**
+ * What the interviewer is told about the clock. `null` = untimed, all the
+ * way to the prompt.
+ *
+ * It used to be `caps.time_limit_ms ?? SESSION_LENGTH_MS` — a nominal 45
+ * minutes substituted for a missing limit — and the number rode into the
+ * prompt as fact: sess-qa813-panesint-b opened "…and you've got 45 minutes"
+ * on a round whose spec says `time_limit_ms: null`, while the candidate's
+ * own header clock (chrome.ts emits `data-limit` only when timed) counted
+ * UP with no deadline. `time_limit_ms: null` is the DEFAULT_SPEC shape, so
+ * that was most rounds. Rendering 0 instead would be WORSE — "Remaining:
+ * 0 min" reads as "time is up" — so the untimed case is stated positively
+ * in the prompt (round-rules.ts timeRules), never as a number. Pure.
+ */
+export function remainingMsFor(limitMs: number | null, elapsedMs: number): number | null {
+  return limitMs === null ? null : limitMs - elapsedMs;
+}
 /**
  * Initiative clocks (sess-1786220758002 redesign). The old single clock —
  * "5 minutes since ANY spoken turn" — meant every reply reset the initiative
@@ -264,6 +288,41 @@ function hasFailingRun(events: TraceEvent[]): boolean {
   return events.some(isFailingRun);
 }
 
+/** How long silent reading counts as "not underway yet" before the round is
+ *  underway regardless — someone can study a one-shot statement for a while,
+ *  but three minutes in, the interview has started whether or not anything
+ *  ran. */
+export const UNDERWAY_FLOOR_MS = 3 * 60_000;
+
+/**
+ * Is the round genuinely underway — should the interviewer take initiative?
+ *
+ * This used to be `hasFailingRun` alone, which is right for a debugging
+ * round (the kickoff autorun makes it true in the first seconds) and wrong
+ * for every other shape: a no-run round produces no test_run at all, an
+ * all_passing round starts green, and (pre-un-conflation, 2026-08-15)
+ * one-shot rounds could not run either — they now can, but a candidate who
+ * simply hasn't run yet must still count as underway.
+ * QA 2026-08-14 measured the result — on 6 of 8 shipped rounds the entire
+ * unprompted interviewer (pressure, moments, stuck, adrift, wrap-up, even
+ * the acks) was unreachable for the whole session; the candidate got an
+ * opening turn and replies, nothing else, for 45-90 minutes.
+ *
+ * Underway now means: a failing run happened (the debugging trigger,
+ * unchanged), OR the candidate started working (an edit or save), OR they
+ * have been in the room past the floor — reading IS working on rounds whose
+ * work starts with reading. Pure over the trace, clock injected.
+ */
+export function roundUnderway(
+  events: TraceEvent[],
+  nowMs: number,
+  sessionStartedAt: number,
+): boolean {
+  if (hasFailingRun(events)) return true;
+  if (events.some((e) => e.type === 'edit' || e.type === 'file_save')) return true;
+  return nowMs - sessionStartedAt >= UNDERWAY_FLOOR_MS;
+}
+
 /** Buffer a small GET from the IDE (used only for the workbench boot HTML,
  *  which is a few hundred KB). Rejects on non-200 so the caller falls back
  *  to the transparent proxy. */
@@ -357,6 +416,25 @@ export function traceUpgradeAllowed(reqUrl: string | undefined, expectedToken: s
   return timingSafeEqual(a, b);
 }
 
+/** Voice-off reason, ordered by product truth: a round with nobody listening
+ *  outranks the session flag, which outranks a missing key. 'no_interviewer'
+ *  exists because a live mic on a solo round records a silent room for a
+ *  consumer that does not exist (TODOS #49's phantom "you (voice)" turns) —
+ *  the mic exists iff someone is listening (owner decision 2026-08-15).
+ *  `hasInterviewer` is the RUNTIME handle (caps.interviewer && the model is
+ *  wired), matching what the page itself keys on — an IP_INTERVIEWER=0 run
+ *  has nobody listening either. */
+export function voiceOffReasonFor(
+  hasInterviewer: boolean,
+  voiceFlag: boolean,
+  hasKey: boolean,
+): 'no_interviewer' | 'disabled' | 'no_key' | null {
+  if (!hasInterviewer) return 'no_interviewer';
+  if (!voiceFlag) return 'disabled';
+  if (!hasKey) return 'no_key';
+  return null;
+}
+
 export async function runSession(cfg: SessionConfig): Promise<void> {
   // First statement in the function, on purpose: everything below this line
   // mutates state the running session owns.
@@ -382,6 +460,20 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // The round's shape — everything below renders/enforces from THESE flags,
   // never from a format name (capabilities, not categories).
   const roundSpec = resolveRoundSpec(problem);
+  // Validation ran only at build/intake, never here — so a manifest carrying
+  // an out-of-vocabulary check.kind silently fell through roundRules() to the
+  // DEBUGGING defaults, running "you know where the bug is" rules on a round
+  // with no bug (QA 2026-08-14 audit). A legacy manifest with NO round_spec
+  // still resolves to the default spec above and stays launchable; only an
+  // spec that EXISTS and is invalid refuses to run.
+  if (problem.round_spec) {
+    const specFailures = validateRoundSpec(problem.round_spec);
+    if (specFailures.length > 0) {
+      throw new Error(
+        `problem.json round_spec is invalid — refusing to run a round whose rules would silently default to debugging:\n  - ${specFailures.join('\n  - ')}`,
+      );
+    }
+  }
   const caps = roundSpec.capabilities;
   const surface = resolveSurface(caps);
 
@@ -446,10 +538,10 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     // (learned the hard way). Other check kinds start green or blank — an
     // opening wall of red is noise, not a trigger.
     ...(cfg.autorunTests && roundSpec.check.kind === 'one_failing_test' ? [] : ['-e', 'IP_AUTORUN_TESTS=0']),
-    // No-run rounds and one-shot rounds both hide the Run Tests affordance:
-    // in one case the suite is off-limits, in the other it is not an
-    // iteration tool (it runs once, server-side, at submit).
-    ...(caps.can_run_tests && caps.submit !== 'one_shot' ? [] : ['-e', 'IP_CAN_RUN_TESTS=0']),
+    // can_run_tests ALONE governs the run loop (un-conflation 2026-08-15):
+    // one_shot is the autograding contract — the graded run at Submit —
+    // and a visible suite stays runnable while working, like a real OA.
+    ...(caps.can_run_tests ? [] : ['-e', 'IP_CAN_RUN_TESTS=0']),
     '-v', `${extDist}:/ext`,
     '-v', `${ideDataDir}:/ipdata`,
     '-v', `${cfg.problemDir}:${workspacePath}`,
@@ -463,11 +555,45 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // Derived from the same facts the runtime enforces, so it can never drift
   // into a runner that is not installed.
   const howToRun =
-    caps.submit === 'one_shot'
-      ? 'The suite does NOT run during this round. It runs once, server-side, when they press Submit. There is no run command available to them — say so plainly if asked.'
-      : !caps.can_run_tests
+    !caps.can_run_tests
       ? 'This round does not allow running the suite at all. There is no run command — say so plainly if asked.'
-      : `They press the **Run Tests** button in the session header (top right, above the editor). It runs \`${testCmd}\` in the workspace and shows the output in the ${surface === 'panes' ? 'test results panel below the editor' : "editor's Test Results panel"}. That is the intended path. No other test runner is installed.`;
+      : `They press the **Run Tests** button in the session header (top right, above the editor). It runs \`${testCmd}\` in the workspace and shows the output in the ${surface === 'panes' ? 'test results panel below the editor' : "editor's Test Results panel"}. That is the intended path${surface === 'ide' ? `; running \`${testCmd}\` in the integrated terminal also works and is observed` : ''}.${caps.submit === 'one_shot' ? ' The GRADED run is separate: it happens once, server-side, when they press Submit.' : ''}`;
+
+  // What the agenda may treat as reachable: on a no-run round the suite
+  // cannot run mid-round, so verify/reflect are not-applicable rather than
+  // open gaps (agenda.ts AgendaCaps). One-shot rounds run freely since the
+  // un-conflation (2026-08-15) — only can_run_tests decides.
+  const agendaCaps = { runnable: caps.can_run_tests };
+
+  // The round's mechanics, stated to the interviewer — the axes the prompt
+  // never used to carry (QA 2026-08-14: rules assumed iteration on one-shot
+  // rounds, "Reading their actual work" promised test output that cannot
+  // exist, and nothing named the review round's deliverable). Derived from
+  // the same capabilities the runtime enforces; session-constant → cached.
+  const partCount = problem.source?.parts?.length ?? 0;
+  const roundMechanics = [
+    surface === 'ide'
+      ? 'They work in a full IDE — editor and integrated terminal; terminal test commands are observed.'
+      : 'They work in a lightweight editor with the problem statement docked beside it; there is no terminal.',
+    caps.starts_from === 'blank'
+      ? 'They start from a blank scaffold — the files they create ARE the work.'
+      : caps.starts_from === 'diff'
+        ? 'They are reviewing a change: the diff is the artifact under review, and their WRITTEN review (REVIEW.md) is the deliverable that gets graded. Probe the write-up — coverage, severity calls, evidence — not just the reading.'
+        : 'They work inside an existing repo.',
+    // Two independent axes, two independent sentences (un-conflation
+    // 2026-08-15): the run loop and the grading contract.
+    caps.can_run_tests
+      ? 'They can run the suite anytime and read the results.'
+      : 'Nothing runs in this round at all — never ask whether a change worked or what a run showed; nothing has run.',
+    caps.submit === 'one_shot'
+      ? 'ONE graded submission, at the end, when they press Submit — the authoritative graded run happens there, and there is no iterating after it.'
+      : '',
+    partCount >= 2
+      ? `This is a multi-part set: ${partCount} independent problems (solution_part1 … solution_part${partCount}). Track which part they are on from their activity; progress on one part says nothing about the others.`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   // What a strong candidate does in THIS round — the judge's own grading
   // dimensions, finally shared with the interviewer (the rubric-blind
@@ -497,6 +623,31 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // the vitest testCmd default makes about problem dirs).
   const monacoRoot = path.join(cfg.repoRoot, 'node_modules', 'monaco-editor', 'min', 'vs');
 
+  // PostHog (posthog.ts) — from env, NOT resolvePublicConfig: a spawned
+  // session deliberately receives a partial Supabase config (no service key,
+  // WU8) and the all-or-nothing rule there would throw. child-env passes the
+  // IP_POSTHOG_* trio to session children; unset = all of this is inert.
+  const phCfg = posthogConfigFromEnv(process.env);
+  const phSession = makePh(phCfg);
+  const phAsset = phCfg ? posthogAssetFile(cfg.repoRoot) : null;
+  // The round page's replay boundary. Default: the ROUND INTERIOR is blocked
+  // — the IDE iframe (same-origin, so rrweb WOULD record into it), the
+  // Monaco pane, the transcript, the test output. Two reasons, both real:
+  // rrweb serializes DOM mutations on the main thread and a VS Code
+  // workbench is the heaviest mutation source there is, on the page that
+  // also runs the timer, voice and the trace WS; and the intro copy above
+  // PROMISES "other terminal commands are not observed". IP_POSTHOG_
+  // REPLAY_ROUND=1 lifts the blocks — measure input latency first, and fix
+  // the copy (public-config.ts has the full note).
+  const sessionAnalytics =
+    phCfg && phAsset
+      ? posthogSnippet(phCfg, {
+          assetPath: posthogAssetPath(posthogAssetVersion(cfg.repoRoot)),
+          distinctId: cfg.userId,
+          ...(phCfg.replayRound ? {} : { blockSelector: 'main iframe, #editor, #log, #runout' }),
+        })
+      : '';
+
   // ---- one server: chrome + api + trace ingest + IDE proxy ----
   const proxy = httpProxy.createProxyServer({
     target: `http://127.0.0.1:${cfg.idePort}`,
@@ -521,7 +672,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // is a location signal, and repeating it turns the round into a guided
   // tour. The warm inversion (they are already in the right place) carries
   // no location content and is deliberately not capped by this.
+  // Set when a redirect turn actually SPEAKS — a guard-silenced attempt
+  // retries (the stuckRedactions pattern), with its own 2-strike budget so
+  // a composition the guard keeps rejecting cannot loop all session.
   let adriftFired = false;
+  let adriftRedactions = 0;
   // Wrap-up phase state (I3): set once by detectWrapSignal; questions are
   // counted by wrap turns that actually SPOKE, and after the closing the
   // interviewer goes quiet for good. All verbal — /api/end is untouched.
@@ -529,6 +684,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   let wrapQuestionsAsked = 0;
   let wrapClosed = false;
   let lastWarmTs = 0;
+  // Interviewer health for the chip (owner decision, QA 2026-08-14): a
+  // model-path failure used to be indistinguishable from deliberate silence
+  // — the candidate concluded they were being ignored. Set by the intent
+  // gate's and the turn's failure paths, cleared by the next healthy one.
+  let interviewerFault: 'intent' | 'turn' | null = null;
   // The live extension socket, so the chrome's Run Tests button can reach
   // the IDE's own runner (see /api/ide-run).
   let traceSocket: WebSocket | null = null;
@@ -537,12 +697,29 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   let notifyTurn: () => void = () => {};
 
   // ---- interviewer ----
-  const { bug, bugFile } = bugContext(problem);
+  const { bug, bugFile, hasAnswerKnowledge } = interviewerGroundTruth(problem, roundSpec.check.kind);
   // The stable code context (repo map + the failing test verbatim), computed
   // ONCE: it describes the problem as handed out, so the cached system block
   // stays byte-identical across turns.
   const codebaseView = codebaseViewOf(cfg.problemDir, problem.planted_bug?.failing_test ?? null);
   const workspaceFileList = listWorkspaceFiles(cfg.problemDir);
+  // The grading key can span several files — a review round plants defects
+  // across the diff, and the single bugFile field could only ever guard one
+  // of them (QA 2026-08-14: rep-mst39p35's rollup.py held a planted BLOCKER
+  // and was unguarded). Every workspace file the key's description names is
+  // a never-name location; on a debugging round this also protects sibling
+  // files the description cites as answer context.
+  const bugBase = bugFile.split('/').pop() ?? bugFile;
+  const descText = (problem.planted_bug?.description ?? '').toLowerCase();
+  const extraProtectedFiles = hasAnswerKnowledge
+    ? [
+        ...new Set(
+          workspaceFileList
+            .map((p) => p.split('/').pop() ?? p)
+            .filter((base) => base !== bugBase && descText.includes(base.toLowerCase())),
+        ),
+      ]
+    : [];
   // The spec's interviewer:false (an OA) wins over everything: nobody
   // replies, so the intent check has nothing to route to either. The mic
   // stays live — think-aloud is still judge signal.
@@ -582,7 +759,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           void runInterviewer(null, null, {
             kind: 'opening',
             observation:
-              'The candidate just arrived. Open the round: greet, frame the task from the spec, say how it runs, invite them to begin.',
+              'The candidate just arrived. Open the round per the OPENING rule and this round’s engagement style — if the style prescribes a pre-code segment (e.g. behavioral questions first), begin with that segment instead of framing the task.',
           }),
         );
       }
@@ -591,9 +768,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   let interviewerBusy = false;
 
   // Timed rounds: the spec's limit is BOTH the interviewer's countdown and a
-  // hard cap; untimed rounds keep the nominal 45-minute pressure horizon
-  // with no enforcement (exactly today's behavior).
-  const sessionLengthMs = caps.time_limit_ms ?? SESSION_LENGTH_MS;
+  // hard cap. Untimed rounds have NO horizon at all — no default is
+  // substituted anywhere (remainingMsFor's header has the incident: the old
+  // nominal 45 minutes rode into the prompt as a fact the interviewer told
+  // the candidate). The cap timer below already ran only on timed rounds, so
+  // nothing is un-enforced that was enforced before.
   // Set when the cap is reached. /api/messages carries it so the client can
   // end through the normal path (mic released first); the grace timer below
   // is the fallback for a closed tab — the record must close either way.
@@ -615,10 +794,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // what made a missing credential look like a broken feature. Each cause
   // gets its own name so the chip can say something actionable.
   const elevenKey = process.env.ELEVENLABS_API_KEY ?? process.env.IP_ELEVENLABS_KEY ?? '';
-  const voiceOffReason: 'disabled' | 'no_key' | null =
-    cfg.voice === false ? 'disabled' : elevenKey.length === 0 ? 'no_key' : null;
+  const voiceOffReason = voiceOffReasonFor(interviewer !== null, cfg.voice !== false, elevenKey.length > 0);
   const voiceEnabled = voiceOffReason === null;
-  if (voiceOffReason === 'no_key') {
+  if (voiceOffReason === 'no_interviewer') {
+    console.log('[session] voice OFF — no interviewer this round (the mic exists iff someone is listening)');
+  } else if (voiceOffReason === 'no_key') {
     console.warn(
       '[session] voice OFF — no ELEVENLABS_API_KEY (or IP_ELEVENLABS_KEY) in this process.\n' +
         '          The interviewer still runs, text-only. Put the key in .env at the repo\n' +
@@ -682,10 +862,17 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
   const routeUtterance = (text: string): void => {
     if (!interviewer || !intentCheck || !text.trim() || ended) return;
-    // Deterministic fast path: unambiguous asks and post-answer corrections
-    // never touch the LLM gate — no model call, no latency, no chance of the
-    // "narration" misread that dropped three real asks in one session.
-    if (isExplicitAsk(text) || isCorrectionFollowUp(text, store.readAll(), Date.now())) {
+    // Deterministic fast path: unambiguous asks, post-answer corrections,
+    // and the first words after a pending interviewer question never touch
+    // the LLM gate — no model call, no latency, no chance of the
+    // "narration" misread that dropped three real asks in one session (and
+    // later read a candidate's complete root-cause answer to a direct
+    // instruction as narration — sess-qa814-leak, 190s of silence).
+    if (
+      isExplicitAsk(text) ||
+      isCorrectionFollowUp(text, store.readAll(), Date.now()) ||
+      isAnswerToPendingQuestion(text, store.readAll(), Date.now())
+    ) {
       console.log(`[intent] fast-path ADDRESSED: ${text.slice(0, 80)}`);
       turnQueue.push(text);
       notifyTurn(); // ring the doorbell now so the "…" appears immediately
@@ -714,6 +901,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // "Judged not-addressed" and "check crashed" must never look the
         // same in the log (first live session was undebuggable without this).
         console.log(`[intent] ${addressed ? 'ADDRESSED' : 'narration'}: ${text.slice(0, 80)}`);
+        if (interviewerFault === 'intent') interviewerFault = null; // gate healthy again
         if (!addressed) return; // narration: traced, agent stays silent
         turnQueue.push(text);
         notifyTurn();
@@ -721,6 +909,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       })
       .catch((e) => {
         console.warn(`[intent] check FAILED (staying silent): ${String(e).slice(0, 120)}`);
+        interviewerFault = 'intent';
       });
   };
 
@@ -740,6 +929,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     /** Set on wrap-lane turns: this turn asks the next evaluation question
      *  (or delivers the closing). Bookkeeping happens only if it speaks. */
     wrapTopic: string | null = null,
+    /** describeWarm() output — its own lane, no longer riding the adrift
+     *  slot: the ADRIFT prompt rules instruct a redirect ("say plainly that
+     *  it looks sound — that region is not where the fault is"), the exact
+     *  opposite of what a warm observation means (QA 2026-08-14 audit). */
+    warmObservation: string | null = null,
   ): Promise<void> => {
     if (!interviewer || ended) return;
     if (interviewerBusy) {
@@ -782,9 +976,10 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         bug,
         bugFile,
         howToRun,
+        mechanics: roundMechanics,
         targetNote,
         elapsedMs: now - (sessionStartedAt ?? now),
-        remainingMs: sessionLengthMs - (now - (sessionStartedAt ?? now)),
+        remainingMs: remainingMsFor(caps.time_limit_ms, now - (sessionStartedAt ?? now)),
         recentActivity: renderActivity(events, now),
         // Real lines only; unheard voice segments collapse to a count line
         // instead of eating window slots as empty candidate turns.
@@ -794,17 +989,38 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // aliased by describeStuck — identity, never file names.
         stuckObservation: stuck ? describeStuck(stuck, now) : null,
         adriftObservation,
-        allowedExtra: problem.planted_bug?.failing_test ?? '',
+        warmObservation,
+        // Only a debugging round's failing_test is a real test name on the
+        // candidate's screen. On other kinds the field is repurposed prose —
+        // a review round's carried a sentence naming the defect areas, which
+        // whitelisted seven answer stems in the vocabulary guard
+        // (QA 2026-08-14).
+        allowedExtra:
+          roundSpec.check.kind === 'one_failing_test' ? (problem.planted_bug?.failing_test ?? '') : '',
         workspaceView,
         bugFileVisited: candidateVisitedBugFile(events, bugFile),
+        hasAnswerKnowledge,
+        protectedExtras: extraProtectedFiles.map((f) => ({
+          file: f,
+          visited: candidateVisitedBugFile(events, f),
+        })),
         rubric: rubricText,
         engagement,
-        momentObservation: moment ? moment.observation : null,
+        // The opening rides its OWN slot: passed through the moment slot it
+        // inherited "Follow the moment rules above" (kind probe, nudge true)
+        // — flatly contradicting the OPENING rule's kind answer/nudge false,
+        // and agenda.ts keys `clarify` off a prompted kind:'answer', so the
+        // mislabel corrupted the agenda (QA 2026-08-14 audit).
+        momentObservation: moment && moment.kind !== 'opening' ? moment.observation : null,
+        openingObservation: moment?.kind === 'opening' ? moment.observation : null,
         checkKind: roundSpec.check.kind,
         codebase: codebaseView,
-        // The evaluation agenda rides on EVERY turn (replies included) so
-        // even a reply can be aimed at an uncovered dimension.
-        agenda: renderAgenda(assessAgenda(events, now)),
+        // The agenda rides UNPROMPTED turns only. It used to ride replies
+        // too, which was one of four instructions mandating a question be
+        // appended to every turn — the same follow-up got bolted onto three
+        // consecutive replies inside 43 seconds (QA 2026-08-14,
+        // sess-qa814-leak). A reply's job is the answer.
+        agenda: candidateMessage === null ? renderAgenda(assessAgenda(events, now, agendaCaps)) : undefined,
         // During wrap-up every turn sees the phase state; the wrap-lane turn
         // additionally carries its assigned topic.
         wrapState:
@@ -823,6 +1039,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           stuckRedactions.set(stuck.since_ms, n);
           console.warn(`[interviewer] stuck hint redacted (${n}/2 for this episode)`);
         }
+        if (adriftObservation && !turn.say) {
+          adriftRedactions++;
+          if (adriftRedactions >= 2) adriftFired = true;
+          console.warn(`[interviewer] adrift redirect redacted (${adriftRedactions}/2 — then the lane gives up)`);
+        }
       }
       if (!turn.say) {
         // Silence is a valid turn — but an UNEXPLAINED silence is how three
@@ -836,10 +1057,17 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
               : (turn.reason ?? '(no reason — parse failure or error, see warnings above)')
           }`,
         );
+        // A reasoned silence proves the model path is healthy; a reasonless,
+        // unredacted one IS the failure shape (parse/call error).
+        if (turn.redacted || turn.reason) interviewerFault = null;
+        else interviewerFault = 'turn';
         return;
       }
       lastInterviewerTs = Date.now();
       if (candidateMessage === null) lastUnpromptedTs = lastInterviewerTs;
+      interviewerFault = null; // a spoken turn is the all-clear
+      // The once-per-session redirect budget burns on a SPOKEN redirect only.
+      if (adriftObservation) adriftFired = true;
       if (wrapTopic !== null) {
         // Count only turns that actually spoke; a silent wrap turn retries.
         if (wrapTopic === CLOSING_TOPIC) {
@@ -864,6 +1092,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       notifyTurn();
     } catch (e) {
       console.warn('[interviewer] turn failed:', String(e));
+      interviewerFault = 'turn';
     } finally {
       interviewerBusy = false;
       // A question may have stacked while this turn was composing.
@@ -923,13 +1152,22 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
     // The judge IS the feedback (2026-07-30 design). Blind to the gap graph;
     // knows the planted bug; failure yields UNASSESSED, never a verdict.
-    const result = await judgeSession({
-      sessionId: cfg.sessionId,
-      events,
-      problem,
-      problemDir: cfg.problemDir,
-      templatePath: path.join(cfg.repoRoot, 'prompts', 'judge-session.md'),
-    });
+    // Talk-dimension clamp BEFORE any write: on a solo round with zero
+    // utterances, communicate/reflect verdicts would be fabricated (see
+    // clampSilentDimensions) — and a fabricated 'weak' becomes a gap.
+    const result = clampSilentDimensions(
+      await judgeSession({
+        sessionId: cfg.sessionId,
+        events,
+        problem,
+        problemDir: cfg.problemDir,
+        templatePath: path.join(cfg.repoRoot, 'prompts', 'judge-session.md'),
+      }),
+      {
+        hasInterviewer: interviewer !== null,
+        utteranceCount: events.filter((e) => e.type === 'utterance').length,
+      },
+    );
 
     mkdirSync(path.join(cfg.repoRoot, 'assessments'), { recursive: true });
     writeFileSync(
@@ -978,7 +1216,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     }
 
     const view = buildGraphView(gapStore, cfg.sessionId);
-    const card = buildAssessmentCard(result, view, events, problem.planted_bug?.description);
+    const card = buildAssessmentCard(result, view, events, problem.planted_bug?.description, {
+      interviewer: interviewer !== null,
+    });
     mkdirSync(path.join(cfg.repoRoot, 'feedback'), { recursive: true });
     writeFileSync(
       path.join(cfg.repoRoot, 'feedback', `${cfg.sessionId}.json`),
@@ -1000,6 +1240,25 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         2,
       ),
     );
+
+    // The round's lifecycle record, mirrored (posthog.ts; the trace stays
+    // authoritative). Plain capture, NOT captureAndWait: finalize's return
+    // value is the card the candidate is actively waiting for, and this
+    // process lingers ≥30 min serving that card (session-sweep
+    // ENDED_LINGER_MS), so the void'ed fetch has all the flush time it
+    // needs at zero added latency. judge_unassessed is its own event — a
+    // judge failure writes no memory and needs its own alarm.
+    if (result.status !== 'assessed') {
+      phSession.capture(cfg.userId, 'judge_unassessed', { session_id: cfg.sessionId });
+    }
+    phSession.capture(cfg.userId, 'round_ended', {
+      session_id: cfg.sessionId,
+      status: result.status,
+      solved: result.status === 'assessed' ? (result.solved ?? null) : null,
+      interviewer: interviewer !== null,
+      surface,
+      duration_ms: sessionStartedAt ? Date.now() - sessionStartedAt : null,
+    });
 
     // Close the memory loop: generate the NEXT problem now, aimed at the gap
     // this session just surfaced. Detached and unwaited — it takes ~5 minutes
@@ -1031,7 +1290,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     // server-to-server probes authenticate via x-ip-internal.
     {
       const openPath =
-        url === '/session' || url.startsWith('/client/') || url.startsWith('/vendor/monaco/');
+        url === '/session' || url.startsWith('/client/') || url.startsWith('/vendor/monaco/') ||
+        // The analytics bundle is a page static like the two above — and if
+        // this is missed, the script 404s behind auth and round analytics
+        // die silently (the page itself is built to survive exactly that).
+        isPosthogAssetUrl(url);
       if (!openPath) {
         const viewer = await auth.resolve(req);
         if (!viewer) {
@@ -1067,6 +1330,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           workspace_path: workspacePath,
           elapsed_ms: sessionStartedAt ? Date.now() - sessionStartedAt : 0,
           voice: Boolean(voice),
+          ...(sessionAnalytics ? { analytics: sessionAnalytics } : {}),
         }),
       );
     }
@@ -1136,6 +1400,14 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       }
     }
     if (url === '/api/utterance' && req.method === 'POST') {
+      // Solo rounds have no utterance channel AT ALL (owner decision
+      // 2026-08-15): the client no longer posts, and this guard keeps any
+      // stray caller from planting talk-evidence in a trace the judge would
+      // then grade narration against.
+      if (!interviewer) {
+        res.writeHead(409, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'no interviewer this round' }));
+      }
       const body = JSON.parse((await readBody(req)) || '{}') as { text?: string };
       const ev = store.emitChrome('utterance', { text: body.text ?? '', via: 'text' });
       // Typed and spoken words take the SAME path: trace always, intent
@@ -1207,6 +1479,12 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           heard,
           thinking: interviewerBusy || turnQueue.size > 0 || settlePending(),
           time_up: timeUpAt !== null,
+          // Interviewer health, the voiceOffReason precedent made dynamic: a
+          // model-path failure used to be COMPLETE silence with no signal of
+          // any kind — the QA candidates concluded they were being ignored
+          // (sess-1786686415240 asked four direct questions into the void).
+          // Cleared by the next healthy turn/intent check; null when off.
+          interviewer_fault: interviewer ? interviewerFault : null,
         }),
       );
     }
@@ -1232,6 +1510,21 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       writeFileSync(file, JSON.stringify(confirms, null, 2));
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ ok: true }));
+    }
+    if (isPosthogAssetUrl(url) && req.method === 'GET') {
+      // The vendored analytics bundle — same one the app serves, same
+      // immutable caching (the version in the URL is the cache buster; see
+      // app.ts's vendor route for the full note on why this one asset may
+      // diverge from no-store).
+      if (!phAsset) {
+        res.writeHead(404);
+        return res.end('no such asset');
+      }
+      res.writeHead(200, {
+        'content-type': 'text/javascript',
+        'cache-control': 'public, max-age=31536000, immutable',
+      });
+      return res.end(readFileSync(phAsset));
     }
     if (url.startsWith('/vendor/monaco/') && req.method === 'GET') {
       // Monaco's prebuilt AMD tree served straight from node_modules — the
@@ -1578,8 +1871,10 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     server.listen(cfg.port, resolve);
   });
   cfg.onReady?.();
-  // Unprompted turns. Only once the round is genuinely underway — before
-  // the first failing run there is nothing to say. When the stuck detector
+  // Unprompted turns. Only once the round is genuinely underway — a failing
+  // run, a first edit, or the floor elapsing (roundUnderway's header has the
+  // QA incident: the old failing-run-only gate silenced every initiative
+  // lane for whole one-shot and green-start rounds). When the stuck detector
   // fires, the unprompted turn IS the scaffolding move instead of a pressure
   // beat (decision D3): one voice at a time, same 4-minute floor. Pressure
   // aimed at someone already grinding produces flailing, not progress.
@@ -1587,12 +1882,12 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     pressureTimer = setInterval(() => {
       if (ended || interviewerBusy || sessionStartedAt === null) return;
       const events = store.readAll();
-      if (!hasFailingRun(events)) return;
       const now = Date.now();
+      if (!roundUnderway(events, now, sessionStartedAt)) return;
 
       // Wrap signal: checked every tick regardless of clocks, set once.
       if (wrapUpAt === null) {
-        const sig = detectWrapSignal(events, now);
+        const sig = detectWrapSignal(events, now, { runnable: agendaCaps.runnable });
         if (sig !== null) {
           wrapUpAt = now;
           console.log('[wrapup] working phase over — evaluation questions begin');
@@ -1612,7 +1907,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         const topic =
           wrapQuestionsAsked >= WRAP_UP_QUESTIONS
             ? CLOSING_TOPIC
-            : selectWrapTopic(assessAgenda(events, now), wrapQuestionsAsked);
+            : selectWrapTopic(assessAgenda(events, now, agendaCaps), wrapQuestionsAsked, roundSpec.check.kind);
         void runInterviewer(null, null, null, null, topic);
         return;
       }
@@ -1630,7 +1925,13 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // detectStuck is blind to a candidate who only reads (its own doc
         // says reading must never trip it), which left the wrong-file reader
         // with no help at all for 35 minutes in sess-1786072934316.
-        const adrift = detectAdrift(events, now, sessionStartedAt);
+        // EVIDENCE GATE: a redirect asserts "no answer lives where you are
+        // reading", and without a ground-truth location there is nothing to
+        // back that with — the old code always redirected on bugless rounds
+        // (regionContainsAnswer short-circuits false on an empty bugFile),
+        // pushing candidates off regions the system knew nothing about
+        // (QA 2026-08-14). No answer knowledge → no adrift lane at all.
+        const adrift = hasAnswerKnowledge ? detectAdrift(events, now, sessionStartedAt) : null;
         // The once-per-session budget is spent on the REDIRECT only: "the
         // region you are in is spent" is a location signal, and repeating it
         // turns the round into a guided tour. The warm inversion carries no
@@ -1638,17 +1939,25 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // available all session, which is the half the candidate actually
         // asked for ("rarely making me feel like I was on to something").
         if (adrift) {
-          const warm = regionContainsAnswer(adrift, bugFile, problem.planted_bug?.line);
+          // Warm against EVERY protected location: a review round's defects
+          // span files, and reading any of them is the right neighbourhood.
+          const warm =
+            regionContainsAnswer(adrift, bugFile, problem.planted_bug?.line) ||
+            extraProtectedFiles.some((f) => regionContainsAnswer(adrift, f, null));
           const warmCooling = warm && now - lastWarmTs < WARM_COOLDOWN_MS;
           if ((warm && !warmCooling) || (!warm && !adriftFired)) {
             if (warm) lastWarmTs = now;
-            else adriftFired = true;
+            // The redirect budget is burned when the turn actually SPEAKS
+            // (below) — the old pre-dispatch mark spent the once-per-session
+            // slot on turns the guard then silenced.
             console.log(`[adrift] ${warm ? 'WARM — answer is in their region; encouraging, not redirecting' : 'REDIRECT'}`);
             void runInterviewer(
               null,
               null,
               null,
-              warm ? describeWarm(adrift, now) : describeAdrift(adrift, now),
+              warm ? null : describeAdrift(adrift, now),
+              null,
+              warm ? describeWarm(adrift, now) : null,
             );
             return;
           }
@@ -1684,7 +1993,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       // the conversation there, and a canned continuer reads as checked-out.
       if (ended || interviewerBusy || sessionStartedAt === null || timeUpAt !== null || wrapUpAt !== null) return;
       const events = store.readAll();
-      if (!hasFailingRun(events)) return; // same "genuinely underway" gate as pressure
+      if (!roundUnderway(events, Date.now(), sessionStartedAt)) return; // same "genuinely underway" gate as pressure
       if (Date.now() - lastUnpromptedTs >= PRESSURE_INTERVAL_MS) return; // a real turn is due — let it speak
       const ack = decideAck(events, Date.now(), { askPending: turnQueue.size > 0 });
       if (!ack) return;
@@ -1699,13 +2008,17 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // end first (mic released through the normal path); a 30s grace covers the
   // closed-tab case so the record always closes.
   if (caps.time_limit_ms) {
+    // Bound here, not read through `caps` in the callback: the outer
+    // narrowing does not survive into setInterval, and the cap timer should
+    // read THE CAP, never a shared "session length" that once had a fallback.
+    const limitMs = caps.time_limit_ms;
     let warned = false;
     capTimer = setInterval(() => {
       if (ended || sessionStartedAt === null) return;
       const elapsed = Date.now() - sessionStartedAt;
-      if (!warned && elapsed >= sessionLengthMs * 0.8) {
+      if (!warned && elapsed >= limitMs * 0.8) {
         warned = true;
-        const left = Math.max(1, Math.round((sessionLengthMs - elapsed) / 60_000));
+        const left = Math.max(1, Math.round((limitMs - elapsed) / 60_000));
         store.emitChrome('interviewer', {
           text: `${left} minute${left === 1 ? '' : 's'} remaining.`,
           kind: 'time',
@@ -1713,7 +2026,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         });
         notifyTurn();
       }
-      if (elapsed >= sessionLengthMs && timeUpAt === null) {
+      if (elapsed >= limitMs && timeUpAt === null) {
         timeUpAt = Date.now();
         store.emitChrome('interviewer', {
           text: "Time's up — submitting what's there now.",

@@ -65,9 +65,17 @@ CANDIDATE_MATERIAL>>>
   or restate them faithfully and CONCRETELY. Shape statements in this
   blueprint override any generic defaults downstream, so be precise: "a
   single Python file of roughly 200-300 lines", not "a small program".
+- Plain language reaches the candidate. Every sentence you write is an
+  instruction the generator follows, so mandate simplicity explicitly:
+  candidate-facing prose leads with the task, uses everyday words, and
+  introduces at most TWO invented proper nouns; the contract lives in ONE
+  place (the statement), never restated across docstrings and READMEs.
+  Never ask for more invented libraries, brands, or codenames than the
+  round genuinely needs — one unfamiliar thing is a round; four is a fog.
 - Stay consistent with the mechanical spec: if it says no interviewer, do not
   describe interviewer interaction; if submit is one_shot, describe the
-  no-iteration reality.
+  single-graded-submission reality (the visible suite stays runnable while
+  working unless the spec says tests cannot run).
 - Do not invent company facts that are not in the candidate's words or
   material. When the material is thin, describe the most representative
   version of the round and keep claims generic rather than fabricated.

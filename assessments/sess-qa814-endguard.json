@@ -1,0 +1,64 @@
+{
+  "session_id": "sess-qa814-endguard",
+  "status": "assessed",
+  "judged_at": 1786731944813,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "45bab0da9f82",
+  "schema_version": 1,
+  "renderer_version": 3,
+  "expectations_used": {
+    "clarify": "Pins the contract down from the visible suites instead of guessing — saying out loud that percent discounts floor to whole cents, that only the largest order-level percent applies, and that the rebate is judged on the amount owed after vouchers.",
+    "approach": "Names a mechanism before typing: that ring_up runs three ordered stages (sku percents, then one order percent, then coupons tested against the running total), and that best_checkout has to search voucher-to-item pairings because a smaller discount can preserve the rebate.",
+    "communicate": "Says which of the three parts they are on and which rule they are encoding as they encode it — announcing the move from bag_total's every-third-free arithmetic to ring_up's stage order, and stating the rebate trade-off in Part 3 out loud instead of working it out silently.",
+    "implement": "Keeps every figure in integer cents with floor division, sorts sku promos by percent descending then code ascending, appends to the trail as each promo is applied rather than reconstructing it afterwards, and leaves the test files untouched.",
+    "verify": "Hand-walks the stated examples before submitting — the 4100-cent cart through all three stages to 2458, and the 10000-cent rebate case where the voucher is better left unused — because each suite is graded once, at submit.",
+    "reflect": "States which of the three parts they finished, names what is still shaky (for example the tie-break between equal-saving voucher assignments, or the skipped-coupon rule), and says what they would check next with more time."
+  },
+  "solved": false,
+  "summary": "The candidate opened the first solution file and submitted within ten seconds without writing any implementation, resulting in only 10/37 tests passing, then ended the session immediately with no discussion of plan, process, or reflection.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "unassessable",
+      "analysis": "The session lasted only ten seconds before the candidate submitted and ended, giving no time to ask questions or resolve any ambiguity about the spec's rules (percent floors, order-level percent stacking, rebate ordering).",
+      "evidence": []
+    },
+    {
+      "dimension": "approach",
+      "verdict": "unassessable",
+      "analysis": "No plan or hypothesis was stated at any point; the candidate opened the file and immediately submitted without any visible deliberation on mechanism for bag_total, ring_up, or best_checkout.",
+      "evidence": []
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "weak",
+      "analysis": "There is no narration of what they were reading, thinking, or attempting — they opened one file and submitted within ten seconds with nothing said about intent or findings.",
+      "evidence": [
+        0,
+        10
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "unassessable",
+      "analysis": "No implementation activity is visible in the timeline; the file was opened but no edits are recorded before submission, so there is nothing to assess about coding quality.",
+      "evidence": []
+    },
+    {
+      "dimension": "verify",
+      "verdict": "weak",
+      "analysis": "The candidate submitted immediately without running or checking any test locally beforehand, and the graded run came back at only 10/37 passing, showing no verification step was taken before trusting the (nonexistent) work.",
+      "evidence": [
+        10
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "weak",
+      "analysis": "The candidate ended the session immediately after the failing submission with no comment on what went wrong, what parts were incomplete, or what they would do differently.",
+      "evidence": [
+        10
+      ]
+    }
+  ]
+}

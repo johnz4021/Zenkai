@@ -88,6 +88,37 @@ export interface Unassessed {
 
 export type JudgeResult = Assessment | Unassessed;
 
+/** Talk-dimension honesty on solo rounds (owner decision 2026-08-15): with no
+ *  interviewer and zero utterances in the trace, communicate and reflect have
+ *  no evidence class at all — narration is the only thing they measure, and
+ *  solo rounds have no wrap-up. A verdict there is fabrication by
+ *  construction, and a fabricated 'weak' would write a gap the round could
+ *  not exhibit, steering future generation at a phantom. Mechanical, runs in
+ *  finalize BEFORE any write — same "no model output reaches state ungated"
+ *  rule as every other gate. clarify/approach stay judge-graded: they have
+ *  non-verbal evidence (which files were read before the first edit). */
+const VERBAL_ONLY_DIMENSIONS: readonly DimensionKey[] = ['communicate', 'reflect'];
+export function clampSilentDimensions(
+  result: JudgeResult,
+  opts: { hasInterviewer: boolean; utteranceCount: number },
+): JudgeResult {
+  if (result.status !== 'assessed') return result;
+  if (opts.hasInterviewer || opts.utteranceCount > 0) return result;
+  return {
+    ...result,
+    dimensions: result.dimensions.map((d) =>
+      VERBAL_ONLY_DIMENSIONS.includes(d.dimension) && d.verdict !== 'unassessable'
+        ? {
+            ...d,
+            verdict: 'unassessable',
+            analysis: 'Not observable on a solo round — nobody was listening.',
+            evidence: [],
+          }
+        : d,
+    ),
+  };
+}
+
 // ---- injectable judge ----
 
 export interface JudgeInput {

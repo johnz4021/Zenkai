@@ -18,6 +18,19 @@
  * Walks reps/ ONLY — the founder's problems/ and targets/ are admin data and
  * not this module's to touch. Pure planner (injected nowMs, no I/O) so the
  * reap matrix is unit-tested without a filesystem.
+ *
+ * `.used` is TWO lines (`sid\nISO\n`, pool.ts:56-58), and this module read it
+ * with `.trim()` and tested `/^sess-[\w-]+$/` against the result — which never
+ * matched, so `graded` was ALWAYS false and neither pass has ever fired in
+ * production (retention.test.ts masked it with single-line fixtures). Fixing
+ * the parse ACTIVATES both passes wherever IP_RETENTION_DAYS is set
+ * (ops/env.launch.template sets 14 on the VPS). That is only safe because the
+ * pristine archive lands in the same change and lives as a SIBLING of the
+ * problem dir (`<dir>.pristine.tar.gz`, artifact.ts) — the slim pass only ever
+ * deletes INSIDE `problem/`, so a slimmed rep stays repeatable from its
+ * archive. Reps consumed before that change have only the incomplete
+ * `.session-snapshot/`, which slimming removes: those are honestly
+ * not-repeatable afterward, which is the status quo, not a regression.
  */
 
 import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
@@ -25,7 +38,13 @@ import path from 'node:path';
 
 /** Files that survive a slim: enough to render the history card, prove the
  *  round ran, and rejudge it from the trace. */
-export const SLIM_KEEP = ['problem.json', '.used', '.validated', '.failed'] as const;
+export const SLIM_KEEP = [
+  'problem.json',
+  '.used',
+  '.validated',
+  '.failed',
+  '.runs.jsonl', // the per-run ledger: every attempt this artifact ever served
+] as const;
 
 export interface RepDiskFacts {
   id: string;
@@ -90,8 +109,10 @@ export function gatherRepDiskFacts(root: string): RepDiskFacts[] {
     if (existsSync(usedFile)) {
       usedMtimeMs = statSync(usedFile).mtimeMs;
       // .used names the session that consumed the problem; graded = that
-      // session's assessment AND feedback both landed.
-      const sid = readFileSync(usedFile, 'utf8').trim();
+      // session's assessment AND feedback both landed. First LINE only —
+      // the file is `sid\nISO\n`, and `.trim()` here left the timestamp
+      // attached, which no sid pattern could ever match.
+      const sid = readFileSync(usedFile, 'utf8').split('\n')[0] ?? '';
       graded =
         /^sess-[\w-]+$/.test(sid) &&
         existsSync(path.join(root, 'assessments', `${sid}.json`)) &&

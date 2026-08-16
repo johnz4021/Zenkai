@@ -57,6 +57,17 @@ export const ROUND_FIELDS = {
   surface: { type: 'string', enum: ['ide', 'panes'] },
   check_kind: { type: 'string', enum: ['one_failing_test', 'all_failing', 'all_passing', 'diff_present'] },
   max_source_files: { type: 'number' },
+  min_tests: {
+    type: 'number',
+    description:
+      'Suite-size floor the generated round must meet — scale it to the round: a staged 60-90-minute build warrants ~12-20 behavioral tests; a short single-function sprint the default. OMIT when the material gives no signal about scope.',
+  },
+  task: {
+    type: 'string',
+    enum: ['algorithmic_set', 'debug', 'practical_build', 'comprehend', 'extend_keep_green', 'review_diff'],
+    description:
+      'What the candidate DOES — decided from the material, not the platform (HackerRank hosts everything). Escalating stages of ONE system = practical_build, even when delivered as an "OA"; separate independent problems = algorithmic_set. Omit only when the material truly cannot say.',
+  },
   emphasis: { type: 'string' },
   date: {
     type: 'string',
@@ -166,6 +177,9 @@ export function gateClarify(raw: unknown): ClarifyResult {
   const dropped: string[] = [];
   for (const r of rounds) {
     try {
+      // draftToSpec carries the task hypothesis since 2026-08-15 — the
+      // wizard used to drop it, which sent its LLD OAs to the algorithmic
+      // skeleton via deriveTaskFromSpec's documented blind spot.
       drafts.push(draftToSpec(r as DraftToolOutput));
     } catch (e) {
       dropped.push(String(e).slice(0, 120));

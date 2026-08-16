@@ -140,7 +140,9 @@ describe('spec-driven session page (capabilities, not format branches)', () => {
     expect(html).not.toContain('the interviewer only replies');
     expect(html).toContain('>Submit</button>');
     expect(html).toContain('data-limit="1200000"');
-    expect(html).toContain('runs ONCE, when you press Submit');
+    // Un-conflation 2026-08-15: the graded run is once; RUNNING is free.
+    expect(html).toContain('the graded run happens ONCE, when you press Submit');
+    expect(html).toContain('Run the suite as often as you like');
     expect(html).not.toContain('runs once automatically at start');
   });
 
@@ -186,10 +188,11 @@ describe('Run Tests lives in our header, not inside the editor', () => {
     expect(html.indexOf('id="run"')).toBeLessThan(html.indexOf('<main>'));
   });
 
-  it('rounds that cannot iterate have no run button on either surface', () => {
-    expect(sessionPage('s', { one_shot: true })).not.toContain('id="run"');
+  it('only can_run_tests hides the Run button — one-shot rounds run freely (2026-08-15)', () => {
+    expect(sessionPage('s', { one_shot: true })).toContain('id="run"');
     expect(sessionPage('s', { can_run_tests: false })).not.toContain('id="run"');
-    expect(sessionPage('s', { surface: 'panes', one_shot: true, statement: 'x' })).not.toContain('id="run"');
+    expect(sessionPage('s', { surface: 'panes', one_shot: true, statement: 'x' })).toContain('id="run"');
+    expect(sessionPage('s', { surface: 'panes', can_run_tests: false, statement: 'x' })).not.toContain('id="run"');
   });
 
   it('the IDE run path asks the extension to run, never a second runner', () => {
@@ -218,10 +221,10 @@ describe('panes surface (the HackerRank-classic renderer)', () => {
     expect(html).toContain('Implement the reservation ledger.');
     expect(html).toContain('/vendor/monaco/loader.js');
     expect(html).toContain('<script src="/client/panes.js"></script>');
-    // The shared chrome survives the fork: Submit flow, clock, chat aside.
+    // The shared chrome survives the fork: Submit flow, clock. (The chat
+    // aside is interviewer-only since 2026-08-15 — pinned in its own suite.)
     expect(html).toContain('>Submit</button>');
     expect(html).toContain('data-limit="6300000"');
-    expect(html).toContain('id="log"');
   });
 
   it('the ide surface is byte-for-byte the page the product always had', () => {
@@ -231,8 +234,11 @@ describe('panes surface (the HackerRank-classic renderer)', () => {
     expect(html).not.toContain('monaco');
   });
 
-  it('one_shot and no-run panes rounds have NO Run button; iterate rounds do', () => {
-    expect(oaPanes()).not.toContain('id="run"');
+  it('a one_shot OA keeps its Run button AND its Submit contract; only no-run rounds lose it', () => {
+    // Un-conflation 2026-08-15: the OA's designed loop is run-freely,
+    // graded-once — the old page severed it.
+    expect(oaPanes()).toContain('id="run"');
+    expect(oaPanes()).toContain('>Submit</button>');
     const noRun = sessionPage('s', { surface: 'panes', can_run_tests: false, statement: 'x' });
     expect(noRun).not.toContain('id="run"');
     const iterate = sessionPage('s', { surface: 'panes', can_run_tests: true, statement: 'x' });
@@ -264,6 +270,60 @@ describe('panes surface (the HackerRank-classic renderer)', () => {
   });
 });
 
+describe('solo rounds — conversation UI exists iff someone is listening (2026-08-15)', () => {
+  const solo = (over = {}) => sessionPage('s', { interviewer: false, ...over });
+  const js = clientScript() ?? '';
+
+  it('no chat aside, no composer, no voice chrome, no voice script on either surface', () => {
+    for (const html of [solo(), solo({ surface: 'panes', statement: 'x' })]) {
+      expect(html).not.toContain('<aside>');
+      expect(html).not.toContain('id="log"');
+      expect(html).not.toContain('id="f"');
+      expect(html).not.toContain('id="msg"');
+      expect(html).not.toContain('id="voicechip"');
+      expect(html).not.toContain('id="mute"');
+      expect(html).not.toContain('id="intchip"');
+      expect(html).not.toContain('startVoice');
+    }
+  });
+
+  it('the notice line re-homes the etiquette, with the one-shot clause when it applies', () => {
+    expect(solo()).toContain('id="notice"');
+    expect(solo()).toContain('nobody replies');
+    expect(solo({ one_shot: true })).toContain('the graded run happens ONCE, when you press Submit');
+    expect(solo({ one_shot: true })).toContain('Run the suite as often as you like');
+    // The no-run clause rides can_run_tests alone (un-conflation 2026-08-15)
+    // and names the button the round actually has.
+    expect(solo({ one_shot: true, can_run_tests: false })).toContain('Nothing runs this round — press Submit');
+    expect(solo({ can_run_tests: false })).toContain('Nothing runs this round — press End session');
+    // Interviewer pages never render it — their aside carries the intro.
+    expect(sessionPage('s')).not.toContain('id="notice"');
+  });
+
+  it('#feedback is a main child on EVERY variant — the graded card no longer lives in the aside', () => {
+    for (const html of [solo(), solo({ surface: 'panes', statement: 'x' }), sessionPage('s')]) {
+      expect(html).toContain('<div id="feedback"></div>');
+      expect(html).toContain('body.ended #feedback');
+      expect(html).toContain('body.ended aside { display: none; }');
+    }
+  });
+
+  it('the client tolerates the missing aside and re-homes messages to the notice', () => {
+    // say() must not throw at load, the composer binds conditionally, and
+    // time-cap turns (the only solo-visible messages) reach notify().
+    expect(js).toContain('if (!log) return null;');
+    expect(js).toContain('function notify(');
+    expect(js).toMatch(/if \(log\) say\('interviewer', m\.text\);\s*\n\s*else notify\(m\.text\);/);
+    expect(js).toContain('const composerForm = document.getElementById');
+    expect(js).toMatch(/if \(composerForm\) composerForm\.addEventListener/);
+  });
+
+  it('solo cards collapse unassessable rows into one honest line', () => {
+    expect(js).toContain("card.interviewer === false");
+    expect(js).toContain('Not observable this round (no interviewer)');
+  });
+});
+
 describe('beta auth — session-origin token handoff (WU4)', () => {
   it('catches #token= before any request-firing script runs', () => {
     const page = sessionPage('sess-test');
@@ -277,12 +337,14 @@ describe('beta auth — session-origin token handoff (WU4)', () => {
 });
 
 describe('beta copy on the session card (WU9)', () => {
-  it('the memory note rides below the patterns line in the card renderer', () => {
+  it('the retention line rides below the patterns line in the card renderer', () => {
     const js = clientScript('session.js') ?? '';
     const patterns = js.indexOf('before patterns emerge');
-    const note = js.indexOf('Deeper memory is in development');
+    const note = js.indexOf('learning your patterns across rounds');
     expect(patterns).toBeGreaterThan(-1);
     expect(note).toBeGreaterThan(patterns); // below, never replacing
+    // Trimmed 2026-08-15: no roadmap promises on the card.
+    expect(js).not.toContain('Deeper memory is in development');
   });
 });
 
@@ -303,7 +365,9 @@ describe('one-shot status copy (QA ISSUE-001)', () => {
 
   it('the client branches the trigger phrase on that attribute', () => {
     const js = clientScript() ?? '';
-    expect(js).toContain('suite runs once at submit');
+    // Run loop first, then the grading contract (un-conflation 2026-08-15).
+    expect(js).toContain('graded once at Submit');
+    expect(js).toContain("dataset.noRun === '1'");
     expect(js).toContain('oneShot');
     // The debugging-round phrase must survive for rounds that can arm it.
     expect(js).toContain('waiting for first failing test run');
@@ -335,5 +399,39 @@ describe('panes flush completeness (QA ISSUE-002)', () => {
 
   it('is still a parseable classic script after the change', () => {
     expect(() => new Function(panes)).not.toThrow();
+  });
+});
+
+describe('session page analytics (posthog.ts builds it; this pins the seam)', () => {
+  it('absent = byte-identical: no posthog, no vendor path, anywhere', () => {
+    const html = sessionPage('sess-test');
+    expect(html).not.toContain('posthog');
+    expect(html).not.toContain('/vendor/insight');
+  });
+
+  it('renders the pre-built snippet verbatim in the head, before the stylesheet', async () => {
+    const { posthogSnippet, posthogAssetPath } = await import('./posthog.js');
+    const snippet = posthogSnippet(
+      { key: 'phc_test', host: 'https://us.i.posthog.com' },
+      {
+        assetPath: posthogAssetPath('1.0.0'),
+        // The round-interior block, exactly as session.ts passes it with
+        // IP_POSTHOG_REPLAY_ROUND unset: the same-origin IDE iframe WOULD
+        // be recorded by rrweb by default, and the intro copy promises the
+        // terminal is not observed.
+        blockSelector: 'main iframe, #editor, #log, #runout',
+        distinctId: 'user-1',
+      },
+    );
+    const html = sessionPage('sess-test', { analytics: snippet });
+    expect(html).toContain('/vendor/insight-1.0.0.js');
+    expect(html).toContain('blockSelector');
+    expect(html.indexOf('/vendor/insight')).toBeLessThan(html.indexOf('<style>'));
+    // The auth handoff script must still run FIRST — it sets the cookie
+    // every later request depends on (chrome.ts head comment).
+    expect(html.indexOf('#token=')).toBeLessThan(html.indexOf('/vendor/insight'));
+    const inline = /<script>\n([\s\S]*?)<\/script>/.exec(snippet)?.[1] ?? '';
+    expect(() => new Function(inline)).not.toThrow();
+    expect(inline).toContain('window.posthog.identify("user-1")');
   });
 });

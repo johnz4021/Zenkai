@@ -31,6 +31,17 @@ A round is described by:
 - `check_kind` — how a generated problem proves itself: `one_failing_test` (find-and-
   fix in a repo), `all_failing` (build against a visible suite), `all_passing`
   (extend/refactor a green repo), `diff_present` (review).
+- `task` — what the candidate DOES, decided from the material, never the platform
+  (HackerRank hosts everything): `algorithmic_set` (separate independent problems),
+  `debug` (find-and-fix), `practical_build` (build a small system against
+  staged/evolving requirements — decomp and LLD rounds are THIS, even when
+  delivered as an "OA"; escalating parts of ONE system means practical_build, not
+  algorithmic_set), `comprehend`, `extend_keep_green`, `review_diff`. Omit only
+  when the material truly cannot say — this routes which generation recipe runs.
+- `min_tests` — the suite-size floor the generated round must meet, scaled to the
+  round's scope: a staged 60-90-minute build warrants ~12-20 behavioral tests; a
+  short single-function sprint the default floor. OMIT when the material gives no
+  signal about scope — never guess a number.
 - `unsupported` — ONE sentence when a round fundamentally needs something outside
   this vocabulary (system-design canvas, multi-day take-home, pure conversation);
   empty otherwise. The product declines honestly rather than faking it.

@@ -32,6 +32,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { attachmentBlocks, draftToSpec, targetDir, type DraftToolOutput, type SpecDraft, type Target } from './intake.js';
 import { ROUND_FIELDS, coerceArray } from './clarify.js';
+import { coerceTask } from './blueprint.js';
 import { gateConceptTopics, type ConceptTopic } from './concept-topics.js';
 
 // ---- conversation store (targets/<id>/conversation.jsonl) ----
@@ -243,6 +244,9 @@ export function gateProposal(raw: unknown): PlannerProposal {
       if (draft.spec.capabilities.starts_from === 'blank' && draft.spec.check.kind === 'all_passing') {
         console.warn(`[planner] blank + all_passing is incoherent — check kind coerced to all_failing for "${draft.spec.id}"`);
         draft.spec.check = { ...draft.spec.check, kind: 'all_failing' };
+        // The kind changed under the task hypothesis — re-run the ONE gate
+        // so the pair stays coherent (draftToSpec validated the old kind).
+        if (draft.task) draft.task = coerceTask(draft.task, draft.spec).task;
       }
       // Named problems ride raw — the accept route resolves them against
       // the dataset index; the model never decides which entry a name is.

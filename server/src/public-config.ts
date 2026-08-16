@@ -64,6 +64,89 @@ export interface PublicConfig {
     days: number | null;
     reapNodeModules: boolean;
   };
+  /**
+   * Willingness-to-pay gate (paywall.ts). THIS ONE REALLY DENIES: a user past
+   * the free limits who declines does not get that round. Unset = OFF = local
+   * dev, byte-identical.
+   *
+   * This flag is the ONLY thing protecting a dev box: a local .env that
+   * configures Supabase while leaving IP_AUTH_ADMIN_EMAILS at the
+   * you@example.com placeholder makes the founder a non-admin on their own
+   * machine, so the admin bypass in gateVerdict does not fire there. Arming
+   * this locally really will gate you.
+   *
+   * It is also the kill switch: unset it and `systemctl restart zenkai-app`
+   * (~10s, and KillMode=process means live rounds survive the restart).
+   */
+  paywall: {
+    /** IP_PAYWALL_GATE=1 */
+    enabled: boolean;
+    /** Integer dollars, never a display string — see GateView.price_usd. */
+    priceUsd: number;
+    /** Free session launches before the gate. 0 is meaningful (gate the
+     *  first round) — see the zeroOr note in resolvePublicConfig. */
+    freeRounds: number;
+    /** Free targets before the gate. A guardrail, not the experiment. */
+    freePlans: number;
+    /** Rounds a SUBSCRIBER gets per billing period. Resets on the Stripe
+     *  period boundary (billing.ts periodStart), so last month's rounds never
+     *  eat this month's. Unlimited would be a liability: at ~$2 a round a
+     *  heavy user costs more than they pay. */
+    paidRounds: number;
+  };
+  /**
+   * Stripe subscription billing (billing.ts). null = OFF — the gate still
+   * works and the manual grant path still comps, there is just nothing to buy.
+   *
+   * All-or-nothing like `supabase` above: half a billing config is a
+   * misconfiguration, and a box that renders a Subscribe button it cannot
+   * honour is worse than one with no button at all.
+   *
+   * NOTE these are SECRETS. child-env.ts must drop STRIPE_API_KEY and
+   * STRIPE_WEBHOOK_SECRET for every child kind — its generator/session paths
+   * are denylists, so a new key reaches every agentic `claude -p` run unless
+   * it is named there explicitly.
+   */
+  stripe: {
+    /** Restricted key (rk_) preferred over a secret key (sk_): least
+     *  privilege, so a leak can do far less. */
+    apiKey: string;
+    webhookSecret: string;
+    /** The Price to subscribe to. One Product per plan; Prices are for
+     *  variants of the same plan (monthly vs annual). */
+    priceId: string;
+  } | null;
+  /**
+   * PostHog analytics (posthog.ts). null = OFF — no vendor script is served,
+   * no inline init is rendered, no server event is captured; an unset box
+   * stays byte-identical to pre-analytics behaviour, same guarantee as every
+   * other block in this file.
+   *
+   * NOT a secret, deliberately: the project key (phc_) is DESIGNED to sit in
+   * the browser, exactly like the Supabase anon key. It still goes in
+   * child-env.ts GENERATOR_DROP — an agentic `claude -p` run has no use for
+   * it, same noise-reduction reasoning as the anon key — but never in
+   * ALWAYS_DROP, which is for credentials that move money or read the DB.
+   * Session processes DO keep it: they emit round lifecycle events.
+   */
+  posthog: {
+    /** Project API key, phc_ prefix. Public: ships to every browser. */
+    key: string;
+    /** Ingest host, e.g. https://us.i.posthog.com. */
+    host: string;
+    /**
+     * IP_POSTHOG_REPLAY_ROUND=1: session replay records the round's interior
+     * (the IDE iframe, the Monaco pane, the transcript, test output) instead
+     * of blocking it. Default OFF for two reasons that are not both obvious:
+     * rrweb serializes DOM mutations on the MAIN THREAD and a VS Code
+     * workbench is about the heaviest mutation source there is, on the page
+     * that also runs the timer, the voice socket and the trace WS; and the
+     * round page PROMISES "other terminal commands are not observed"
+     * (chrome.ts intro copy) — recording the iframe would falsify it. Flip
+     * only after measuring input latency with it on, and fix the copy.
+     */
+    replayRound: boolean;
+  } | null;
 }
 
 const strip = (u: string): string => u.replace(/\/+$/, '');
@@ -73,7 +156,112 @@ function intOr(v: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 }
 
+/** intOr's sibling for knobs where ZERO is a meaningful setting rather than
+ *  garbage. Every cap in this file wants intOr (a cap of 0 would deadlock the
+ *  product); the paywall's free allowances want this one, because 0 means
+ *  "gate immediately" and is how the flow gets exercised at all. An empty or
+ *  absent value still takes the fallback — only an explicit number is honored. */
+function zeroOr(v: string | undefined, fallback: number): number {
+  if (v === undefined || v.trim() === '') return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+}
+
+/**
+ * Stripe ids and keys have stable, documented prefixes, and checking them is
+ * the whole difference between a boot that refuses and a BUYER who presses
+ * Subscribe and gets a 502.
+ *
+ * Presence is not enough, because both easy mistakes produce three non-empty
+ * values. The Dashboard lists the publishable key first and calls it an API
+ * key; a Product id sits right beside the Price id on the same page. Verified
+ * 2026-08-14 against the live API: a `pk_` key returns
+ * `403 secret_key_required` on EVERY server call, so billing read as
+ * "configured" while being structurally incapable of a single charge — the
+ * exact state the all-or-nothing rule above exists to prevent, walked into
+ * through a different door.
+ *
+ * Only the type prefix is ever quoted back; the rest of the value is a secret
+ * and stays out of the message and the logs.
+ */
+function expectPrefix(name: string, value: string, allowed: readonly string[], hint: string): void {
+  if (allowed.some((p) => value.startsWith(p))) return;
+  throw new Error(`${name} starts with "${value.slice(0, 8)}" — ${hint}`);
+}
+
 export function resolvePublicConfig(env: Record<string, string | undefined>): PublicConfig {
+  // Billing is all-or-nothing, same rule and same reasoning as Supabase below:
+  // a Subscribe button on a box that cannot complete a purchase is worse than
+  // no button. Unset = billing off = today's behaviour exactly.
+  const sKey = env.STRIPE_API_KEY?.trim();
+  const sHook = env.STRIPE_WEBHOOK_SECRET?.trim();
+  const sPrice = env.STRIPE_PRICE_ID?.trim();
+  if ((sKey || sHook || sPrice) && !(sKey && sHook && sPrice)) {
+    throw new Error(
+      'STRIPE_API_KEY, STRIPE_WEBHOOK_SECRET and STRIPE_PRICE_ID must be set together (or none)',
+    );
+  }
+  if (sKey && sHook && sPrice) {
+    expectPrefix(
+      'STRIPE_API_KEY',
+      sKey,
+      ['sk_', 'rk_'],
+      'that is the PUBLISHABLE key, which the server cannot use — every call ' +
+        'returns 403 secret_key_required. Use the secret key (sk_) or, better, ' +
+        'a restricted key (rk_) with write on Checkout Sessions, Customers and ' +
+        'Billing Portal Sessions and read on Subscriptions and Prices.',
+    );
+    expectPrefix(
+      'STRIPE_WEBHOOK_SECRET',
+      sHook,
+      ['whsec_'],
+      'a webhook signing secret starts with whsec_ — take it from `stripe listen` or the endpoint page in the Dashboard.',
+    );
+    expectPrefix(
+      'STRIPE_PRICE_ID',
+      sPrice,
+      ['price_'],
+      'that looks like a Product id, not a Price. A Product is WHAT you sell; ' +
+        'a Price is how much and how often. Checkout charges a Price.',
+    );
+  }
+  const stripeCfg =
+    sKey && sHook && sPrice ? { apiKey: sKey, webhookSecret: sHook, priceId: sPrice } : null;
+  // PostHog: the key alone is enough (the host has a sane default), but a
+  // host with no key is half a config and refuses, same rule as above. The
+  // prefix checks are the pk_-in-STRIPE_API_KEY lesson applied forward: a
+  // personal API key (phx_) pasted here would ship a SECRET to every
+  // browser, which is strictly worse than a broken integration.
+  const phKey = env.IP_POSTHOG_KEY?.trim();
+  const phHost = env.IP_POSTHOG_HOST?.trim();
+  if (phHost && !phKey) {
+    throw new Error('IP_POSTHOG_HOST is set but IP_POSTHOG_KEY is not — set both or neither');
+  }
+  if (phKey) {
+    expectPrefix(
+      'IP_POSTHOG_KEY',
+      phKey,
+      ['phc_'],
+      'that is not a PROJECT key. phx_ is a personal API key — a real secret ' +
+        'that must never reach a browser, and this one ships to every page. ' +
+        'Use the project key from Settings → Project → Project API key.',
+    );
+    if (phHost) {
+      expectPrefix(
+        'IP_POSTHOG_HOST',
+        phHost,
+        ['https://', 'http://'],
+        'expected an origin like https://us.i.posthog.com (http:// only for a local test relay).',
+      );
+    }
+  }
+  const posthogCfg = phKey
+    ? {
+        key: phKey,
+        host: strip(phHost || 'https://us.i.posthog.com'),
+        replayRound: env.IP_POSTHOG_REPLAY_ROUND === '1',
+      }
+    : null;
   const url = env.IP_SUPABASE_URL?.trim();
   const anonKey = env.IP_SUPABASE_ANON_KEY?.trim();
   const serviceKey = env.IP_SUPABASE_SERVICE_KEY?.trim();
@@ -118,5 +306,18 @@ export function resolvePublicConfig(env: Record<string, string | undefined>): Pu
       maxConcurrentSessions: intOr(env.IP_MAX_CONCURRENT_SESSIONS, 2),
       maxSessionsPerUser: intOr(env.IP_MAX_SESSIONS_PER_USER, 1),
     },
+    paywall: {
+      enabled: env.IP_PAYWALL_GATE === '1',
+      priceUsd: intOr(env.IP_PAYWALL_PRICE_USD, 39),
+      // zeroOr, NOT intOr: intOr treats 0 as garbage and returns the fallback,
+      // and here 0 is a legitimate value — "gate the very first round" is both
+      // a real config and the only practical way to exercise the flow locally.
+      // Using intOr would make IP_PAYWALL_FREE_ROUNDS=0 silently mean 3.
+      freeRounds: zeroOr(env.IP_PAYWALL_FREE_ROUNDS, 3),
+      freePlans: zeroOr(env.IP_PAYWALL_FREE_PLANS, 3),
+      paidRounds: zeroOr(env.IP_PAYWALL_PAID_ROUNDS, 4),
+    },
+    stripe: stripeCfg,
+    posthog: posthogCfg,
   };
 }

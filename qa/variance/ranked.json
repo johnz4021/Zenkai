@@ -1,0 +1,229 @@
+{
+ "selected": [
+  {
+   "id": "tension-six-parts-one-file",
+   "stress_score": 9.5,
+   "note": "Violates every axis of the multi-part contract at once: >4 parts, one-file layout vs flat solution_partN, co-located tests, uncertain stated count. Kept over near-dupe extreme-four-parts-one-file."
+  },
+  {
+   "id": "lang-zh-bytedance-oa",
+   "stress_score": 9,
+   "note": "Cross-language named-problem binding (Chinese titles -> dataset slugs) + 3-part set + one-shot OA, all inferred from Mandarin. Sourced-build anchor."
+  },
+  {
+   "id": "lang-contradictory-edits",
+   "stress_score": 9,
+   "note": "Every field stated wrong then corrected; sloppy read binds a real-but-wrong LC slug (word-break vs decode-ways). Last-write-wins across runtime, parts, time."
+  },
+  {
+   "id": "lang-whatsapp-fwd-oa",
+   "stress_score": 9,
+   "note": "Unbindable famous problem (LRU not in vendored dataset), unsupported SQL part type, stated-vs-buildable part mismatch, inexpressible per-part timers — four graceful-degradation tests in one paste."
+  },
+  {
+   "id": "domain-fighting-game-rollback-desync",
+   "stress_score": 9,
+   "note": "Attacks the generator's own determinism discipline: TS one_failing_test that must fail reliably after many simulated frames; any harness nondeterminism kills validation."
+  },
+  {
+   "id": "domain-systemverilog-scoreboard-green",
+   "stress_score": 9,
+   "note": "The adversarial corner of check kinds: all_passing green suite with a real planted defect the tests must deliberately not cover without looking rigged."
+  },
+  {
+   "id": "tension-lc-style-but-no-coding",
+   "stress_score": 9,
+   "note": "can_run_tests=false vs test-based check.kind cross-field gate, task with no ROUND_TASKS skeleton, plus one bindable + one unbindable named problem."
+  },
+  {
+   "id": "tension-no-tests-but-run-tests",
+   "stress_score": 9,
+   "note": "Purest hit on the validateRoundSpec coherence gate: no visible suite + iterate-until-green + pass criterion. TS debug. Clarifier must split 'no test files' from 'no run capability'."
+  },
+  {
+   "id": "tension-blank-repo-all-green",
+   "stress_score": 9,
+   "note": "Three-way impossible spec (blank start, all_passing, no suite) — forces the clarifier to pick which two survive against an explicit user demand."
+  },
+  {
+   "id": "tension-typescript-oa-python-me",
+   "stress_score": 9,
+   "note": "Cross-language suite/solution split has no vocabulary; user delegates the impossible reconciliation. Whatever runtime wins contradicts half the brief; two LC binds ride along."
+  },
+  {
+   "id": "tension-silent-oa-grade-my-speaking",
+   "stress_score": 9,
+   "note": "Primary success criterion (talk grading) depends on a capability interviewer=false defines away; judge clamps talk dimensions on an utterance-free trace. Emotionally loaded coercion test."
+  },
+  {
+   "id": "tension-context-contradicts-description",
+   "stress_score": 9,
+   "note": "Every extractable field conflicts between description and firsthand artifact, and the user explicitly instructs against the evidence-tier rule. Confirm-gate legibility test."
+  },
+  {
+   "id": "extreme-five-named-problems",
+   "stress_score": 9,
+   "note": "5 named problems vs cap 4 (LRU likely unbindable -> lands exactly at cap), no-substitution demand, inexpressible ordering. Kept over near-dupe five-or-six-problems."
+  },
+  {
+   "id": "extreme-all-green-perf-sprint",
+   "stress_score": 9,
+   "note": "all_passing + min_tests 25 + max_source_files 1 + 20min + perf target the CheckSpec cannot express — the perf criterion can silently fall out of the validated artifact."
+  },
+  {
+   "id": "extreme-twelve-of-fifteen-red",
+   "stress_score": 9,
+   "note": "12-of-15 failing fits none of the four check kinds; whichever kind is picked, the exact failing-count proof fights the artifact."
+  },
+  {
+   "id": "vocab-gem-coin-change",
+   "stress_score": 9,
+   "note": "Deliberate reproduction of the rep-e2e52324 failure mode: bound real problem whose surface must contain zero algorithmic vocabulary, starving the expectation-tie gate."
+  },
+  {
+   "id": "lang-pt-nubank-review",
+   "stress_score": 8.5,
+   "note": "diff_present + can_run_tests=false in Portuguese — the historically 502ing files_changed inference path, end to end in a non-English register."
+  },
+  {
+   "id": "lang-emoji-plan-multiround",
+   "stress_score": 8.5,
+   "note": "One brief -> three RoundSpecs with divergent capability profiles and three date states (fixed/approximate/absent-not-guessed); multi-spec intake is uniquely stressed here."
+  },
+  {
+   "id": "domain-kdbq-prop-shop-4part",
+   "stress_score": 8.5,
+   "note": "4-part cap + q-semantics re-expression + max_source_files and per-part test gates squeezed simultaneously. Tests invented (non-LC) multi-part machinery."
+  },
+  {
+   "id": "domain-fortran-stencil-diff-round",
+   "stress_score": 8.5,
+   "note": "Rarest check kind: diff_present over all-green working code, exact-failing-count satisfied at zero, bitwise-determinism constraint the tests must encode."
+  },
+  {
+   "id": "domain-salesforce-apex-hackerrank-3part",
+   "stress_score": 8.5,
+   "note": "Mixed set: exactly one part dataset-bound (valid-parentheses), two invented — stresses plural-sources' ability to mix sourced and unsourced parts without the skin altering pre-verified I/O."
+  },
+  {
+   "id": "extreme-nested-subparts",
+   "stress_score": 8.5,
+   "note": "2-stated vs 4-effective part arithmetic plus DEPENDENT sub-parts the flat independent-parts model structurally cannot express; user predicts the failure."
+  },
+  {
+   "id": "extreme-untimed-but-tracked",
+   "stress_score": 8.5,
+   "note": "Three mutually contradictory time signals (null/4h/45min) against a one-number-or-null field, riding the can_run_tests coherence boundary. Only null-time-shape brief kept."
+  },
+  {
+   "id": "extreme-hundred-case-judge",
+   "stress_score": 8.5,
+   "note": "min_tests 100 on an LC-sourced build — probes whether the vendored record carries that many cases and how the deterministic converter fails the floor."
+  },
+  {
+   "id": "vocab-hft-tick-throttle",
+   "stress_score": 8.5,
+   "note": "Every domain identifier under the 5-char vocabulary floor; expectation sentences have almost no legal bridge except one deliberately-threaded identifier. Kept over near-dupes icu/fx."
+  },
+  {
+   "id": "vocab-merge-intervals-2-fake",
+   "stress_score": 8.5,
+   "note": "Nonexistent problems one token from real slugs — resolver must return null rather than fuzzy-bind to meeting-rooms-iii / merge-intervals, then degrade to invention."
+  },
+  {
+   "id": "vocab-lru-typescript",
+   "stress_score": 8.5,
+   "note": "Named-LC-vs-TypeScript head-on collision: sourced conversion emits python suites, so the pipeline must break either the sourcing or the runtime ask. Short brief, hard corner."
+  },
+  {
+   "id": "lang-markdown-soup-stripe",
+   "stress_score": 8,
+   "note": "Unclosed code fence can swallow the load-bearing requirements; TS one_failing_test + max_source_files scattered across broken Notion-export wreckage."
+  },
+  {
+   "id": "extreme-three-hour-marathon",
+   "stress_score": 8,
+   "note": "time_limit_ms at the high extreme (3h) + part cap exactly at 4 + inexpressible difficulty ramp + C++ runtime temptation from the pasted email. Only huge-time-shape brief."
+  },
+  {
+   "id": "vocab-orderbook-all-failing",
+   "stress_score": 8,
+   "note": "Explicit all_failing (stubbed-not-buggy) the clarifier must not collapse into one_failing_test, over uniformly sub-floor order-book identifiers."
+  }
+ ],
+ "build_assignment": [
+  {
+   "id": "lang-zh-bytedance-oa",
+   "kind": "sourced",
+   "venue": "local",
+   "shape_note": "3-part all-sourced python OA set (source.parts), one-shot, no interviewer, 90min — exercises multi-bind from cross-language names through lc-refs into the flat partN layout and per-part topic-ledger rows."
+  },
+  {
+   "id": "extreme-five-named-problems",
+   "kind": "sourced",
+   "venue": "local",
+   "shape_note": "Over-cap clamp shape: 5 named -> 4 bindable slugs exactly at the part cap, 2h timer — exercises cap enforcement, the drop-one decision surfacing at confirm, and 4-slug conversion in one artifact."
+  },
+  {
+   "id": "vocab-gem-coin-change",
+   "kind": "sourced",
+   "venue": "box",
+   "shape_note": "Single-part skinned sourced round (coin-change), no-interviewer OA etiquette — exercises the skin-vs-expectation vocabulary gate on a real binding; medium complexity, right size for prod-parity timing."
+  },
+  {
+   "id": "extreme-hundred-case-judge",
+   "kind": "sourced",
+   "venue": "local",
+   "shape_note": "Single-part sourced HARD (trapping-rain-water) with min_tests 100 — exercises lc-convert's case-count against the vendored record's pre-verified I/O and the reskin-without-semantic-drift rule."
+  },
+  {
+   "id": "domain-fighting-game-rollback-desync",
+   "kind": "invented",
+   "venue": "local",
+   "shape_note": "TypeScript repo-debug, one_failing_test — exercises the generator's own determinism discipline (checksum test must fail reliably, never flakily) and the exact-failing-count validator gate in TS."
+  },
+  {
+   "id": "domain-systemverilog-scoreboard-green",
+   "kind": "invented",
+   "venue": "box",
+   "shape_note": "Python all_passing with a planted-but-untested defect — the adversarial check-kind corner; medium single-part complexity makes it the second prod-parity timing candidate."
+  },
+  {
+   "id": "domain-fortran-stencil-diff-round",
+   "kind": "invented",
+   "venue": "local",
+   "shape_note": "diff_present over all-green working code, python, refactor-for-speed — exercises zero-failing-count validation and results-must-not-change bitwise determinism encoded in tests."
+  },
+  {
+   "id": "lang-pt-nubank-review",
+   "kind": "invented",
+   "venue": "local",
+   "shape_note": "Read-only PR review: starts_from diff, can_run_tests=false, files_changed 3-4, interviewer on — the historically 502ing diff path end to end, from non-English intake through generation."
+  },
+  {
+   "id": "vocab-orderbook-all-failing",
+   "kind": "invented",
+   "venue": "local",
+   "shape_note": "all_failing implement-from-stub build, python — exercises stub-vs-bug check-kind selection plus expectation sentences over sub-5-char identifiers at min-test count."
+  },
+  {
+   "id": "domain-kdbq-prop-shop-4part",
+   "kind": "invented",
+   "venue": "local",
+   "shape_note": "4-part INVENTED OA set, 60min, no interviewer — probes whether multi-part machinery works without LC sourcing and how 4 parts squeeze max_source_files and per-part test gates."
+  },
+  {
+   "id": "extreme-all-green-perf-sprint",
+   "kind": "invented",
+   "venue": "local",
+   "shape_note": "all_passing single-file perf sprint: min_tests 25, max_source_files 1, 20min — exercises the perf-criterion-as-blueprint-prose gap where the validator only proves 'all pass'."
+  },
+  {
+   "id": "vocab-lru-typescript",
+   "kind": "invented",
+   "venue": "local",
+   "shape_note": "TS single-part 35min feature build after the named bind fails or is overridden (LRU absent from dataset / python-only conversion) — exercises unbindable-fallback into TS invention and the runtime gate."
+  }
+ ],
+ "coverage_gaps": "The corpus is entirely intake/generation-side; whole subsystems are unreachable from briefs: (1) Session-runtime behavior — nothing stresses the live interviewer loop, leaksBugLocation defenses, stuck/adrift/moments suppression rules, voice vs text-only degradation, or the panes-vs-IDE surface choice (one brief tags surface-panes incidentally, none forces panes edge cases). (2) Judge/trace-side variance — no adversarial TRACES (weird utterance patterns, zero-edit traces arrive only implied, citation-verification attacks); briefs can demand impossible specs but cannot produce a mean recorded session. (3) Memory/pacing over time — everything is single-shot intake; no brief stresses queue pacing across many dated specs, gap-graph-targeted generation, the adapt.ts approved-diff flow, the 14-day seen-window dedup, or practice-again pristine restore. (4) Ops/concurrency — racing generations, stale .generating markers, crash-recovery, and the app's disk-reconciliation invariants cannot be exercised by brief text. (5) Evidence media — all context is pasted text; no actual screenshots/images/audio to classify by evidence tier. (6) A clean approved-verbatim path — every verbatim brief is conflicted, so the policy gate's happy path goes untested. (7) Sourced-TS and sourced-multi-part-at-scale — no brief can force a legitimately TS-sourced conversion (the dataset path is python-only) or min_tests-scale floors on a multi-part sourced set. (8) No benign baseline briefs exist to measure the variance floor against — the corpus measures behavior under attack but not drift on normal input."
+}

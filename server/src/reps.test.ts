@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DEFAULT_DEBUGGING_SPEC } from '@interview-prep/shared';
 import { writeGeneratingMarker } from './generation-state.js';
+import { appendRun, pristineArchivePath } from './artifact.js';
 import {
   DRAFT_FAILURE_PREFIX,
   MAX_REP_CONTEXT,
@@ -26,6 +27,7 @@ import {
   repOwnedBy,
   repsVisibleTo,
   repBlueprintPath,
+  repeatVerdict,
   repProblemDir,
   repStateView,
   retryVerdict,
@@ -220,6 +222,49 @@ describe('launchVerdict', () => {
   });
 });
 
+describe('repeatVerdict — refusing to destroy a tree that still means something', () => {
+  it.each([
+    // A consumed 'ready' rep is a crashed/unjudged run — or a repeat that
+    // reconcile demoted. It MUST be repeatable: refusing left it with no
+    // affordance at all, since launch answers already-used (QA 2026-08-14).
+    // preserveRunTree banks its tree before the restore.
+    ['ready', true, false, 'pristine', 'ok'],
+    ['ready', false, false, 'pristine', 'not-consumed'],
+    ['failed', true, false, 'pristine', 'not-done'],
+    ['generating', false, false, 'pristine', 'not-done'],
+    ['done', false, false, 'pristine', 'not-consumed'],
+    ['done', true, true, 'pristine', 'session-live'],
+    ['done', true, false, null, 'not-repeatable'],
+    ['done', true, false, 'pristine', 'ok'],
+    ['done', true, false, 'snapshot', 'ok'],
+  ] as const)(
+    'status=%s used=%s liveOnDir=%s restorable=%s → %s',
+    (status, usedExists, sessionLiveOnDir, restorable, want) => {
+      expect(repeatVerdict(rep({ status }), { usedExists, sessionLiveOnDir, restorable })).toBe(want);
+    },
+  );
+
+  it('a live session outranks repeatability — never swap files under a round', () => {
+    expect(
+      repeatVerdict(rep({ status: 'ready' }), {
+        usedExists: true,
+        sessionLiveOnDir: true,
+        restorable: 'pristine',
+      }),
+    ).toBe('session-live');
+  });
+
+  it('an artifact that never built is refused before anything else', () => {
+    expect(
+      repeatVerdict(rep({ status: 'generating' }), {
+        usedExists: true,
+        sessionLiveOnDir: false,
+        restorable: 'pristine',
+      }),
+    ).toBe('not-done');
+  });
+});
+
 describe('retryVerdict — the ISSUE-003 double-agent guard', () => {
   it.each([
     ['ready', false, 'not-failed'],
@@ -245,6 +290,84 @@ describe('repStateView', () => {
     expect(view.map((v) => v.id)).toEqual(['rep-b', 'rep-a']);
     expect(view[0]!.title).toBe('Inventory reservations gone wrong');
     expect(view[1]!.title).toBe(DEFAULT_DEBUGGING_SPEC.label);
+  });
+
+  it('surfaces repeatable + the run ledger straight off disk', () => {
+    freshRoot();
+    const r = rep({ id: 'rep-done', status: 'done', session_id: 'sess-1', done_at: '2026-08-14' });
+    const dir = repProblemDir(root, r.id);
+    mkdirSync(dir, { recursive: true });
+    // Two-line .used, the real format; the first line matches the stored sid
+    // so reconcileWithDisk leaves the done row alone.
+    writeFileSync(path.join(dir, '.used'), 'sess-1\n2026-08-14T00:00:00Z\n');
+    appendRun(dir, { session_id: 'sess-1', user_id: 'u1', at: '2026-08-14T00:00:00Z' });
+
+    // A pre-artifact rep with neither archive nor snapshot is honestly not
+    // repeatable — the button must not appear where the endpoint would 409.
+    const before = repStateView(root, repsFile(r))[0]!;
+    expect(before.repeatable).toBe(false);
+    expect(before.runs).toEqual([{ session_id: 'sess-1', user_id: 'u1', at: '2026-08-14T00:00:00Z' }]);
+
+    writeFileSync(pristineArchivePath(dir), 'a tarball, as far as existsSync cares');
+    expect(repStateView(root, repsFile(r))[0]!.repeatable).toBe(true);
+  });
+
+  it('never repeatable before the round is done, archive or not', () => {
+    freshRoot();
+    const r = rep({ id: 'rep-mid', status: 'ready' });
+    const dir = repProblemDir(root, r.id);
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(path.join(dir, '.session-snapshot'));
+    writeFileSync(pristineArchivePath(dir), 'tarball');
+    const view = repStateView(root, repsFile(r))[0]!;
+    expect(view.repeatable).toBe(false);
+    expect(view.runs).toEqual([]);
+  });
+
+  it('a consumed rep whose run never got a verdict stays repeatable', () => {
+    // QA 2026-08-14: reconcile demotes done → ready when .used names a new
+    // session, so a repeat whose round crashed used to answer not-done to
+    // repeat AND already-used to launch — a rep with no way forward at all.
+    freshRoot();
+    const r = rep({ id: 'rep-stranded', status: 'ready', session_id: 'sess-crashed' });
+    const dir = repProblemDir(root, r.id);
+    mkdirSync(path.join(dir, '.session-snapshot'), { recursive: true });
+    writeFileSync(path.join(dir, '.session-snapshot', 'solution.py'), 'print(1)\n');
+    writeFileSync(path.join(dir, '.used'), 'sess-crashed\n2026-08-14T00:00:00Z\n');
+
+    expect(repStateView(root, repsFile(r))[0]!.repeatable).toBe(true);
+    expect(
+      repeatVerdict({ status: 'ready' }, {
+        usedExists: true,
+        sessionLiveOnDir: false,
+        restorable: 'snapshot',
+      }),
+    ).toBe('ok');
+  });
+
+  it('a ready rep that never ran is NOT repeatable — Start is the honest action', () => {
+    freshRoot();
+    const r = rep({ id: 'rep-virgin', status: 'ready' });
+    const dir = repProblemDir(root, r.id);
+    mkdirSync(path.join(dir, '.session-snapshot'), { recursive: true });
+    writeFileSync(path.join(dir, '.session-snapshot', 'solution.py'), 'print(1)\n');
+    expect(repStateView(root, repsFile(r))[0]!.repeatable).toBe(false);
+  });
+
+  it('falls back to the session snapshot when no archive exists', () => {
+    freshRoot();
+    const r = rep({ id: 'rep-snap', status: 'done', session_id: 'sess-9', done_at: '2026-08-14' });
+    const dir = repProblemDir(root, r.id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, '.used'), 'sess-9\n2026-08-14T00:00:00Z\n');
+    mkdirSync(path.join(dir, '.session-snapshot'));
+    // A snapshot with nothing in it is a killed session's leftover, not a
+    // workspace — restoring from it would wipe the tree and replace it with
+    // nothing (QA 2026-08-14), so it must not advertise itself as repeatable.
+    expect(repStateView(root, repsFile(r))[0]!.repeatable).toBe(false);
+
+    writeFileSync(path.join(dir, '.session-snapshot', 'solution.py'), 'print(1)\n');
+    expect(repStateView(root, repsFile(r))[0]!.repeatable).toBe(true);
   });
 });
 

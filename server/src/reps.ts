@@ -33,6 +33,7 @@ import path from 'node:path';
 import type { RoundSpec } from '@interview-prep/shared';
 import type { Queue, QueueItem } from './queue.js';
 import { localDate, reconcileWithDisk } from './queue.js';
+import { hasUsableSnapshot, pristineArchivePath, readRuns, restorability, type RunEntry } from './artifact.js';
 import {
   generationProgress,
   readGeneratingMarker,
@@ -238,6 +239,50 @@ export function launchVerdict(
   return 'ok';
 }
 
+/**
+ * "Practice again" on a finished rep (artifact.ts / TODOS #48). Separate
+ * from launchVerdict on purpose: launch refuses a consumed dir, repeat
+ * REQUIRES one and then destroys the candidate's working tree, so every
+ * branch below is a reason not to destroy something.
+ *
+ *  not-done        the rep has no runnable artifact yet ('generating') or
+ *                  never produced one ('failed'). Nothing to repeat.
+ *  not-consumed    nothing has run here yet; there is nothing to repeat and
+ *                  the plain launch path is the honest answer.
+ *  session-live    a live session has the dir bind-mounted into docker;
+ *                  restoring under it would swap the files out from beneath
+ *                  the candidate mid-round.
+ *  not-repeatable  neither a pristine archive nor a session snapshot exists
+ *                  (a pre-archive rep whose snapshot retention slimmed) —
+ *                  relaunching would hand back the previous solve.
+ *
+ * 'ready' + `.used` is ACCEPTED, and that reversal is the point. This first
+ * required a literal 'done', reasoning that a crashed or unjudged run's
+ * working tree is the rejudge evidence. But reconcile demotes done → ready
+ * the moment `.used` names a new session, so a repeat whose round crashed (or
+ * whose judge returned UNASSESSED) landed in a state with NO way out: launch
+ * answered `already-used`, repeat answered `not-done`, and the row rendered a
+ * Start button whose 409 pointed at a "practice again" affordance the row did
+ * not have. QA 2026-08-14 stranded three real reps this way in one sitting.
+ * The evidence argument also no longer holds: `preserveRunTree` tars the
+ * working tree before every restore, so the bytes survive (TODOS #55 covers
+ * teaching rejudge to read them).
+ */
+export function repeatVerdict(
+  rep: Pick<Rep, 'status'>,
+  state: {
+    usedExists: boolean;
+    sessionLiveOnDir: boolean;
+    restorable: 'pristine' | 'snapshot' | null;
+  },
+): 'ok' | 'not-done' | 'not-consumed' | 'session-live' | 'not-repeatable' {
+  if (rep.status !== 'done' && rep.status !== 'ready') return 'not-done';
+  if (!state.usedExists) return 'not-consumed';
+  if (state.sessionLiveOnDir) return 'session-live';
+  if (state.restorable === null) return 'not-repeatable';
+  return 'ok';
+}
+
 export function retryVerdict(
   rep: Rep,
   state: { markerAlive: boolean },
@@ -295,6 +340,14 @@ export interface RepView extends Rep {
   phase: RepPhase;
   title: string;
   generating?: { since: string | null; files: number; phase: 'building' | 'finalizing' };
+  /** Can this finished round be run again on a reset workspace? Drives the
+   *  history row's "practice again" action — no extra endpoint, and the
+   *  button never appears where /api/practice/repeat would 409. */
+  repeatable: boolean;
+  /** Every session that ever ran in this dir (artifact.ts's append-only
+   *  ledger). Length > 1 = a repeat happened, and history renders the
+   *  prior attempts' cards — without it a repeat LOOKS like erasure. */
+  runs: RunEntry[];
 }
 
 /**
@@ -313,7 +366,28 @@ export function repStateView(root: string, file: RepsFile): RepView[] {
         hasBlueprint: existsSync(repBlueprintPath(root, rep.id)),
         failedText,
       });
-      const view: RepView = { ...rep, phase, title: resolveRepTitle(root, rep) };
+      const view: RepView = {
+        ...rep,
+        phase,
+        title: resolveRepTitle(root, rep),
+        // Restorability is a disk fact, same discipline as every other
+        // status here: a pristine archive beside the dir, or the pre-archive
+        // session snapshot inside it.
+        // Must agree with repeatVerdict or the row lies: a consumed 'ready'
+        // rep (its run crashed, or reconcile demoted it after a repeat) is
+        // repeatable, and showing Start there dead-ends on a 409.
+        repeatable:
+          (rep.status === 'done' || rep.status === 'ready') &&
+          existsSync(path.join(dir, '.used')) &&
+          restorability({
+            hasPristine: existsSync(pristineArchivePath(dir)),
+            // Usable, not merely present — an empty snapshot dir is a killed
+            // session's leftover, and offering "practice again" on it would
+            // promise a restore that has nothing to restore.
+            hasSnapshot: hasUsableSnapshot(dir),
+          }) !== null,
+        runs: readRuns(dir),
+      };
       if (rep.status === 'generating') view.generating = generationProgress(dir);
       return view;
     })

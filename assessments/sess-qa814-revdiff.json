@@ -1,0 +1,7 @@
+{
+  "session_id": "sess-qa814-revdiff",
+  "status": "unassessed",
+  "judged_at": 1786726434555,
+  "reason": "judge output invalid (not retried — schema mismatch repeats): Error: missing/invalid solved",
+  "raw_output": "{\"params\":{}}"
+}

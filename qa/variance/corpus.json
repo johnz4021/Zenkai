@@ -1,0 +1,1039 @@
+[
+ {
+  "id": "vocab-hft-tick-throttle",
+  "description": "im interviewing at a prop trading firm (cant say which, think hrt/imc tier) and the phone screen is apparently a debugging exercise on a market data feed handler. everything in their codebase is abbreviated to death — the guy i know who did it last year said the whole file was like px, qty, ts, seq, and a throttle interval field called min_ms. basically you get a tick throttler that dedupes and rate-limits quotes, one of the tests fails, and you have to find the bug while talking through it. can you make me one exactly like that in python? keep the naming style please, thats honestly half the difficulty — reading code where nothing has a real name. 45 minutes i think. one failing test and the rest green is how he described it, so dont give me a pile of broken tests, just the one.",
+  "context": "what he remembered of the shape (probably not exact):\n\nclass Tick:\n    ts: int   # epoch ns\n    px: float\n    qty: int\n    seq: int\n\ndef on_tick(t: Tick, min_ms: int = 250) -> bool:\n    # returns True if the tick should be forwarded\n    ...\n\nhe said the bug was somewhere in how it compared ts across ticks but he never figured out if it was units (ns vs ms) or an off by one on seq",
+  "gates_stressed": [
+   "expectation-vocabulary",
+   "one-failing-test-count",
+   "runtime-choice-python",
+   "time-limit"
+  ],
+  "stress_rationale": "Every domain identifier (px, qty, ts, seq) is under the 5-char vocabulary floor; min_ms survives only via whole-identifier tokenization, so expectation sentences have almost no legal bridge to the spec unless the generator deliberately reuses the one long identifier. Also pins an exact one_failing_test contract and a units-flavored bug.",
+  "sourced_hint": false
+ },
+ {
+  "id": "vocab-fx-ccy-microspec",
+  "description": "payments startup onsite next thurs. they do fx conversion, and the take-home last cycle was apparently: implement a mid-rate lookup with a bps spread applied per ccy pair, amt in minor units, return the converted amt. i want a build round like that. python, under an hour, nothing fancy. one thing — all their vars are literally amt, ccy, bps, fx, px. keep it that way, i need to get used to reading it.",
+  "gates_stressed": [
+   "expectation-vocabulary",
+   "runtime-choice-python",
+   "time-limit"
+  ],
+  "stress_rationale": "Deliberately terse brief (~70 words) whose entire requested vocabulary (amt, ccy, bps, fx, px) is below the 5-char token floor — the expectation gate's shared-vocabulary check has essentially nothing to grab, so either the generator invents longer identifiers (violating the user's explicit ask) or expectations fail the tie check.",
+  "sourced_hint": false
+ },
+ {
+  "id": "vocab-kv-ttl-twist",
+  "description": "prepping for a backend role at a caching/CDN company. their screen is always some flavor of build-a-cache. i know the classic is LRU cache on leetcode and ive done that one to death, so dont just give me lru cache verbatim — give me something LIKE it but with a twist, e.g. ttl expiry on top, or a size budget in bytes instead of entry count. invent the twist yourself, surprise me. the api should stay minimal like the real thing though: get(k), set(k, v, ttl), maybe del(k). python. 40 min. i want tests that actually poke the expiry boundary not just happy path.",
+  "gates_stressed": [
+   "lc-named-binding",
+   "expectation-vocabulary",
+   "min-test-count"
+  ],
+  "stress_rationale": "Names a real LC problem (lru-cache) while explicitly forbidding using it verbatim and asking for an invented variant — the clarifier must decide between binding the slug and leaving it prose, the documented ambiguous middle. The requested API surface (k, v, ttl, get, set, del) is all sub-5-char, starving the expectation gate.",
+  "sourced_hint": true
+ },
+ {
+  "id": "vocab-two-sum-or-invent",
+  "description": "recruiter email for a mid-level swe screen said, quote, 'expect something in the vein of two sum or merge intervals'. so i want a couple practice rounds — one that IS one of those two, actually the real problem, and one that is just in that vein but invented, so i dont overfit to the exact statements. python is fine for both. 30 min each i guess? honestly whatever you think matches a first-round phone screen at a normal tech company.",
+  "gates_stressed": [
+   "lc-named-binding",
+   "lc-auto-source",
+   "time-limit"
+  ],
+  "stress_rationale": "Two real LC names plus an explicit or-invent-something-like-it instruction in one paste, and a request for TWO rounds — stresses whether the clarifier produces one spec or two, and whether each spec's source binding lands on the right side of the named-vs-invented line.",
+  "sourced_hint": true
+ },
+ {
+  "id": "vocab-merge-intervals-2-fake",
+  "description": "ok so a guy in my discord swears his amazon OA had 'merge intervals 2' where the intervals have priorities and lower priority ones get truncated instead of merged, and the other question was 'meeting rooms IV'. i looked on leetcode and i can find meeting rooms 1 through 3 but not 4, and no merge intervals 2, but he was really specific about the names so maybe theyre premium only or got renamed?? can you set me up with both of those. if you genuinely cant find them just make whatever the closest real thing is, but try the exact ones first please.",
+  "gates_stressed": [
+   "nonexistent-problem-resolution",
+   "lc-named-binding",
+   "lc-auto-source"
+  ],
+  "stress_rationale": "Both named problems do not exist (meeting-rooms-iv, merge-intervals-2) but are one token away from real slugs — the resolver must return null rather than fuzzy-binding to meeting-rooms-iii or merge-intervals, and the pipeline must degrade to prose/invention without stalling on the user's 'try the exact ones first' framing.",
+  "sourced_hint": false
+ },
+ {
+  "id": "vocab-bakery-oven-story",
+  "description": "so my friend just did an OA for a food-delivery company and she screenshotted me the question, ive typed it out below as close as i can. its written as this whole cutesy bakery story but when you strip the story out its obviously just an intervals/scheduling problem. i want you to build me a practice round that keeps this exact FLAVOR — the story-wrapped statement where you have to see through the narrative to the algorithm — because thats the part i find hard, not the algorithm itself. ive solved merge intervals plain, its the translation step that kills me under time pressure. so: story on the surface, real algorithmic problem underneath, tests graded on the actual mechanics. python, ~40 minutes, and please dont dumb down the story, the noise IS the exercise.",
+  "context": "her question, best i can reconstruct:\n\n\"Marzipan's Bakery has a single wood-fired oven. Each morning, Marzipan receives loaf orders, each with a preferred bake window [start, end] in minutes after opening. The oven chimes when a bake window opens and pulses softly while any loaf is baking. Overlapping windows can share the oven (loaves bake together on one tray), so whenever two windows overlap even at a single minute, Marzipan combines them into one continuous firing. Given the day's bake windows in any order, return the final list of firings the oven will perform, earliest first. The village council also wants to know the longest continuous firing of the day.\n\nExample: windows [[1,4],[8,10],[3,6]] -> firings [[1,6],[8,10]], longest 5.\"\n\nthere was a part 2 about adding a cooldown between firings but she ran out of time and doesnt remember the wording",
+  "gates_stressed": [
+   "skinned-statement-vocab",
+   "expectation-vocabulary",
+   "lc-named-binding",
+   "part-count-cap"
+  ],
+  "stress_rationale": "The documented structural weakness, requested on purpose: a spec speaking story vocabulary (loaves, oven, chime, firings) over merge-intervals mechanics, so rubric expectations naturally speak algorithm words that share no 5-char tokens with the spec. The half-remembered part 2 also dangles an ambiguous 1-vs-2-part decision.",
+  "sourced_hint": true
+ },
+ {
+  "id": "vocab-starship-relay-story",
+  "description": "prepping for a game studio's engine team OA. their questions are famously narrative-wrapped, i pasted a fragment someone posted on their discord before mods deleted it. its clearly shortest-path underneath (relays = nodes, fuel = edge weights) but the statement never says graph, dijkstra, node, edge — everything is in-universe. i want a round in that style: the statement stays fully in the fiction, the grading is on the real algorithm. dont reuse the exact starship one since ive now seen it, invent a different fiction over the same kind of mechanics or bind whatever the closest real leetcode problem is under the hood. python please, and give me a proper test suite not two examples.",
+  "context": "the deleted fragment:\n\n\"The colony ship Vesper drifts between fuel relays scattered across the sector. Jumping from relay to relay burns antimatter — each charted lane lists its burn. Some lanes are one-way (gravity assists). The navigator must find the cheapest total burn from the Vesper's current relay to the sanctuary station, or report that no charted route exists. Sector charts can list up to 10^5 relays and 10^6 lanes; burns fit in a 64-bit signed...\"\n\n(cut off there)",
+  "gates_stressed": [
+   "skinned-statement-vocab",
+   "expectation-vocabulary",
+   "lc-auto-source",
+   "min-test-count"
+  ],
+  "stress_rationale": "Story-over-algorithm again but on a graph problem with an explicit do-not-reuse constraint plus an or-bind-the-closest-real-problem escape hatch — the clarifier must choose invention vs auto-sourcing, and the in-fiction vocabulary (relays, lanes, burns) versus algorithmic expectations is exactly the gate's known blind spot.",
+  "sourced_hint": true
+ },
+ {
+  "id": "vocab-lru-typescript",
+  "description": "we're a typescript shop and im rusty on TS specifically, thats the whole point of this practice. give me the classic LRU cache problem — the actual leetcode one, get and put, O(1) both — but the repo has to be typescript with a real test runner, not python. i keep seeing prep tools default to python and it defeats the purpose for me. 35 minutes, standard difficulty, nothing extra bolted on.",
+  "gates_stressed": [
+   "runtime-choice-typescript",
+   "lc-named-binding",
+   "expectation-vocabulary"
+  ],
+  "stress_rationale": "A real LC binding (lru-cache) colliding head-on with an explicit TypeScript runtime demand — LC-sourced conversion emits python suites from pre-verified I/O, so the pipeline must either honor the source and break the runtime ask or honor the runtime and lose deterministic sourcing. Short brief, hard corner.",
+  "sourced_hint": true
+ },
+ {
+  "id": "vocab-oa-3part-terse",
+  "description": "citadel-style OA in 12 days, its a hackerrank thing, 3 questions, maybe 4 — the invite says 'up to 4 tasks, 100 minutes' so i genuinely dont know, prep me for 3 but if you can do 4 do 4. from grapevine reports: q1 is always an easy warmup, someone said theirs was 'basically two sum but on a price series', q2 is usually hashmap/heap-ish, one report said top k frequent something, q3 is the hard one, sliding window or dp, no consensus. no interviewer obviously, its a timed OA, nobody is listening, so the practice round shouldnt expect me to narrate — i want to practice the discipline of just reading, coding, moving on, and budgeting the 100 min across parts. also every report agrees the starter code is aggressively terse, function sigs like def solve(n, k, a) or f(px_list, k), zero comments. python. one more thing, i tank these because i over-polish q1, so if the tooling can show elapsed time per part or anything like that, great, if not nvm.",
+  "gates_stressed": [
+   "part-count-cap",
+   "no-interviewer-etiquette",
+   "lc-parts-binding",
+   "expectation-vocabulary",
+   "time-limit"
+  ],
+  "stress_rationale": "Multi-part OA with a stated-but-uncertain part count ('3, maybe 4') probing the cap logic, part descriptions that half-name real problems (two-sum-ish, top-k-frequent-ish) forcing per-part bind-or-invent calls, explicit no-interviewer etiquette, and requested solve(n, k, a)-grade signatures that starve the vocabulary gate on every part at once.",
+  "sourced_hint": true
+ },
+ {
+  "id": "vocab-icu-telemetry-bpm",
+  "description": "interviewing at a medical device company (patient monitoring). the loop has a debugging round on code thats deliberately full of clinical abbreviations — hr, bpm, spo2, sys, dia, ecg — because reading domain code is part of the job. the recruiter literally said 'the exercise looks scarier than it is, its the abbreviations'. so: python service that ingests vitals readings and raises alerts on thresholds (spo2 below a floor, hr out of range, that kind of thing), with a planted bug i have to find, exactly one test failing. 45 min with an interviewer. please dont expand the abbreviations in the code, the whole point is training my eyes on hr and spo2 not heart_rate and oxygen_saturation.",
+  "gates_stressed": [
+   "expectation-vocabulary",
+   "one-failing-test-count",
+   "runtime-choice-python"
+  ],
+  "stress_rationale": "Clinical abbreviations (hr, bpm, sys, dia, ecg) sit under the 5-char floor and the user explicitly forbids the easy fix of expanding them — spo2 at 4 chars included — so the spec-expectation bridge must be built from threshold/alert prose alone, plus a hard exactly-one-failing-test contract.",
+  "sourced_hint": false
+ },
+ {
+  "id": "vocab-orderbook-all-failing",
+  "description": "second round at a crypto exchange. format per their prep email: you get a skeleton of a limit order book matcher where the test suite exists but EVERY test fails, because the matching logic is stubbed out, and you implement until green. not a debugging round — nothing is subtly wrong, its just unimplemented. i want to practice exactly that shape because psychologically a wall of red is different from one red test. the domain vocab is standard book stuff: bid, ask, px, sz, oid, fill. python, 60 minutes, and the tests should cover partial fills and price-time priority not just crossing the spread.",
+  "gates_stressed": [
+   "check-kind-all-failing",
+   "expectation-vocabulary",
+   "min-test-count"
+  ],
+  "stress_rationale": "Explicitly demands the all_failing check kind with a stubbed-not-buggy framing the clarifier must not collapse into one_failing_test, over an order-book vocabulary (bid, px, sz, oid, fill) that is uniformly under the token floor.",
+  "sourced_hint": false
+ },
+ {
+  "id": "vocab-half-remembered-nk",
+  "description": "i bombed an OA yesterday and i want to redo basically the same question until its reflexive. ive pasted what i remember of the statement below — its short because the real one was short, like four sentences, all math notation, variables were just n, k and an array a. i think its a known leetcode one?? something with 'k' in the title, maybe 'find k closest' or 'k-th smallest' something, i couldnt tell you. recreate it as close as you can, or if you recognize which real problem it is just give me that one directly. python, 25 min like the real thing.",
+  "context": "what i remember:\n\n\"Given an integer array a of length n and an integer k, return the k-th ??? element after repeatedly removing ??? — i think you removed adjacent pairs that summed to something, or maybe pairs equal to each other. constraints were n up to 10^5, k <= n. one example was a = [3,1,2], k = 2 -> answer 2 (i am not sure about this example at all)\"",
+  "gates_stressed": [
+   "lc-named-binding",
+   "spec-min-length",
+   "expectation-vocabulary",
+   "time-limit"
+  ],
+  "stress_rationale": "A genuinely unresolvable fuzzy reference ('k closest or k-th smallest something') with a corrupted half-remembered statement — the resolver should fail to bind and the generator must expand a four-sentence n/k/a skeleton into a spec long enough to pass the min-length gate while its only identifiers are single letters.",
+  "sourced_hint": true
+ },
+ {
+  "id": "vocab-verbatim-merge-intervals",
+  "description": "please give me the actual real merge intervals problem, word for word as it appears on leetcode, same examples same constraints — not a reworded version, not a themed version. my interviewer at this company is known for asking it literally verbatim and i want my read of the statement to be automatic. python. 20 minutes. thats the whole request, dont add parts or twists.",
+  "gates_stressed": [
+   "verbatim-policy-gate",
+   "lc-named-binding",
+   "time-limit"
+  ],
+  "stress_rationale": "Clean real binding (merge-intervals) with an explicit demand for verbatim mode, which is policy-gated behind the skinned default — tests whether the clarifier surfaces the policy decision rather than silently skinning or silently going verbatim, on an otherwise minimal 60-word brief.",
+  "sourced_hint": true
+ },
+ {
+  "id": "vocab-terse-refactor-diff",
+  "description": "staff-adjacent interview at a company that inherited a gnarly legacy codebase, and their signature round is: here is working-but-horrifying code, all the tests pass, refactor it while keeping them passing, we grade the diff. the horrifying part per my referral: functions named f, g, h2, module-level dicts called cfg and st, magic numbers everywhere. i want a practice repo in that style — python, everything green from the start, my job is purely to improve it and the assessment should be about what i changed and why, not about making red tests pass. 50 minutes. dont make the code long, make it dense.",
+  "gates_stressed": [
+   "check-kind-diff-present",
+   "check-kind-all-passing",
+   "expectation-vocabulary"
+  ],
+  "stress_rationale": "Sits exactly on the diff_present vs all_passing boundary (all green at start, graded on the diff) so check-kind inference can plausibly land either way, and the requested f/g/h2/cfg/st naming means the spec's most problem-specific tokens are structurally invisible to the vocabulary gate.",
+  "sourced_hint": false
+ },
+ {
+  "id": "vocab-gem-coin-change",
+  "description": "duolingo-ish edtech company, their OA skins everything in product lingo — gems, streaks, hearts. a past candidate blogged that his question was, and i quote, 'literally just coin change wearing a gem costume: given gem pack denominations and a target gem amount, min number of packs to buy'. i want that exact experience: the real coin change problem underneath, but the statement fully in gems-and-packs language with zero algorithm words in it. thats the skill i need, seeing through the costume fast. python, 30 min, hackerrank style so no talking.",
+  "gates_stressed": [
+   "skinned-statement-vocab",
+   "lc-named-binding",
+   "expectation-vocabulary",
+   "no-interviewer-etiquette"
+  ],
+  "stress_rationale": "Maximal skinned-LC stress requested by name: a bound real problem (coin-change) whose surface must contain zero algorithmic vocabulary, so spec tokens (gems, packs) and expectation tokens (denominations, recurrence, minimum coins) can only meet through whatever identifiers the generator threads through both — the exact rep-e2e52324 failure mode, deliberately.",
+  "sourced_hint": true
+ },
+ {
+  "id": "vocab-url-shortener-sprint",
+  "description": "25 minute screen, thats all i get, recruiter was clear its tiny on purpose. build a url shortener core: shorten(url) -> code, resolve(code) -> url, codes are base62, collisions handled somehow. she said and i quote 'candidates who write five files fail, it should be one file maybe two'. so please cap it hard at 2 source files. python. also the fields in their example were literally uid, url, code — short names, small surface, small everything.",
+  "gates_stressed": [
+   "max-source-files",
+   "time-limit",
+   "expectation-vocabulary"
+  ],
+  "stress_rationale": "A hard user-stated max_source_files of 2 (the one enforceable size knob) against a 25-minute limit at the small extreme of the time distribution, in a domain whose natural identifiers (uid, url, code, base62) mostly duck under the 5-char floor — small-everything stress on gates tuned for medium-sized rounds.",
+  "sourced_hint": false
+ },
+ {
+  "id": "tension-lc-style-but-no-coding",
+  "description": "Amazon phone screen in 9 days. Recruiter said \"leetcode style\" but everyone on Blind says the phone screen is actually mostly a design discussion now, you talk through the approach and they barely look at your code. So here's what I want: no actual coding. I don't want to type code at all, I just want to talk through it. BUT I still want real leetcode problems on screen — specifically two sum and lru cache since those keep showing up in the amazon tagged list — and I want to be graded on whether the tests pass at the end, because that's how i know if my approach was actually right. So basically: no editor, no writing code, but real problems and pass/fail on the test suite. 45 minutes. does that make sense",
+  "stress_rationale": "Wants test-suite grading with no code authored: the natural spec is can_run_tests=false (or no editor at all) with check.kind one_failing_test/all_passing, which trips the validateRoundSpec cross-field coherence gate. The clarifier must coerce (drop the 'no coding' clause or the test grading) while still honoring two real LC bindings. Also pulls toward a task (design discussion) that has no skeleton in ROUND_TASKS.",
+  "gates_stressed": [
+   "can_run_tests=false incoherent with test-based check.kind (validateRoundSpec cross-field gate)",
+   "task coercion — 'design discussion' has no ROUND_TASKS skeleton",
+   "LC named-problem binding via lc-refs (two sum, lru cache)",
+   "interviewer=true talk-heavy round vs autograded check"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "tension-debugging-from-scratch",
+  "description": "so I keep bombing debugging rounds (bombed one at datadog last month, another at a startup tuesday). the feedback both times was I flail around in unfamiliar code. here's the thing though — I genuinely learn best when I build things myself from scratch. so what I want is a debugging round, but starting from a completely empty file. no starter code, no existing repo, nothing. blank editor. I'll write the system myself and then debug it. it should still count as debugging practice and the grading should be the standard debugging thing where there's one specific failing test that proves the bug. python please, and make the bug something subtle with datetimes or timezones since that's what got me at datadog.",
+  "stress_rationale": "The debug task skeleton presupposes starts_from=repo with a planted bug; starts_from=blank makes one_failing_test unsatisfiable (there is no planted bug in an empty file — the candidate authors everything). The clarifier must either override the user's explicit 'completely empty file' or emit a spec whose generated artifact cannot pass the validator's exact-failing-count gate.",
+  "gates_stressed": [
+   "starts_from=blank vs debug task skeleton coherence",
+   "one_failing_test check on a blank scaffold (nothing to plant)",
+   "exact failing-test count validator gate",
+   "python runtime choice"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "tension-oa-but-grill-me",
+  "description": "Prepping for the Citadel HackerRank OA. It's fully automated — no human, no call, camera proctored but nobody's actually there. I want the practice to be EXACTLY like the real thing, same silence, no chat window, no mic, don't break the illusion. But also — and this is important — my problem is I panic under scrutiny, so I need the interviewer to interrupt me constantly, ask me why I chose that data structure, grill me on time complexity mid-problem, push back when I'm wrong. Both things. Real OA conditions AND aggressive live grilling. If those conflict, do both anyway, alternate or something. 2 problems, 60 min, medium-hard.",
+  "stress_rationale": "interviewer is a single boolean and the conversation UI exists iff someone is listening — 'exact OA silence' and 'constant grilling' cannot coexist in one spec. Stresses whether the clarifier picks one, asks, or emits something incoherent; also whether the confirm-gate surfaces which side was dropped. 'Alternate or something' invites an out-of-vocabulary hybrid.",
+  "gates_stressed": [
+   "interviewer boolean — OA vs live pressure, no hybrid in vocabulary",
+   "no-interviewer OA etiquette (no chat aside, no mic)",
+   "part_count=2 algorithmic set",
+   "time_limit_ms"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "tension-untimed-exactly-25",
+  "description": "stripe api-integration screen next thurs. important: do NOT time me, no countdown on screen, timers spike my anxiety and i freeze. completely untimed please. it should take exactly 25 minutes though and you should cut me off hard at 25 if i run over, since the real one is 25. python, something with a flaky external api like their real question apparently is.",
+  "stress_rationale": "time_limit_ms is null (untimed, no chrome countdown) or a positive number (countdown + auto-finalize) — 'no timer but hard cutoff at 25' asks for enforcement without display, which the capability vocabulary cannot express. Short brief tests whether the clarifier coerces to 25min, to null, or invents a middle state.",
+  "gates_stressed": [
+   "time_limit_ms null vs positive — no 'enforced but hidden' state",
+   "auto-finalize at cap vs 'untimed' promise",
+   "python runtime, practical_build task inference from thin text"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "tension-no-tests-but-run-tests",
+  "description": "ok weird request. test suites stress me out — seeing 14 red tests makes me spiral. so: NO tests in the repo. i don't want to see a single test file, don't even have a tests folder. but i obviously need to check my work, so keep the Run Tests button and i want to run the tests after every change and keep iterating until everything is green before i submit. that loop is the whole way i work. also the grading at the end should be based on how many tests pass. its for a mid-level backend screen, typescript, some kind of order processing service with a planted bug maybe 40 min",
+  "stress_rationale": "The purest hit on the cross-field gate: can_run_tests=false (no visible suite) plus submit=iterate-until-green plus a pass-count criterion is exactly the 'can_run_tests=false is incoherent with check.kind' failure in validateRoundSpec. The clarifier must recognize 'no test files visible' vs 'no run capability' are different asks and coerce accordingly.",
+  "gates_stressed": [
+   "can_run_tests=false + iterate incoherence",
+   "can_run_tests=false vs test-based check.kind (validateRoundSpec)",
+   "min_tests vs 'no tests folder'",
+   "typescript runtime, debug task"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "tension-blank-repo-all-green",
+  "description": "I want a from-scratch build round. completely empty repo — I mean empty, no scaffold, no function stubs, i want the experience of a blinking cursor in an empty file. hard requirement: all tests must be PASSING when I open it. I want to start from green and my job is to keep it green while I add the feature. that's how my last job's codebase worked and it's the muscle i want. oh and don't include tests, i'll know if it works. an inventory/reservation system type thing, 60-75 min, no interviewer talking but grade my final code.",
+  "stress_rationale": "blank + all_passing is a natural-language version of an impossible spec: a green suite over zero code, from a user who also says 'don't include tests'. Three-way contradiction (blank start, all_passing check, no suite) forces the clarifier to pick which two survive; extend_keep_green's skeleton assumes starts_from=repo, so task inference fights starts_from too.",
+  "gates_stressed": [
+   "starts_from=blank vs check.kind=all_passing coherence",
+   "extend_keep_green task vs blank scaffold",
+   "'no tests' vs all_passing/min_tests",
+   "interviewer=false with code-graded outcome"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "tension-one-shot-but-iterate",
+  "description": "CodeSignal GCA for a fintech company. recruiter was explicit: single submission, graded once at the end, no partial reruns, what you submit is what's scored. I want to practice under exactly that rule. but the way i actually practice is i submit, look at the grader output, fix, submit again, like 10-15 times. so set it up so it's graded exactly once — one final submission, that's the score — but also let me submit as many times as i want and see full grader output every time before the final one. the real thing is 70 minutes 4 questions so do that, standard codesignal difficulty curve (easy easy medium hard).",
+  "stress_rationale": "submit is a closed two-value vocabulary — iterate or one_shot — and this brief demands both with a plausible-sounding rationale ('practice submissions before the real one'), a state the runtime doesn't have. Also a legit 4-part multi-part OA set riding along, so coercion has to preserve part_count=4 (exactly at the cap) while resolving the submit conflict.",
+  "gates_stressed": [
+   "submit iterate vs one_shot — no 'practice submissions then final' state",
+   "part_count=4 at the multi-part cap",
+   "LC auto-sourcing for unnamed algorithmic set (lc-pick)",
+   "time_limit_ms 70min"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "tension-six-parts-one-file",
+  "description": "the jane street / citadel style OA im prepping for is 6 parts. or maybe 7, my friend said it changed this year. 90 minutes total. constraint from me: I get completely lost when there are multiple files, so EVERYTHING must be in one single file. one file, all 6-7 parts in it, tests included in the same file too. each part should still be graded separately though with its own tests. use real leetcode problems for the parts, hards mostly, maybe one medium to warm up.",
+  "stress_rationale": "Multi-part sets have a flat solution_partN.py + tests/test_partN.py layout, part_count is capped by max_source_files and 4 — this asks for 6-7 parts AND max_source_files=1 AND tests co-located in the solution file (validator counts tests separately). Every axis of the multi-part contract is violated at once; the stated count is itself uncertain ('6, or maybe 7').",
+  "gates_stressed": [
+   "part_count > 4 cap",
+   "part_count capped by max_source_files (1 file vs 6 parts)",
+   "flat solution_partN/tests layout vs 'tests in the same file'",
+   "per-part LC binding of N hard problems",
+   "uncertain stated part_count"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "tension-verbatim-but-disguised",
+  "description": "my friend did this exact onsite at a series B last month and sent me what she saw (pasted below). it is literally two sum and merge intervals word for word off leetcode, they didn't even change the variable names. so I want the EXACT official leetcode wording, verbatim, character for character, do not paraphrase anything — I want to rehearse against the real text. but ALSO please disguise both problems so I can't tell which ones they are, change the story/surface completely, because the skill i actually need is recognizing a disguised two-sum cold. both requirements are firm. one 60 min session, both problems, python, no interviewer.",
+  "context": "from sarah, 7/19: \"ok so round 2 was wild, it was literally leetcode two sum copy pasted, like the same example arrays [2,7,11,15] target 9 and everything lol. second one was merge intervals also verbatim i'm pretty sure. 30 min each, hackerrank, nobody on the call. they autograde. you got this\"",
+  "stress_rationale": "mode: skinned vs verbatim is a policy-gated either/or and this demands both simultaneously, with firsthand evidence (screenshots-tier context) that would normally justify verbatim. Stresses the policy gate, the skinned-default decision, evidence_tier classification (firsthand artifact), and two-problem lc-refs binding from context rather than description.",
+  "gates_stressed": [
+   "verbatim mode policy gate vs skinned default — user demands both",
+   "named_problems extraction from pasted context (lc-refs)",
+   "evidence_tier=firsthand classification",
+   "2-part set, interviewer=false"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "tension-typescript-oa-python-me",
+  "description": "Vercel's OA only allows TypeScript, node 20, their harness runs vitest apparently. I do not know typescript at all, I'm a python person, 5 years of it. so: the round must be typescript (matching the real thing, ts tests, ts harness, everything) but I need to write my solution in python. maybe the tests are typescript and they call my python? or transpile my python to ts automatically? or split it, half the problems ts half python? honestly whatever works, you figure it out, but both constraints are real: it IS a typescript OA and I WILL be writing python. 60 min, 2 problems, no interviewer. graph traversal stuff probably, their tagged questions are like course schedule and number of islands.",
+  "stress_rationale": "Runtime is a single choice the test-command contract enforces — a TS suite grading a Python solution is outside the runtime vocabulary, and the user explicitly delegates the impossible reconciliation ('you figure it out'). Names two real LC problems so the coercion also has to survive binding. Whichever runtime the clarifier picks contradicts half the brief.",
+  "gates_stressed": [
+   "python vs typescript runtime choice (test-command runtime contract)",
+   "cross-language suite/solution split has no vocabulary",
+   "LC binding: course schedule, number of islands",
+   "2-part OA, interviewer=false"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "tension-review-round-nothing-changed",
+  "description": "Meta added a code review round to E5 loops, i have one in two weeks. I want to practice reviewing a PR/diff. the twist: I heard from someone in the loop before me that sometimes the diff they show you is actually FINE — no bug, nothing wrong, the correct answer is 'ship it' — and they're testing whether you invent problems. so give me a review round where nothing changed. zero files modified, empty diff. I still need to find the planted bug though because I know your product plants bugs, so plant one somewhere in the unchanged code. 30 minutes, talk me through it with an interviewer.",
+  "stress_rationale": "diff_present's manifest check requires non-empty files_changed — a 'zero files modified, empty diff' review round fails checkManifest even though validateRoundSpec now shape-checks only (the QA 2026-08-13 relaxation). Simultaneously demands a planted bug in unchanged code, mixing review_diff with debug semantics. Tests whether the pipeline fails at inference, generation, or validation, and how legibly.",
+  "gates_stressed": [
+   "diff_present with empty files_changed (checkManifest non-empty rule)",
+   "review_diff vs debug task blend — planted bug outside the diff",
+   "starts_from=diff coherence",
+   "interviewer=true review etiquette"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "tension-silent-oa-grade-my-speaking",
+  "description": "long one sorry. background: I've done maybe 30 real interviews over two loops (2024 and now) and the consistent feedback when i get any is that my communication while coding is weak — i go silent for 10 minutes, then dump a finished solution nobody followed. my therapist and my old EM both said the same thing basically. the round I'm actually prepping for right now is Anthropic's async screen — fully asynchronous, no human anywhere, you record nothing, you just do the problems in their environment and submit. i've confirmed with the recruiter there is no interviewer and nothing i say is heard by anyone, mic isn't even requested. SO. i want to practice under exactly those conditions — total silence, no interviewer, no chat window, nobody listening, the real async experience — because half my problem is the eeriness of the silence itself, i need to acclimate to it. AND, the main thing i want out of this: detailed, harsh feedback on my verbal communication during the round. how clearly i narrated my thinking, whether i explained tradeoffs out loud, whether i signposted before diving in, filler words, all of it. grade the communication dimensions hard, that's the whole point of me doing this. i know those sound like they conflict but they don't really — i'll be talking out loud to myself the whole time, you just have to listen without being there, if that makes sense. don't respond to me during the round, don't acknowledge anything i say, but capture it all and judge it. two medium problems, python, 55 minutes, keep the environment as close to a bare async OA as you can. this is the round that decides whether this whole loop was worth it so please get it right.",
+  "stress_rationale": "interviewer=false means nobody records — no mic, no chat — and the judge clamps talk dimensions to unassessable on an utterance-free solo trace. The user explicitly pre-empts the coercion ('you just have to listen without being there'), asking for a capability the vocabulary defines away: recording without an interviewer. Long, emotionally-loaded brief tests whether the clarifier holds the line or emits a spec whose main deliverable (talk grading) is structurally impossible.",
+  "gates_stressed": [
+   "interviewer=false = no recording, no mic (conversation UI iff listening)",
+   "talk dimensions clamp to unassessable on utterance-free trace (judge clampSilentDimensions)",
+   "user's primary success criterion depends on the dropped capability",
+   "2-part set, python, time_limit"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "tension-context-contradicts-description",
+  "description": "OA prep for robinhood. it's a hackerrank, fully automated, no human on it, 70 minutes, 2 algorithm questions, standard stuff. pasting the recruiter email below for reference. want it as realistic as possible so match what i said — timed, silent, autograded, python.",
+  "context": "Subject: Robinhood — Next Steps!\n\nHi,\n\nGreat news — the team would love to move you forward! Your next round is a 45-minute collaborative pair-debugging session with one of our engineers. You'll work together in a shared coding environment on an existing service that has a subtle defect — this is intentionally NOT an assessment of algorithmic puzzles, and there's no automated scoring; your interviewer will be evaluating how you navigate unfamiliar code and how you communicate as you go. Please have your mic and camera ready. Feel free to ask your interviewer questions throughout — collaboration is what we're looking for!\n\nBest,\nMadison\nRecruiting Coordinator, Robinhood",
+  "stress_rationale": "Every extractable field conflicts between description and pasted firsthand artifact: 70min vs 45min, no-human vs live engineer, algorithmic set vs pair-debugging on an existing service, autograded vs no automated scoring, silent vs mic-required. The evidence-tier rules say the firsthand artifact should win, but the user's closing line explicitly instructs 'match what i said'. Tests which source the extraction trusts and whether the confirm gate surfaces the conflict.",
+  "gates_stressed": [
+   "description vs context reconciliation in intake extraction",
+   "evidence_tier: firsthand artifact contradicting user's account",
+   "interviewer flag, time_limit_ms, task (algorithmic_set vs debug), submit — all bivalent",
+   "starts_from repo vs blank"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "tension-three-hards-five-minutes",
+  "description": "speed is my whole strategy. give me leetcode hards — the real ones, like the dp on trees stuff, binary lifting, whatever's genuinely hard, no mediums pretending — and time limit five minutes. i read that pattern recognition speed is what separates people so i want to drill recognition not solving. actually make it 3 problems, all hards, 5 minutes TOTAL for all three. important: everything must be actually finishable in the time, don't give me anything i can't realistically complete, i hate leaving things unfinished, it wrecks my confidence for days. autograded, no interviewer, python.",
+  "stress_rationale": "Simultaneously demands genuine LC hards, 3 parts, a 100-second-per-problem budget, and a hard guarantee of finishability — the difficulty/time/part-count triangle can't close. time_limit_ms=300000 is technically valid (positive number) so the mechanical gate passes; the stress is whether the clarifier/blueprint absorbs the absurdity silently or pushes back, and what lc-pick does when asked for hards under a constraint that contradicts them.",
+  "gates_stressed": [
+   "time_limit_ms plausibility (valid to the gate, absurd to the round)",
+   "part_count=3 vs total time budget",
+   "LC difficulty selection vs 'must be finishable' guarantee",
+   "one_shot autograded set"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "tension-one-test-thirty-cases",
+  "description": "for my take-home-style OA practice: i want exactly ONE test. literally one. big test suites overwhelm me, 14 test names scrolling by means nothing to me. one test, that's it. however — it needs to be thorough, at least 30 distinct edge cases covered: empty input, single element, unicode in strings, integer overflow boundaries, duplicate handling, the works. and i need to know WHICH edge case failed when it fails, individually, by name, so separate reporting per case. but one test. an interval scheduling problem would be good, timed 40 min, typescript this time since im rusty.",
+  "stress_rationale": "min_tests and the exact-failing-test-count gates count discrete tests; 'one test with 30 individually-reported cases' asks the suite topology to be simultaneously 1 and 30. Whichever way generation resolves it (one mega-test vs 30 tests), it violates either the user's stated hard constraint or the min_tests/expectation-sentence machinery. Also flips runtime to TypeScript on an interval problem that lc-pick would happily source.",
+  "gates_stressed": [
+   "min_tests vs 'exactly one test'",
+   "exact failing-test count with aggregated vs discrete cases",
+   "per-case reporting vs suite-size constraint",
+   "typescript runtime"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "tension-behavioral-no-code-at-all",
+  "description": "honestly the round i'm actually scared of is the behavioral one. amazon loop, the bar raiser LP interview — tell me about a time you disagreed with your manager, dive deep, all the STAR stuff. can you make me a practice round for that? no code at all. no editor, no repo, no tests, nothing technical on screen — just the interviewer asking me leadership principle questions for 45 minutes and pushing on my answers, and then i want your usual detailed judging and the gap tracking on it, same as the coding rounds get. if your system absolutely requires there to be code, fine, put some code in there, but i should never have to touch it or look at it, it's set dressing. this matters more to me than the coding rounds tbh, please don't turn it into a coding round.",
+  "stress_rationale": "Entirely outside the product's generative scope — every ROUND_TASKS skeleton, every check kind, and the whole validator presuppose a code artifact. The user pre-authorizes decorative code but forbids interaction with it, so any check kind over that code grades nothing the user did. Tests the clarifier's drop path (refuse/redirect) versus emitting a hollow spec that validates mechanically but is semantically empty, plus the judge/gap-graph on a trace with zero code events.",
+  "gates_stressed": [
+   "no task in ROUND_TASKS fits — coerce vs drop decision",
+   "check kind over untouched 'set dressing' code grades nothing",
+   "can_run_tests/starts_from vocabulary has no 'no code' state",
+   "judge dimensions on a zero-edit trace"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "extreme-four-parts-one-file",
+  "description": "ok so I have the capital one codesignal on monday. did a practice one tonight and the format threw me — its 4 separate questions but the editor is literally ONE file, like theres a stub for solve1, solve2, solve3, solve4 stacked in the same python file and you scroll between them, you never switch files. 70 minutes for all four. no person on the other end, it just autogrades whatever you have when time runs out. can you build me a practice round thats exactly this — four problems, all in the one single file, 70 min hard cutoff, python, nobody talking to me. the questions themselves were pretty standard leetcode easy/medium stuff (first was some array counting thing, the last was harder, some DP looking thing i didnt finish)",
+  "stress_rationale": "Directly collides the multi-part machinery with the size knob: part_count 4 is capped by max_source_files, but the user insists on a single file — the flat solution_partN.py layout structurally contradicts 'one file with four stubs'. The clarifier must either clamp parts to 1, raise max_source_files against the user's stated surface, or find a third reading; any choice is checkable variance.",
+  "gates_stressed": [
+   "part_count_cap",
+   "max_source_files",
+   "lc_plural_sourcing",
+   "time_limit_ms",
+   "no_interviewer_oa",
+   "auto_finalize"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "extreme-twenty-five-tests",
+  "description": "I bombed the stripe OA last year mostly because their hidden grader ran a ton of tests and I only passed like half — partial credit killed me. The recruiter this time said the graded suite is 25+ cases including edge cases nobody thinks about (empty input, unicode keys, huge N). I want to actually practice against a suite that big instead of the 4-test toy problems every prep site gives you. Can you generate me a problem — something practical and stripe flavored like a rate limiter or an idempotency-key store — where the visible test suite has AT LEAST 25 tests and all of them start failing, so I can watch the number go down as I build? one hour timer. python or typescript, whatever, they let you pick on the real one.",
+  "stress_rationale": "Pushes min_tests to 25 on an all_failing build the generator must author from scratch — 25 substantive, non-duplicate tests with expectation sentences that survive the vocabulary-tied quality gate is far above the generator's comfortable output size. Also leaves the runtime deliberately open, forcing the clarifier to commit.",
+  "gates_stressed": [
+   "min_tests",
+   "check_kind_all_failing",
+   "expectation_sentences",
+   "runtime_choice_open",
+   "time_limit_ms"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "extreme-fifteen-minute-lightning",
+  "description": "our bootcamp runs 15 minute 'lightning rounds' every friday — one small problem, blank editor, the timer counts down on screen and it locks at 0:00 and submits whatever you have. i keep freezing in the last 5 minutes. can you make one exactly like that: 15 minutes HARD stop, no hints, no interviewer, something leetcode-easy-ish so its actually finishable in the time. i want to do like ten of these this week honestly",
+  "stress_rationale": "time_limit_ms at the extreme low end (900000) with auto-finalize — tests whether the clarifier honors a tiny budget instead of rounding up to a 'reasonable' 45 minutes, and whether difficulty calibration (an easy that fits 15 min) actually reaches the picker.",
+  "gates_stressed": [
+   "time_limit_ms",
+   "auto_finalize",
+   "no_interviewer_oa",
+   "lc_auto_sourcing",
+   "difficulty_vs_budget"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "extreme-twenty-file-repo",
+  "description": "the onsite debugging round at datadog (or at least what my friend who interviewed in march described) is 'find the bug in a production-sized service' — he said the repo they handed him was BIG, 20+ source files, real layering, routes, middleware, config, the works, and only one test failing somewhere deep in it. every practice debugging exercise ive done was like 3 files which teaches you nothing about navigation. i want the real thing: a repo with at MINIMUM 20 source files (not counting tests), python, exactly one failing test, an interviewer talking to me, about an hour. the point is practicing how i move through a codebase i've never seen, not the fix itself",
+  "stress_rationale": "Inverts the usual use of max_source_files: the user wants a floor of 20+, stressing the validator's file count, the ~5-minute agentic generation budget (big repos blow it up or come back hollow), and whether one_failing_test's exact-count gate survives a large surface area.",
+  "gates_stressed": [
+   "max_source_files",
+   "generation_size",
+   "check_kind_one_failing_test",
+   "ide_surface",
+   "live_interviewer"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "extreme-one-giant-test",
+  "description": "weird one — the OA i failed last month had exactly ONE test. it just ran your whole program against a big input file and diffed your output against the expected output. pass or fail, zero partial credit, zero feedback about WHAT was wrong. brutal. i want to practice under exactly that: one single test, it fails at the start, no other signal to iterate against. 45 minutes, no interviewer. honestly the skill im missing is debugging blind",
+  "stress_rationale": "Degenerate suite size: a 1-test suite satisfies one_failing_test literally but collapses against min-test substance gates and makes the single expectation sentence carry the entire vocabulary-quality check. Also probes whether the generator can resist padding the suite when the spec says one.",
+  "gates_stressed": [
+   "min_tests",
+   "check_kind_one_failing_test",
+   "expectation_sentences",
+   "no_interviewer_oa",
+   "time_limit_ms"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "extreme-three-hour-marathon",
+  "description": "prepping for the SIG quant dev OA — pasted the recruiter email below. its a 3 hour single sitting, four problems, difficulty ramps and problem 4 is quote 'intentionally very challenging, most candidates do not complete it'. i have never coded for 3 hours straight under a timer in my life and i genuinely think stamina and pacing are my gap, not algorithms. can you set up the FULL 3 hours as one session — 4 problems ramping easy to brutal, python, partial credit per problem, autograded at the end, and nobody talking to me because in the real one its just me and the clock. dont shorten it, i specifically need to feel hour three",
+  "context": "Subject: Online Assessment — scheduling\n\nHi John,\n\nGreat speaking with you. Your assessment window opens Monday. A few details so you can prepare:\n\n- Duration: 3 hours, single sitting. The timer cannot be paused once started.\n- Format: 4 programming problems of increasing difficulty. Partial credit is awarded per test case.\n- Problem 4 is intentionally very challenging — most candidates do not complete it, and that is expected.\n- Languages: Python 3 or C++.\n- You may not use external resources or AI assistance. The environment is proctored.\n\nPlease reply with 2–3 slots that work for you this week.\n\nBest,\nRachel\nTechnical Recruiting",
+  "stress_rationale": "time_limit_ms at the extreme high end (10800000) plus the part cap exactly at 4 with a stated difficulty ramp — parts are picked as a diverse set, not a graded ramp, so 'easy to brutal' pressures lc-pick semantics it doesn't have. The pasted email also tempts the clarifier to infer C++ (out of vocabulary).",
+  "gates_stressed": [
+   "time_limit_ms",
+   "part_count_cap",
+   "lc_plural_sourcing",
+   "difficulty_ramp_unexpressible",
+   "no_interviewer_oa",
+   "runtime_python"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "extreme-five-or-six-problems",
+  "description": "got the citadel campus OA invite for next week. checked blind and reddit and everyone who took it last cycle says it was NOT 2 questions like the invite email implies — pasted one of the threads below. consensus is 5 or 6 shortish problems, 90 minutes total, mostly easy-medium leetcode with one hard at the end. i know 5-6 problems in 90 minutes is a lot, thats exactly why i want to practice it that way and not some watered down version. give me the same shape: 5 or 6 problems, 90 minute timer, python, straight autograde, no interviewer",
+  "context": "r/csMajors — Citadel SWE campus OA megathread\n\nu/throwaway8842: took it yesterday. SIX questions?? 90 min. q1-q4 were easy/med (string parsing, hashmap counting, merge intervals type thing, some greedy scheduling), q5 was graph bfs, q6 was straight up hard dp that i skipped entirely\n\nu/quanthopeful: mine had 5. i think they A/B test the count. pace yourself, the last two are weighted way more\n\nu/lowgpa_highhopes: can confirm 90 minutes is not enough lol. do NOT get stuck on q2 like me",
+  "stress_rationale": "The stated part count (5 or 6) is above the hard cap of 4 — the clarifier must clamp, and how it communicates the clamp (silently? at confirm?) is exactly the variance under test. The pasted thread also names problem shapes ('merge intervals type thing') that half-bind to real LC slugs.",
+  "gates_stressed": [
+   "part_count_cap",
+   "lc_plural_sourcing",
+   "time_limit_ms",
+   "no_interviewer_oa",
+   "lc_named_problems"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "extreme-twenty-min-three-parts",
+  "description": "recruiter said the hackerrank screen is short — 20 minutes, 3 quick questions, 'most people finish with time to spare'. i do not trust that at all lol. 20 min across 3 problems is like 6 minutes each?? i want to practice the exact pacing so i know when to bail on a question. 3 small problems, one 20 minute total timer across all of them, autosubmit at zero, python, nobody on the call",
+  "stress_rationale": "Tiny total budget spread over multiple parts — 20 minutes for a 3-part set stresses whether the pipeline lets a multi-part OA carry a time cap that small, and whether the picked problems are actually 6-minute-sized rather than default-difficulty.",
+  "gates_stressed": [
+   "time_limit_ms",
+   "part_count_cap",
+   "lc_plural_sourcing",
+   "auto_finalize",
+   "difficulty_vs_budget"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "extreme-five-named-problems",
+  "description": "every glassdoor review of the roblox OA names the same problems lol, its barely even hidden. across the ~10 reviews i went through i collected these: two sum (the warmup apparently), lru cache, merge intervals, number of islands, and one person swears they got median of two sorted arrays as the closer. can you build me one practice OA that has ALL FIVE of those, in that order, 2 hours, python? i know five is a lot but my logic is if i can do all 5 back to back under one timer then the real thing (probably 3 of these) will feel easy. dont swap any of them out for 'similar' problems, i want those exact five",
+  "stress_rationale": "Five explicitly named LC problems against a parts cap of 4 — named-problem binding via lc-refs must resolve all five slugs and then something has to drop one, against a user who explicitly forbade substitution. Also requests ordering, which a part SET doesn't express, and quotes real problem names into skinned-mode territory.",
+  "gates_stressed": [
+   "lc_named_problems",
+   "part_count_cap",
+   "skinned_vs_verbatim",
+   "part_ordering_unexpressible",
+   "time_limit_ms"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "extreme-untimed-but-tracked",
+  "description": "take-home style OA and i cannot figure out if its timed. the instructions page literally says 'there is no time limit' but the FAQ (pasted below) says the link expires 4 hours after you open it, AND the recruiter told me on the phone that 'strong candidates usually finish within 45 minutes' and that the hiring manager can see elapsed time. so which is it?? no time limit, 4 hours, or 45 minutes? i genuinely dont know how to practice this. i guess give me whatever you think matches reality. the task itself: they give you a spec for a small CLI tool and an empty repo, you build it from scratch, and the tests only run when you submit — you cant run them yourself while working, which is the part that scares me most",
+  "context": "From the assessment FAQ page:\n\nQ: Is the assessment timed?\nA: There is no time limit, and we encourage you to work at your own pace. Please note that the assessment link expires four (4) hours after it is first opened, at which point your work will be submitted automatically.\n\nQ: Can I run the evaluation suite while I work?\nA: No. The evaluation suite runs once, upon submission. We recommend testing your work using your own methods before submitting.",
+  "stress_rationale": "Three mutually contradictory time signals (null, 4h, 45min) force a judgment call the closed vocabulary can't hedge on — time_limit_ms is one number or null. Plus submit-only grading maps to submit:one_shot with can_run_tests pressure: the FAQ says you can't run THEIR suite but can test yourself, right on the coherence-gate boundary.",
+  "gates_stressed": [
+   "time_limit_ms",
+   "submit_one_shot",
+   "can_run_tests_coherence",
+   "blank_start",
+   "check_kind_selection"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "extreme-typescript-forty-specs",
+  "description": "senior-ish frontend platform role but the OA is pure node/typescript — you implement a small async job queue library against a written spec and they run their own jest suite against your build. my friend who did it said its around 40 specs and your score is literally specsPassed/40, no partial credit within a spec. i want to practice with a real 40-spec suite in typescript, all red at the start, 75 minutes, nobody talking to me. and please actually make it TYPESCRIPT — every practice tool ive tried silently defaults to python and it throws my muscle memory off completely, if i see a .py file im closing the tab",
+  "stress_rationale": "Stacks the TypeScript runtime contract (against a python-leaning pipeline and a python-only LC sourcing path) with min_tests at 40 on all_failing — a 40-spec authored jest suite is a heavy generation ask, and the user has made runtime a hard requirement the validator's runtime gate must actually catch if the generator drifts.",
+  "gates_stressed": [
+   "runtime_typescript",
+   "min_tests",
+   "check_kind_all_failing",
+   "generation_size",
+   "no_interviewer_oa",
+   "time_limit_ms"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "extreme-monster-diff-review",
+  "description": "final round for an internal transfer (sister team, but they run it like a real external interview) is a code review exercise: they hand you a pull request and 30 minutes on the clock. the hiring manager straight up warned me the PR is deliberately huge — 'about 1500 lines across 10 or 12 files' — because the whole point is seeing whether you triage or try to read it linearly and drown. can you generate exactly that? a review round: one big diff, at least 10 changed files, meaningfully large not padded, 30 minute cap, NO running anything (its review only, there is no run button in their setup), and an interviewer on the line listening to my walkthrough and poking at what i skip",
+  "stress_rationale": "diff_present at extreme scale: 10-12 files_changed and ~1500 diff lines stress generation size and the files_changed manifest proof, while can_run_tests:false must coexist coherently with a diff check. The 30-minute cap on a huge artifact plus a live interviewer is a rare capability combination.",
+  "gates_stressed": [
+   "check_kind_diff_present",
+   "files_changed",
+   "can_run_tests_coherence",
+   "generation_size",
+   "time_limit_ms",
+   "live_interviewer"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "extreme-twelve-of-fifteen-red",
+  "description": "the debugging round im prepping for works like this: you open the project and 12 of the 15 tests are already failing — my friend who interviews FOR this company confirmed thats the actual setup, its one root-cause bug that cascades through most of the suite but not all of it. you get an hour to make everything green, talking through it with the interviewer the whole time. can you replicate that exact starting state, 12 red 3 green, one underlying cause? the partial-green part matters, it tells you which layer still works",
+  "stress_rationale": "12-of-15 failing fits none of the four check kinds — one_failing_test proves exactly one, all_failing proves all — so the clarifier must shoehorn a shape the closed vocabulary cannot express, and whichever kind it picks, the validator's exact failing-count proof will fight the generated artifact.",
+  "gates_stressed": [
+   "check_kind_selection",
+   "exact_failing_count",
+   "check_kind_one_failing_test",
+   "min_tests",
+   "live_interviewer"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "extreme-all-green-perf-sprint",
+  "description": "optiver-style python round, a friend described it: they give you ONE file, roughly 200 lines, and all 25 tests are already passing when you open it. the task is make it FAST — theres a perf harness with a target time and you have to hit the target without breaking any of the 25 tests. and you get twenty minutes. which is insane. i want exactly that: a single source file, 25+ tests that are all green at the start and must STAY green, some perf target to hit, 20 minute hard timer, no interviewer. the panic of refactoring live code you didnt write with everything green and a clock running is the specific thing i need to rehearse",
+  "stress_rationale": "The one brief built on all_passing, and it maxes every knob at once: min_tests 25, max_source_files 1, a 20-minute cap, and a performance target that the closed CheckSpec cannot express at all — the perf criterion has to survive as blueprint prose while the validator only proves 'all pass', a gap the generated problem can silently fall into.",
+  "gates_stressed": [
+   "check_kind_all_passing",
+   "min_tests",
+   "max_source_files",
+   "time_limit_ms",
+   "perf_target_unexpressible",
+   "no_interviewer_oa"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "extreme-nested-subparts",
+  "description": "the OA im prepping for is officially '2 questions' but everyone who took it says question 2 is really three parts — 2a, 2b, 2c — that build on each other. like 2a is parse the input format, 2b adds a query API on top of whatever you built in 2a, and 2c is 'now make 2b fast for large inputs'. so is that 2 problems or 4?? no idea how to even count it. 75 minutes total, python, autograded. i would rather over-prepare, so if you can do the version where the sub-parts are separately graded things, do that one. but they genuinely do share code in the real thing which i assume you cant really simulate",
+  "stress_rationale": "Ambiguous part arithmetic (2 stated, 4 effective) plus DEPENDENT sub-parts that share code — the flat multi-part model binds independent problems with separate solution files, so 'b builds on a' is structurally unexpressible; the clarifier must pick a count and silently discard the dependency, and the user has even predicted the failure.",
+  "gates_stressed": [
+   "part_count_cap",
+   "dependent_parts_unexpressible",
+   "check_kind_selection",
+   "time_limit_ms",
+   "no_interviewer_oa"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "extreme-hundred-case-judge",
+  "description": "the startup im interviewing with uses a codeforces style judge for their screen — one hard problem, and the results page literally shows 'Running test 1/100...' with a verdict per case, your score is cases passed out of 100. a guy on their discord said his problem was leetcode's trapping rain water very thinly reskinned (different story, same problem). can you give me trapping rain water but with a genuinely big case suite, like 100 tests, so the partial-credit grind feels like the real judge? watching 63/100 and hunting for the edge case is a skill in itself. 60 minutes, python, no interviewer",
+  "stress_rationale": "min_tests at 100 against an LC-sourced build — the suite comes from pre-verified dataset I/O, so this probes whether the vendored record for a named hard even carries that many cases and what happens when the deterministic converter can't meet the floor. Also binds a single named problem ('trapping rain water') with an explicit reskin request, riding the skinned-mode default.",
+  "gates_stressed": [
+   "min_tests",
+   "lc_named_problems",
+   "lc_convert_case_count",
+   "skinned_vs_verbatim",
+   "time_limit_ms",
+   "no_interviewer_oa"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "domain-cobol-copybook-parser",
+  "description": "I have an onsite next week with a bank in Charlotte thats doing a big mainframe modernization push, they are hiring people to move COBOL batch jobs to python services. The team lead told me on the phone the coding exercise is basically \"we hand you a COBOL copybook and you write the python that parses the flat file it describes.\" I haven't touched COBOL since a co-op in 2019. Stuff I remember them caring about: PIC X(10) vs PIC 9(7)V99 with the implied decimal point, COMP-3 packed decimal (which i never fully understood, two digits per byte and a sign nibble??), OCCURS clauses for repeating groups, and signed overpunch characters in the last digit like { and }. The real files are EBCDIC exports off the mainframe but for the exercise i'm pretty sure they use plain ascii fixed width so you dont need codec stuff. Can zenkai make me a practice round where I get a copybook-ish record layout spec and have to implement the parser from scratch, with a test suite that actually checks the tricky parts — implied decimals, packed decimal, overpunch signs, repeating groups? Like all the tests failing at the start and I make them green. 60 minutes I think is what she said. Python obviously since python is the modernization target language.",
+  "gates_stressed": [
+   "runtime_choice_python",
+   "check_kind:all_failing",
+   "expectation_sentence_vocabulary",
+   "min_test_count"
+  ],
+  "stress_rationale": "The generator must encode genuinely obscure COBOL record-layout semantics (COMP-3 packed decimal, signed overpunch, OCCURS) as a deterministic python parsing problem. Expectation sentences have to use mainframe vocabulary far outside the LC comfort distribution while still passing the vocabulary-tie gate, and the all-failing implement-from-spec shape needs enough real tests to satisfy min counts without inventing untestable EBCDIC fluff.",
+  "sourced_hint": false
+ },
+ {
+  "id": "domain-kdbq-prop-shop-4part",
+  "description": "Final round OA at a prop trading shop in chicago, their whole stack is kdb+/q. Its 4 short questions, 60 minutes total, no interviewer, screen recorded. The recruiter said explicitly you can answer in python if you don't write q, they just want to see the logic — apparently half their hires learn q on the job. q is insanely terse and I can barely read it, one line does what 30 lines of pandas does. I pasted one of the practice snippets they sent below, I think its doing an asof join and then a vwap by symbol? Can you build me a 4 part timed practice set that mimics this kind of thing — table-ish operations, joins on time, grouped aggregations, all in plain python (no pandas, i want to do it by hand with dicts and lists). No interviewer, strict timer, like the real thing.",
+  "context": "practice snippet from their prep pdf:\n\nt:([]time:09:30 09:31 09:33t;sym:`AAPL`AAPL`MSFT;px:189.2 189.4 411.1;size:100 250 80)\nq:([]time:09:30 09:32t;sym:`AAPL`MSFT;bid:189.1 411.0;ask:189.3 411.2)\naj[`sym`time;t;q]\n\nselect vwap:size wavg px by sym from t where time within 09:30 16:00t\n\n\"explain what aj does when there is no quote at or before the trade time\"",
+  "gates_stressed": [
+   "multi_part_set_4",
+   "oa_etiquette_no_interviewer",
+   "runtime_choice_python",
+   "time_limit",
+   "expectation_sentence_vocabulary",
+   "max_source_files"
+  ],
+  "stress_rationale": "Hits the 4-part cap on multi-part OA sets while the source material is q code whose semantics (asof joins, wavg by sym, null handling when no prior quote exists) must be re-expressed as deterministic python parts. The pasted q tempts the generator to reference untestable q constructs in statements, and 4 parts squeeze against max_source_files and per-part test-count gates simultaneously.",
+  "sourced_hint": false
+ },
+ {
+  "id": "domain-erlang-otp-supervisor-bug",
+  "description": "Interviewing at a messaging infrastructure company, a big chunk of their stack is erlang/OTP (they came out of the ejabberd world i think). The engineer who did my phone screen said the onsite debugging exercise is \"language agnostic\" — they port a supervision tree scenario into whatever language you're comfortable in, because what they're testing is whether you understand restart semantics not erlang syntax. So I want to practice hunting a bug in something that behaves like an OTP supervisor: restart strategies (one_for_one vs one_for_all vs rest_for_one), max restart intensity within a time window, child processes that crash and either get restarted or take siblings down with them. I always get confused about exactly when a restart cascades vs when the supervisor itself gives up and dies. Can zenkai generate a python repo that simulates that — like a little supervisor class with child specs — with one test failing that catches a planted bug in the restart logic? With the interviewer asking me questions while i dig. Maybe 50 min.",
+  "gates_stressed": [
+   "check_kind:one_failing_test",
+   "exact_failing_test_count",
+   "expectation_sentence_vocabulary",
+   "runtime_choice_python"
+  ],
+  "stress_rationale": "OTP supervision semantics are inherently concurrent BEAM-process behavior that must be faked as a synchronous, deterministic python simulation. The planted bug in restart-cascade logic has to fail exactly one test — hard when restart intensity windows imply time — and expectation sentences must handle erlang vocabulary (one_for_one, restart intensity) that the model rarely writes tests around.",
+  "sourced_hint": false
+ },
+ {
+  "id": "domain-fighting-game-rollback-desync",
+  "description": "I'm interviewing at a fighting game studio for a netcode position. A friend who interviewed last year told me the exercise: they give you a small deterministic game simulation and recorded inputs from two players, and rollback networking is either half-implemented or has a planted desync — when a remote input arrives late you're supposed to rewind to the last confirmed frame, re-apply the corrected inputs, and re-simulate up to the present frame. The classic planted bugs are apparently: iterating a hash map in nondeterministic order inside the sim step, float accumulation instead of fixed point, and saving the state snapshot AFTER applying the speculative input instead of before. The subtle thing is desyncs dont show up immediately, the checksums only diverge like 100+ frames later, so you cant just eyeball frame 1. I'd love a debugging round in typescript (their tooling and replay viewer are TS, the engine is C++ but they said the exercise isnt), with a tiny fixed-point sim, and one failing test that compares end-state checksums after a long input script. 45 minutes, interviewer present asking me to narrate.",
+  "gates_stressed": [
+   "runtime_choice_typescript",
+   "check_kind:one_failing_test",
+   "deterministic_tests",
+   "time_limit",
+   "exact_failing_test_count"
+  ],
+  "stress_rationale": "Rollback desyncs are emergent-over-time bugs: the generator must build a deterministic TS simulation where the planted defect provably fails exactly one checksum test after many frames — reliably, not flakily. Any accidental nondeterminism in the generated harness itself (object key order, float drift) makes the round fail validation, so the domain attacks the generator's own determinism discipline.",
+  "sourced_hint": false
+ },
+ {
+  "id": "domain-infusion-pump-reference-model",
+  "description": "Ok so the actual job is embedded C on infusion pumps — class C software under IEC 62304, MISRA, the whole regulated thing. But the hiring manager told me the coding screen deliberately is NOT in C: they have you implement a python \"reference model\" of the dose-rate controller, because thats literally how their verification team works, golden model in python checked against the firmware. Things he said to expect: fixed point math (Q16.16 i think), because floats are banned in the dose calculation path on the device; bolus dose limits and lockout intervals; watchdog / timeout behavior where the pump must fall into a safe state if the controller stops responding; and unit conversion between mg and mcg and mL/hr which is apparently where the famous real-world accidents came from so they are obsessive about it. Heres my question — can the practice round's tests actually enforce the no-floating-point thing? Like fail me if my dose path uses floats anywhere? I don't even know if thats checkable in python. If not, at least tests that would catch the rounding differences between float math and Q16.16 math at the boundary values. Implement-from-spec style, everything red at the start. Take your time on the time limit, maybe 70 minutes, this stuff is fiddly.",
+  "context": "from the JD: \"Software Engineer II — Infusion Systems. Development under IEC 62304 (Class C) and ISO 14971 risk management. Firmware in C per MISRA C:2012. Note: the technical screen is conducted in Python — candidates implement a reference model of the dose-rate controller and defend it against our verification scenarios. Familiarity with fixed-point arithmetic and unit-safety practices strongly preferred.\"",
+  "gates_stressed": [
+   "expectation_sentence_vocabulary",
+   "check_kind:all_failing",
+   "min_test_count",
+   "runtime_choice_python",
+   "time_limit"
+  ],
+  "stress_rationale": "The user explicitly requests a gate the harness cannot literally enforce (detect floating point usage in python), so the clarifier must translate safety-critical intent into checkable boundary-value tests without silently promising the impossible. Q16.16 fixed-point semantics and mg/mcg unit safety push expectation sentences deep into regulated-medical vocabulary the generator has never phrased test assertions in.",
+  "sourced_hint": false
+ },
+ {
+  "id": "domain-salesforce-apex-hackerrank-3part",
+  "description": "Got a hackerrank OA for a salesforce developer role, 3 questions, 90 minutes, no interviewer. The role itself is all Apex + SOQL + governor limits but the OA platform doesnt even offer Apex (recruiter email pasted below, she lists Java/JS/Python). A friend who took the same OA in the spring told me what the three were, roughly: one was literally valid parentheses just reskinned as matching merge-field brackets in an email template body, one was a SOQL-ish thing where you group a list of records by a field and aggregate, and one was about respecting governor limits — chunk a list of N records into batches of max 200 for DML, with some edge case around exactly 200. Can I get a 3 part practice set shaped exactly like that? Python is fine for all of them, I just need the reps under a timer with nobody talking to me. One request: make the parentheses one the REAL leetcode valid parentheses under the hood if you can, so afterwards i can compare my solution against known good ones. The other two can be invented.",
+  "context": "from the recruiter email:\n\"Hi John,\nGreat news — the team would like to move you to the online assessment stage. You'll receive a HackerRank link valid for 7 days. Details: 3 questions, 90 minutes, one sitting. Available languages: Java, JavaScript, Python 3 (note: Apex is not available on the assessment platform — this section evaluates general problem solving). The final round will include an Apex-specific pairing session.\nBest, Priya\"",
+  "gates_stressed": [
+   "multi_part_set_3",
+   "lc_sourced_binding",
+   "oa_etiquette_no_interviewer",
+   "time_limit",
+   "part_count_vs_named_problems"
+  ],
+  "sourced_hint": true,
+  "stress_rationale": "A 3-part set where exactly one part is a named LC problem (valid parentheses) that must be dataset-bound while the other two parts are invented Apex-flavored problems — stressing the plural-sources machinery's ability to mix sourced and unsourced parts, keep the skin (merge-field brackets) from altering the pre-verified I/O, and hold OA etiquette with no interviewer."
+ },
+ {
+  "id": "domain-bioinformatics-vcf-two-part",
+  "description": "Genomics startup, pipeline engineer role (they run nextflow on AWS batch but the screen is plain python live coding, no bioinformatics libraries). The hiring manager was unusually upfront about the format: two parts, 60 minutes, interviewer on the call. Part 1 is a warmup that he literally described as \"merge intervals but on genomic coordinates\" — records with (chrom, start, end), half-open like BED format, and you have to merge overlapping regions PER CHROMOSOME which is the twist over the leetcode version. Part 2 is bigger: parse a simplified VCF-ish text format (header lines starting with ##, a #CHROM column line, then tab separated variant records) and compute per-sample stats like het/hom counts. He warned me that 1-based VCF coordinates vs 0-based BED coordinates trips up literally every candidate and they watch for it. Can zenkai build this as a 2 part round? And if the warmup can be the actual leetcode merge intervals under the hood, calibrated difficulty wise, that would be ideal — but keep the genomic skin because thats how theyll phrase it.",
+  "gates_stressed": [
+   "lc_sourced_binding",
+   "multi_part_set_2",
+   "expectation_sentence_vocabulary",
+   "runtime_choice_python",
+   "skinned_source_semantics"
+  ],
+  "sourced_hint": true,
+  "stress_rationale": "The named LC binding (merge intervals) comes with a user-requested semantic extension (per-chromosome grouping, half-open coordinates) that would change the graded I/O — the pipeline must either keep the pre-verified suite intact under a pure reskin or resolve the tension explicitly. Part 2 is pure domain invention with VCF parsing vocabulary (het/hom, 1-based vs 0-based) stressing the expectation-sentence gates."
+ },
+ {
+  "id": "domain-audio-dsp-biquad",
+  "description": "Interviewing at an audio plugin company (think serum/fabfilter tier). Real codebase is C++/JUCE but the screen is \"any language you like.\" From a glassdoor review (pasted below) the exercise is implementing a biquad filter — direct form 1 I believe, coefficients from the RBJ audio EQ cookbook for a lowpass with given cutoff and Q — plus a ring buffer for a delay line. What worries me is grading: how do tests even judge a filter implementation? sample-by-sample comparison against a reference output with some epsilon tolerance i guess? i do NOT want tests that fail because of 1e-15 float noise. Python please, plain python, no numpy so i actually understand every multiply. The review also says they ask about denormal numbers killing performance which i dont think even manifests the same way in python, so idk if that part is practicable at all. Implement from scratch, all tests red at the start, 55 min.",
+  "context": "glassdoor interview review (Audio Software Engineer, posted ~8 months ago):\n\"Phone screen then a 1hr coding exercise. Coding was implementing a biquad (they give you the RBJ cookbook formulas on a slide) and processing a buffer of samples through it, then a fixed-size circular buffer for a delay effect. Interviewer cared a lot about edge cases: what happens at cutoff near nyquist, resetting filter state between channels, and asked me to explain denormals and why you'd flush to zero. Reasonable but you need to actually know DSP basics, cant leetcode-grind your way through it.\"",
+  "gates_stressed": [
+   "float_tolerance_grading",
+   "check_kind:all_failing",
+   "expectation_sentence_vocabulary",
+   "runtime_choice_python"
+  ],
+  "stress_rationale": "Grading a DSP filter forces the generator to author tolerance-based numeric assertions that are deterministic yet not brittle at 1e-15 — a test-authoring style LC problems never require. The denormal question is a domain concept that has no clean python analog, so the clarifier must drop or translate it without leaking an untestable expectation into the spec.",
+  "sourced_hint": false
+ },
+ {
+  "id": "domain-solidity-audit-reentrancy-analog",
+  "description": "Career switching from backend into smart contract auditing, got an interview at one of the audit firms (trail of bits / OZ tier, wont say which). Interesting format: they do NOT test solidity in the first technical round. Instead they hand you a python simulation of a token/vault system with a vulnerability planted and you audit it live, talking through your process while the interviewer probes. The bug classes they apparently pull from: a reentrancy analog where withdraw() invokes a user-supplied hook/callback BEFORE decrementing the balance (checks-effects-interactions violated), integer truncation in fee math where rounding always favors the user, and share-price inflation on the first depositor of a vault. I want exactly that as a practice round: a repo where the code looks clean, exactly one test fails, and the fix is a small reordering or a rounding direction change. 60 minutes, interviewer pressure on. If you can make the planted bug the checks-effects-interactions ordering one specifically, even better, thats the one i keep missing in CTFs.",
+  "gates_stressed": [
+   "check_kind:one_failing_test",
+   "exact_failing_test_count",
+   "expectation_sentence_vocabulary",
+   "runtime_choice_python"
+  ],
+  "stress_rationale": "The user prescribes the exact vulnerability class, and the generator must plant a reentrancy analog in synchronous python — a language where reentrancy barely exists — such that exactly one test catches it. EVM/audit vocabulary (checks-effects-interactions, share inflation, rounding direction) stresses the expectation-sentence gates and tempts the generator into untestable security prose.",
+  "sourced_hint": false
+ },
+ {
+  "id": "domain-gis-knearest-typescript",
+  "description": "GIS company, web mapping team (esri competitor basically), so the interview is in typescript since thats what the whole front end and their tile server tooling is in. Recruiter gave me the topic list straight up: point-in-polygon via ray casting (with the nasty edge cases when the ray hits a vertex exactly), haversine great-circle distance, and \"find the k nearest features to a clicked point\" — which, lets be honest, is just k closest points to origin from leetcode but with lat/lng pairs and haversine instead of euclidean distance. Explicit rule: no geometry libraries, no turf.js, they want the math from scratch. Can i get a TS round covering this? For the k-nearest one, if it can literally BE the leetcode problem under the hood that helps me calibrate. One more thing — map projections completely melt my brain, if the generated problem starts talking about web mercator or EPSG codes ill panic, please keep everything in plain lat/lng degrees. 60 min, with interviewer.",
+  "gates_stressed": [
+   "runtime_choice_typescript",
+   "lc_sourced_binding",
+   "skinned_source_semantics",
+   "expectation_sentence_vocabulary"
+  ],
+  "sourced_hint": true,
+  "stress_rationale": "Names an LC problem (k closest points to origin) but requests a distance-metric swap (haversine over euclidean) that would invalidate the pre-verified I/O — the binding path must reskin without changing graded semantics or surface the conflict. TS runtime for computational geometry plus a negative constraint (never mention projections/EPSG) tests whether blueprint prose constraints survive into generation."
+ },
+ {
+  "id": "domain-fortran-stencil-diff-round",
+  "description": "Interviewing with a national lab group, computational physics — their life is migrating fortran 77 codes to modern fortran with python bindings and they screen for people who can read numerics and make them fast. They told me the format in advance because its basically a take-home done live: you get a WORKING but deliberately slow python port of a 2D heat diffusion stencil (5-point laplacian, explicit euler stepping, halo/ghost cells around the boundary), all tests already passing, and the task is make it faster WITHOUT changing any numerical results — theyre watching whether you hoist allocations out of the time loop, avoid recomputing the halo every step, maybe restructure the update sweep, that kind of thing. So the starting repo should have zero failing tests and the deliverable is essentially the diff plus my explanation. Is that a shape zenkai supports? Tests green before, tests green after, the change itself is what gets judged. 90 minutes, no interviewer for the first hour then they join to review my diff.",
+  "gates_stressed": [
+   "check_kind:diff_present",
+   "runtime_choice_python",
+   "time_limit",
+   "expectation_sentence_vocabulary"
+  ],
+  "stress_rationale": "An all-green starting state where the deliverable is the diff exercises the rarest check kind — the clarifier must resist its prior of always planting a failing test, and the validator's exact-failing-count gate must be satisfied at zero. Stencil/halo/ghost-cell HPC vocabulary is far outside the generator's test-writing comfort zone, and results-must-not-change is a bitwise-determinism constraint the tests must actually encode.",
+  "sourced_hint": false
+ },
+ {
+  "id": "domain-actuarial-sas-migration-oa",
+  "description": "So this is a weird one. Big insurance company, \"actuarial transformation\" team, which translated from corporate speak means: two decades of SAS programs that price and reserve everything, and they are converting it all to python. The OA is 2 parts, 75 minutes total, no human on the call, webcam proctored. Part 1 per the prep sheet: they show you a SAS data step — with RETAIN across rows, BY-group processing with FIRST.var and LAST.var flags, the implicit loop over observations — and you reimplement the same logic in python. plain python, i asked if pandas is allowed and the coordinator didnt know, so assume no, dicts and lists. If youve never read SAS, RETAIN means a variable keeps its value across iterations instead of resetting, and FIRST./LAST. are true on the first/last row of each by-group, its how everyone does grouped running totals. Part 2 is actuarial-flavored: a loss reserving triangle, compute chain-ladder age-to-age development factors and project the ultimate losses, they give the triangle as rows of paid amounts by accident year and development period. I took exam P years ago and remember roughly none of it, but the math itself is just weighted ratios and cumulative products, its the off by one on development periods thatll kill me. Can zenkai generate this as a two part timed OA? Deadpan corporate tone in the problem statements would honestly be good practice for the real thing.",
+  "gates_stressed": [
+   "multi_part_set_2",
+   "oa_etiquette_no_interviewer",
+   "expectation_sentence_vocabulary",
+   "runtime_choice_python",
+   "min_test_count"
+  ],
+  "stress_rationale": "SAS data-step semantics (RETAIN, FIRST./LAST. by-group flags, the implicit row loop) and chain-ladder reserving are about as far from LC distribution as it gets — both parts are pure invention that must independently clear every validator gate, and the expectation sentences must faithfully carry actuarial/SAS vocabulary without collapsing into generic array-problem phrasing.",
+  "sourced_hint": false
+ },
+ {
+  "id": "domain-systemverilog-scoreboard-green",
+  "description": "Design verification role at a chip company. Day job is SystemVerilog/UVM but their coding screen is in python — you build the golden reference model / scoreboard side, which is honestly how modern DV teams work anyway (cocotb etc). The exercise per my referral: a reference model of a synchronous FIFO with almost_full / almost_empty threshold flags, fed a log of read/write transactions, and your model's flag predictions get checked against expected behavior cycle by cycle. Now here's the twist I actually want to practice, because its how their onsite really works: they hand you code where the provided tests all PASS, and the model is still wrong — like the almost_full flag asserting at depth >= threshold when the spec says strictly greater, an off by one that the existing tests just dont cover. You have to find it from reading the spec against the code, basically a code review under time pressure. Can zenkai generate a round where nothing is red when i open it and there is still a genuine planted defect i need to find and demonstrate? Ideally i'd show its wrong by writing the missing test myself. 50 minutes, interviewer present.",
+  "gates_stressed": [
+   "check_kind:all_passing",
+   "expectation_sentence_vocabulary",
+   "runtime_choice_python",
+   "planted_bug_without_failing_test"
+  ],
+  "stress_rationale": "all_passing with a genuinely planted defect is the adversarial corner of the check-kind vocabulary: the validator must accept a fully green suite while the manifest still names a real, demonstrable bug, and the generated tests must deliberately not cover the defect without looking rigged. Hardware DV vocabulary (cycles, transactions, threshold assertion semantics) stresses the sentence-quality gates.",
+  "sourced_hint": false
+ },
+ {
+  "id": "domain-ocaml-terse-immutable",
+  "description": "jane street style shop, interviews are in ocaml but they said practice the logic in whatever you want. i want an immutable interval-map exercise, functional updates only, every operation returns a new structure, zero mutation anywhere. typescript i guess? better type system than python for this. 40 minutes. and if its even possible, make the tests FAIL if my code mutates the original structure instead of returning a fresh one.",
+  "gates_stressed": [
+   "runtime_choice_typescript",
+   "time_limit",
+   "check_kind:all_failing",
+   "clarifier_underspecification"
+  ],
+  "stress_rationale": "A near-minimum-length brief that forces the clarifier to infer almost the entire spec from 60 terse words, plus a hard-to-enforce ask (tests that detect mutation) that must degrade into something actually checkable — deep-freeze or reference-identity assertions in TS — rather than an untestable promise. Functional-persistence idioms fight the generator's default imperative test style.",
+  "sourced_hint": false
+ },
+ {
+  "id": "domain-scada-water-plc-interlock",
+  "description": "Long shot but here goes. I've been an automation tech at a municipal water treatment plant for 6 years — ladder logic, Allen-Bradley PLCs, wonderware HMI screens, the whole IEC 61131 world — and im interviewing for a \"controls software engineer\" job at a company that builds SCADA supervisory software in python, so like one level up from the PLCs. The interview has a debugging exercise in python and honestly ive written maybe 2000 lines of python in my life, all scripts. What im told is the exercise simulates the kind of logic i already know cold from ladder: a state machine for a pump sequence with interlocks and timers. In my world its all TON timers (on-delay, output goes true after the input has been true for the preset time), debounce on float switches because they chatter, permissives and interlocks (chlorine pump must NOT run unless the flow switch has proven flow for 5 seconds, that kind of thing), fail-safe on loss of signal. The horror stories in this industry are all interlock bugs — a pump that keeps injecting chlorine after flow stopped because someone latched a bit and never unlatched it. Anyway what i want from zenkai: a python round that simulates a small pump/chemical-feed controller with a planted interlock or timer bug and one failing test that exposes it, and me having to find it while the interviewer asks questions, because thats the format. Two important things. One, the time stuff cant be real sleeps right? in ladder the scan cycle is the clock — i assume the python version should take time as an input i can step, otherwise the tests would take forever and be flaky. Two, please keep the repo SMALL, like 3 source files max — im not a software engineer yet, when i opened a friends practice repo with 14 files i just shut the laptop. 60 minutes. Sorry for the wall of text, day shift was long.",
+  "gates_stressed": [
+   "check_kind:one_failing_test",
+   "deterministic_tests",
+   "max_source_files",
+   "expectation_sentence_vocabulary",
+   "runtime_choice_python"
+  ],
+  "stress_rationale": "A long noisy brief with the two load-bearing requirements buried near the end (injectable stepped clock instead of real sleeps; a hard 3-source-file cap) — exactly the extraction test a rambling real user poses. TON-timer and interlock semantics from ladder logic must become deterministic clock-injected python, and the file cap collides with the generator's tendency to sprawl simulation scaffolding.",
+  "sourced_hint": false
+ },
+ {
+  "id": "domain-r-quant-sliding-window-vol",
+  "description": "Quant research team at an asset manager — the researchers live in R (xts, data.table, decades of internal R packages) but the coding screen is in python because thats where the platform is heading, recruiter email pasted below. She told me more than she probably should have: two questions, 45 minutes, interviewer on zoom. Question one she called \"a classic — sliding window maximum,\" her words. Question two is domain flavored: given a series of prices, compute rolling realized volatility over a trailing window (log returns, then stdev over the window, annualized with sqrt 252), handling the warmup period where the window isnt full yet — she said what they actually grade is whether you handle the partial-window edge correctly and whether its O(n) not O(n·w). Can zenkai build this as a 2 parter where part 1 is the ACTUAL leetcode sliding window maximum (i want to be calibrated against the real thing, monotonic deque and all) and part 2 is the rolling vol question? Python for both. Please dont let the finance one drift into R-isms, ive never used R and the problem should not assume i have.",
+  "context": "recruiter email excerpt:\n\"Hi John — confirming your technical screen for Tuesday. Format: 45 minutes with one of our senior researchers, two coding questions in Python (please note: while much of the research codebase is in R, all interview coding is Python 3, no libraries beyond the standard library). The first question is a standard algorithms warmup; the second is closer to our day-to-day work with time series. Camera on, screen shared. — Danielle\"",
+  "gates_stressed": [
+   "lc_sourced_binding",
+   "multi_part_set_2",
+   "runtime_choice_python",
+   "time_limit",
+   "expectation_sentence_vocabulary"
+  ],
+  "sourced_hint": true,
+  "stress_rationale": "A mixed 2-part set binding a named LC-hard problem (sliding window maximum) verbatim-by-intent next to an invented quant part with precise numeric grading (log returns, annualization, partial-window semantics) that needs tolerance-aware tests. The brief's R-heavy framing plus an explicit no-R-isms constraint tests whether domain color contaminates the python expectation sentences."
+ },
+ {
+  "id": "lang-es-onsite-debug",
+  "description": "hola! tengo entrevista presencial con mercado libre el 28 de agosto (backend, equipo de pagos). la ronda tecnica según la recruiter es asi: te abren un repo en python que ya existe, hay un bug plantado, y tenes que encontrarlo y arreglarlo mientras hablas en voz alta con el entrevistador. dura una hora mas o menos, y podes correr los tests las veces que quieras. quiero practicar exactamente eso — un repo de verdad, no ejercicios de juguete tipo leetcode. mi python esta bien pero me trabo mucho explicando mientras leo codigo que no escribi yo, y en ingles peor todavia (la entrevista es en ingles 😅). si se puede que los problemas sean de backend/apis/pagos porque es fintech. gracias!!",
+  "stress_rationale": "Entirely in Spanish with informal rioplatense grammar and no English keywords except 'tests' and 'leetcode'. The clarifier must extract a full spec (repo start, one_failing_test, interviewer on, ~60min limit, python, a real ISO date, fintech emphasis) from another language, and the blueprint/generator must honor a domain skin ('pagos') that stresses the expectation-sentence vocabulary gate.",
+  "gates_stressed": [
+   "non-english-clarifier-inference",
+   "time_limit_ms-parsing",
+   "check-kind-one_failing_test",
+   "runtime-choice-python",
+   "date-extraction",
+   "expectation-sentence-vocabulary"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "lang-zh-bytedance-oa",
+  "description": "下周有字节跳动后端开发的笔试(OA),朋友刚考完跟我说的情况:90分钟3道编程题,难度递增,ACM模式要自己处理输入输出,没有面试官,全程自己做,提交一次算一次。他考到的题:第一题是两数之和的变种,第二题好像是硬币兑换(就是dp那道经典题),第三题是图的题,应该是岛屿数量或者类似的。我想按这个格式练:3道题一组,90分钟计时,python。另外我英文读题有点慢,题目还是用英文吧,因为真实笔试就是英文的,但是希望表述不要太绕。谢谢",
+  "stress_rationale": "Mandarin brief where the named problems appear only as Chinese titles (两数之和 = two-sum, 硬币兑换 = coin-change, 岛屿数量 = number-of-islands — all present in the vendored dataset). Stresses whether cross-language named_problems extraction reaches lc-refs at all, plus a 3-part OA set, 90-minute limit, one-shot submit, and interviewer=false, all inferred from non-English text.",
+  "gates_stressed": [
+   "lc-binding-cross-language",
+   "part-count-extraction",
+   "multi-part-source-parts",
+   "non-english-clarifier-inference",
+   "interviewer-false-oa-etiquette",
+   "submit-one_shot",
+   "time_limit_ms-parsing"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "lang-hinglish-amazon-oa",
+  "description": "bhai mera amazon ka OA hai next week friday ko, SDE-1 new grad wala. format ye hai — 2 coding questions, 70 minutes total, koi interviewer nahi hota bas akele karna hai aur submit ek hi baar hota hai i think? mere dost ko pichle month ek island count karne wala question aaya tha (grid me 1s aur 0s, count the islands wala) aur dusra tha anagrams ko group karna. blank editor se start hota hai, function likhna hota hai aur saare test cases pass karne padte hai, kuch hidden bhi hote hai. main python me karunga. workstyle/behavioral wala section mat banao wo alag cheez hai, sirf coding chahiye. aur haan difficulty LC medium rakhna, hard mat dena warna confidence aur gir jayega 😂",
+  "stress_rationale": "Dense Hinglish code-switching with the named problems described functionally ('island count karne wala', 'anagrams ko group karna') rather than by title — binding number-of-islands and group-anagrams requires semantic resolution through romanized Hindi. Also stresses filtering an out-of-scope section (workstyle assessment), 2-part OA, blank start, all_passing with hidden tests, relative date.",
+  "gates_stressed": [
+   "lc-named-problem-binding",
+   "non-english-clarifier-inference",
+   "part-count-extraction",
+   "starts_from-blank",
+   "check-kind-all_passing",
+   "interviewer-false-oa-etiquette",
+   "out-of-scope-section-filtering",
+   "relative-date-parsing"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "lang-genz-cooked",
+  "description": "ok so. i am literally so cooked rn 😭😭😭 meta E4 phone screen in 10 days and they do 2 mediums in like 37 minutes which is UNHINGED behavior?? my friend said one of hers was trapping rain water (the evil one 💀💀💀) and i cannot do that problem to save my LIFE. pls make me timed sets, 2 problems, ~40 min, python, and make one of them trapping rain water fr fr. also — no interviewer helping... wait actually there IS a person at meta screens they just sit there and vibe 🧍 whatever u decide there. main thing = TIMER + pressure. i need to lock in. no cap this app is my last hope bestie ✨🙏",
+  "stress_rationale": "Emoji-saturated Gen-Z register with slang carrying the actual spec ('2 mediums in like 37 minutes', 'make one of them trapping rain water'). Contains an unresolved self-contradiction about the interviewer ('no interviewer... wait actually there IS a person') that the clarifier must surface or decide, a named LC bind buried in noise, an odd 37-minute limit, and a 2-part set.",
+  "gates_stressed": [
+   "lc-named-problem-binding",
+   "contradiction-resolution",
+   "time_limit_ms-parsing",
+   "part-count-extraction",
+   "signal-extraction-from-noise",
+   "interviewer-ambiguity"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "lang-recruiter-thread-codesignal",
+  "description": "honestly not sure which part of this matters so im pasting the entire email chain with the recruiter below, newest at the top the way gmail gave it to me. the actual test details are in there somewhere, i think in her second email? just make my practice match whatever she describes. i have like 9 days and i havent done a timed assessment since college.",
+  "context": "From: Priya Raghunathan <priya.r@meridiantrading.com>\nTo: John Zhang <zhang4021@gmail.com>\nDate: Thu, Aug 13, 2026 at 4:12 PM\nSubject: Re: Re: Re: Meridian Trading | Coding Assessment — Next Steps\n\nHi John,\n\nNo problem at all — Tuesday works. I've asked our coordinator to hold the debrief slot.\n\nAnd yes, the link is single-use, so please only open it when you're ready to start. Good luck!\n\nBest,\nPriya\n\nPriya Raghunathan\nTalent Acquisition Partner | Meridian Trading LLC\n(212) 555-0184 | meridiantrading.com\nBook time with me: calendly.com/priya-meridian/15min\n\nOn Thu, Aug 13, 2026 at 2:47 PM John Zhang <zhang4021@gmail.com> wrote:\n> Hi Priya, quick question — if I take it Saturday morning is that ok or does it\n> need to be a weekday? Also is the link one-time use?\n> Thanks, John\n\nOn Wed, Aug 12, 2026 at 10:03 AM Priya Raghunathan <priya.r@meridiantrading.com> wrote:\n> Hi John,\n>\n> Great speaking with you yesterday! As discussed, the next step is our online\n> assessment. A few details so you know what to expect:\n>\n> - Platform: CodeSignal — you'll receive the General Coding Assessment (GCA)\n> - Duration: 70 minutes, timer starts as soon as you open the assessment\n> - Format: four tasks of increasing difficulty. Most candidates finish 3 of 4;\n>   a strong score does not require completing everything.\n> - Languages: your choice; the majority of our candidates use Python\n> - Environment: browser-based editor with a run button for the provided sample\n>   tests; final scoring uses hidden tests at submission\n> - Proctoring: webcam and screen recording are required (ID check at start)\n> - You have ONE attempt. The invitation link expires 7 days from this email.\n>\n> Please find the candidate prep guide attached (Meridian_GCA_CandidateGuide.pdf).\n> Let me know once you've completed it and we'll schedule the follow-up debrief.\n>\n> Warmly,\n> Priya\n\nOn Tue, Aug 11, 2026 at 5:31 PM Auto-Reply <recruiting-ops@meridiantrading.com> wrote:\n> I am currently out of office with limited access to email, returning Aug 12.\n> For urgent scheduling matters please contact coordination@meridiantrading.com.\n\nOn Tue, Aug 11, 2026 at 5:30 PM John Zhang <zhang4021@gmail.com> wrote:\n> Hi Priya, thanks for the call today — excited to move forward. Sending my\n> availability as requested: any weekday after 4pm ET works for the debrief.\n> Best, John\n>\n> Sent from my iPhone\n\n--\nThis e-mail and any attachments are confidential and may be legally privileged. If you are not the intended recipient, please notify the sender immediately and delete this message. Meridian Trading LLC does not accept liability for any errors or omissions in the contents of this message which arise as a result of e-mail transmission. Please consider the environment before printing this email.",
+  "stress_rationale": "A 40-word ask on top of a full pasted gmail thread in reverse chronological order, with the real spec (CodeSignal GCA: 70 min, FOUR tasks increasing difficulty, one attempt, sample tests runnable + hidden at submit, no interviewer) buried mid-thread between scheduling noise, an out-of-office auto-reply, signatures, and a legal footer. Stresses signal extraction, the 4-part cap on source.parts, and iterate-on-samples/one-shot-on-submit ambiguity.",
+  "gates_stressed": [
+   "signal-extraction-from-noise",
+   "part-count-extraction",
+   "multi-part-source-parts",
+   "part-cap-4",
+   "time_limit_ms-parsing",
+   "interviewer-false-oa-etiquette",
+   "submit-semantics-ambiguity"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "lang-markdown-soup-stripe",
+  "description": "## interview prep — stripe???\n\n- [ ] so the round is called **\"integration debugging\"** i think\n    - existing codebase (node / **typescript**)\n    - they said ~~90~~ 60 minutes\n- what happens: | step | thing |\n| you get | a repo w/ a payments-ish API integration that has a bug |\n| one test | is failing?? you have to figure out why\n\n```\nrecruiter said: \"you'll be dropped into a small TypeScript service where one of\nthe integration tests fails. Your job is to find the root cause and fix it. You\ncan run the test suite as often as you like, and your interviewer will be on the\ncall with you the whole time.\"\n\n(the fence above never closed lol sorry, my notion export is cursed)\n\n### what i want\npractice rounds exactly like that. typescript NOT python — i always practice in\npython and then panic in ts. real repo, real failing test, interviewer talking to\nme. and keep the repos small enough to actually read in an hour, like max 5-6\nsource files, i dont want a 40 file monorepo situation\n###",
+  "stress_rationale": "Broken Notion-export markdown: half-formed tables, a code fence that opens and never closes (so everything after it may be swallowed by naive markdown handling — including the actual requirements), strikethrough corrections (~~90~~ 60), and empty trailing headers. The load-bearing details (TS runtime, one_failing_test, 60 min, interviewer on, max 5-6 source files) are scattered across the wreckage; 'max 5-6 files' should land as check.max_source_files, and the payments skin stresses expectation-sentence vocabulary.",
+  "gates_stressed": [
+   "markdown-format-chaos",
+   "runtime-choice-typescript",
+   "check-kind-one_failing_test",
+   "max_source_files",
+   "time_limit_ms-parsing",
+   "expectation-sentence-vocabulary"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "lang-code-dump-goldman",
+  "description": "failed the goldman hackerrank last week on this (i think it was the subarray sum equals k one? or some variant of it) — heres what i wrote before time ran out, make me practice rounds like whatever this is:\n\ndef count_subarrays(nums, k):\n    # brute force first then optimize (never got to optimize lol)\n    count = 0\n    for i in range(len(nums)):\n        s = 0\n        for j in range(i, len(nums)):\n            s += nums[j]\n            if s == k:\n                count += 1\n            elif s > k:\n                break   # this was wrong?? negatives exist\n    return count\n\n# attempt 2 with prefix sums, ran out of time somewhere in here\ndef count_subarrays_v2(nums, k):\n    from collections import defaultdict\n    seen = defaultdict(int)\n    seen[0] = 1\n    total = 0\n    ans = 0\n    for x in nums:\n        total += x\n        # ans += seen[total - k]   <- kept getting off by one??\n        if total - k in seen:\n            ans += seen[total - k]\n        seen[total] += 1\n    return ans\n\n# the sample that failed on hackerrank:\n# nums = [1, -1, 0], k = 0  -> expected 3, mine printed 2\n\nit was 2 questions in 60 min, no interviewer, python, hidden test cases at submit. same format pls. also that break statement bug — is that the kind of thing your judge would catch me on?",
+  "stress_rationale": "The brief is ~85% pasted Python code with the spec squeezed into one sentence at each end. Stresses whether the clarifier reads intent around a code wall, binds the hedged self-diagnosis ('the subarray sum equals k one?') to the real slug, and doesn't mistake the pasted buggy code for a generation instruction. Also carries a direct product question mid-brief that intake must not let derail spec inference.",
+  "gates_stressed": [
+   "intent-inference-from-code-paste",
+   "lc-named-problem-binding",
+   "part-count-extraction",
+   "interviewer-false-oa-etiquette",
+   "runtime-choice-python",
+   "signal-extraction-from-noise"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "lang-allcaps-tomorrow",
+  "description": "OK SO MY ONSITE GOT MOVED UP AND IT IS NOW TOMORROW AT 9AM. I NEED PRACTICE ROUNDS TONIGHT. DO NOT MAKE THEM WEIRD OR CLEVER. NORMAL LEETCODE MEDIUM. 45 MINUTES. ONE PROBLEM AT A TIME. NO INTERVIEWER TALKING TO ME, I CANNOT HANDLE VOICES RIGHT NOW. PYTHON. TESTS I CAN RUN MYSELF WHENEVER I WANT. THAT IS IT. THAT IS THE WHOLE REQUEST. PLEASE DO NOT ASK ME FIFTEEN CLARIFYING QUESTIONS, I DO NOT HAVE TIME FOR THAT TONIGHT. IF SOMETHING IS AMBIGUOUS JUST PICK THE NORMAL OPTION AND GO.",
+  "stress_rationale": "All-caps urgency with explicit anti-clarification pressure ('DO NOT ASK ME FIFTEEN CLARIFYING QUESTIONS... JUST PICK THE NORMAL OPTION') — stresses whether the clarifier still routes through the confirm gate instead of skipping it, whether 'TOMORROW AT 9AM' becomes a real date, and whether shouted casing degrades entity extraction (45 min, single part, interviewer off, iterate submit).",
+  "gates_stressed": [
+   "relative-date-parsing",
+   "anti-clarification-pressure",
+   "time_limit_ms-parsing",
+   "interviewer-false-oa-etiquette",
+   "case-normalization",
+   "confirm-gate-integrity"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "lang-contradictory-edits",
+  "description": "so my roblox onsite has a coding round, typescript because thats their stack — actually no wait, forget that, the recruiter email says 'language of your choice' so python, im way faster in python. its 3 problems in 75 minutes... hmm actually let me reread her email. ok its 2 problems, 60 minutes, the third thing is a system design convo which is a separate round, dont build that. my friend who did it last year got word break as one of them — no wait, it was decode ways, the one where the string of digits maps to letters, he specifically complained about leading zeros for like ten minutes. so final: 2 problems, 60 min — actually she wrote 'approximately 50 minutes of coding' so use 50. python (final answer). one of the two should be decode ways or something in that exact family. no interviewer during the coding part, they leave the room apparently which is somehow worse. sorry this is a mess, im literally rereading the thread as i type",
+  "stress_rationale": "Every load-bearing field gets stated wrong and then corrected mid-text: typescript→python, 3 parts→2, word break→decode ways, 75→60→50 minutes. Stresses last-write-wins intent resolution across the whole spec — a clarifier that latches onto first mentions produces the wrong runtime, wrong part count, wrong LC binding (word-break AND decode-ways both exist in the dataset, so a sloppy read binds a real but wrong problem), and wrong time limit.",
+  "gates_stressed": [
+   "contradiction-resolution",
+   "lc-named-problem-binding",
+   "runtime-choice-python",
+   "part-count-extraction",
+   "time_limit_ms-parsing",
+   "out-of-scope-section-filtering"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "lang-franglais-shopify",
+  "description": "salut! jai une entrevue chez shopify (dev backend, équipe checkout) dans 3 semaines. le format cest du pair programming: tu travailles dans un vrai repo avec linterviewer qui te regarde et pose des questions, tu peux rouler les tests quand tu veux, pas vraiment de limite de temps stricte mais environ 1h. le stack chez eux cest ruby/rails par contre, et honnêtement je sais pas si vous supportez ruby?? sinon python fait laffaire, cest la logique de debugging que je veux pratiquer, pas la syntaxe. what matters for me: reading unfamiliar code out loud en anglais (je suis francophone, mon anglais technique sous pression cest... pas fort lol), narrating my thought process, pas paniquer quand linterviewer demande 'why did you look there first?'. un vrai repo svp, genre 10-15 fichiers, pas un one-pager. merci!",
+  "stress_rationale": "Québécois French/English blend that explicitly requests an unsupported runtime (ruby) while offering the fallback itself ('sinon python fait laffaire') — the clarifier must take the fallback rather than invent a ruby capability or fail. Also an untimed round (time_limit_ms null despite 'environ 1h' hedging), interviewer=true repo debugging, and a 10-15 file size hint against max_source_files.",
+  "gates_stressed": [
+   "unsupported-runtime-fallback",
+   "non-english-clarifier-inference",
+   "time-limit-null-vs-approximate",
+   "check-kind-one_failing_test",
+   "max_source_files",
+   "interviewer-true-pairing"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "lang-pt-nubank-review",
+  "description": "oi! entrevista no nubank mês que vem (engenheiro de software pleno). uma das rodadas é de code review: eles abrem um pull request de verdade — um diff mexendo em umas 3 ou 4 arquivos — e você tem que revisar em voz alta com o entrevistador, apontar problemas, sugerir melhorias, perguntar o que não entender. não é pra rodar nada, é só ler o diff e conversar. dizem que sempre tem pelo menos um bug de verdade escondido no meio das mudanças, além de uns problemas de estilo que são meio isca. queria treinar exatamente isso: me dá diffs pra revisar, com bug plantado, e alguém do outro lado conversando comigo e me pressionando um pouco. pode ser código python. ah, e a entrevista em si é em inglês, então o material pode ficar em inglês — eu só tô escrevendo em português porque é mais fácil explicar assim 😅",
+  "stress_rationale": "Brazilian Portuguese brief targeting the least-exercised check kind: diff_present with can_run_tests=false ('não é pra rodar nada'), which historically 502'd through intake (the files_changed inference bug). Stresses the diff round path end to end in a non-English register, including the 3-4 changed-files expectation and the coherence rule that an un-runnable suite can't be the passing criterion.",
+  "gates_stressed": [
+   "check-kind-diff_present",
+   "can_run_tests-false-coherence",
+   "files_changed-inference",
+   "non-english-clarifier-inference",
+   "starts_from-diff",
+   "interviewer-true-pairing"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "lang-whatsapp-fwd-oa",
+  "description": "my roommate did the flipkart SDE2 OA yesterday and then sent me these texts about it. im forwarding verbatim because i cannot summarize right now, i have the SAME oa on saturday. build me practice that matches what he describes — at least the coding parts, idk what you can do about the rest:",
+  "context": "[13/08, 23:41] Rohan: bro that OA was rough\n[13/08, 23:41] Rohan: 3 sections 90 min total\n[13/08, 23:42] Rohan: q1 was kth largest element but like a twist on it, stream version\n[13/08, 23:43] Rohan: q2 was design an LRU cache, actually implement get and put with the O(1) requirement\n[13/08, 23:44] Rohan: q3 was SQL 💀 write a query, top 3 salaries per department or smth\n[13/08, 23:44] Rohan: no editor for the sql one just a textbox lmaooo\n[13/08, 23:46] Rohan: coding ones were python, you can run the sample tests but hidden ones only at submit\n[13/08, 23:47] Rohan: also proctored, camera on, felt like a school exam\n[13/08, 23:52] Rohan: honestly just grind heaps and hashmaps youll be fine\n[14/08, 00:03] Rohan: oh and each question had its own timer, you cant go back to a previous one\n[14/08, 00:04] Rohan: good luck bro youve got this 💪",
+  "stress_rationale": "Spec arrives as a pasted WhatsApp forward with timestamps and slang. Three landmines: 'kth largest element' binds cleanly, 'LRU cache' is a real famous problem that is NOT in the vendored dataset (unbindable named problem — binding must fail gracefully, not hallucinate a slug), and the SQL section is an unsupported part type the user themselves flags ('idk what you can do about the rest'). Stated 3 sections but only 1-2 buildable parts, plus per-question timers the closed vocabulary cannot express.",
+  "gates_stressed": [
+   "unbindable-named-problem",
+   "unsupported-part-type-sql",
+   "part-count-vs-buildable-parts",
+   "lc-named-problem-binding",
+   "inexpressible-constraint-per-part-timers",
+   "signal-extraction-from-noise"
+  ],
+  "sourced_hint": true
+ },
+ {
+  "id": "lang-jd-boilerplate",
+  "description": "recruiter told me 'the technical round is 1 hour, hands-on and practical, not leetcode style' and that is literally ALL i know about the format. pasted the full job posting below — can u infer from it what theyd actually put in front of me and make practice rounds that fit? im rusty, been at the same job 6 years, havent interviewd since 2020. python is my langauge.",
+  "context": "Senior Backend Engineer — Platform Team\nCoastline Health | San Francisco, CA (Hybrid) | Full-time\n\nAbout Us\nCoastline Health is on a mission to make chronic-care management radically more accessible. Our platform connects 40,000+ patients with care teams across 14 states, processing millions of clinical events daily. Backed by leading investors, we are a Series C company of ~220 employees who believe healthcare software should be as reliable as the care it enables. We move fast, but never at the expense of patient safety.\n\nThe Role\nWe are looking for a Senior Backend Engineer to join our Platform team, which owns the core services powering scheduling, messaging, and clinical-data ingestion. You will design, build, and operate the systems that every product team at Coastline depends on.\n\nWhat you'll do\n- Design and implement high-throughput services in Python (FastAPI, Celery) backed by PostgreSQL and Redis\n- Own reliability for ingestion pipelines handling HL7/FHIR clinical data from 60+ integration partners\n- Lead incident response and post-mortems; improve our observability stack (Datadog, Sentry)\n- Partner with product engineers to design stable internal APIs and deprecate legacy endpoints\n- Mentor mid-level engineers through code review and design review\n- Participate in our on-call rotation (approx. 1 week in 8)\n\nWhat we're looking for\n- 5+ years building production backend systems, ideally in Python\n- Deep working knowledge of relational databases: schema design, query optimization, migrations at scale\n- Experience operating distributed systems: queues, retries, idempotency, backpressure\n- Comfort debugging unfamiliar code under pressure — much of our work is understanding systems we inherited\n- Strong written communication; we are documentation-heavy and meeting-light\n- Nice to have: healthcare data experience (HL7v2, FHIR), Terraform, AWS (ECS, RDS, SQS)\n\nWhat we offer\n- Competitive salary ($185k–$230k depending on experience) + meaningful equity\n- Medical, dental, and vision coverage (100% premium covered for employees, 75% for dependents)\n- 401(k) with 4% match\n- Flexible PTO with a 3-week minimum expectation\n- 16 weeks parental leave\n- $1,500 annual learning stipend\n- Hybrid schedule: Tuesdays and Wednesdays in our SoMa office\n\nOur Process\n1. Recruiter screen (30 min)\n2. Hiring manager conversation (45 min)\n3. Technical interview (60 min)\n4. Virtual onsite: system design, technical deep-dive, values interview\n5. Offer\n\nCoastline Health is an equal opportunity employer. We celebrate diversity and are committed to creating an inclusive environment for all employees. All qualified applicants will receive consideration for employment without regard to race, color, religion, gender, gender identity or expression, sexual orientation, national origin, genetics, disability, age, or veteran status. If you require a reasonable accommodation during the application process, please contact accommodations@coastlinehealth.example.\n\nWe are not able to sponsor visas for this position at this time. No recruiters or staffing agencies, please.",
+  "stress_rationale": "The description is 60 words of weak signal ('hands-on and practical, not leetcode') and the context is a full JD that is mostly benefits/EEO/process boilerplate. The clarifier must infer format from priors + the one real clue in the requirements ('comfort debugging unfamiliar code under pressure') and resist treating salary bands and PTO policy as spec material; the healthcare-ingestion domain pressures the expectation-sentence vocabulary gate and blueprint skinning.",
+  "gates_stressed": [
+   "weak-signal-format-inference",
+   "signal-extraction-from-noise",
+   "check-kind-one_failing_test",
+   "runtime-choice-python",
+   "expectation-sentence-vocabulary",
+   "evidence-tier-classification"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "lang-emoji-plan-multiround",
+  "description": "✨🎯 MY BIG PREP PLAN 🎯✨ (pasting from my notion, pls ignore the vibes)\n\n💼 company: datadog, backend SWE\n📅 the gauntlet:\n→ 🖥️ round 1: online assessment — aug 22 — 2 coding questions, 60 min, no human involved, autograded, python is fine\n→ 📞 round 2: technical screen — ~aug 29 (not booked yet, recruiter is slow) — 1 problem live with an engineer on the call, 45 min, they said 'collaborative, you can run your code as you go'\n→ 🏢 round 3: the onsite has a 'bug hunt' round?? — date totally unknown — existing codebase, find & fix a real bug, ~60 min, interviewer present asking questions. this is the one that actually scares me 😰😰\n🥅 goal: practice for ALL THREE, in order, OA stuff first since its the soonest\n🚫 not doing here: system design (i have a separate coach for that), behavioral (my sister works in HR lol im covered)\n⚡ vibe check: i want the pressure to feel REAL. timers. judgement. consequences. lets gooo 😤🔥",
+  "stress_rationale": "One brief that must fan out into THREE distinct RoundSpecs with different capability profiles (OA: 2 parts, no interviewer, one-shot; screen: 1 problem, interviewer, iterate; onsite: repo debugging round) and three different date states (fixed, approximate, absent — the spec's date field must not be guessed for round 3). Emoji arrows and Notion decoration replace all normal sentence structure, and two whole rounds must be explicitly excluded.",
+  "gates_stressed": [
+   "multi-spec-intake",
+   "per-round-capability-divergence",
+   "date-extraction",
+   "date-absent-not-guessed",
+   "out-of-scope-section-filtering",
+   "emoji-format-chaos",
+   "queue-pacing-multiple-dates"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "lang-denglisch-live-tdd",
+  "description": "hi, ich hab bald das technical interview bei einem berliner startup (fintech, series B, name lass ich mal weg). der recruiter meinte es ist live coding, ungefähr 60 min: man kriegt eine kurze spec und implementiert ein kleines feature from scratch, also leerer editor, keine vorhandene codebase. der interviewer schaut zu und fragt zwischendurch so sachen wie 'warum machst du das so und nicht anders'. am ende müssen alle tests grün sein — die tests haben die vorher geschrieben, man sieht sie von anfang an, so test-driven mäßig. sprache ist typescript (node), das ist deren stack, und ich bin da ehrlich gesagt wackelig — hab die letzten jahre fast nur python gemacht. wäre super wenn die übungsrunden genau so laufen: blank start, sichtbare test suite die am anfang komplett rot ist, am ende alles grün, typescript, mit einem interviewer der zwischendurch nachfragt. und bitte mindestens so 8-10 tests pro runde, damit es nicht trivial wird. danke dir!",
+  "stress_rationale": "German/English 'Denglisch' brief describing a TDD-style round: blank start where the pre-written suite starts fully red and must end green — this sits exactly on the all_failing vs all_passing boundary ('komplett rot am anfang, am ende alles grün') and the clarifier must pick the right check kind for a from-scratch build. Also extracts min_tests (8-10), TypeScript runtime against a python-preferring user, and interviewer=true, all from mixed-language prose.",
+  "gates_stressed": [
+   "check-kind-all_passing-vs-all_failing",
+   "min_tests",
+   "starts_from-blank",
+   "runtime-choice-typescript",
+   "non-english-clarifier-inference",
+   "interviewer-true-pairing"
+  ],
+  "sourced_hint": false
+ },
+ {
+  "id": "lang-runon-nopunct",
+  "description": "ok so i have this hackerrank thing coming up for a fintech company i think its like a screening round before the real interviews and my friend told me its usually two questions sometimes three and you get an hour and the questions are like merge intervals or spiral matrix type stuff like classic array manipulation nothing crazy but the pressure gets me every single time because theres a timer counting down in the corner and no person to talk to which somehow makes it worse like at least with a person you can stall by explaining things but alone its just you and the clock and my brain goes completely empty and i start writing nested loops for everything even when i know theres a better way anyway what i want is practice that feels exactly like that so timed sets with the countdown visible two or three questions per set python because thats what ill actually use and please make them the classic kind like the merge intervals one and the spiral matrix one and maybe maximum subarray because the kadane thing never sticks in my head no matter how many times i relearn it and also can you make it so i cant just endlessly rerun tests like in the real thing you submit once and thats basically it or maybe sample tests visible and hidden ones at submit thats how hackerrank does it i think anyway yeah thats it sorry for the wall of text i type how i think",
+  "stress_rationale": "250+ words, zero sentence boundaries, zero capitalization — entity extraction with no punctuation to anchor on. Three real dataset problems are named mid-stream (merge-intervals, spiral-matrix, maximum-subarray via 'the kadane thing'), the part count is self-contradictory ('two questions sometimes three... two or three questions per set'), and the submit semantics are argued both ways in one breath (one-shot vs samples-visible iterate), forcing the clarifier to pick and surface a coherent spec.",
+  "gates_stressed": [
+   "no-punctuation-parsing",
+   "lc-named-problem-binding",
+   "multi-part-source-parts",
+   "part-count-ambiguity",
+   "submit-semantics-ambiguity",
+   "time_limit_ms-parsing",
+   "surface-panes"
+  ],
+  "sourced_hint": true
+ }
+]

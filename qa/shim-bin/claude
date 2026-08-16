@@ -1,0 +1,5 @@
+#!/bin/sh
+# The PATH shim: prepend qa/shim-bin to PATH and every `claude -p` spawn in
+# the tree (app, session, cli children) resolves here instead of the real CLI.
+# See qa/fake-claude.mjs for the dispatch table and qa/README.md for the recipe.
+exec node "$(dirname "$0")/../fake-claude.mjs" "$@"

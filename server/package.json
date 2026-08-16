@@ -6,8 +6,10 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
     "@interview-prep/shared": "*",
+    "stripe": "^22.4.0",
     "http-proxy": "^1.18.1",
     "monaco-editor": "0.52.2",
+    "posthog-js": "^1.302.0",
     "ws": "^8.21.1"
   }
 }

@@ -35,6 +35,10 @@ reps.json
 
 # launch-origin metric (the composer-landing falsifier)
 launches.jsonl
+# willingness-to-pay probe (paywall.ts) — carries user ids and emails
+paywall.jsonl
+# subscription entitlement (billing.ts) — customer + subscription ids
+subscriptions.jsonl
 sessions-live.json
 .ide-data/
 
@@ -43,3 +47,10 @@ datasets/
 
 # per-user topic ledgers (same class of data as gaps/)
 topics/
+
+# git worktrees parked under .claude/ (full repo checkouts, never commit)
+.claude/worktrees/
+
+# qa harness runtime droppings (qa/README.md)
+qa/.shim-log.jsonl
+qa/.shim-control.json

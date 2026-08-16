@@ -573,7 +573,7 @@ describe('named problems ride the gate raw (2026-08-13 sourcing)', () => {
     expect(user.evidence).toBe('stated');
     const auto = namedProblemGap([{ title: 'Two Sum', difficulty: 'easy', picked_by: 'auto' }]);
     expect(auto.value).not.toContain('Two Sum');
-    expect(auto.value).toContain('hidden');
+    expect(auto.value).toContain('revealed when the round starts');
     expect(auto.options.map((o) => o.label)).toContain('invent instead');
     // A set: named parts listed, auto remainder counted, never titled.
     const set = namedProblemGap([

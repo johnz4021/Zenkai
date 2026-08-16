@@ -22,7 +22,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import type { GeneratedProblem, TraceEvent } from '@interview-prep/shared';
 import { isCandidateActivity } from '@interview-prep/shared';
-import { ANSWERABLE, SURRENDER, roundRules } from './round-rules.js';
+import { ANSWERABLE, SURRENDER, roundRules, timeRules } from './round-rules.js';
 
 export type InterviewerKind = 'answer' | 'pressure' | 'probe' | 'decline' | 'silent';
 
@@ -82,13 +82,27 @@ export interface InterviewerContext {
    */
   howToRun?: string;
   /**
+   * The round's mechanics — surface, starts_from, submit mode, part count —
+   * stated as facts the model may rely on. The axes existed only in code
+   * until QA 2026-08-14 found prompt rules assuming iteration on one-shot
+   * rounds and nothing naming the review round's written deliverable.
+   * Session-constant → cached half.
+   */
+  mechanics?: string;
+  /**
    * buildTargetNote() output — the candidate's gap history as generator/
    * interviewer emphasis. Shapes WHERE pressure lands; must never be
    * mentioned (the prompt enforces it, guardGapLeak backstops it).
    */
   targetNote?: string;
   elapsedMs: number;
-  remainingMs: number;
+  /** Milliseconds left, or `null` on an UNTIMED round (the DEFAULT_SPEC
+   *  shape). Null is not "unknown" and not "zero" — it means there is no
+   *  deadline, and render() turns it into a positive statement rather than
+   *  a number. Defaulting it to a nominal length is what put "you've got
+   *  45 minutes" into an untimed round's opening turn
+   *  (sess-qa813-panesint-b). */
+  remainingMs: number | null;
   recentActivity: string;
   transcript: { who: 'candidate' | 'interviewer'; text: string }[];
   /** null = unprompted pressure beat rather than a reply. */
@@ -112,6 +126,22 @@ export interface InterviewerContext {
   /** True once the candidate has themselves touched the bug file —
    *  relaxes the location guard for found territory. */
   bugFileVisited?: boolean;
+  /**
+   * Whether `bug` is genuine private answer knowledge (a planted defect) or
+   * the explicit no-knowledge statement. Arms the vocabulary guard: stemming
+   * the no-knowledge text into `forbidden` would ban its own ordinary words
+   * from scaffolding turns while guarding nothing (the old sentinel banned
+   * "plant", "round" and "type" — QA 2026-08-14). Defaults to true so
+   * existing call sites keep today's behavior.
+   */
+  hasAnswerKnowledge?: boolean;
+  /**
+   * Never-name locations beyond `bugFile`, with per-file found-territory
+   * state — a review round plants defects across several files. Session-
+   * derived (files the grading key's description names), per-turn (visited
+   * changes as they work).
+   */
+  protectedExtras?: { file: string; visited: boolean }[];
   /** The problem's six rubric dimension expectations, rendered as a list.
    *  Per-session constant (stable half, cacheable). The judge always had
    *  these; the interviewer probing blind to them was the rubric-blind
@@ -121,16 +151,31 @@ export interface InterviewerContext {
   /** The blueprint's "## Interviewer engagement" section (or a per-check
    *  default): how led this round is, what to reward. Stable half. */
   engagement?: string;
-  /** Set when a moment trigger fired ('opening' or a moments.ts detection):
-   *  the observation text for the per-turn half. */
+  /** Set when a moments.ts detection fired: the observation text for the
+   *  per-turn half. The opening does NOT ride this slot (its wrapper says
+   *  "follow the moment rules" — kind probe/nudge true — contradicting the
+   *  OPENING rule's kind answer/nudge false; QA 2026-08-14 audit). */
   momentObservation?: string | null;
+  /** Set exactly once, on candidate arrival: the opening instruction. Its
+   *  own slot so it renders under the OPENING rule, never the moment
+   *  wrapper. */
+  openingObservation?: string | null;
   /**
-   * describeAdrift()/describeWarm() output: they have been reading one region
-   * for a long time with nothing moving. Fires the REDIRECT rules (close the
-   * dead end) or, when the answer is inside that region, the encouragement
-   * inversion. Never both with stuckObservation — the tick picks one.
+   * describeAdrift() output: they have been reading one region for a long
+   * time with nothing moving, and the region is verifiably NOT where the
+   * answer lives. Fires the REDIRECT rules (close the dead end). Never both
+   * with stuckObservation — the tick picks one.
    */
   adriftObservation?: string | null;
+  /**
+   * describeWarm() output: same confinement, but the answer is IN the region
+   * with them. Its own slot on purpose — it used to ride `adriftObservation`,
+   * where the prompt's adrift rules instructed "say plainly that it looks
+   * sound — that region is not where the fault is": a direct order to push
+   * the candidate off the bug in the one case the detector exists to invert
+   * (QA 2026-08-14 audit).
+   */
+  warmObservation?: string | null;
   /** The round's check kind — selects the per-kind prompt blocks
    *  (round-rules.ts). Absent = one_failing_test, the legacy resolution. */
   checkKind?: string;
@@ -300,6 +345,19 @@ export function leaksGapNote(text: string): boolean {
  * legitimate spec answers — exactly the over-broadening leaksBugLocation's
  * comment warns about — but a stuck turn is not answering a question, so
  * there is nothing legitimate for it to muzzle.
+ *
+ * DO NOT re-propose arming this (or an allowlist variant) on decline/reply
+ * turns without new evidence. Measured against the six real declines in
+ * traces/sess-qa814-leak.jsonl (2026-08-14): 1-in-6 precision — it flags
+ * "assertion", "eligible", "scenario", "ruled", "mechanism" as leaks, and
+ * the whitelist that would save those IS the abstract interviewer register
+ * ("boundary", "ordering", "edge case") the check exists to catch. It is
+ * also structurally blind to coined synonyms: "boundary minute" appears in
+ * neither the bug text nor the spec, so the stem intersection cannot see
+ * it. Those leak shapes are prompt rules ("A refusal must not re-frame the
+ * question") plus the widened nudge definition, not a mechanical guard.
+ * Named trigger to revisit: a leak shape that survives the prompt rules AND
+ * is mechanically separable from the interviewer register.
  */
 const STEM_STOP = new Set([
   'that', 'this', 'with', 'without', 'from', 'into', 'onto', 'over', 'under',
@@ -377,9 +435,17 @@ export function guard(
    *  discussing their own changes there is the whole point of the
    *  interviewer having eyes. Unvisited stays redacted exactly as before. */
   bugFileVisited = false,
+  /** Additional never-name locations beyond the primary — a review round
+   *  plants several defects across several files, and a single-string
+   *  `bugFile` could only guard one of them (QA 2026-08-14: rep-mst39p35's
+   *  rollup.py held a planted BLOCKER and was unguarded by design). Each
+   *  entry carries its own found-territory relaxation. */
+  extraProtected: { file: string; visited: boolean }[] = [],
 ): InterviewerTurn {
   if (!turn.say) return turn;
-  const bugLeak = !bugFileVisited && leaksBugLocation(turn.say, bugFile);
+  const bugLeak =
+    (!bugFileVisited && leaksBugLocation(turn.say, bugFile)) ||
+    extraProtected.some((p) => !p.visited && leaksBugLocation(turn.say, p.file));
   // The gap-note guard only arms when a note was actually injected —
   // otherwise a turn like "you tend to..." is just conversation.
   const gapLeak = hasTargetNote && leaksGapNote(turn.say);
@@ -506,6 +572,7 @@ export function render(template: string, ctx: InterviewerContext): string {
     SURRENDER,
     CODEBASE: ctx.codebase ?? '(no codebase view available for this round)',
     HOW_TO_RUN: ctx.howToRun ?? 'Not known for this round — say you are not sure if asked.',
+    ROUND_MECHANICS: ctx.mechanics ?? '(no mechanics notes for this round)',
     TARGET_NOTE: ctx.targetNote ?? '(no history yet — first sessions)',
     RUBRIC: ctx.rubric ?? '(no rubric available for this round)',
     ENGAGEMENT: ctx.engagement ?? 'Balanced: probe at the flagged moments, otherwise let them work.',
@@ -513,13 +580,31 @@ export function render(template: string, ctx: InterviewerContext): string {
     MOMENT: ctx.momentObservation
       ? `MOMENT — ${ctx.momentObservation} Follow the moment rules above: one focused probe about it, then release.`
       : 'no',
+    OPENING: ctx.openingObservation
+      ? `OPENING — ${ctx.openingObservation} Follow the OPENING rule above: kind "answer", nudge false.`
+      : 'no',
     ELAPSED_MIN: String(Math.round(ctx.elapsedMs / 60_000)),
-    REMAINING_MIN: String(Math.max(0, Math.round(ctx.remainingMs / 60_000))),
+    // Timedness is per-SESSION constant (capabilities.time_limit_ms is read
+    // once from a frozen spec), so TIME_RULES sits in the CACHED half and the
+    // renderSplit byte-identity contract holds as the clock ticks.
+    TIME_RULES: timeRules(ctx.remainingMs !== null),
+    // One token, one meaning. `REMAINING_MIN` is gone on purpose: a bare
+    // number slot can only ever render a number, and on an untimed round
+    // every number is a lie — 0 included, which reads as "time is up".
+    REMAINING:
+      ctx.remainingMs === null
+        ? 'Remaining: UNTIMED — this round has no time limit and no deadline. Nothing is counting down.'
+        : `Remaining: ${Math.max(0, Math.round(ctx.remainingMs / 60_000))} min.`,
     RECENT_ACTIVITY: ctx.recentActivity,
     ADRIFT: ctx.adriftObservation
       ? `ADRIFT — ${ctx.adriftObservation} Follow the adrift rules above: one move, nudge true.`
       : 'no',
-    AGENDA: ctx.agenda ?? '(no agenda computed for this round)',
+    WARM: ctx.warmObservation
+      ? `WARM — ${ctx.warmObservation} Follow the warm rules above: encourage, never redirect, nudge true.`
+      : 'no',
+    AGENDA:
+      ctx.agenda ??
+      '(none this turn — this is a reply; answer what was asked. The agenda rides unprompted turns.)',
     WRAPUP: ctx.wrapState ?? 'no — the working phase is still on.',
     STUCK: ctx.stuckObservation
       ? `STUCK — ${ctx.stuckObservation} Follow the stuck rules above: one move, their vocabulary only, nudge true.`
@@ -546,7 +631,12 @@ export function render(template: string, ctx: InterviewerContext): string {
 export function stuckVocabOf(
   ctx: InterviewerContext,
 ): { forbidden: string; allowed: string } | undefined {
-  if (!ctx.stuckObservation && !ctx.adriftObservation) return undefined;
+  if (!ctx.stuckObservation && !ctx.adriftObservation && !ctx.warmObservation) return undefined;
+  // No answer knowledge → nothing to guard, and stemming the no-knowledge
+  // statement into `forbidden` bans its own ordinary words ("plant",
+  // "round", "type" under the old sentinel) from the one lane this module
+  // exists to serve.
+  if (ctx.hasAnswerKnowledge === false) return undefined;
   const candidateWords = ctx.transcript
     .filter((t) => t.who === 'candidate')
     .map((t) => t.text)
@@ -555,6 +645,16 @@ export function stuckVocabOf(
     forbidden: `${ctx.bug}\n${ctx.bugFile}`,
     allowed: `${ctx.spec}\n${ctx.allowedExtra ?? ''}\n${candidateWords}`,
   };
+}
+
+/** Extra never-name locations with the same publicness relaxations the
+ *  primary gets (found territory, spec-named). Shared by both model paths so
+ *  the two guard calls cannot drift. */
+export function protectionOf(ctx: InterviewerContext): { file: string; visited: boolean }[] {
+  return (ctx.protectedExtras ?? []).map((p) => ({
+    file: p.file,
+    visited: p.visited || specNamesBugFile(ctx.spec, p.file),
+  }));
 }
 
 /** Marker splitting the session-stable prompt half from the per-turn half. */
@@ -599,7 +699,7 @@ export function claudeInterviewer(templatePath: string, model = 'sonnet'): Inter
   const template = readFileSync(templatePath, 'utf8');
   return async (ctx) => {
     const raw = await runClaudeP(render(template, ctx), model, 45_000);
-    return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx), (ctx.bugFileVisited ?? false) || specNamesBugFile(ctx.spec, ctx.bugFile));
+    return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx), (ctx.bugFileVisited ?? false) || specNamesBugFile(ctx.spec, ctx.bugFile), protectionOf(ctx));
   };
 }
 
@@ -648,7 +748,7 @@ export function streamingInterviewer(templatePath: string, model = 'claude-sonne
         // A truncated turn parses to SILENT and vanishes — say so loudly.
         console.warn(`[interviewer] turn TRUNCATED at max_tokens — raw tail: …${raw.slice(-120)}`);
       }
-      return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx), (ctx.bugFileVisited ?? false) || specNamesBugFile(ctx.spec, ctx.bugFile));
+      return guard(parseTurn(raw), ctx.bugFile, ctx.candidateMessage !== null, Boolean(ctx.targetNote), stuckVocabOf(ctx), (ctx.bugFileVisited ?? false) || specNamesBugFile(ctx.spec, ctx.bugFile), protectionOf(ctx));
     } catch (e) {
       console.warn('[interviewer] streaming failed, this turn is silent:', String(e).slice(0, 200));
       return { say: '', kind: 'silent', nudge: false };
@@ -748,8 +848,13 @@ export function apiIntentCheck(): IntentCheck {
       // interviewer, can you give me a hand?") came back narration, and this
       // catch ate whatever went wrong, leaving nothing to diagnose. The
       // all-false fallback pathology banned in the judge was alive here.
-      console.warn('[intent] API check ERRORED (treating as narration):', String(e).slice(0, 200));
-      return false;
+      // RETHROWN (not resolved false) since QA 2026-08-14: resolving false
+      // made an auth outage indistinguishable from a genuine narration
+      // judgment at the routing layer, so the session could never surface
+      // interviewer health to the candidate. routeUtterance's catch keeps
+      // the fail-toward-silence behavior AND marks the fault for the chip.
+      console.warn('[intent] API check ERRORED (utterance stays unrouted):', String(e).slice(0, 200));
+      throw e instanceof Error ? e : new Error(String(e));
     }
   };
 }
@@ -769,12 +874,74 @@ export function pickIntentCheck(): IntentCheck {
   return process.env.ANTHROPIC_API_KEY ? apiIntentCheck() : claudePIntentCheck();
 }
 
-/** Build the guarded context fields from a problem manifest. */
+/** Build the guarded context fields from a problem manifest.
+ *  @deprecated interviewerGroundTruth is the per-kind replacement — this
+ *  degraded every non-debugging round to a self-contradicting sentinel
+ *  ("(no planted bug for this round type)" under a heading asserting
+ *  private knowledge) and wrapped review rounds' multi-defect key in a
+ *  debugging-shaped "It breaks exactly one test" sentence. Kept only for
+ *  its tests until they migrate. */
 export function bugContext(problem: GeneratedProblem): { bug: string; bugFile: string } {
   const b = problem.planted_bug;
   if (!b) return { bug: '(no planted bug for this round type)', bugFile: '' };
   return {
     bug: `File: ${b.file} (line ${b.line})\n${b.description}\nIt breaks exactly one test: "${b.failing_test}".`,
     bugFile: b.file,
+  };
+}
+
+/**
+ * Per-kind ground truth for the {{BUG}} slot — the interviewer-side
+ * analogue of the judge's groundTruth(), which generalized long ago while
+ * this side kept the debugging shape (QA 2026-08-14):
+ *
+ *  - no planted bug (all_failing, all_passing, and legacy shapes): the old
+ *    sentinel rendered "(no planted bug for this round type)" directly under
+ *    "## What you know that they do not", followed by answer rules asserting
+ *    "You know what the planted defects are". Now the slot says plainly that
+ *    there is NO private answer knowledge and not to pretend otherwise.
+ *  - diff_present with a planted key (the real generated shape —
+ *    rep-mst39p35 carries all four defects, severities, files and lines in
+ *    planted_bug.description): the old text wrapped that key in "It breaks
+ *    exactly one test: (none — …)". Now it is framed as the review's grading
+ *    key, and hasAnswerKnowledge arms the guards for it.
+ *  - one_failing_test: byte-identical to the original debugging text.
+ *
+ * `hasAnswerKnowledge` drives the vocabulary guard: stemming the no-bug
+ * sentinel into `forbidden` used to ban the words "plant", "round" and
+ * "type" from stuck/adrift turns ("You're 20 minutes into this round" —
+ * silenced) while guarding nothing.
+ */
+export function interviewerGroundTruth(
+  problem: Pick<GeneratedProblem, 'planted_bug'>,
+  checkKind: string | undefined,
+): { bug: string; bugFile: string; hasAnswerKnowledge: boolean } {
+  const b = problem.planted_bug;
+  if (!b) {
+    return {
+      bug:
+        'You have NO private answer knowledge in this round — there is no planted ' +
+        'defect and no hidden solution. Do not imply you know the answer, a ' +
+        'location, or an approach. Your only edge over the candidate is the spec, ' +
+        'the suite, and visibility into their work.',
+      bugFile: '',
+      hasAnswerKnowledge: false,
+    };
+  }
+  if (checkKind === 'diff_present') {
+    return {
+      bug:
+        `The diff under review contains planted defects, and you hold the grading ` +
+        `key (PRIVATE — the candidate finds and writes these up themselves):\n` +
+        `${b.description}\n` +
+        `Primary location: ${b.file}${typeof b.line === 'number' ? ` (line ${b.line})` : ''}.`,
+      bugFile: b.file,
+      hasAnswerKnowledge: true,
+    };
+  }
+  return {
+    bug: `File: ${b.file} (line ${b.line})\n${b.description}\nIt breaks exactly one test: "${b.failing_test}".`,
+    bugFile: b.file,
+    hasAnswerKnowledge: true,
   };
 }

@@ -127,17 +127,28 @@ export function allocateSlot(
 export type LaunchVerdict2 = 'ok' | 'your-session-live' | 'all-slots-busy' | 'already-launching';
 
 /** Live = not yet ended. Per-user cap ignores ended entries (a graded round
- *  lingering to serve its card must not block the next launch). */
+ *  lingering to serve its card must not block the next launch).
+ *
+ *  `ignoreEndedOnSameDir` is opt-in and exists for repeat sessions only
+ *  (app.ts /api/practice/repeat): an ended entry lingers ~30-40 min to serve
+ *  its card, so "practice again" straight after finishing would otherwise
+ *  409 on its own just-graded round. A LIVE entry on the dir still blocks
+ *  under the flag. The default stays strict — for the queue/launch paths the
+ *  same-dir check is the only dirty-relaunch guard inside the registry
+ *  window, and the test below pins it. */
 export function launchVerdict2(
   entries: SessionEntry[],
   userId: string,
   isAdmin: boolean,
   problemDir: string,
   caps: { maxConcurrentSessions: number; maxSessionsPerUser: number },
+  opts?: { ignoreEndedOnSameDir?: boolean },
 ): LaunchVerdict2 {
   // ADDITIVE to the .used marker check, not a replacement: this covers the
   // in-registry window; .used covers everything after the entry drops.
-  if (entries.some((e) => e.problem_dir === problemDir)) return 'already-launching';
+  const sameDirBlocks = (e: SessionEntry): boolean =>
+    e.problem_dir === problemDir && (!opts?.ignoreEndedOnSameDir || e.ended_at === undefined);
+  if (entries.some(sameDirBlocks)) return 'already-launching';
   const live = entries.filter((e) => e.ended_at === undefined);
   if (!isAdmin) {
     const mine = live.filter((e) => e.user_id === userId).length;

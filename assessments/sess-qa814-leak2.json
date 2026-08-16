@@ -1,0 +1,72 @@
+{
+  "session_id": "sess-qa814-leak2",
+  "status": "assessed",
+  "judged_at": 1786728144256,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "45bab0da9f82",
+  "schema_version": 1,
+  "renderer_version": 3,
+  "expectations_used": {
+    "clarify": "Pins down what the failing test actually asserts before editing — that a ticket arriving at the first minute of the evening belongs to the incoming agent — and asks the interviewer which shift owns a minute that two windows appear to share, rather than assuming the test is wrong.",
+    "approach": "Names a mechanism out loud before changing code — e.g. that the outgoing agent survives the on-shift filter at the boundary minute and then beats the incoming agent on the fewest-open-tickets rank key — instead of pointing vaguely at 'the shift code'.",
+    "communicate": "Keeps a running account while reading roster.py, policy.py and router.py, saying which candidate explanation each observation rules out — skill match, concurrency cap, tenure bar, rank ordering — and announcing each move from the failing test to the filter to the ranking rather than working silently.",
+    "implement": "Corrects the boundary in minutes_into_shift so an agent stops being eligible at their shift end minute, matching the half-open Shift.covers, and leaves the rank key, the tenure bar and the tests untouched.",
+    "verify": "Re-runs the full suite after the fix, confirms the evening-handover test passes, and checks the wrap-past-midnight and coverage-report tests still pass rather than stopping at the one assertion.",
+    "reflect": "Explains that the defect was a disagreement between two on-shift implementations — the inclusive comparison in policy versus the half-open Shift.covers — and why the load-based ranking is what turned that overlap into the wrong agent, not merely that the assertion is now green."
+  },
+  "solved": false,
+  "summary": "The candidate spent the entire ten minutes trying to get the interviewer to name the buggy file or function instead of investigating the failing test and code themselves, made a brief unfocused pass through router.py, and ended the session without ever opening policy.py, forming a hypothesis, or making any code change.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "weak",
+      "analysis": "Rather than pinning down what the failing test actually asserts, the candidate repeatedly asked the interviewer to just name the file, function, or line, even after being redirected multiple times to read the test setup itself. This is the opposite of resolving ambiguity through the material provided; it's asking to have the ambiguity removed by fiat rather than examining the test to see what minute and shift the ticket falls into.",
+      "evidence": [
+        20,
+        80,
+        219,
+        267
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "weak",
+      "analysis": "No mechanism was ever named. The candidate never articulated a hypothesis like 'the outgoing agent is still considered on-shift at the boundary minute and wins on the rank key' — they only asked yes/no questions about which file might contain the bug, which is a location guess dressed as delegation rather than a plan.",
+      "evidence": [
+        219,
+        267
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "weak",
+      "analysis": "There are a few narration lines while reading router.py, but they are thin ('nothing jumps out yet', 'backlog drain looks fine') rather than a running account connecting observations to ruled-in/ruled-out hypotheses about skill, cap, tenure, or rank ordering as the rubric calls for. Long stretches, including the entire second half of the session, show no substantive narration of reasoning about the shift-boundary mechanism.",
+      "evidence": [
+        443,
+        460,
+        532
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "unassessable",
+      "analysis": "The candidate never edited any code — the session consisted of reading router.py and asking the interviewer for direction, then ending the session without touching policy.py or making any change.",
+      "evidence": []
+    },
+    {
+      "dimension": "verify",
+      "verdict": "unassessable",
+      "analysis": "No fix was ever produced, so there was nothing to verify; the only test run was the initial one showing the failure.",
+      "evidence": []
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "weak",
+      "analysis": "At the end the candidate asked the interviewer to summarize their own weak spots rather than articulating what they had ruled out or any hypothesis about the root cause, and then ended the session without ever identifying the shift-boundary defect or its relationship to the ranking logic.",
+      "evidence": [
+        532,
+        588
+      ]
+    }
+  ]
+}

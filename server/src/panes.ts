@@ -97,7 +97,8 @@ export function summarizeTail(tail: string): string {
  *   vitest:    "Tests  3 failed | 5 passed (8)" | "Tests  8 passed (8)"
  * Null when neither pattern is present — callers omit counts rather than
  * guess, and the timeline falls back to the binary PASSED/FAILED line.
- * Why: on one-shot rounds the graded run is the ONLY signal; without counts
+ * Why: on one-shot rounds the graded run is the AUTHORITATIVE signal (and
+ * before the 2026-08-15 un-conflation it was the only one); without counts
  * the judge cannot tell 15/16 from 0/16 (renderer v3).
  */
 export function parseRunCounts(tail: string): { total: number; passed: number; failed: number } | null {
@@ -125,13 +126,15 @@ export function parseRunCounts(tail: string): { total: number; passed: number; f
   return null;
 }
 
-export type RunRejection = 'no_runs' | 'one_shot' | 'ended' | 'busy';
+export type RunRejection = 'no_runs' | 'ended' | 'busy';
 
 /**
  * Whether /api/run may execute right now. The load-bearing case is
- * one_shot: an OA round's suite runs ONCE, at submit — this guard is what
- * keeps the panes Run route from quietly reintroducing iteration into
- * rounds whose whole point is that you cannot iterate.
+ * can_run_tests: it ALONE governs the run loop (un-conflation, 2026-08-15
+ * — `submit: one_shot` is the autograding contract, one authoritative
+ * server-side run of a read-only suite at Submit, and says nothing about
+ * running; a live round's own blueprint promised HackerRank's
+ * run-freely-graded-once semantics and this guard was what broke it).
  */
 /**
  * Files a candidate could drop at the workspace ROOT to hijack the graded
@@ -172,7 +175,6 @@ export function runGuard(
 ): RunRejection | null {
   if (ended) return 'ended';
   if (!caps.can_run_tests) return 'no_runs';
-  if (caps.submit === 'one_shot') return 'one_shot';
   if (running) return 'busy';
   return null;
 }

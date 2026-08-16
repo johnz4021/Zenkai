@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   checkExpectations,
   checkManifest,
   checkSuiteAgainstKind,
   countSourceFiles,
+  EXPECTATION_FAILURE_RE,
   normalizeTestName,
   parseUnittestOutput,
   parseVitestJson,
@@ -121,6 +125,65 @@ describe('checkManifest', () => {
       },
     } as GeneratedProblem;
     expect(checkExpectations(bad).some((f) => f.includes('no vocabulary'))).toBe(true);
+  });
+
+  it('vocabulary matches across morphology — the chatdelivery incident pin (2026-08-15)', () => {
+    // The round's BEST expectation was scored generic because its shared
+    // concepts were near-misses of the planted bug's words: check/re-checks,
+    // register/registers. Stemming both pools makes them the same token.
+    const incident = {
+      ...base,
+      planted_bug: {
+        ...base.planted_bug!,
+        description:
+          '_deliver_one calls _claim_slot (which registers the request in _inflight) inside the spawned task rather than in the dispatch loop, so the loop re-checks the window at zero and submits the whole backlog at once.',
+      },
+      spec:
+        'chatdelivery is the client-side path that gets chat messages from an outbox onto the server. Acknowledgements come back on one shared queue in completion order, never submission order, and delivery state is written down in exactly one place.',
+      rubric: {
+        ...base.rubric,
+        dimensions: {
+          ...base.rubric.dimensions,
+          reflect:
+            'Explains why the original gate read zero and what class of bug a check-then-register split across a scheduling boundary is',
+        },
+      },
+    } as GeneratedProblem;
+    expect(checkExpectations(incident).filter((f) => f.includes('reflect'))).toEqual([]);
+  });
+
+  it('an ABSENT individual expectation is legal — the judge ladder covers it (2026-08-15)', () => {
+    const dims = { ...base.rubric.dimensions } as Record<string, string>;
+    delete dims.reflect;
+    const stripped = { ...base, rubric: { ...base.rubric, dimensions: dims } } as GeneratedProblem;
+    expect(checkExpectations(stripped)).toEqual([]);
+    // But the whole map missing stays a generation failure.
+    const none = { ...base, rubric: { round_type: 'debugging' } } as GeneratedProblem;
+    expect(checkExpectations(none).length).toBeGreaterThan(0);
+  });
+});
+
+describe('strip-and-degrade on the build path (pinned via source)', () => {
+  const cliSource = readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), 'cli.ts'),
+    'utf8',
+  );
+
+  it('generateInto strips ONLY when every failure is an expectation-quality failure, then re-rules', () => {
+    expect(cliSource).toContain('EXPECTATION_FAILURE_RE');
+    expect(cliSource).toContain('keys.length === report.failures.length');
+    // The strip re-validates — the final report, not the strip, decides.
+    const strip = cliSource.indexOf('stripped ${keys.length} expectation');
+    expect(strip).toBeGreaterThan(-1);
+    expect(cliSource.indexOf('report = validateProblem(targetDir)', strip)).toBeGreaterThan(strip);
+  });
+
+  it('the failure regex matches exactly the quality-failure messages', () => {
+    expect(EXPECTATION_FAILURE_RE.exec('expectation for reflect shares no vocabulary with the spec — x')?.[1]).toBe('reflect');
+    expect(EXPECTATION_FAILURE_RE.exec('expectation for verify too thin (< 8 words): "x"')?.[1]).toBe('verify');
+    expect(EXPECTATION_FAILURE_RE.exec('expectation for clarify starts with a vague stem: "x"')?.[1]).toBe('clarify');
+    expect(EXPECTATION_FAILURE_RE.exec('rubric.dimensions missing (generator must emit per-dimension expectations)')).toBeNull();
+    expect(EXPECTATION_FAILURE_RE.exec('spec missing or too short')).toBeNull();
   });
 });
 

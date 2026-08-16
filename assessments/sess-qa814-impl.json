@@ -1,0 +1,78 @@
+{
+  "session_id": "sess-qa814-impl",
+  "status": "assessed",
+  "judged_at": 1786727450199,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "45bab0da9f82",
+  "schema_version": 1,
+  "renderer_version": 3,
+  "expectations_used": {
+    "clarify": "Asks the interviewer about what README.md leaves genuinely open — whether `doc_ids` may hold the same document twice, or whether a shard listing may repeat an id across pages — instead of inventing a rule silently and burying it in `gather_texts`.",
+    "approach": "States the mechanism before typing: that each manifest needs its own slip-to-document-id map because a slip is unique only inside the manifest that issued it, and that entries must be looked up rather than zipped because their order is unspecified — not merely that they will 'use the manifest API'.",
+    "communicate": "Narrates each decision as it is taken — which sentence of the README fixes the try count in `refresh_one`, why `list_shard_documents` keeps paging past a page with no rows — instead of going quiet through the edit-and-rerun cycles.",
+    "implement": "Writes short functions that follow the documented contract, such as splitting `gather_texts` at `MANIFEST_LIMIT` and submitting those manifests together rather than one after another, and leaves girder.py and vaultline.py untouched.",
+    "verify": "Re-runs test_reindex.py after each function rather than only at the end, and says which tests flipped and why before moving on to the next stub.",
+    "reflect": "Explains which line of the README each finished function satisfies — the per-manifest scope of a slip, `next_cursor` being the only end-of-listing signal, `max_tries` counting the first try — rather than offering a green suite as the reason the code is right."
+  },
+  "solved": false,
+  "summary": "The candidate asked one genuinely sharp clarifying question about duplicate ids but never followed through to resolve it, then made a burst of unnarrated edits to reindex.py without stating a plan, ran the suite once, saw continued failure, and ended the session without diagnosis or reflection. The round's own bar (a green suite) was not met.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "adequate",
+      "analysis": "They did surface the genuine ambiguity the README leaves open — whether doc_ids or shard listings could contain duplicate ids — which is exactly the kind of question the problem calls for. However, when the interviewer bounced the question back asking what the test suite assumes, the candidate did not go check the tests to answer it before moving on; they pivoted to a logistics question about the test runner instead of resolving the substantive ambiguity.",
+      "evidence": [
+        138,
+        171
+      ]
+    },
+    {
+      "dimension": "approach",
+      "verdict": "weak",
+      "analysis": "After opening reindex.py and being asked directly which of the four stubs they would tackle first and why, there is no recorded verbal or written plan naming a mechanism or even an ordering before they began editing. Edits begin at +287s with no stated hypothesis about slip-to-document mapping, shard paging termination, gate bounding, or retry counting.",
+      "evidence": [
+        287
+      ],
+      "stripped_evidence": [
+        248
+      ]
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "weak",
+      "analysis": "Aside from the two clarifying questions early on, the candidate went silent through the file-opening, editing, and test-running stretch from +233s to +362s, giving no narration of what they were implementing, which stub they were on, or why. The interviewer's direct prompt at +248s asking them to narrate their plan went unanswered before edits started.",
+      "evidence": [
+        287,
+        332
+      ]
+    },
+    {
+      "dimension": "implement",
+      "verdict": "weak",
+      "analysis": "Five edits were made to reindex.py in a short burst culminating in a save and test run that still failed, but with no narration or plan tying the edits to specific stubs or README clauses, it is impossible to see coherent, scoped progress — the edits and the final failing run look like an attempt cut short rather than a completed, verified implementation of even one function.",
+      "evidence": [
+        287,
+        332,
+        344
+      ]
+    },
+    {
+      "dimension": "verify",
+      "verdict": "weak",
+      "analysis": "They did run the test suite once after their edits at +344s, which is a verification step, but immediately upon seeing it still failed they ended the session without diagnosing which tests flipped, which remained broken, or why — no engagement with the failure output is evidenced.",
+      "evidence": [
+        344,
+        362
+      ]
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "weak",
+      "analysis": "The session ended immediately after the failing test run with no explanation of what was fixed, what remained broken, or why the suite was still red; no root-cause or contract-mapping statement was made at any point.",
+      "evidence": [
+        344,
+        362
+      ]
+    }
+  ]
+}

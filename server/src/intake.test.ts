@@ -190,3 +190,39 @@ describe('attachmentBlocks', () => {
     expect(attachmentBlocks(root, t)).toEqual([]);
   });
 });
+
+describe('draftToSpec — min_tests producer + the task hypothesis on every door (2026-08-15)', () => {
+  const base = {
+    id: 'lld-oa',
+    label: 'Staged LLD OA',
+    interviewer: false,
+    can_run_tests: true,
+    time_limit_minutes: 90,
+    starts_from: 'blank' as const,
+    submit: 'one_shot' as const,
+    check_kind: 'all_failing' as const,
+    emphasis: '',
+    rationale: 'Staged build.',
+    unsupported: '',
+  };
+
+  it('min_tests rides into check exactly like max_source_files; junk drops', () => {
+    expect(draftToSpec({ ...base, min_tests: 15 }).spec.check.min_tests).toBe(15);
+    expect(draftToSpec(base).spec.check.min_tests).toBeUndefined();
+    expect(draftToSpec({ ...base, min_tests: 0 } as never).spec.check.min_tests).toBeUndefined();
+    expect(draftToSpec({ ...base, min_tests: 2.5 } as never).spec.check.min_tests).toBeUndefined();
+  });
+
+  it('a coherent task hypothesis rides the draft — the wizard/planner blind-spot fix', () => {
+    // blank+all_failing+panes-ish is EXACTLY the shape deriveTaskFromSpec
+    // cannot tell apart from an algorithmic set; the stated hypothesis wins.
+    expect(draftToSpec({ ...base, task: 'practical_build' }).task).toBe('practical_build');
+  });
+
+  it('an incoherent task coerces through the ONE gate; absence stays absent; declined rounds carry none', () => {
+    expect(draftToSpec({ ...base, task: 'review_diff' }).task).toBe('algorithmic_set'); // derived fallback
+    expect(draftToSpec(base).task).toBeUndefined();
+    const declined = draftToSpec({ ...base, task: 'practical_build', check_kind: 'diff_present' as const, unsupported: 'no code to run' });
+    expect(declined.task).toBeUndefined();
+  });
+});

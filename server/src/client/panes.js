@@ -84,9 +84,9 @@
     }
     return Promise.all([...inflight]);
   };
-  // Submit path (session.js endSession) must flush too: on a one_shot round
-  // the Run button doesn't exist, so without this hook nothing ever flushed
-  // and the last <800ms of typing was graded away by the submit run.
+  // Submit path (session.js endSession) must flush too: a candidate can
+  // type right up to pressing Submit without another Run, so without this
+  // hook the last <800ms of typing was graded away by the submit run.
   window.ipPanesFlush = flushSaves;
 
   const renderTabs = (files) => {

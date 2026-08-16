@@ -1056,33 +1056,17 @@ logs), or Meta/Google expanding the pilots beyond select orgs.
 
 ---
 
-## 43. Skinned LC rounds de-skin themselves through the cases files
+## 43. Skinned LC rounds de-skin themselves through the cases files — SHIPPED (option b, 2026-08-15)
 
-**What:** `tests/cases.json` / `cases_partN.json` carry the dataset's raw kwarg
-strings verbatim — original LeetCode parameter names (`low`, `high`, `zero`,
-`one`) — and the panes file strip lists them, so one tab-click reveals the
-problem's real identity on every skinned round (single AND multi-part; 2026-08-14
-full-surface QA hit it on `count-ways-to-build-good-strings` and all 3 parts of
-rep-set67388).
-
-**Why it's a decision, not just a fix:** the harness already passes case values
-POSITIONALLY (lc-convert.ts header: "a skinned scaffold may rename parameters
-freely as long as order and meaning hold"), so the kwarg NAMES in cases files are
-display-only. Two viable shapes: (a) hide cases/tests files from the panes list
-on one-shot rounds — matches real OAs, which never show the grading suite, and
-the in-session PUT block for the grading contract already landed (2026-08-14);
-(b) re-emit cases keys renamed to the skinned scaffold's own signature (parse the
-generated `def`). (a) is 10 lines in `listWorkspaceFiles`; (b) preserves
-inspectability. Pick one deliberately — (a) changes what a candidate sees.
-
-**Where to start:** `server/src/panes.ts` `listWorkspaceFiles` for (a);
-`server/src/lc-convert.ts` `renderCasesJson` + a signature parse for (b).
-
-**Effort:** (a) CC ~15 min / (b) CC ~1-2 hr. **Priority:** P1 — it defeats the
-skinned-mode policy on every sourced round.
-
----
-
+Resolved with the statement-quality pass: `writeSourcedTests` now re-emits
+skinned cases with top-level input keys renamed to the generated scaffold's own
+parameter names (`renameCaseKeys` + `scaffoldParams`, lc-convert.ts) — the
+post-generation re-emit sees the scaffold on disk, the pre-generation emit and
+verbatim mode keep raw keys, and a key-count mismatch falls back untouched so
+grading can never corrupt (the harness calls positionally). Inspectability
+preserved; the cases file now speaks the statement's vocabulary. Option (a)
+(hiding the files on one-shot rounds) stays available if reading expected
+outputs ever proves to distort one-shot scores — see the hidden-test-split note.
 ## 44. Multi-part rounds: per-part outcomes for the topic ledger and the judge
 
 **What:** a multi-part set records the whole-session `solved` boolean on every
@@ -1130,6 +1114,15 @@ silent-failure class found in the full-surface QA.
 
 ---
 
+
+**Narrowed 2026-08-16:** the boot warning shipped — cli.ts names a
+shell-inherited key that differs from .env's at startup, with the unset
+remedy in the message (the owner hit the full silent-degradation chain
+live: stale .zshrc export → interviewer 401 on every turn → 'interviewer:
+unavailable' chips and unassessed cards, no cause named anywhere). The
+remaining #45 scope is the deeper preflight: probe the key with a cheap
+model call at app boot and refuse/flag sessions when it fails.
+
 ## 46. CLI `generate-for` is a second, poorer generation path
 
 **What:** the CLI path is queue-blind: it drops a queue item's bound LC
@@ -1170,25 +1163,15 @@ the practice door now generates on demand.
 
 ---
 
-## 48. `.used` is a single-session slot — reruns orphan history and replay dirty workspaces
+## 48. ~~`.used` is a single-session slot~~ SHIPPED 2026-08-14 — `artifact.ts`
 
-**What:** re-running a problem dir overwrites `.used` (the session→problem
-binding), so earlier sessions of the same dir become un-rejudgeable and their
-provenance is gone; and because the panes editor writes into the host problem
-dir with no restore, a re-run replays the previous candidate's code (2026-08-14
-QA: four sessions consumed rep-set67388; only the last is recoverable, and the
-queue-launch path handed a QA agent a pre-solved workspace).
-
-**Fix shape:** append-only `.used` (one line per session; rejudge matches any
-line) is 5 lines and fixes provenance. Workspace restore is the bigger half —
-either a pristine snapshot taken at validate time (`.session-snapshot` machinery
-already exists) restored on launch, or per-session workspace copies.
-
-**Where to start:** `cli.ts` markUsed + the rejudge `.used` scan (now three
-universes, cli.ts:599); `session.ts` launch path for the restore.
-
-**Effort:** CC ~1-2 hr. **Priority:** P2 (P1 the moment anyone re-runs a round
-deliberately).
+Pristine archives are tarred at validation time to a sibling
+`<dir>.pristine.tar.gz`; every run appends to `.runs.jsonl` (`.used` stays
+overwrite-latest so all three of its parse conventions keep working); rejudge
+resolves any historical session via `dirRanSession`; `/api/practice/repeat`
+restores pristine (snapshot fallback for pre-change reps) and relaunches. Two
+descendants deferred with their reasoning: #55 (rejudge-from-run-tarball) and
+#56 (topic-ledger repeat bias).
 
 ---
 
@@ -1204,6 +1187,12 @@ while /api/status said `stt_up:false` — the two health surfaces disagree.
 the QA's phantom turns may partly be the harness's silent-room setup; needs a
 human listen-through before touching thresholds. The health split is mechanical
 but lives in the same file.
+
+**Narrowed 2026-08-15:** solo rounds no longer open a mic at all (the
+`no_interviewer` voice gate, session.ts) — the no-interviewer phantom-turn
+instance above is structurally gone. The energy-gate work remains for
+interviewer rounds, where a quiet candidate still produces ambient
+transcripts.
 
 **Where to start:** `server/src/voice.ts` (energy gate, health events), then
 `judge`'s `isPhantomUtterance` for whether graded traces should drop empties.
@@ -1232,36 +1221,77 @@ targets. Also: derive the label from the planner's first reply, not the paste.
 
 ---
 
-## 51. Interviewer observations from the 2026-08-14 full-surface QA (record, not fixes)
+## 51. ~~Interviewer observations from the 2026-08-14 full-surface QA~~ SHIPPED 2026-08-14 (one item retracted)
 
-Deliberately note-only (owner's instruction: no interviewer changes from QA).
-From live probed sessions (sess-qa814-leak trace analysis, sess-qa813-panesint-b)
-and the legacy round:
+The note-only freeze was lifted by the owner the same day; every observation
+became a fix, landed with tests (commits e414145..1a8597c):
 
-- **Mechanism leak in a stuck nudge:** one nudge handed over the planted bug's
-  MECHANISM without naming the file; `leaksBugLocation()` is deliberately
-  locational and has zero coverage for non-locational disclosure. The
-  `leaksImplementationVocabulary` stuck-turn guard exists but did not catch it.
-- **Ground-truth vocabulary volunteered:** replied to a bug-location probe with
-  "boundary minute" before the candidate had used any such term.
-- **Latency cliff:** a direct root-cause statement went unanswered 190s, then
-  was answered by a turn the pipeline flagged unprompted (~40x median latency).
-- **Repetition:** near-identical follow-up appended to three consecutive turns
-  within 43s (settle-window shape).
-- **Invented constraints:** told an untimed round it had "45 minutes"; skipped
-  the round emphasis's mandated LP questions entirely.
-- **Intent gate fails open to 'narration'** when the classifier call errors —
-  directly-addressed questions get silence (session.ts routing, arguably
-  interviewer-side; left untouched per instruction).
-- **Refused a rubric-rewarded clarifying question** on the implement round, and
-  the judge then penalized the candidate for not clarifying — the two ends of
-  the product disagree about the same behavior.
-- **Wrong runner claim:** stated the Run Tests button is "the only runner
-  installed here" on an IDE round whose terminal runs the suite fine.
+- Untimed 45-minute fabrication -> `remainingMsFor` + `timeRules` (the number
+  came from `SESSION_LENGTH_MS`, not the model).
+- "Boundary minute" coinage + composed-pointer leak -> prompt rules ("A
+  refusal must not re-frame the question", "Never compose your own answers
+  into a pointer") + widened nudge definition. Mechanical guards were
+  measured and REJECTED at 1-in-6 precision - the reasoning and the revisit
+  trigger live on `leaksImplementationVocabulary`'s header.
+- 190s unanswered diagnosis -> `isAnswerToPendingQuestion` fast-path detector.
+- Triple follow-up in 43s -> the mandate-to-question removed (ANSWERABLE
+  hand-back now optional-and-open; agenda rides unprompted turns only).
+- Skipped LP segment -> the OPENING rule defers to the engagement style, and
+  the opening rides its own slot instead of the moment wrapper.
+- Intent gate failing open -> `apiIntentCheck` rethrows; the fault feeds the
+  new candidate-visible interviewer-health chip.
+- "Only runner installed here" -> the `howToRun` tail told the model exactly
+  that; it now names the terminal as legal and observed.
 
-**Where the fixes would start (when unfrozen):** `interviewer.ts` guard family
-+ `round-rules.ts` ANSWERABLE, `session.ts` intent-gate error path, prompt
-emphasis handling. **Priority:** owner's call.
+**RETRACTED:** "refused a rubric-rewarded clarifying question and the judge
+penalized the candidate for it." The assessment shows the opposite -
+`assessments/sess-qa814-impl.json` scored clarify **adequate**, explicitly
+crediting the question ("exactly the kind of question the problem calls
+for") and marking down only the failure to follow through, which the trace
+supports. The interviewer's decline ("that's a genuine open point you'll
+need to decide and defend") was good interviewing on an
+implement-from-minimal-docs round. No defect existed.
+
+---
+
+## 58. Interviewer versatility residue (2026-08-14 audit, deferred with reasoning)
+
+The structural fixes landed (initiative gate, per-kind ground truth, adrift
+evidence, agenda/wrap capabilities, mechanics slot). What remains, each too
+design-shaped to land blind:
+
+**(a) Cumulative opened-files state.** The interviewer asserted the candidate
+had "read roster, router, and the ranking helper" when the trace shows two of
+the three were never opened - it conflated self-report with observation, and
+nothing in the state carries "files they actually opened" (RECENT_ACTIVITY is
+a 10-event window; CODEBASE lists everything that exists). Fix: a cumulative
+opened-files line in the per-turn state (the trace walk
+`candidateVisitedBugFile` already does), plus a rule that absence-from-window
+is not evidence. Prose alone cannot fix this - the model has no correct
+source for the claim.
+
+**(b) The agenda's clarify proxy.** `agenda.ts` keys `clarify` off a prompted
+`kind:'answer'` interviewer turn - so every CONFIRM move ("Right - that's
+real", which the prompt maps to kind answer) records that the candidate asked
+a clarifying question. Fix: key off a candidate-side signal (an utterance the
+gate routed as addressed AND shaped like a question), not the interviewer's
+own label.
+
+**(c) `bugFileVisited` scope.** One incidental `file_open` (including the
+extension's activation-focus event) permanently disables LOCATION redaction
+for that file. The relaxation should permit discussing their changes there,
+not free the interviewer to volunteer the location unprompted forever after.
+
+**(d) Prompt dead weight.** ~20 lines duplicate mechanical guarantees
+(`ack.ts` at prompt "Never spend a turn proving you exist" - conditionally
+false as stated; wrap-up procedure text that `renderWrapState` already
+injects at point of use). Cut candidates listed in the 2026-08-14 prompt
+audit. Also: `{{TIME_RULES}}`/`{{ROUND_MECHANICS}}` landed as ADDITIONS; the
+audit's structural recommendation (a never-reveal reminder in the per-turn
+half beside {{CANDIDATE_MESSAGE}}) is still open.
+
+**Trigger:** the next live interviewer round that exhibits any of these, or
+the next prompt-size pass. **Effort:** CC ~1-2 hr total. **Priority:** P2.
 
 ---
 
@@ -1312,6 +1342,11 @@ the same question `repace` and the adapt flow already answer differently.
 `item.status !== 'done'` precondition), plus a migration pass over
 `targets/*/queue.json` for the rows already stuck.
 
+**Partial (2026-08-14, repeat sessions):** reconcile now DOES correct one case —
+a `done` item whose `.used` first line changed (a repeat ran) re-points to the
+new session and demotes to `ready`. The stub-heal case above is still open;
+the demote is the precedent for "disk wins on this field".
+
 **Effort:** CC ~45 min. **Priority:** P2.
 
 ---
@@ -1342,3 +1377,81 @@ state different things. Recorded together so they can be swept in one pass:
 
 **Effort:** CC ~15-30 min each. **Priority:** P3, except the deliverable
 labeling (P2 — it is in the judge's ground truth).
+
+---
+
+## 55. Rejudging an old session of a review-shaped round reads the wrong tree
+
+**What:** `deliverableText` (judge.ts:445) reads REVIEW.md/*.md from the LIVE
+problem dir at rejudge time. After a repeat, rejudging the EARLIER session
+grades the current tree's markdown, not what that candidate wrote. The bytes
+are preserved (`<dir>.runs/<sid>.tar.gz`, written before every restore) but
+rejudge does not read tarballs. Deferred from the 2026-08-14 repeat build:
+only review-shaped rounds are affected, the original finalize-time judgment
+was correct, and rejudge is an operator tool.
+
+**Fix shape:** when the target session is not `.used`'s first line, extract
+its run tarball to a temp dir and pass THAT as `problemDir` to `judgeSession`.
+~15 lines, but it touches the judge path — do it with a golden fixture.
+
+**Trigger:** the first time someone actually rejudges a superseded session of
+a review round. **Effort:** CC ~30 min. **Priority:** P3.
+
+---
+
+## 56. Topic ledger counts a memorized re-solve like a first-sight solve
+
+**What:** a repeat session gets a fresh session id, so `attemptsFromSession`
+appends a new ledger row and a re-solve of a problem seen last week inflates
+topic strength as if it were novel. `TopicAttempt.origin` is a closed
+`'session' | 'rejudge'` union and stays closed (two-artifact-rule instinct:
+don't widen a closed vocabulary for a display concern).
+
+**Fix shape when it matters:** the ledger already has everything needed to
+DERIVE repeat-ness at read time — same user, same slug, earlier row. Discount
+in `buildTopicView` scoring, not in the record. Blocked on the same trigger as
+weakness-ranked selection (#40): the ledger is record-only today by user
+decision, so a scoring bias has no consumer to mislead yet.
+
+**Trigger:** wiring any picker/report that reads topic strength. **Effort:**
+CC ~30 min. **Priority:** P3.
+
+---
+
+## 57. Cross-user artifact library (Phase 2 of the caching plan)
+
+**What:** before generating, check for an existing validated artifact whose
+closed core matches the request — exact equality on task + capabilities +
+check + runtime + source binding + generation-prompt hash; label/date/user
+fields excluded — and claim it instead of spending an opus run. Prose is a
+VETO, never a matcher (any emphasis/named-company/topic constraint → generate
+fresh; the clarifier is already the canonicalizer that makes differently-worded
+same-shape requests collide). Never serve the same artifact twice to one user
+(`.runs.jsonl` is the seen-set). Phase 1 (2026-08-14) built the substrate:
+pristine archives are what a library would serve.
+
+**Deferred by user decision (2026-08-14):** beta users will have varied
+targets, so hit rate starts near zero; measured build cost is ~$3.54 (opus,
+invented) vs ~$0.50 (sonnet, LC-sourced), and the round mix is mostly sourced.
+
+**Trigger:** generation spend >$500/mo with invented rounds >40% of the mix
+(~50+ active users), or build-queue latency becoming a user complaint.
+**Effort:** CC ~1-2 days including the veto gates. **Priority:** P3 until the
+trigger fires.
+
+## 58. Feedback cards speak about the user in the third person
+
+**What:** the judge writes "The candidate spent under three minutes…" /
+"They opened CHANGE.diff…", and the gap band + feedback cards render that
+prose verbatim on the user's own dashboard — a report about you, addressed
+to someone else. Fix is judge-prompt-side ("you opened…"), not a render
+transform: rewriting pronouns mechanically would corrupt quoted evidence.
+
+**Deferred (2026-08-15 UX pass):** changing the judge prompt bumps its hash,
+which invalidates gauntlet caches and version-splits assessment history — it
+deserves its own gauntlet run, not a copy-fix commit. Every string-level slop
+fix from the same pass shipped separately.
+
+**Trigger:** the next planned judge-prompt revision (ride along with it), or
+a beta user calling the card's voice out. **Effort:** prompt edit + one
+`eval-judge` run. **Priority:** P3.

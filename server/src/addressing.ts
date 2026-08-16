@@ -75,3 +75,54 @@ export function isCorrectionFollowUp(text: string, events: TraceEvent[], nowMs: 
   }
   return false;
 }
+
+/** How long an interviewer question or directive stays "pending" — the
+ *  candidate's first words inside this window are a reply, not narration. */
+export const PENDING_QUESTION_WINDOW_MS = 120_000;
+
+/**
+ * The candidate's FIRST utterance after an interviewer turn that asked for
+ * something is addressed by construction — you do not narrate INTO a
+ * question someone just asked you. Same shape as isCorrectionFollowUp, one
+ * detector over.
+ *
+ * Why (sess-qa814-leak, +379s→+405s): the interviewer ended a turn with
+ * "…go check whether the on-shift check you've been reading agrees with the
+ * half-open rule I just gave you", and the candidate's next utterance was
+ * the complete root cause, 26s later. A long declarative statement:
+ * isExplicitAsk missed it, the LLM gate read it as narration, and the
+ * diagnosis sat unanswered for 190s until the unprompted pressure lane
+ * finally spoke past it.
+ *
+ * "Asked for something" is: kind probe/pressure (interrogative by
+ * construction), a literal "?", or nudge:true — the motivating turn was a
+ * DIRECTIVE (kind "answer", no question mark, nudge true), and a directive
+ * invites a report-back exactly like a question. Server-emitted acks and
+ * time announcements are skipped: content-free by design, they neither ask
+ * nor cancel a pending question. A false positive costs one interviewer
+ * call that may choose silence — the same cost model as the other two
+ * detectors. Pure, clock injected.
+ */
+export function isAnswerToPendingQuestion(
+  text: string,
+  events: TraceEvent[],
+  nowMs: number,
+): boolean {
+  if (!text.trim()) return false;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type === 'utterance' && String((e.payload as { text?: string })?.text ?? '').trim()) {
+      return false; // not the FIRST words since the question — the gate decides
+    }
+    if (e.type !== 'interviewer') continue;
+    const p = e.payload as { kind?: string; text?: string; nudge?: boolean } | null;
+    if (p?.kind === 'ack' || p?.kind === 'time') continue;
+    const asked =
+      p?.kind === 'probe' ||
+      p?.kind === 'pressure' ||
+      p?.nudge === true ||
+      String(p?.text ?? '').includes('?');
+    return asked && nowMs - e.ts <= PENDING_QUESTION_WINDOW_MS;
+  }
+  return false;
+}

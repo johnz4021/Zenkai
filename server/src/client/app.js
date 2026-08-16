@@ -36,6 +36,21 @@ let loggedOut = false;
 // and lose the mode they picked.
 let loginMode = 'in'; // 'in' | 'up'
 
+/** The ONLY door to PostHog. The vendored bundle is served at a neutral path
+ *  but ad blockers still kill it for a real slice of users, and then
+ *  window.posthog simply does not exist — a bare posthog.* call anywhere in
+ *  this file would throw inside whatever handler made it, breaking the button
+ *  for exactly the users least likely to report it. app.test.ts pins that no
+ *  bare call exists. Usage: track('capture', 'event', {...}),
+ *  track('identify', id). */
+function track(method) {
+  try {
+    if (window.posthog && typeof window.posthog[method] === 'function') {
+      window.posthog[method].apply(window.posthog, [].slice.call(arguments, 1));
+    }
+  } catch (e) { /* analytics never break the app */ }
+}
+
 function jwt() { try { return window.localStorage.getItem('ip_jwt') || ''; } catch { return ''; } }
 function setJwt(t) {
   try { window.localStorage.setItem('ip_jwt', t); } catch { /* private mode */ }
@@ -106,11 +121,12 @@ function renderLogin(msg) {
     '<button id="login-google" class="primary" type="button">Continue with Google</button>' +
     '<div class="loginsep">or</div>' +
     '<div><label for="login-email">Email</label>' +
-    '<div class="loginrow"><input id="login-email" type="email" placeholder="you@school.edu" autocomplete="email">' +
-    '<button id="login-otp" type="button">Send code</button></div></div>' +
-    '<div id="login-code-row" hidden><label for="login-code">6-digit code</label>' +
-    '<div class="loginrow"><input id="login-code" inputmode="numeric" autocomplete="one-time-code" placeholder="000000">' +
-    '<button id="login-verify" class="primary" type="button">' + (signUp ? 'Create account' : 'Sign in') + '</button></div></div>' +
+    '<div class="loginrow"><input id="login-email" type="email" placeholder="you@school.edu" autocomplete="email"></div></div>' +
+    '<div><label for="login-pass">Password</label>' +
+    '<div class="loginrow"><input id="login-pass" type="password"' +
+      (signUp ? ' placeholder="at least 6 characters"' : '') +
+      ' autocomplete="' + (signUp ? 'new-password' : 'current-password') + '"></div></div>' +
+    '<button id="login-submit" class="primary" type="button">' + (signUp ? 'Create account' : 'Sign in') + '</button>' +
     '<p id="login-msg">' + esc(msg || '') + '</p>' +
     '<p class="loginfine">Free while in beta. Everyone shares one daily build budget, so rounds can run out before the day does.</p>' +
     '</div></div>';
@@ -120,14 +136,16 @@ function renderLogin(msg) {
     n.classList.toggle('bad', tone === 'bad');
     n.classList.toggle('good', tone === 'good');
   };
-  // Carry the typed address across the swap. Someone who types their email,
-  // then realises they need the other tab, should not have to type it twice.
+  // Carry what was typed across the swap. Someone who fills the form, then
+  // realises they need the other tab, should not start over.
   const swap = (mode) => {
     if (loginMode === mode) return;
     const typed = el('login-email').value;
+    const pass = el('login-pass').value;
     loginMode = mode;
     renderLogin();
     el('login-email').value = typed;
+    el('login-pass').value = pass;
   };
   el('mode-in').addEventListener('click', () => swap('in'));
   el('mode-up').addEventListener('click', () => swap('up'));
@@ -140,43 +158,67 @@ function renderLogin(msg) {
     headers: { apikey: authCfg.anon_key, 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  el('login-otp').addEventListener('click', async () => {
+  // Email + password, plain GoTrue REST (no SDK — the repo has a no-bundler
+  // rule). Replaced the OTP/magic-code flow: a 6-digit code round-trips
+  // through email, which is the one dependency this beta cannot rely on
+  // (built-in Supabase SMTP is rate-limited to a handful an hour, and custom
+  // SMTP was never set up). A password needs no delivery at all.
+  //
+  // The two tabs still mean something: `signup` refuses to sign an existing
+  // user in, and `token` refuses to create an account, so a typo'd address
+  // says so instead of silently minting a second empty account.
+  const submit = async () => {
     const email = el('login-email').value.trim();
+    const password = el('login-pass').value;
     if (!email) { say('enter your email first', 'bad'); return; }
-    const btn = el('login-otp');
+    if (!password) { say('enter your password', 'bad'); return; }
+    if (signUp && password.length < 6) { say('password needs at least 6 characters', 'bad'); return; }
+    const btn = el('login-submit');
     btn.disabled = true;
-    btn.textContent = 'Sending…';
     say('working');
-    // create_user is what makes the two tabs mean something. Sign in refuses
-    // to mint an account, so a typo'd address says so instead of silently
-    // creating a second empty one the user will never find again.
-    const r = await gotrue('otp', { email, create_user: signUp });
-    btn.disabled = false;
-    btn.textContent = 'Send code';
-    if (r.ok) {
-      el('login-code-row').hidden = false;
-      el('login-code').focus();
-      say('code sent to ' + email, 'good');
+    let r;
+    try {
+      r = signUp
+        ? await gotrue('signup', { email, password })
+        : await gotrue('token?grant_type=password', { email, password });
+    } catch {
+      btn.disabled = false;
+      say('could not reach the sign-in service — try again', 'bad');
       return;
     }
-    if (!signUp) { say('no account with that email yet — switch to Sign up', 'bad'); return; }
-    say('could not send a code (' + r.status + ') — check the address and try again', 'bad');
-  });
-  el('login-verify').addEventListener('click', async () => {
-    const email = el('login-email').value.trim();
-    const code = el('login-code').value.trim();
-    if (!code) { say('enter the code from the email', 'bad'); return; }
-    const btn = el('login-verify');
-    btn.disabled = true;
-    say('verifying');
-    const r = await gotrue('verify', { type: 'email', email, token: code });
+    let body = {};
+    try { body = await r.json(); } catch { /* a body-less error is still an error */ }
     btn.disabled = false;
-    if (!r.ok) { say('that code did not verify — request a fresh one', 'bad'); return; }
-    const body = await r.json();
-    if (!body.access_token) { say('no token in the reply — try again', 'bad'); return; }
+    if (!r.ok) {
+      // GoTrue puts the human-readable reason in msg or error_description.
+      const why = String(body.msg || body.error_description || body.error || '');
+      if (!signUp && /invalid login credentials/i.test(why)) {
+        say('wrong email or password — or switch to Sign up if you are new', 'bad');
+      } else if (signUp && /already|registered|exists/i.test(why)) {
+        say('there is already an account with that email — switch to Sign in', 'bad');
+      } else {
+        say(why || 'that did not work (' + r.status + ') — try again', 'bad');
+      }
+      return;
+    }
+    if (!body.access_token) {
+      // Signup succeeded but returned no session: Supabase has "Confirm
+      // email" ON, so the account is pending a link this beta probably cannot
+      // deliver. Say it plainly — the fix is the operator's (turn confirmation
+      // off, or configure SMTP), not something the user can work around.
+      say('account created — check your email to confirm it, then sign in', 'good');
+      loginMode = 'in';
+      return;
+    }
     setJwt(body.access_token);
     window.location.reload();
-  });
+  };
+  el('login-submit').addEventListener('click', submit);
+  // Enter submits from either field. A password form that needs a mouse is a
+  // password form people abandon.
+  for (const id of ['login-email', 'login-pass']) {
+    el(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  }
 }
 
 async function initAuth() {
@@ -195,7 +237,25 @@ async function initAuth() {
     window.history.replaceState(null, '', '#/');
   }
   if (!jwt()) { renderLogin(); return false; }
+  showSignout();
   return true;
+}
+
+/**
+ * Reveal the masthead's sign out. Driven by AUTH state — auth is on and this
+ * browser holds a token — never by a successful /api/state.
+ *
+ * That distinction is the whole point (live report 2026-08-15: "I can't sign
+ * out right now"). Visibility used to be set inside render(), and render is
+ * exactly what does NOT run when the app is unhappy: a thrown state fetch
+ * returns at the banner, and a render that throws returns at "this page is
+ * out of date". Both leave a signed-in user with no exit — and a stuck app is
+ * when you most want to leave the account, not least. The class is applied
+ * once at boot and nothing clears it but renderLogin's own reload.
+ */
+function showSignout() {
+  const s = el('nav-signout');
+  if (s) s.classList.toggle('on', Boolean(authCfg && authCfg.enabled && jwt()));
 }
 
 // ---- routing: the route decides what's visible; the poll only fills it ----
@@ -247,6 +307,12 @@ const BINARY_KINDS = { 'image/png': 'image', 'image/jpeg': 'image', 'image/webp'
 // A paste longer than this becomes a chip instead of composer text — the
 // candidate's own material must never dominate the viewport.
 const PASTE_CHIP_CHARS = 400;
+// Assistant research reports run long; a HISTORY turn past this folds to its
+// first sentence (the pastechip pattern). The CURRENT turn never folds — it
+// may end in the question the candidate must read. Prompt-side brevity
+// (prompts/planner.md) is the fix; this is the safety net for scrollback and
+// resumed replays (owner report 2026-08-15: walls of research nobody read).
+const PLANNER_FOLD_CHARS = 700;
 
 const plan = {
   tid: null, turns: [], proposal: null, busy: false, error: '',
@@ -257,6 +323,9 @@ const plan = {
   flash: false,            // one render's worth of row-flash after an update
   readOnly: false,         // no API key: replay + confirm, but no sending
   askDismissed: null,      // turn index whose pinned options were waved off
+  buildArmed: false,       // an unsettled build was clicked once; the second
+                           // click ships it (owner request 2026-08-15).
+                           // Transient — any other interaction disarms it.
 };
 
 let renderedTurnCount = 0; // autoscroll fires only when this grows
@@ -266,6 +335,7 @@ function resetPlan() {
   plan.tid = null; plan.turns = []; plan.proposal = null; plan.busy = false;
   plan.error = ''; plan.gateOpen = null; plan.include = {}; plan.tier = {};
   plan.openChips = {}; plan.flash = false; plan.readOnly = false; plan.askDismissed = null;
+  plan.buildArmed = false;
   attachments.length = 0;
 }
 
@@ -283,7 +353,7 @@ function specShapeLine(c) {
   return (c.interviewer ? 'live interviewer' : 'no interviewer (OA)') + ' · ' +
     (c.time_limit_ms ? Math.round(c.time_limit_ms / 60000) + ' min' : 'untimed') + ' · ' +
     'starts from ' + esc(c.starts_from) + ' · ' +
-    (c.submit === 'one_shot' ? 'graded once at submit' : 'iterate freely');
+    (c.submit === 'one_shot' ? 'graded once at submit' : 'graded as you go');
 }
 
 /** Same vocabulary as specShapeLine, compressed for the landing readout —
@@ -331,6 +401,8 @@ function planResume(id) {
 }
 
 function planTurn(message) {
+  // Talking to the planner is the opposite of "build it anyway".
+  plan.buildArmed = false;
   plan.busy = true; plan.error = '';
   renderPlan();
   fetch('/api/plan/turn', {
@@ -378,6 +450,24 @@ async function planFirstSend(text) {
       body: JSON.stringify({ label, description: text, context: buildContext(), attachments: buildBinaryAttachments() }),
     });
     const sBody = await r.json();
+    // WTP gate. Status-checked before the error branch for the same reason as
+    // launchCommon, plus one specific to this path: wirePlan's send() clears
+    // the composer BEFORE calling here and there is no draft persistence
+    // anywhere, so a gated user would lose everything they typed. Restore it.
+    if (r.status === 402 && sBody.paywall && !paywallOpen) {
+      plan.busy = false;
+      if (text) plan.turns.pop();
+      // Replay target if this ends in a Checkout redirect. Carries the typed
+      // text, which the composer already cleared and nothing else persists.
+      paywallIntent = { kind: 'plan', text: text };
+      let proceed = false;
+      try { proceed = await showPaywallGate(sBody.paywall); } catch { proceed = false; }
+      if (proceed) { renderPlan(); planFirstSend(text); return; }
+      const box = el('plan-msg');
+      if (box && text) box.value = text; // their words, back where they left them
+      renderPlan();
+      return;
+    }
     if (sBody.error) { plan.busy = false; plan.error = sBody.error; if (text) plan.turns.pop(); renderPlan(); return; }
     plan.tid = sBody.id;
     flowTargetId = sBody.id;
@@ -405,6 +495,12 @@ function linkify(escaped) {
     // Single newlines are the model's line breaks (list items, short
     // enumerations); paragraphs were already split on blank lines.
     .replace(/\n/g, '<br>');
+}
+
+/** The fold's one-line summary: the first sentence, capped. */
+function firstSentence(s) {
+  const m = (s || '').match(/^[\s\S]{0,158}?[.!?](?=\s|$)/);
+  return m ? m[0].trim() : (s || '').slice(0, 140).trim() + '…';
 }
 
 function renderTurns() {
@@ -436,8 +532,23 @@ function renderTurns() {
       // Rendering it painted an empty bubble on every proposal turn.
       if (!(t.prose || '').trim() && !(t.questions && t.questions.length) && !(t.unreadable && t.unreadable.length)) return;
       html += '<div class="turn-planner' + (i > lastUser ? '' : ' history') + '">';
-      for (const para of (t.prose || '').split('\n\n')) {
-        if (para.trim()) html += '<p>' + linkify(esc(para.trim())) + '</p>';
+      // A long HISTORY note folds to its first sentence; reuses the
+      // pastechip toggle (indexes are per-turn, so user chips and fold
+      // chips can't collide). Unreadable-link repairs render OUTSIDE the
+      // fold below — a dead end must stay visible.
+      const foldable = (t.prose || '').length > PLANNER_FOLD_CHARS && i <= lastUser;
+      if (foldable && !plan.openChips[i]) {
+        html += '<button type="button" class="pastechip foldnote" data-chip="' + i + '">' +
+          '<span>▸</span><span>' + linkify(esc(firstSentence(t.prose))) + '</span>' +
+          '<span class="foldmeta">· read the full note</span></button>';
+      } else {
+        if (foldable) {
+          html += '<button type="button" class="pastechip foldnote" data-chip="' + i + '">' +
+            '<span>▾</span><span>' + linkify(esc(firstSentence(t.prose))) + '</span></button>';
+        }
+        for (const para of (t.prose || '').split('\n\n')) {
+          if (para.trim()) html += '<p>' + linkify(esc(para.trim())) + '</p>';
+        }
       }
       // A link the fetch tool could not read is a dead end unless the
       // candidate hears about it — many sites (reddit.com among them) are
@@ -493,8 +604,23 @@ function renderPanel() {
         (open ? '<div class="gatedetail"><b>Why this shape:</b> ' + esc(d.rationale || '') + '</div>' : '') +
         '</div>';
     }
-    for (const { d } of declined) {
-      body += '<div class="gatedecline">' + esc(d.spec.label) + ' — can\'t run honestly: ' + esc(d.unsupported) + '</div>';
+    for (const { d, i } of declined) {
+      // Decision 2B, applied to THIS door (live report 2026-08-15: an
+      // Amazon HM round — half LP conversation, half live coding — was the
+      // plan's ONLY draft, so the model's honest decline left "Confirm 0
+      // rounds" with no way forward; the practice door already offers
+      // "Build the closest version" on the same flag). The decline stays
+      // the DEFAULT: the checkbox is opt-IN, and ticking it means "build
+      // the closest supported version" — the spec beneath is a fully valid
+      // round; unsupported is a caveat about fidelity, not a broken spec.
+      const included = plan.include[i] === true;
+      body += '<div class="gaterow gatedecline' + (plan.flash ? ' flash' : '') + '">' +
+        '<label class="gcheck"><input type="checkbox"' + (included ? ' checked' : '') + ' data-gi="' + i + '" /> ' +
+        '<span style="color:' + (included ? 'var(--text-1)' : 'var(--text-2)') + '">' + esc(d.spec.label) + '</span></label>' +
+        '<div class="gshape">' + specShapeLine(d.spec.capabilities) + '</div>' +
+        '<div class="gdeclinewhy">can\'t run honestly: ' + esc(d.unsupported) +
+        (included ? '' : ' — tick to build the closest version anyway') + '</div>' +
+        '</div>';
     }
     body += '<div class="paceline">' +
       (p.pace_per_week
@@ -508,15 +634,74 @@ function renderPanel() {
         p.topics.map((t) => esc(t.label || t.id)).join(' · ') + '</div>';
     }
   }
-  const n = p ? p.drafts.filter((d, i) => !d.unsupported && plan.include[i] !== false).length : 0;
+  // Usable drafts count unless UNticked; declined drafts count only when
+  // ticked — the model's decline is the default, overriding it is deliberate.
+  const n = p ? p.drafts.filter((d, i) => (d.unsupported ? plan.include[i] === true : plan.include[i] !== false)).length : 0;
+  const declinedOnly = Boolean(p) && n === 0 && p.drafts.some((d) => d.unsupported);
+  // Soft readiness (owner decision 2026-08-15): the button never gates on
+  // the model — the user outranks it — but the note beneath says whether
+  // the shape is still moving. `summary` is the model's own settle signal
+  // (prompts/planner.md); open questions keep it honest after a reopener.
+  const asks = openAskCount();
+  const settled = planSettled();
+  // Armed = an unsettled build was clicked once and is waiting for a second
+  // click. A settle landing in between makes the arming moot — the normal
+  // one-click path is correct again.
+  const armed = plan.buildArmed && !settled;
+  const label = armed
+    ? 'Build anyway →'
+    : n === 1 ? 'Confirm 1 round and build the plan' : 'Confirm ' + n + ' rounds and build the plan';
+  const note = !p ? ''
+    : declinedOnly
+      // Without this line the settled note read "ready when you are" above
+      // a disabled button — a contradiction with no visible cause.
+      ? 'every round here was declined — tick one above to build its closest version'
+    : armed
+      ? (asks ? asks + ' question' + (asks === 1 ? '' : 's') + ' still open. ' : 'The shape is still moving. ') +
+        'Click again to build now, or keep talking to settle it.'
+    : settled ? 'shape settled — ready when you are'
+    : 'still working out the shape' +
+      (asks ? ' — ' + asks + ' open question' + (asks === 1 ? '' : 's') + ' below' : '');
+  const noteClass = armed ? ' armed' : settled ? ' settled' : '';
   return '<aside id="plan-panel">' +
     '<div class="phead"><p class="micro">The plan</p>' +
     '<div class="meta">nothing is generated until you confirm</div></div>' +
     '<div class="pbody">' + body + '</div>' +
-    '<div class="pfoot"><button id="gate-confirm" class="primary" type="button"' + (n === 0 ? ' disabled' : '') + '>' +
-    (n === 1 ? 'Confirm 1 round and build the plan' : 'Confirm ' + n + ' rounds and build the plan') + '</button>' +
-    '<span class="meta" id="gate-note"></span></div>' +
+    '<div class="pfoot"><button id="gate-confirm" class="primary' + (settled ? '' : ' pending') +
+    '" type="button" aria-describedby="gate-note"' + (n === 0 ? ' disabled' : '') + '>' +
+    label + '</button>' +
+    '<div class="meta' + noteClass + '" id="gate-note">' + note + '</div></div>' +
     '</aside>';
+}
+
+/** The model's own settle signal: it writes `summary` once the loop's shape
+ *  stops moving (prompts/planner.md), and no question may still be open.
+ *  A SIGNAL, never a lock — `summary` is prompt-instructed, not enforced, so
+ *  a model that never emits one must not be able to strand the plan. That is
+ *  why the unsettled path is a speed bump (two clicks) and not a disable. */
+function planSettled() {
+  return Boolean(plan.proposal && plan.proposal.summary) && openAskCount() === 0;
+}
+
+/** Any interaction that isn't the build button itself cancels a pending
+ *  "build anyway" — the armed state must survive only deliberate intent. */
+function disarmBuild() {
+  if (!plan.buildArmed) return false;
+  plan.buildArmed = false;
+  return true;
+}
+
+/** Open planner questions after the last user message. Unlike pendingAsk,
+ *  neither dismissal nor a busy model is checked — waving the pills away
+ *  doesn't make the plan more settled. */
+function openAskCount() {
+  let lastUser = -1;
+  let n = 0;
+  plan.turns.forEach((t, i) => {
+    if (t.role === 'user') { lastUser = i; n = 0; return; }
+    if (t.questions && t.questions.length && i > lastUser) n = t.questions.length;
+  });
+  return n;
 }
 
 /** The open question, if any: the latest ask with no user message after it
@@ -570,7 +755,10 @@ function renderComposer() {
     '<button id="plan-send" type="button"' + (plan.busy || plan.readOnly ? ' disabled' : '') + '>Send</button></div>' +
     '<div class="linkrow"><input id="plan-link" placeholder="add a link (optional) — a repo, a thread, a writeup" aria-label="Add a link (optional)" />' +
     '<button id="plan-addlink" type="button">add</button></div>' +
-    '<div class="helper">Correct me where I am wrong. What you saw yourself outranks anything I find.</div>' +
+    // The correction invitation earns its place only once there is
+    // something to correct — before the first reply it read as noise
+    // (QA 2026-08-15).
+    (plan.tid ? '<div class="helper">Correct me where I am wrong. What you saw yourself outranks anything I find.</div>' : '') +
     '</div>';
 }
 
@@ -584,9 +772,11 @@ function renderPlan() {
 
   let chat = '';
   if (!plan.tid && plan.turns.length === 0) {
-    chat = '<div id="plan-intro">Describe the interview you\'re preparing for — company, what the recruiter said, ' +
-      'what a friend told you, a screenshot of the assessment preview. Paste everything; I\'ll sort out what matters ' +
-      'and build a practice plan you confirm before anything is generated.</div>' +
+    // One sentence, not a briefing (QA 2026-08-15): the placeholder already
+    // shows what to paste, and the trust line ('nothing generated until you
+    // confirm') is the part worth saying twice.
+    chat = '<div id="plan-intro">Describe the interview you\'re preparing for — paste everything you have ' +
+      '(recruiter email, JD, screenshots). Nothing is generated until you confirm the plan.</div>' +
       (plan.error ? '<p class="err">' + esc(plan.error) + '</p>' : '');
   } else {
     chat = renderTurns();
@@ -728,13 +918,28 @@ function wirePlan(f) {
     const p = plan.proposal;
     const kept = [];
     p.drafts.forEach((d, i) => {
-      if (d.unsupported || plan.include[i] === false) return;
+      // Mirror of the panel's count: declined ships only when ticked (2B —
+      // the override is the user's), usable ships unless unticked.
+      if (d.unsupported ? plan.include[i] !== true : plan.include[i] === false) return;
       const tier = plan.tier[i] || d.spec.evidence_tier;
       kept.push(Object.assign({}, d.spec, tier ? { evidence_tier: tier } : {}));
     });
     if (!kept.length) return;
+    // Speed bump (owner request 2026-08-15): while the planner is still
+    // clarifying, the first click ARMS rather than builds — the button
+    // relabels to "Build anyway →" and the note says why. The second click
+    // ships it. Never a disable: the settle signal is model-written, so a
+    // planner that forgets it must not be able to strand the plan.
+    if (!planSettled() && !plan.buildArmed) {
+      plan.buildArmed = true;
+      renderPlan();
+      return;
+    }
+    plan.buildArmed = false;
     el('gate-confirm').disabled = true;
-    el('gate-note').textContent = 'building your plan…';
+    // The accept is SLOW (queue sourcing + one naming call per spec) — the
+    // same indeterminate bar the chat's busy state uses, not a bare line.
+    el('gate-note').innerHTML = 'building your plan…<div class="progress"><div class="fill"></div></div>';
     const r = await fetch('/api/accept-spec', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -742,10 +947,8 @@ function wirePlan(f) {
     });
     const sBody = await r.json();
     if (sBody.error) {
-      el('gate-confirm').disabled = false;
-      el('gate-note').textContent = '';
       plan.error = sBody.error;
-      renderPlan();
+      renderPlan(); // button + note re-render from state
       return;
     }
     // The payoff moment: the whole season appears NOW.
@@ -804,6 +1007,11 @@ el('e-file').addEventListener('change', () => {
 const rep = {
   phase: 'input',        // input | clarifying | confirm | started
   busy: false,           // a re-infer is in flight; confirm STAYS rendered
+  draftsStale: false,    // a shape answer settled locally and the drafts don't
+                         // reflect it yet — Start re-checks before shipping (T3)
+  recheckTimer: null,    // debounce handle for the background re-check
+  recheckDirty: false,   // an answer landed mid-flight → re-fire once at landing
+  startQueued: false,    // Start pressed while stale/in-flight — go at landing
   repId: null,           // client-generated at confirm so a double-click
                          // carries the SAME id into the server's mkdir lock
   description: '',
@@ -817,6 +1025,9 @@ const rep = {
   sourceText: null, sourceAttachN: 0,
   flashIds: [],          // gap ids to .flash after the next render, then cleared
   pendingFocus: null,    // gap id whose first control gets focus post-render
+  editingGap: null,      // rail gap id whose editor is open (compact readback,
+                         // owner report 2026-08-15) — transient, never persisted
+  pendingEditFocus: null, // one-shot: focus that editor after the next render
   linkOpen: false,       // the link input appears on request, not by default
   error: '',
 };
@@ -829,10 +1040,13 @@ let lastWaitAnnounced = null;
 
 function resetRep() {
   rep.phase = 'input'; rep.busy = false; rep.repId = null; rep.description = '';
+  rep.draftsStale = false; rep.recheckDirty = false; rep.startQueued = false;
+  if (rep.recheckTimer) { clearTimeout(rep.recheckTimer); rep.recheckTimer = null; }
   rep.drafts = []; rep.questions = []; rep.answers = []; rep.chosen = 0;
   rep.gaps = []; rep.brief = ''; rep.degraded = false;
   rep.sourceText = null; rep.sourceAttachN = 0;
   rep.flashIds = []; rep.pendingFocus = null;
+  rep.editingGap = null; rep.pendingEditFocus = null;
   rep.linkOpen = false;
   rep.error = '';
   lastWaitAnnounced = null;
@@ -849,6 +1063,7 @@ function saveRep() {
       drafts: rep.drafts, chosen: rep.chosen, gaps: rep.gaps,
       brief: rep.brief, degraded: rep.degraded, answers: rep.answers,
       sourceText: rep.sourceText, sourceAttachN: rep.sourceAttachN,
+      draftsStale: rep.draftsStale,
     }));
   } catch { /* storage full or denied — the feature degrades to pre-T10 */ }
 }
@@ -866,6 +1081,9 @@ function hydrateRep() {
     rep.answers = Array.isArray(s.answers) ? s.answers : [];
     rep.sourceText = typeof s.sourceText === 'string' ? s.sourceText : null;
     rep.sourceAttachN = Number.isInteger(s.sourceAttachN) ? s.sourceAttachN : 0;
+    // A reload kills an in-flight re-check, but staleness survives it — the
+    // Start gate re-verifies. Old snapshots hydrate false (they predate this).
+    rep.draftsStale = Boolean(s.draftsStale);
     rep.questions = rep.gaps.filter((g) => g.status === 'open');
     // In-flight states don't survive a reload; clamp to what the data holds.
     rep.phase = s.phase === 'started' ? 'started'
@@ -1006,7 +1224,7 @@ function renderPractice() {
     // free when nothing changed and an explicit REGENERATE when it did.
     const dirty = repPasteDirty(keep);
     const returning = rep.drafts.length > 0;
-    html += '<h1 class="hero"><label for="rep-paste">What are you preparing for?</label></h1>' +
+    html += '<h1 class="hero"><label for="rep-paste">What do you want to practice right now?</label></h1>' +
       '<div class="composer-frame">' +
       '<textarea id="rep-paste" placeholder="paste a recruiter email, a JD, a friend’s description…"></textarea>' + chips +
       (rep.linkOpen
@@ -1052,12 +1270,13 @@ function renderPractice() {
     html += '<div id="rep-confirm">';
     html += '<div id="rep-open"><div class="micro">Needed before I build</div>';
     if (rep.busy) {
-      // A re-infer runs 8-20s. The screen never blanks: the rail stays put,
-      // controls disable, and the wait gets the SAME progress bar the first
-      // inference gets. A 12px grey line alone was invisible — and when the
-      // re-infer was triggered from the correction box at the bottom of this
-      // column, it rendered off-screen above the fold entirely (live report
-      // 2026-08-12: "sudden generation after a wait with no indicator").
+      // A re-infer runs 8-20s — in the BACKGROUND (owner decision
+      // 2026-08-15): the screen never blanks and the controls stay live, so
+      // the user keeps answering while it flies. The wait still gets the
+      // SAME progress bar the first inference gets: a 12px grey line alone
+      // was invisible (live report 2026-08-12: "sudden generation after a
+      // wait with no indicator"). Only the correction box disables — it
+      // rewrites the description and stays a blocking, explicit apply.
       html += '<div class="metaline" style="margin-top:8px">re-checking the shape…</div>' +
         '<div class="progress"><div class="fill"></div></div>';
     }
@@ -1070,7 +1289,7 @@ function renderPractice() {
         '<div class="optdetail">' + esc(g.why) + '</div>' +
         '<div class="askopts">' +
         g.options.map((o, oi) =>
-          '<button type="button" class="qopt" data-gap="' + esc(g.id) + '" data-o="' + oi + '"' + dis + '>' + esc(o.label) +
+          '<button type="button" class="qopt" data-gap="' + esc(g.id) + '" data-o="' + oi + '">' + esc(o.label) +
           (o.detail ? ' <span class="rec">' + esc(o.detail) + '</span>' : '') + '</button>').join('') +
         '</div>' +
         // Options are SHORTCUTS, never a gate (rule 3): every open value
@@ -1078,7 +1297,7 @@ function renderPractice() {
         (g.closed ? '' :
           '<div class="gapinput-row">' +
           '<label for="gapfree-' + esc(g.id) + '" class="rep-srlabel" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">' + esc(g.label) + '</label>' +
-          '<input id="gapfree-' + esc(g.id) + '" class="gapinput" data-gap="' + esc(g.id) + '" placeholder="or type your own…"' + dis + '>' +
+          '<input id="gapfree-' + esc(g.id) + '" class="gapinput" data-gap="' + esc(g.id) + '" placeholder="or type your own…">' +
           '</div>') +
         '</div>';
     }
@@ -1104,34 +1323,40 @@ function renderPractice() {
         ' rounds — building “' + esc(d.spec.label) + '”</div>';
     }
     for (const g of settled) {
+      // Compact readback (owner report 2026-08-15): the always-open 44px
+      // controls made the rail outgrow the viewport — every answer moved a
+      // full edit box + why-line into this column, and Start (grid row 2)
+      // sank below all of it. The value is now a click-to-edit button; the
+      // control and its why-line render only for the row being edited.
+      const editing = g.id === rep.editingGap;
       html += '<div class="gaterow" data-gap="' + esc(g.id) + '">' +
         '<label class="micro" for="gap-' + esc(g.id) + '">' + esc(g.label) +
         ' <span class="tier">' + (tierWord[g.evidence] || 'guessed') + '</span></label>' +
-        (g.closed && g.options.length
-          ? '<select id="gap-' + esc(g.id) + '" class="gapedit" data-gap="' + esc(g.id) + '"' + dis + '>' +
-            g.options.map((o) => '<option' + (o.label === g.value ? ' selected' : '') + '>' + esc(o.label) + '</option>').join('') +
-            (g.options.some((o) => o.label === g.value) ? '' : '<option selected>' + esc(g.value) + '</option>') +
-            '</select>'
-          : '<input id="gap-' + esc(g.id) + '" class="gapedit" data-gap="' + esc(g.id) + '" value="' + esc(g.value) + '"' + dis + '>') +
-        '<div class="gapwhy">' + esc(g.why) + '</div>' +
+        (editing
+          ? (g.closed && g.options.length
+            ? '<select id="gap-' + esc(g.id) + '" class="gapedit" data-gap="' + esc(g.id) + '">' +
+              g.options.map((o) => '<option' + (o.label === g.value ? ' selected' : '') + '>' + esc(o.label) + '</option>').join('') +
+              (g.options.some((o) => o.label === g.value) ? '' : '<option selected>' + esc(g.value) + '</option>') +
+              '</select>'
+            : '<input id="gap-' + esc(g.id) + '" class="gapedit" data-gap="' + esc(g.id) + '" value="' + esc(g.value) + '">') +
+            '<div class="gapwhy">' + esc(g.why) + '</div>'
+          : '<button type="button" id="gap-' + esc(g.id) + '" class="gapval" data-gap="' + esc(g.id) + '"' +
+            ' aria-label="change ' + esc(g.label) + ' — currently ' + esc(g.value) + '">' + esc(g.value) + '</button>') +
         '</div>';
     }
     html += '<div class="metaline" style="margin-top:10px">' + esc(specShapeLine(d.spec.capabilities)) + '</div>';
     html += '</div>'; // #rep-rail
 
-    // The commit block spans BOTH columns. The brief is a paragraph meant to
-    // be read right before an irreversible build; in the 220px rail it
-    // rendered as a twelve-line sliver (QA 2026-08-12, ISSUE-004). Full width
-    // here also puts Start below everything it is committing, which is what
-    // the approved mockup showed. Still in flow — the sticky slot stays free.
-    html += '<div id="rep-commit">';
-    if (rep.brief) html += '<div id="rep-brief">' + esc(rep.brief) + '</div>';
-    if (d.unsupported) {
-      // Decision 2B: the decline is visible and the choice is the user's.
-      html += '<div id="rep-unsupported">can’t run this honestly: ' + esc(d.unsupported) + '</div>';
-    }
-    html += '<div class="rep-actions"><button type="button" class="primary" id="rep-start"' + dis + '>' + startLabel + '</button></div>';
-    html += '</div>'; // #rep-commit
+    // The commit band spans BOTH columns and sits ABOVE them (owner call
+    // 2026-08-15): anything placed inside a column rides that column's
+    // length, and the rail is ~70px per confirmed fact — eight facts put
+    // Start off-screen. A band above the grid costs the columns no space
+    // and its position never depends on how long either one gets.
+    //
+    // It is LAST in the DOM on purpose: the questions are the task and must
+    // keep the first tab stop (tab order, pass 6). CSS grid rows do the
+    // visual reordering, so reading order and tab order stay independent.
+    html += renderRepCommit(d, startLabel, open.length);
     html += '</div>'; // #rep-confirm
   }
   if (rep.phase === 'clarifying') {
@@ -1170,7 +1395,46 @@ function renderPractice() {
       if (ctl) ctl.focus();
       rep.pendingFocus = null;
     }
+    // The just-opened rail editor gets focus — one-shot, so later renders
+    // never steal it back while the editor stays open.
+    if (rep.pendingEditFocus) {
+      const ctl = host.querySelector('.gaterow[data-gap="' + CSS.escape(rep.pendingEditFocus) + '"] .gapedit');
+      if (ctl) ctl.focus();
+      rep.pendingEditFocus = null;
+    }
   }
+}
+
+/** The commit block: brief → decline → Start, in reading order. One
+ *  builder, two placements — grid row 2 while questions are open, inside
+ *  the right column once settled (owner report 2026-08-15). */
+function renderRepCommit(d, startLabel, openCount) {
+  // A band, not a block: what you're about to build on the left, the action
+  // on the right. Sits above both columns so neither can push it off-screen.
+  let html = '<div id="rep-commit"><div class="commit-text">';
+  if (rep.brief) html += '<div id="rep-brief">' + esc(rep.brief) + '</div>';
+  if (d.unsupported) {
+    // Decision 2B: the decline is visible and the choice is the user's.
+    html += '<div id="rep-unsupported">can’t run this honestly: ' + esc(d.unsupported) + '</div>';
+  }
+  // Readiness is VISIBLE but never a gate (owner request 2026-08-15): the
+  // three states the screen can be in read differently at a glance — ready
+  // (loud white primary), re-checking, and still-open-questions (both quiet
+  // steel outline). Start works in all three; the questions are shortcuts,
+  // not a gate (rule 3), so "start anyway" stays one click away.
+  const ready = openCount === 0 && !rep.busy;
+  const note = rep.busy
+    ? 're-checking your answers…'
+    : openCount
+      ? openCount + ' question' + (openCount === 1 ? '' : 's') + ' still open — start anyway if you’re happy'
+      : 'ready to build';
+  html += '<div id="rep-ready" class="' + (ready ? 'is-ready' : 'is-pending') + '">' + note + '</div>';
+  html += '</div>'; // .commit-text
+  // A queued Start survives re-renders: the label comes from state, so the
+  // background landing that resumes it can repaint freely in between.
+  html += '<div class="rep-actions"><button type="button" class="primary' + (ready ? '' : ' pending') + '" id="rep-start"' +
+    (rep.startQueued ? ' disabled>Checking your answers…' : '>' + startLabel) + '</button></div>';
+  return html + '</div>'; // #rep-commit
 }
 
 /** The wait state (design 4A): honest elapsed from the .generating marker,
@@ -1266,9 +1530,9 @@ function wirePractice() {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) practiceClarify();
   });
   // Answers key on the gap's STABLE id (T12) — never an array index, which
-  // re-inference is free to reorder. answerGap routes by cost: shape
-  // re-infers (coherence lives in the server's draftToSpec gate), flavor
-  // settles locally with no round trip (C2).
+  // re-inference is free to reorder. Every answer settles locally; shape
+  // answers additionally schedule the background re-check (coherence still
+  // lives in the server's draftToSpec gate — Start ships nothing stale).
   for (const b of f.querySelectorAll('.qopt')) {
     b.addEventListener('click', () => {
       const g = rep.gaps.find((x) => x.id === b.dataset.gap);
@@ -1280,17 +1544,30 @@ function wirePractice() {
       if (e.key === 'Enter') { e.preventDefault(); answerGap(input.dataset.gap, input.value); }
     });
   }
+  // Compact rail: the value button opens that row's editor (one at a time).
+  for (const b of f.querySelectorAll('.gapval')) {
+    b.addEventListener('click', () => {
+      rep.editingGap = b.dataset.gap;
+      rep.pendingEditFocus = b.dataset.gap;
+      renderPractice();
+    });
+  }
   for (const ctl of f.querySelectorAll('.gapedit')) {
     // Rail rows are the editable readback (decision 1A) — committing a
     // change routes through the same answer path as the question column.
+    // Commit and Escape both close the editor back to the compact row.
     const commit = () => {
       const g = rep.gaps.find((x) => x.id === ctl.dataset.gap);
-      if (!g || !ctl.value.trim() || ctl.value.trim() === g.value) return;
+      if (!g) return;
+      const v = ctl.value.trim();
+      rep.editingGap = null;
+      if (!v || v === g.value) { renderPractice(); return; } // never mind
       answerGap(g.id, ctl.value);
     };
     ctl.addEventListener('change', commit);
     ctl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      if (e.key === 'Escape') { rep.editingGap = null; renderPractice(); }
     });
   }
   const recheck = el('rep-rechecks');
@@ -1317,13 +1594,17 @@ function upsertRepAnswer(id, question, answer) {
   if (i >= 0) rep.answers[i] = entry; else rep.answers.push(entry);
 }
 
-/** One answer path for pills, free-text, and rail edits. Shape re-infers;
- *  flavor settles locally and rides along on the next re-infer's ANSWERS
- *  (the server's gate re-settles it), so nothing is ever lost. */
+/** One answer path for pills, free-text, and rail edits. EVERY answer
+ *  settles locally and instantly (owner decision 2026-08-15 — the blocking
+ *  per-answer re-infer froze the screen 8-20s per shape answer). A shape
+ *  answer additionally marks the drafts stale and schedules ONE debounced
+ *  background re-check carrying ALL answers; flavor rides along on that
+ *  re-check's ANSWERS (the server's gate re-settles it). Nothing is lost:
+ *  Start refuses to ship stale drafts (T3). */
 function answerGap(id, answer) {
   const g = rep.gaps.find((x) => x.id === id);
   const a = (answer || '').trim();
-  if (!g || !a || rep.busy) return;
+  if (!g || !a) return;
   upsertRepAnswer(g.id, g.question, a);
   if (g.id === 'named-problem') {
     // The binding is MECHANICAL — a model round trip adds nothing here.
@@ -1336,23 +1617,54 @@ function answerGap(id, answer) {
     renderPractice();
     return;
   }
-  if (g.affects === 'shape') {
-    // Optimistic settle: the answer moves into the rail immediately; the
-    // snapshot restores it if the re-infer fails. Server gaps win on merge —
-    // a model that re-opens this gap does so VISIBLY (diff → flash), never
-    // silently.
-    const snapshot = JSON.parse(JSON.stringify(rep.gaps));
-    g.status = 'settled'; g.value = a; g.evidence = 'answered';
-    rep.questions = rep.gaps.filter((x) => x.status === 'open');
-    practiceClarify(rep.answers, { snapshot });
-    return;
-  }
   g.status = 'settled'; g.value = a; g.evidence = 'answered';
   rep.questions = rep.gaps.filter((x) => x.status === 'open');
   announce(g.label + ' set to ' + a);
   const nextOpen = rep.gaps.find((x) => x.status === 'open');
   rep.pendingFocus = nextOpen ? nextOpen.id : null;
+  if (g.affects === 'shape') {
+    // The spec only learns a shape answer through re-inference — never
+    // client-side patching (T3). Stale until a re-check lands.
+    rep.draftsStale = true;
+    scheduleRecheck();
+  }
   saveRep();
+  renderPractice();
+}
+
+// Long enough to batch a flurry of pill clicks into one model call, short
+// enough that the re-check usually lands while the user answers the rest —
+// so Start stays instant in the common case.
+const RECHECK_DEBOUNCE_MS = 1200;
+
+/** The background re-check (owner decision 2026-08-15): one debounced
+ *  re-infer carries ALL answers so far. While one is in flight another
+ *  answer just marks it dirty — the landing re-fires once with everything. */
+function scheduleRecheck() {
+  if (rep.busy) { rep.recheckDirty = true; return; }
+  if (rep.recheckTimer) clearTimeout(rep.recheckTimer);
+  rep.recheckTimer = setTimeout(runRecheck, RECHECK_DEBOUNCE_MS);
+}
+
+function runRecheck() {
+  if (rep.recheckTimer) { clearTimeout(rep.recheckTimer); rep.recheckTimer = null; }
+  if (rep.busy) { rep.recheckDirty = true; return; }
+  // No snapshot: answers are client-owned (mergeGaps re-seats them), so a
+  // failed round trip has nothing to revert — Start re-verifies instead.
+  practiceClarify(rep.answers);
+}
+
+// A background re-check may land while the user is typing in a gap input or
+// the correction box; renderPractice's innerHTML rebuild would destroy their
+// in-progress text and focus. Same pattern as the poll's pendingState guard.
+let repRenderPending = false;
+
+function renderPracticeSafe() {
+  const a = document.activeElement;
+  if (userIsTyping() && a && a.closest('#practice-flow')) {
+    repRenderPending = true;
+    return;
+  }
   renderPractice();
 }
 
@@ -1379,24 +1691,67 @@ async function practiceClarify(answers, opts) {
   rep.error = ''; rep.answers = answers || [];
   if (firstRun) rep.phase = 'clarifying'; else rep.busy = true;
   renderPractice();
-  const r = await fetch('/api/practice/clarify', {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      description: rep.description,
-      context: buildContext(),
-      answers: rep.answers.length ? rep.answers : undefined,
-      attachments: buildBinaryAttachments(),
-    }),
-  });
-  const s = await r.json();
-  if (s.error) {
-    // A failed re-infer restores the pre-answer gaps: the optimistic settle
-    // must not survive a round trip that never happened.
-    if (snapshot) { rep.gaps = snapshot; rep.questions = rep.gaps.filter((g) => g.status === 'open'); }
+  let s;
+  // Hoisted out of the try because the 402 branch below needs the STATUS, not
+  // just the body — and `r` would otherwise be scoped to the try block.
+  let status = 0;
+  try {
+    const r = await fetch('/api/practice/clarify', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        description: rep.description,
+        context: buildContext(),
+        answers: rep.answers.length ? rep.answers : undefined,
+        attachments: buildBinaryAttachments(),
+      }),
+    });
+    status = r.status;
+    s = await r.json();
+  } catch {
+    // A network drop must never strand busy=true — the background path
+    // would silently stop re-checking and Start would queue forever.
+    s = { error: 'the app server didn’t answer — check the connection' };
+  }
+  // WTP gate, checked BEFORE the error branch for the same reason as
+  // launchCommon and planFirstSend: a 402 carries a readable sentence in
+  // `error`, so without this the gate DEGRADES INTO AN INLINE ERROR MESSAGE
+  // and the card never opens.
+  //
+  // Found in QA 2026-08-15, and it mattered more than the other two: this is
+  // the composer's own endpoint — "Generate my round" on the landing screen,
+  // the first thing every new user touches. The gate fired correctly on the
+  // server and the whole instrument (gated → would_pay → would_pay_confirmed)
+  // recorded NOTHING on the most-travelled path in the product.
+  if (status === 402 && s.paywall && !paywallOpen) {
     rep.busy = false;
+    rep.startQueued = false;
     rep.phase = rep.drafts.length ? 'confirm' : 'input';
-    rep.error = s.error;
+    // Their typed words live in rep.description; saveRep puts them in
+    // sessionStorage so even a Checkout redirect comes back to them.
+    saveRep();
+    paywallIntent = { kind: 'clarify', answers: rep.answers, opts: opts || null };
+    let proceed = false;
+    try { proceed = await showPaywallGate(s.paywall); } catch { proceed = false; }
+    if (proceed) { practiceClarify(answers, opts); return; }
     renderPractice();
+    return;
+  }
+  if (s.error) {
+    // A failed CORRECTION restores the pre-answer gaps: the optimistic
+    // settle must not survive a round trip that never happened.
+    if (snapshot) { rep.gaps = snapshot; rep.questions = rep.gaps.filter((g) => g.status === 'open'); rep.error = s.error; }
+    else if (!firstRun) {
+      // A failed BACKGROUND re-check loses nothing: answers are client-
+      // owned and the drafts stay stale — Start re-verifies them.
+      rep.draftsStale = true;
+      rep.error = 'couldn’t re-check — your answers are kept; Start will verify them';
+    } else {
+      rep.error = s.error;
+    }
+    rep.busy = false;
+    rep.startQueued = false;
+    rep.phase = rep.drafts.length ? 'confirm' : 'input';
+    if (firstRun || snapshot) renderPractice(); else renderPracticeSafe();
     return;
   }
   const oldGaps = rep.gaps;
@@ -1413,8 +1768,12 @@ async function practiceClarify(answers, opts) {
     rep.flashIds = delta.flash;
     if (delta.sentence) announce(delta.sentence);
   }
-  const nextOpen = rep.gaps.find((g) => g.status === 'open');
-  rep.pendingFocus = nextOpen ? nextOpen.id : null;
+  // Focus follows the task only on the FIRST inference — a background
+  // landing must never steal focus from whatever the user is doing.
+  if (firstRun) {
+    const nextOpen = rep.gaps.find((g) => g.status === 'open');
+    rep.pendingFocus = nextOpen ? nextOpen.id : null;
+  }
   // Stamp what produced these gaps, so step 1 can tell "go back" from
   // "rebuild" without guessing.
   rep.sourceText = basePaste;
@@ -1422,14 +1781,42 @@ async function practiceClarify(answers, opts) {
   // The rep id is minted at confirm-render, ONCE — Start can be mashed and
   // every click carries this same id into the server's mkdir lock.
   rep.repId = rep.repId || 'rep-' + Date.now().toString(36);
-  rep.phase = 'confirm'; rep.busy = false;
+  // Stay-in-input guard: a background landing must not yank the user out
+  // of editing their paste (they pressed ← back mid-flight).
+  if (firstRun || rep.phase !== 'input') rep.phase = 'confirm';
+  rep.busy = false;
+  if (rep.recheckDirty) {
+    // Answers arrived mid-flight: this response is slightly stale (mergeGaps
+    // already re-seated them) — one more re-check carries everything.
+    rep.recheckDirty = false;
+    scheduleRecheck();
+  } else {
+    rep.draftsStale = false; // the drafts now reflect every answer
+  }
   saveRep();
-  renderPractice();
+  if (firstRun) renderPractice(); else renderPracticeSafe();
+  // A Start pressed during the flight resumes the moment the drafts are
+  // verified fresh; if another re-check was scheduled it stays queued.
+  if (rep.startQueued && !rep.draftsStale && !rep.busy) {
+    rep.startQueued = false;
+    const sb = el('rep-start');
+    if (sb) practiceStart(sb);
+  }
 }
 
 async function practiceStart(btn) {
   const d = rep.drafts[rep.chosen];
   if (!d) return;
+  // Stale drafts never ship (T3): a shape answer that hasn't been through
+  // re-inference is missing from the spec. Flush the debounce, queue the
+  // start — the landing calls back here with fresh drafts. In the common
+  // case the background re-check already landed and this gate is free.
+  if (rep.draftsStale || rep.busy) {
+    rep.startQueued = true;
+    btn.disabled = true; btn.textContent = 'Checking your answers…';
+    if (!rep.busy) runRecheck();
+    return;
+  }
   btn.disabled = true; btn.textContent = 'Starting…';
   // The spec ships VERBATIM: every shape answer already landed in it through
   // the server's re-inference, and the client never patches a spec again
@@ -1486,6 +1873,15 @@ async function launchRep(repId, btn) {
   // origin is per call site, never defaulted — the falsifier metric divides
   // on it (2026-08-10 CEO review).
   await launchCommon('/api/practice/launch', { rep_id: repId, origin: 'practice' }, btn, 'Start session →');
+}
+
+/** "practice again" on a finished row — the SAME artifact, restored to its
+ *  pristine bytes server-side inside the launch critical section, so the
+ *  candidate never inherits their own edits. Boot semantics are launchCommon's
+ *  (identical to every other door); origin is its own value, never reused from
+ *  the first run, because the falsifier metric divides on it. */
+async function practiceAgain(repId, btn) {
+  await launchCommon('/api/practice/repeat', { rep_id: repId, origin: 'repeat' }, btn, 'practice again');
 }
 
 async function repRetry(repId, btn) {
@@ -1560,7 +1956,7 @@ function metaLine(caps) {
   return [
     caps.time_limit_ms ? Math.round(caps.time_limit_ms / 60000) + ' min' : 'untimed',
     caps.interviewer ? 'live interviewer' : 'no interviewer',
-    caps.submit === 'one_shot' ? 'one shot' : 'iterate freely',
+    caps.submit === 'one_shot' ? 'graded once at submit' : 'graded as you go',
   ].join(' · ');
 }
 
@@ -1580,7 +1976,10 @@ function genProgressLine(item) {
     g.phase === 'finalizing' ? 'finalizing' : 'building',
     g.since ? '<span class="genclock" data-since="' + esc(g.since) + '"></span>' : '',
     g.files ? g.files + ' files written' : '',
-    'usually 5–8 min',
+    // Self-heal honesty (2026-08-15): a failed first attempt repairs or
+    // retries automatically, so a long build is the system working, not
+    // stuck — the bar must not read as a hang at minute 9.
+    'usually 5–8 min — a rough first pass self-repairs, which can add a few',
   ].filter(Boolean);
   return bits.join(' · ');
 }
@@ -1682,6 +2081,17 @@ function renderSeason(row, state) {
     html += '</div>';
   }
 
+  // The runway's caption (owner report 2026-08-15: nothing said the rows
+  // were practice DAYS, so the timeline read as an undifferentiated list).
+  // Dated plans name the row unit; undated plans own up to having no
+  // calendar — counts/pace stay on the paceline, never repeated here.
+  if (rounds.length) {
+    html += '<p class="micro runwaykey">one row = one practice day</p>';
+  } else {
+    const left = row.queue ? row.queue.items.filter((i) => i.status !== 'done' && i.status !== 'skipped').length : 0;
+    html += '<p class="micro runwaykey">your queue, in order — no dates yet' +
+      (left ? ' · ' + left + ' round' + (left === 1 ? '' : 's') + ' left' : '') + '</p>';
+  }
   html += '<ol class="runway">';
   for (const d of days) {
     if (d.kind === 'interview') {
@@ -1719,7 +2129,8 @@ function renderSeason(row, state) {
       continue;
     }
     if (d.kind === 'quiet') {
-      html += '<li class="quiet"><span class="date"></span><span class="dot"></span>' +
+      // A past quiet run dims with the band it stands in for.
+      html += '<li class="quiet' + (d.past ? ' past' : '') + '"><span class="date"></span><span class="dot"></span>' +
         '<span class="body">· ' + d.count + ' quiet days ·</span></li>';
       continue;
     }
@@ -1740,12 +2151,12 @@ function renderSeason(row, state) {
       if (parts.length === 1) {
         label = it.source.picked_by === 'user'
           ? 'real set: ' + it.source.title + ' · ' + it.source.difficulty
-          : 'real set · ' + it.source.difficulty + ' — hidden until the round';
+          : 'real set · ' + it.source.difficulty + ' — revealed when the round starts';
       } else if (named.length) {
         const extra = parts.length - named.length;
-        label = 'real set: ' + named.map((p) => p.title).join(', ') + (extra ? ' + ' + extra + ' more — hidden' : '');
+        label = 'real set: ' + named.map((p) => p.title).join(', ') + (extra ? ' + ' + extra + ' more, revealed at start' : '');
       } else {
-        label = 'real set × ' + parts.length + ' — hidden until the round';
+        label = 'real set × ' + parts.length + ' — revealed when the round starts';
       }
       return { line: '<span class="srcline">' + esc(label) + '</span>' };
     };
@@ -1807,10 +2218,13 @@ function renderSeason(row, state) {
     }
     // future — actionable (QA D3): build tomorrow's problem tonight. The
     // server's one-at-a-time and session-live 409s still guard everything.
+    // The affordance is a quiet text link, not a second "Generate": the
+    // duplicated label made TODAY's primary read as one of a crowd (friend
+    // walkthrough 2026-08-15). Same .gen wiring, same endpoint.
     if (item) {
       let action = '';
       if (item.status === 'pending') {
-        action = ' <button class="mini gen" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">Generate</button>';
+        action = ' <button class="quietgen gen" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">build ahead</button>';
       } else if (item.status === 'ready' && !state.session_live) {
         action = ' <button class="mini start" data-t="' + esc(t.id) + '" data-i="' + esc(item.id) + '">Start</button>';
       } else if (item.status === 'failed') {
@@ -1878,12 +2292,30 @@ async function refresh(force) {
   }
 }
 
+// An armed "build anyway" survives only deliberate intent: any click that
+// isn't the build button, and any keystroke in the composer, cancels it.
+// Delegated + bound once — wirePlan rebinds per render and would leak.
+document.addEventListener('click', (e) => {
+  if (!plan.buildArmed) return;
+  if (e.target.closest && e.target.closest('#gate-confirm')) return;
+  if (disarmBuild()) renderPlan();
+});
+document.addEventListener('input', (e) => {
+  if (!plan.buildArmed || e.target.id !== 'plan-msg') return;
+  if (disarmBuild()) renderPlan();
+});
+
 document.addEventListener('focusout', () => {
   if (pendingState) {
     const s = pendingState;
     pendingState = null;
     lastStateJson = s;
     window.setTimeout(() => render(JSON.parse(s)), 50);
+  }
+  // A practice re-render deferred by renderPracticeSafe flushes here too.
+  if (repRenderPending) {
+    repRenderPending = false;
+    window.setTimeout(renderPractice, 50);
   }
 });
 
@@ -1916,7 +2348,9 @@ function renderIndex(state) {
     if (cardUpcoming.length) {
       left = daysUntil(cardUpcoming[0].date) + ' days to ' + (cardRounds.length > 1 ? 'next round' : 'interview');
     } else if (cardRounds.length) {
-      left = 'interview passed';
+      // "interview passed" read as "you passed the interview" (QA
+      // 2026-08-15) — this states only what the calendar knows.
+      left = 'interview date passed';
     }
     const nextItem = row.next;
     const nextLine = nextItem
@@ -2067,13 +2501,21 @@ function renderHistory(state) {
       action = '<button type="button" class="mini repretry" data-rep="' + esc(x.id) + '">Retry</button>';
     } else if (x.status === 'done') {
       line = 'done' + (x.done_at ? ' · ' + fmtDate(x.done_at) : '');
-      if (x.session_id) action = feedbackToggle({ session_id: x.session_id });
+      // `repeatable` is the server's disk truth (a pristine archive or a
+      // pre-archive snapshot survives) — the button never appears where
+      // /api/practice/repeat would refuse. Hidden while a session is live for
+      // the same reason Start is: one round at a time.
+      if (x.repeatable && !state.session_live) {
+        action = '<button type="button" class="mini repagain" data-rep="' + esc(x.id) + '">practice again</button>';
+      }
+      if (x.session_id) action += feedbackToggle({ session_id: x.session_id });
     } else {
       line = x.status;
     }
     html += '<div class="reprow"><div class="grow"><b>' + esc(x.title || x.label) + '</b>' +
       '<div class="metaline">' + line + '</div>' +
       feedbackPanel({ session_id: x.session_id }) +
+      priorAttempts(x) +
       '</div>' + action + '</div>';
   }
   html += '</div>';
@@ -2081,6 +2523,9 @@ function renderHistory(state) {
   host.innerHTML = html;
   for (const b of host.querySelectorAll('.repstart')) {
     b.addEventListener('click', () => launchRep(b.dataset.rep, b));
+  }
+  for (const b of host.querySelectorAll('.repagain')) {
+    b.addEventListener('click', () => practiceAgain(b.dataset.rep, b));
   }
   for (const b of host.querySelectorAll('.repretry')) {
     b.addEventListener('click', () => repRetry(b.dataset.rep, b));
@@ -2214,8 +2659,11 @@ function gapGlyph(row) {
  *  model-written. */
 function gapStateLine(s) {
   if (!s || s.state === 'no signal') return 'not yet assessable';
+  // Display words, not the shared verdict-history state vocabulary: "still
+  // firing" is detector jargon — a gap doesn't "fire" to a user (QA
+  // 2026-08-15).
   if (s.state === 'still firing') {
-    return s.weak_count === s.informative_count ? 'still firing — every round' : 'still firing';
+    return s.weak_count === s.informative_count ? 'still showing up — every round' : 'still showing up';
   }
   if (s.state === 'improving') return 'improving — ' + s.recent_not_weak + ' of last ' + s.recent_informative + ' adequate or better';
   if (s.state === 'quiet lately') return 'quiet lately — no gap in the last 3';
@@ -2242,7 +2690,9 @@ function renderGapsBand() {
     const pct = (t) => Math.round((100 * t.not_weak) / t.informative);
     // The one defensible claim (judge-measurability moved too): share of
     // ASSESSABLE verdicts that were not weak, early half vs recent half.
-    sub = 'of what could be assessed: ' + pct(h.trend.first) + '% → ' + pct(h.trend.second) + '% not weak (early → recent)';
+    // Said without the hedge-plus-double-negative (QA 2026-08-15): "of what
+    // could be assessed … not weak" made the header unreadable.
+    sub = 'judged solid: ' + pct(h.trend.first) + '% → ' + pct(h.trend.second) + '% of assessable verdicts (early → recent)';
   }
   const bounds = new Set(h.comparability_boundaries || []);
   let html = '<div class="gapsband"><p class="micro">your gaps</p>' +
@@ -2259,7 +2709,12 @@ function renderGapsBand() {
       // beside them carry the same information as text.
       '<span class="gapstrip" aria-hidden="true">' + strip + '</span>' +
       '<span class="gapstate">' + esc(gapStateLine(s)) + '</span>' +
-      (s && s.latest_analysis ? '<div class="cite gapcite">' + esc(s.latest_analysis.length > 160 ? s.latest_analysis.slice(0, 157) + '…' : s.latest_analysis) + '</div>' : '') +
+      // Full text, CSS-clamped (QA 2026-08-15): the 157-char slice cut every
+      // judge citation mid-word with no way to read the rest. A long cite
+      // clamps to two lines and toggles open on click (delegated below).
+      (s && s.latest_analysis
+        ? '<div class="cite gapcite' + (s.latest_analysis.length > 160 ? ' clamped" role="button" tabindex="0" aria-expanded="false' : '') + '">' + esc(s.latest_analysis) + '</div>'
+        : '') +
       '</div>';
   }
   if ((h.skipped || 0) + (h.unattributable || 0) > 0) {
@@ -2271,6 +2726,23 @@ function renderGapsBand() {
   }
   return html + '</div>';
 }
+
+// Clamped gap citations toggle open in place — delegated for the same
+// reason as the card confirms below (the band re-renders on each poll).
+document.addEventListener('click', (e) => {
+  const cite = e.target.closest('.gapcite.clamped, .gapcite.open');
+  if (!cite) return;
+  cite.classList.toggle('clamped');
+  cite.classList.toggle('open');
+  cite.setAttribute('aria-expanded', cite.classList.contains('open') ? 'true' : 'false');
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const cite = e.target.closest && e.target.closest('.gapcite.clamped, .gapcite.open');
+  if (!cite) return;
+  e.preventDefault();
+  cite.click();
+});
 
 // One delegated listener for every history/timeline card confirm — panels
 // re-render on each poll, so per-render wiring would leak or miss.
@@ -2300,6 +2772,36 @@ function feedbackToggle(i) {
     (openFeedback.has(i.session_id) ? 'hide feedback' : 'feedback') + '</a>';
 }
 
+/** Every earlier run of a repeated round, still readable. `runs` is the
+ *  append-only ledger, oldest→newest, so everything before the last row is
+ *  history — and a "practice again" that hid the previous card would READ as
+ *  erasure (the old sid's assessment is still on disk; only the row moved on).
+ *  Deliberately plain: the same feedbackToggle/feedbackPanel pair every other
+ *  finished row uses, so the per-sid cache and the `a.fbtoggle` wiring cover
+ *  these for free. */
+function priorAttempts(x) {
+  const runs = x.runs || [];
+  if (runs.length < 2) return '';
+  // The last run owns the row above; drop it, and drop the row's own sid
+  // defensively so one card never renders twice under two toggles.
+  // Numbering counts over the WHOLE ledger, so "attempt 1" stays the first run
+  // even if a row below is dropped.
+  const earlier = runs
+    .map((r, n) => ({ r, n }))
+    .slice(0, -1)
+    .filter(({ r }) => r && r.session_id && r.session_id !== x.session_id);
+  if (!earlier.length) return '';
+  const links = earlier.map(({ r, n }) => {
+    // run.at is a full ISO stamp; fmtDate reads the calendar day only, and a
+    // garbled one degrades to no date rather than rendering "NaN".
+    const day = String(r.at || '').slice(0, 10);
+    const when = /^\d{4}-\d{2}-\d{2}$/.test(day) ? ' (' + fmtDate(day) + ')' : '';
+    return esc('attempt ' + (n + 1) + when) + feedbackToggle({ session_id: r.session_id });
+  }).join(' · ');
+  return '<div class="metaline">earlier attempts: ' + links + '</div>' +
+    earlier.map(({ r }) => feedbackPanel({ session_id: r.session_id })).join('');
+}
+
 function feedbackPanel(i) {
   if (!i.session_id || !openFeedback.has(i.session_id)) return '';
   const entry = feedbackCache[i.session_id];
@@ -2321,7 +2823,14 @@ function renderCardHtml(card, confirms, sid) {
     html += '<div class="fbrow closedmark"><p class="desc">Closed: ' + esc(c.description) + '</p></div>';
   }
   if (card.summary) html += '<p class="desc">' + esc(card.summary) + '</p>';
-  for (const r of card.rows || []) {
+  // Solo cards (card.interviewer === false) collapse unassessable rows into
+  // one line — same treatment as the live session card: talk dimensions have
+  // no evidence class when nobody was listening, and a column of grey rows
+  // reads as the product failing.
+  const soloCard = card.interviewer === false;
+  const allRows = card.rows || [];
+  const shownRows = soloCard ? allRows.filter((r) => r.verdict !== 'unassessable') : allRows;
+  for (const r of shownRows) {
     const cls = r.verdict === 'strong' ? 'v-strong' : r.verdict === 'weak' ? 'v-weak' : r.verdict === 'unassessable' ? 'v-none' : '';
     html += '<div class="fbrow ' + cls + '">' +
       '<p class="desc"><b class="dim">' + esc(r.dimension) + '</b> · ' +
@@ -2340,6 +2849,10 @@ function renderCardHtml(card, confirms, sid) {
     }
     html += '</div>';
   }
+  if (soloCard && shownRows.length < allRows.length) {
+    const hiddenDims = allRows.filter((r) => r.verdict === 'unassessable').map((r) => esc(r.dimension)).join(' · ');
+    html += '<div class="fbrow v-none"><p class="desc">Not observable this round (no interviewer): ' + hiddenDims + '</p></div>';
+  }
   if (card.bug && card.solved) {
     html += '<div class="fbrow"><p class="desc"><b>The bug:</b> ' + esc(card.bug.description) + '</p></div>';
   }
@@ -2348,7 +2861,7 @@ function renderCardHtml(card, confirms, sid) {
   }
   // Beta (WU9): same memory roadmap note as the live session card — the
   // history tab is where cards get re-read, so the retention line rides here too.
-  html += '<p class="cite">Zenkai is learning your patterns across rounds — this card already aims your next problem. Deeper memory is in development: why a gap happens, not just where it showed.</p>';
+  html += '<p class="cite">Zenkai is learning your patterns across rounds — this card already aims your next problem.</p>';
   return html;
 }
 
@@ -2540,12 +3053,36 @@ function setTitle(r, state) {
 }
 
 function render(state) {
+  // WTP allowance (paywall.ts). First statement, before anything that can
+  // throw. ADVISORY ONLY — enforcement is the server's 402 at ten spend
+  // routes, always. An absent field means no gate, which is the safe default
+  // for admins, a gate-off server, a comped user, and a client newer than its
+  // server.
+  //
+  // NOT a pre-gate: an earlier comment here claimed this gated the "new plan"
+  // entry point before the user types. It never did — nothing reads
+  // plans_used. What actually protects a gated user's typed words is the
+  // draft restore in planFirstSend's 402 branch. Read for the email address
+  // and, once billing is on, the remaining-rounds readout.
+  paywallAllowance = state.paywall ? { ...state.paywall, email: state.user && state.user.email } : null;
+  // Analytics identity: the Supabase user id ONLY (never the email — it
+  // stays on the box). posthog-js no-ops a repeat identify with the same id,
+  // so calling on every render is free; track() itself no-ops when the
+  // bundle was blocked or the box has no analytics configured.
+  if (state.user && state.user.id) track('identify', state.user.id);
   // Persistent status lives in the masthead; the banner is for genuine
   // problems only. A full-width bar on every page for a usually-false
   // condition was pure vertical tax.
   el('nav-live').classList.toggle('on', Boolean(state.session_live));
   el('nav-live').href = state.session_url ? sessionHref(state.session_url) : '#/';
   el('nav-kill').classList.toggle('on', Boolean(state.session_live));
+  // Only the NAME is a render concern — visibility is owned by initAuth, so
+  // a broken state fetch can never take the exit away (see showSignout).
+  const signout = el('nav-signout');
+  if (signout) {
+    const who = state.user && state.user.email;
+    signout.title = who ? 'Signed in as ' + who + ' — sign out' : 'Sign out';
+  }
   el('banner').innerHTML = '';
 
   const boot = el('boot');
@@ -2645,10 +3182,402 @@ function launchStatus(btn, text, isError) {
 /** Shared launch: POST, then poll session-live until the editor is up —
  *  identical boot semantics for queue items and reps, one copy of the
  *  Docker error truth. */
-async function launchCommon(endpoint, body, btn, idleLabel) {
+// ---- willingness-to-pay gate (paywall.ts) ---------------------------------
+// A REAL limit. Past the free allowance the server answers 402 and the round
+// does not start until the user answers: Subscribe records intent, mints a
+// grant, and the launch is retried; "Maybe later" means no round. An earlier
+// draft never denied anything, which measured cheap talk — a click that cost
+// nothing and changed nothing.
+//
+// NO CARD FIELDS, EVER. The measurement is the CLICK: pressing
+// "Subscribe - $39/mo" while believing it starts checkout has already
+// answered the question. The reveal that payments are not switched on yet is
+// immediate and in place, so nobody is charged or left misled.
+//
+// paywallAllowance is ADVISORY, set from render(). It gates the "new plan"
+// entry point before the user types a description — the composer is cleared
+// before its request and there is no draft persistence, so being stopped at
+// the POST would lose their words. Enforcement is always the server's 402.
+let paywallAllowance = null;
+let paywallOpen = false;
+
+/** Fire-and-forget. keepalive is load-bearing on paths that navigate away:
+ *  a plain in-flight fetch is cancelled by a same-tab navigation, and we
+ *  would lose exactly the events we are here to measure. */
+function probeBeacon(action, fields) {
+  try {
+    // JSON.stringify drops undefined-valued keys, so empty optional answers
+    // never ride as '' — the server-side trim is the backstop, not the norm.
+    fetch('/api/paywall/probe', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      keepalive: true,
+      body: JSON.stringify(Object.assign({ action: action }, fields || {})),
+    }).catch(() => {});
+  } catch { /* a metric never blocks a launch */ }
+}
+
+// ---- surviving the Checkout redirect ------------------------------------
+// The gate is reached from two places, and BOTH retry via an in-memory
+// continuation: launchCommon closes over endpoint/body and recurses with
+// isRetry; planFirstSend closes over the typed text and re-calls itself.
+// Navigating to checkout.stripe.com destroys the page and both closures, so
+// without persisting the intent a user pays and lands back on a page with
+// nothing to resume — the worst possible first impression of a paid product.
+//
+// Set by whichever caller opened the gate; written to sessionStorage right
+// before the redirect; replayed once on return. sessionStorage (not local)
+// because an intent is meaningless in another tab and must not outlive the
+// tab that formed it.
+var PENDING_INTENT_KEY = 'ip_pending_intent';
+let paywallIntent = null;
+
+function savePendingIntent() {
+  try {
+    if (paywallIntent) window.sessionStorage.setItem(PENDING_INTENT_KEY, JSON.stringify(paywallIntent));
+  } catch { /* private mode: they land on the app, just without the auto-resume */ }
+}
+
+function takePendingIntent() {
+  try {
+    var raw = window.sessionStorage.getItem(PENDING_INTENT_KEY);
+    window.sessionStorage.removeItem(PENDING_INTENT_KEY); // once, never twice
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returning from Stripe. Confirms server-side rather than trusting the URL —
+ * a success_url is just a link and proves nothing — then replays whatever the
+ * user was doing when they hit the gate.
+ *
+ * Confirm-first matters: the webhook is the durable record but may not have
+ * landed yet, and the replayed action would be gated again if we raced it.
+ */
+async function resumeAfterCheckout() {
+  var params = new URLSearchParams(window.location.search);
+  var outcome = params.get('checkout');
+  if (!outcome) return;
+  var sid = params.get('session_id');
+  // Clean the URL first so a refresh cannot re-run this.
+  try { window.history.replaceState({}, '', window.location.pathname + window.location.hash); } catch { /* ignore */ }
+  var intent = takePendingIntent();
+  if (outcome !== 'success' || !sid) return; // cancelled: nothing to do, nothing lost
+  try {
+    await fetch('/api/stripe/confirm?session_id=' + encodeURIComponent(sid));
+  } catch { /* the webhook is the backstop; the replay below may still gate */ }
+  if (!intent) return;
+  if (intent.kind === 'launch' && intent.endpoint) {
+    launchCommon(intent.endpoint, intent.body || {}, null, intent.idleLabel || 'Start');
+  } else if (intent.kind === 'plan') {
+    var box = el('plan-msg');
+    if (box && intent.text) box.value = intent.text;
+    planFirstSend(intent.text || '');
+  } else if (intent.kind === 'clarify') {
+    // The composer path. hydrateRep() already ran at module load (app.js:1060,
+    // well before this), so rep.description is back from sessionStorage and
+    // practiceClarify reads it directly — only the answers need carrying.
+    practiceClarify(intent.answers || [], intent.opts || undefined);
+  }
+}
+
+/**
+ * The gate. Resolves true when the caller should retry the request, false
+ * when the user declined and nothing should happen.
+ *
+ * To see it yourself (you are an admin, so the server will never gate you):
+ *   showPaywallGate({ price_usd: 39, reason: 'rounds', used: 3, free: 3 })
+ * in the devtools console. Deliberately no ?preview= param and no env
+ * bypass - a QA hole is a production hole.
+ */
+function showPaywallGate(pw) {
+  return new Promise((resolve) => {
+    var host = el('paywall');
+    if (!host) { resolve(false); return; }
+    paywallOpen = true;
+    var prevFocus = document.activeElement;
+    var price = '$' + Number(pw.price_usd) + '/mo';
+    var unit = pw.reason === 'plans' ? 'plans' : 'rounds';
+    var done = false;
+
+    function teardown(result) {
+      if (done) return;
+      done = true;
+      try {
+        window.removeEventListener('keydown', onKey);
+        host.hidden = true;
+        host.innerHTML = '';
+        if (prevFocus && prevFocus.focus) prevFocus.focus();
+      } catch { /* teardown is best effort */ }
+      paywallOpen = false;
+      resolve(result);
+    }
+    function onKey(e) {
+      if (e.key !== 'Escape') return;
+      // Steps 2 and 3 are PAST the decision: they already pressed Subscribe,
+      // the grant is already recorded, and the action goes through either
+      // way. Escaping out of a follow-up must never cost them the round.
+      // Step 3 records nothing — an escape IS a skip, and skips are the
+      // denominator's silence, not a row.
+      if (host.dataset.step === '3') { teardown(true); return; }
+      if (host.dataset.step === '2') { probeBeacon('notify_declined'); teardown(true); return; }
+      probeBeacon('not_yet');
+      teardown(false);
+    }
+
+    // TWO steps, and which one is last depends on whether billing is wired.
+    // With Stripe configured, Subscribe leaves for hosted Checkout and the
+    // card is the whole story. Without it — the beta measurement mode — the
+    // same click reveals that the round is free and asks the follow-up that
+    // actually costs something (betaReveal below). Either way the gated
+    // action goes through; nothing in here can strand the user.
+    try {
+      host.dataset.step = '';
+      // A SUBSCRIBER who has spent this period's rounds gets a different card:
+      // they are still gated (unlimited would be a liability at ~$2 a round),
+      // but selling someone the subscription they already pay for is the
+      // fastest way to lose them. No price, no Subscribe — just when it resets
+      // and a way into billing.
+      if (pw.subscribed) {
+        host.innerHTML =
+          '<div class="card" role="dialog" aria-modal="true" aria-labelledby="paywall-h">' +
+            '<h2 id="paywall-h">You have used this month’s ' + Number(pw.free) + ' rounds</h2>' +
+            '<p>Your plan renews at the start of your next billing period, and the ' +
+              'count resets then. Nothing is lost in the meantime — your plans, ' +
+              'history and gap graph stay where they are.</p>' +
+            '<div class="btnrow">' +
+              '<button type="button" class="primary" id="paywall-close">Got it</button>' +
+              '<button type="button" id="paywall-portal">Manage billing</button>' +
+            '</div>' +
+          '</div>';
+        host.hidden = false;
+        probeBeacon('gated');
+        var close = el('paywall-close');
+        var portal = el('paywall-portal');
+        if (!close) { teardown(false); return; }
+        close.addEventListener('click', function () { teardown(false); });
+        if (portal) {
+          portal.addEventListener('click', async function () {
+            portal.disabled = true;
+            try {
+              var pr = await fetch('/api/stripe/portal', { method: 'POST' });
+              var pb = await pr.json();
+              if (pb && pb.url) { window.location = pb.url; return; }
+              launchStatusInGate(pb && pb.error ? pb.error : 'could not open billing');
+            } catch { launchStatusInGate('could not open billing — try again'); }
+            portal.disabled = false;
+          });
+        }
+        window.addEventListener('keydown', onKey);
+        if (close.focus) close.focus();
+        return;
+      }
+
+      host.innerHTML =
+        '<div class="card" role="dialog" aria-modal="true" aria-labelledby="paywall-h">' +
+          '<h2 id="paywall-h">You have used your ' + Number(pw.free) + ' free ' + unit + '</h2>' +
+          '<p class="price">' + esc(price) + '</p>' +
+          '<p>Zenkai is ' + esc(price) + ' — plans and rounds included. ' +
+            'Cancel any time from your account.</p>' +
+          '<div class="btnrow">' +
+            '<button type="button" class="primary" id="paywall-yes">Subscribe — ' + esc(price) + '</button>' +
+            '<button type="button" id="paywall-no">Maybe later</button>' +
+          '</div>' +
+        '</div>';
+      host.hidden = false;
+      probeBeacon('gated');
+
+      var yes = el('paywall-yes');
+      var no = el('paywall-no');
+      if (!yes || !no) { teardown(false); return; }
+      no.addEventListener('click', function () {
+        probeBeacon('not_yet');
+        teardown(false);
+      });
+      /**
+       * Step 2, the beta reveal. Reached only by pressing Subscribe on a box
+       * where billing is NOT configured.
+       *
+       * The click that got here already recorded `would_pay`, which is also
+       * the grant — so by this point the round is theirs no matter what they
+       * do next, and this card must never read as another obstacle. It says
+       * the true thing (free during the beta) and then asks the question that
+       * is actually worth something.
+       *
+       * `would_pay` alone is cheap talk: pressing a button that costs nothing
+       * and blocks nothing measures very little, which is exactly why the
+       * earlier probe-only draft was rejected. Agreeing to be EMAILED about
+       * paying is a second deliberate act with a real cost attached, and the
+       * fall-off between the two is the size of the cheap-talk problem —
+       * measured rather than assumed. The expected-price box is optional and
+       * bounded server-side (expectedText, EXPECTED_MAX).
+       */
+      function betaReveal() {
+        host.dataset.step = '2';
+        host.innerHTML =
+          '<div class="card" role="dialog" aria-modal="true" aria-labelledby="paywall-h">' +
+            '<h2 id="paywall-h">Zenkai is free for the rest of the beta</h2>' +
+            '<p>Going ahead now — there is nothing to pay. When paid plans open ' +
+              'it will be ' + esc(price) + '.</p>' +
+            '<p>Want an email when that happens?</p>' +
+            '<label class="sub" for="paywall-expect">What would you expect to pay? (optional)</label>' +
+            '<input type="text" id="paywall-expect" maxlength="200" autocomplete="off" />' +
+            '<div class="btnrow">' +
+              '<button type="button" class="primary" id="paywall-notify">Email me</button>' +
+              '<button type="button" id="paywall-nothanks">No thanks</button>' +
+            '</div>' +
+          '</div>';
+        var expect = function () {
+          var box = el('paywall-expect');
+          return box && box.value ? { expect: box.value } : undefined;
+        };
+        var notify = el('paywall-notify');
+        var nothanks = el('paywall-nothanks');
+        // Defensive: if the card failed to build, they still get their round.
+        if (!notify || !nothanks) { teardown(true); return; }
+        notify.addEventListener('click', function () {
+          probeBeacon('would_pay_confirmed', expect());
+          betaFeedback();
+        });
+        nothanks.addEventListener('click', function () {
+          probeBeacon('notify_declined', expect());
+          betaFeedback();
+        });
+        if (notify.focus) notify.focus();
+      }
+
+      /**
+       * Step 3, the favor (owner request 2026-08-15). The round is already
+       * granted and the email decision already recorded — this card asks the
+       * two questions worth the most from someone who just tried to PAY:
+       * what earned that click, and what would make it worth more. Broad on
+       * purpose, both optional, and every way out (Send with empty boxes,
+       * Skip, Escape) proceeds identically. Skips write nothing: the response
+       * rate reads against the step-2 rows, so silence needs no row.
+       */
+      function betaFeedback() {
+        host.dataset.step = '3';
+        host.innerHTML =
+          '<div class="card" role="dialog" aria-modal="true" aria-labelledby="paywall-h">' +
+            '<h2 id="paywall-h">Two quick questions?</h2>' +
+            '<p>Your round is going ahead either way — but these two answers ' +
+              'genuinely steer what gets built next.</p>' +
+            '<label class="sub" for="paywall-value">What’s the most valuable part of Zenkai for you so far?</label>' +
+            '<textarea id="paywall-value" rows="2" maxlength="500"></textarea>' +
+            '<label class="sub" for="paywall-improve">What’s the one thing you’d most want improved or added?</label>' +
+            '<textarea id="paywall-improve" rows="2" maxlength="500"></textarea>' +
+            '<div class="btnrow">' +
+              '<button type="button" class="primary" id="paywall-send">Send</button>' +
+              '<button type="button" id="paywall-skip">Skip</button>' +
+            '</div>' +
+          '</div>';
+        var send = el('paywall-send');
+        var skip = el('paywall-skip');
+        // Defensive: a broken card still yields the round.
+        if (!send || !skip) { teardown(true); return; }
+        send.addEventListener('click', function () {
+          var v = el('paywall-value');
+          var im = el('paywall-improve');
+          var value = v && v.value.trim() ? v.value : undefined;
+          var improve = im && im.value.trim() ? im.value : undefined;
+          // Send with both boxes empty IS a skip — never a 'feedback' row
+          // with nothing in it.
+          if (value || improve) probeBeacon('feedback', { value: value, improve: improve });
+          teardown(true);
+        });
+        skip.addEventListener('click', function () { teardown(true); });
+        var first = el('paywall-value');
+        if (first && first.focus) first.focus();
+      }
+
+      yes.addEventListener('click', async function () {
+        yes.disabled = true;
+        no.disabled = true;
+        // Record intent BEFORE anything that can navigate away, because a
+        // redirect cancels in-flight requests; probeBeacon uses keepalive for
+        // exactly this. This is also the grant, so from here the action goes
+        // through on every path below.
+        probeBeacon('would_pay');
+        // No billing on this box: the honest reveal, not a 503. Checking the
+        // server-supplied flag rather than trying the route and reading the
+        // error keeps the beta path off the failure branch entirely.
+        if (!pw.billing_enabled) { betaReveal(); return; }
+        yes.textContent = 'Opening checkout...';
+        try {
+          var r = await fetch('/api/stripe/checkout', { method: 'POST' });
+          var b = await r.json();
+          if (!b || !b.url) {
+            yes.disabled = false;
+            no.disabled = false;
+            yes.textContent = 'Subscribe — ' + price;
+            launchStatusInGate(b && b.error ? b.error : 'could not start checkout — try again');
+            return;
+          }
+          // THE CONTINUATION PROBLEM: a full-page redirect destroys the
+          // in-memory closure that would have retried this action. Persist
+          // what they were doing so the return path can replay it; without
+          // this, someone pays and lands back with nothing happening.
+          savePendingIntent();
+          window.location = b.url;
+        } catch {
+          yes.disabled = false;
+          no.disabled = false;
+          yes.textContent = 'Subscribe — ' + price;
+          launchStatusInGate('could not reach checkout — try again');
+        }
+      });
+      window.addEventListener('keydown', onKey);
+      if (yes.focus) yes.focus();
+    } catch {
+      teardown(false);
+    }
+  });
+}
+
+/** One-line error inside the gate card (the card is innerHTML-owned, so this
+ *  appends rather than rewriting and losing the buttons). */
+function launchStatusInGate(msg) {
+  try {
+    var card = el('paywall') && el('paywall').querySelector('.card');
+    if (!card) return;
+    var line = card.querySelector('.gate-err');
+    if (!line) {
+      line = document.createElement('p');
+      line.className = 'gate-err err';
+      card.appendChild(line);
+    }
+    line.textContent = msg;
+  } catch { /* cosmetic */ }
+}
+
+async function launchCommon(endpoint, body, btn, idleLabel, isRetry) {
   if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
   const r = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const s = await r.json();
+  // WTP gate (paywall.ts). MUST come before the s.error branch and MUST read
+  // r.status: nothing else here inspects the status, so a 402 whose body had
+  // no `error` key would fall straight into the poll loop below — a 180s hang
+  // on "Starting…" in legacy mode, or a navigation to the string "undefined"
+  // if some other session happened to be live. The server sends `error` too,
+  // so an un-updated call site degrades to a readable sentence.
+  if (r.status === 402 && s.paywall && !paywallOpen && !isRetry) {
+    // What to replay if this ends in a Checkout redirect (see
+    // resumeAfterCheckout) — the closure below does not survive navigation.
+    paywallIntent = { kind: 'launch', endpoint: endpoint, body: body, idleLabel: idleLabel };
+    let proceed = false;
+    try { proceed = await showPaywallGate(s.paywall); } catch { proceed = false; }
+    if (!proceed) {
+      if (btn) { btn.disabled = false; btn.textContent = idleLabel; }
+      return;
+    }
+    // Through the gate — via a manual comp, or an entitlement already on
+    // disk. (A Checkout purchase never reaches here: it redirects away, and
+    // resumeAfterCheckout replays this call on return.) isRetry stops any
+    // chance of a gate loop.
+    return launchCommon(endpoint, body, btn, idleLabel, true);
+  }
   if (s.error) {
     if (btn) { btn.disabled = false; btn.textContent = idleLabel; launchStatus(btn, s.error, true); }
     else el('banner').innerHTML = '<div class="banner">' + esc(s.error) + '</div>';
@@ -2699,8 +3628,43 @@ el('nav-kill').addEventListener('click', async (e) => {
   refresh(true);
 });
 
+/**
+ * Sign out. Clears the token and hands the page to the login screen — the
+ * same landing a 401 produces, so there is one signed-out surface, not two.
+ *
+ * Local-only by design: the app stores an access token and no refresh token
+ * (setJwt), so there is nothing server-side to revoke — the token simply
+ * stops being sent and expires on its own (max-age 86400). Worth knowing
+ * rather than assuming: this frees the BROWSER, it does not kill a token
+ * someone already copied.
+ *
+ * A live round is the one case worth a confirm. Signing out does NOT end it
+ * (the session is its own process on its own port, and its tab carries its
+ * own token in the fragment), so someone could sign out believing they had
+ * abandoned a graded round and be wrong in the expensive direction.
+ */
+el('nav-signout').addEventListener('click', (e) => {
+  e.preventDefault();
+  // nav-kill carries the live flag already (render toggles both from
+  // state.session_live) — no second copy of that truth to drift.
+  const live = el('nav-kill').classList.contains('on');
+  if (live && !window.confirm(
+    'Sign out? Your round keeps running and is still graded — this only signs this page out.',
+  )) return;
+  track('capture', 'signed_out');
+  clearJwt();
+  // reset() so posthog stops attributing the next person on this browser to
+  // the account that just left.
+  track('reset');
+  renderLogin('signed out');
+});
+
 initAuth().then((ok) => {
   if (!ok) return; // login screen owns the page; success path reloads
   window.setInterval(refresh, 5000);
   refresh(true);
+  // After auth, because confirming a purchase and replaying the gated action
+  // both need a session. Never blocks the app: any failure inside just means
+  // the user lands on a working page and clicks again.
+  resumeAfterCheckout().catch((e) => console.error('[billing] resume failed', e));
 });

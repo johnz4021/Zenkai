@@ -83,7 +83,11 @@ and the session keeps sole ownership of port 3200 and the container.
 
 **Authoritative state lives on disk, never in memory.** Queue item status is derived
 from marker files — `.generating` (carries `{pid, started_at}`; liveness is a signal-0
-probe), `.validated`, `.failed`, `.used` (names the session that consumed the problem).
+probe), `.validated`, `.failed`, `.used` (names the LATEST session that consumed the
+problem; every run is also appended to `.runs.jsonl`, which is how rejudge resolves
+older sessions). Validation also tars the pristine artifact to a sibling
+`<dir>.pristine.tar.gz` (`artifact.ts`) — sessions edit the problem dir in place, so
+the archive is what makes "practice again" and slimming safe.
 The app can be killed and restarted at any time; the worst case is a stale page.
 Data dirs (all gitignored except `fixtures/` and `assessments/`): `targets/`,
 `problems/`, `traces/` (append-only JSONL per session), `gaps/`, `assessments/`,

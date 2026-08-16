@@ -51,7 +51,22 @@ function isGreenRun(e: TraceEvent): boolean {
   return e.type === 'test_run' && (e.payload as { exit_code?: number | null })?.exit_code === 0;
 }
 
-export function assessAgenda(events: TraceEvent[], nowMs: number): Record<DimensionKey, AgendaStatus> {
+export interface AgendaCaps {
+  /** Can the candidate run the suite during the round at all? False only
+   *  on can_run_tests:false rounds (one-shot rounds run freely since the
+   *  2026-08-15 un-conflation) — where `verify` and `reflect`
+   *  must be 'na', not 'none': the old always-runnable assumption printed
+   *  "they have edited but not run the suite since" on EVERY turn of a
+   *  round whose Run button does not exist, and the prompt told the
+   *  interviewer to probe exactly that (QA 2026-08-14). */
+  runnable: boolean;
+}
+
+export function assessAgenda(
+  events: TraceEvent[],
+  nowMs: number,
+  caps: AgendaCaps = { runnable: true },
+): Record<DimensionKey, AgendaStatus> {
   const utterances = events.filter((e) => e.type === 'utterance');
   const substantive = utterances.filter((e) => wordCount(textOf(e)) >= SUBSTANTIVE_WORDS);
 
@@ -69,14 +84,18 @@ export function assessAgenda(events: TraceEvent[], nowMs: number): Record<Dimens
       (e.payload as { unprompted?: boolean })?.unprompted !== true,
   );
 
-  // approach: a theory-sized utterance between the first failure and the
-  // first edit — the "state the mechanism before touching code" habit the
-  // rubric rewards. Until they edit, the span is open-ended.
+  // approach: a theory-sized utterance before the first edit — the "state
+  // the mechanism before touching code" habit the rubric rewards. On a
+  // runnable round the window opens at the first FAILURE (the thing a theory
+  // is about); on a no-run round no failure can ever exist, so the window
+  // opens at the start — the old firstFail key left `approach` permanently
+  // 'na' on exactly the rounds where thinking aloud is the only signal.
+  const approachStartTs = caps.runnable ? firstFail?.ts : events[0]?.ts;
   const approachShown =
-    firstFail !== null &&
+    approachStartTs !== undefined &&
     utterances.some(
       (e) =>
-        e.ts > firstFail.ts &&
+        e.ts >= approachStartTs &&
         (firstEdit === null || e.ts < firstEdit.ts) &&
         wordCount(textOf(e)) >= THEORY_WORDS,
     );
@@ -98,11 +117,18 @@ export function assessAgenda(events: TraceEvent[], nowMs: number): Record<Dimens
 
   const status: Record<DimensionKey, AgendaStatus> = {
     clarify: clarified ? 'some' : 'none',
-    approach: firstFail === null ? 'na' : approachShown ? 'some' : 'none',
+    approach:
+      (caps.runnable ? firstFail === null : events.length === 0)
+        ? 'na'
+        : approachShown
+          ? 'some'
+          : 'none',
     communicate: communicated ? 'some' : 'none',
     implement: anyEdit ? 'some' : 'none',
-    verify: firstEdit === null ? 'na' : verified ? 'some' : 'none',
-    reflect: firstGreen === null ? 'na' : reflected ? 'some' : 'none',
+    // Nothing can run mid-round on a no-run round: verify and reflect are
+    // not-applicable, never open gaps to nag about.
+    verify: !caps.runnable || firstEdit === null ? 'na' : verified ? 'some' : 'none',
+    reflect: !caps.runnable || firstGreen === null ? 'na' : reflected ? 'some' : 'none',
   };
   return status;
 }

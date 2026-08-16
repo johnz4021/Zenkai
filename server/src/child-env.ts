@@ -22,11 +22,34 @@
 
 const SANDBOX_KEEP = ['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'SHELL', 'USER'] as const;
 
-/** Never reaches ANY child. */
-const ALWAYS_DROP = ['IP_SUPABASE_SERVICE_KEY'] as const;
+/** Never reaches ANY child.
+ *
+ *  The Stripe pair earns its place the same way the service key did: a
+ *  generator is an agentic `claude -p` run whose brief carries
+ *  stranger-authored prose, and money-moving credentials in its environment
+ *  are one prompt injection away from being exfiltrated. Nothing a child does
+ *  needs them — billing lives entirely in the app process. */
+const ALWAYS_DROP = [
+  'IP_SUPABASE_SERVICE_KEY',
+  'STRIPE_API_KEY',
+  'STRIPE_WEBHOOK_SECRET',
+] as const;
 
-/** Dropped for generators on top of ALWAYS_DROP. */
-const GENERATOR_DROP = ['ELEVENLABS_API_KEY', 'IP_ELEVENLABS_KEY', 'IP_SUPABASE_ANON_KEY'] as const;
+/** Dropped for generators on top of ALWAYS_DROP.
+ *
+ *  The PostHog trio lives HERE and not in ALWAYS_DROP on purpose: the project
+ *  key (phc_) is public by design — it ships to every browser — so it guards
+ *  nothing, and an agentic `claude -p` run simply has no use for it (the anon
+ *  key's reasoning exactly). SESSION children keep it: they emit the round
+ *  lifecycle events and render the session page's analytics snippet. */
+const GENERATOR_DROP = [
+  'ELEVENLABS_API_KEY',
+  'IP_ELEVENLABS_KEY',
+  'IP_SUPABASE_ANON_KEY',
+  'IP_POSTHOG_KEY',
+  'IP_POSTHOG_HOST',
+  'IP_POSTHOG_REPLAY_ROUND',
+] as const;
 
 export type ChildKind = 'sandbox' | 'generator' | 'session';
 

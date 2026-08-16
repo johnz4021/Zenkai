@@ -140,7 +140,7 @@ export const DEFAULT_EXPECTATIONS: Record<string, Partial<Record<DimensionKey, s
       'States the algorithmic approach and its complexity BEFORE writing code, including why it beats the naive alternative.',
     communicate: 'Talks through the algorithm while implementing it.',
     implement: 'Implementation follows the stated algorithm; deviations are called out.',
-    verify: 'Dry-runs the solution on an example and at least one edge case before declaring done.',
+    verify: 'Runs the suite (or dry-runs an example when nothing runs) and checks an edge case before declaring done.',
     reflect: 'Can restate the complexity and where the approach would break.',
   },
   lld: {

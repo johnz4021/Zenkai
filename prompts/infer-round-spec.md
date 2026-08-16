@@ -20,8 +20,10 @@ optional voice interviewer. A round is described by:
   (debugging, extend-a-feature). `blank` when they build from a scaffold or empty
   file (most OAs, LLD implement-these-classes). `diff` when they review someone
   else's change.
-- `submit` — `one_shot` when the work is graded once at the end (typical OA).
-  `iterate` when re-running tests during the round is part of the work.
+- `submit` — `one_shot` when the work is graded ONCE at the end against a
+  read-only suite (typical autograded OA — the candidate can still run the
+  visible tests while working). `iterate` when the round is judged on how
+  they work, with the suite as their own tool.
 - One round entry per distinct exercise FORM, even when capabilities are
   identical — "debugging a file" and "implementing from documentation" are
   separate rounds with separate ids, because each form gets its own
@@ -38,6 +40,14 @@ optional voice interviewer. A round is described by:
     implemented. For build-it rounds (LLD OA, implement-an-API).
   - `all_passing`: a green repo; the work is extending or refactoring, not fixing.
   - `diff_present`: a change to review; no suite criterion.
+- `task` — what the candidate DOES, decided from the material, never the platform:
+  `algorithmic_set` (separate independent problems), `debug`, `practical_build`
+  (build ONE system against staged requirements — decomp/LLD rounds are THIS even
+  when delivered as an "OA"), `comprehend`, `extend_keep_green`, `review_diff`.
+  Omit only when the material truly cannot say — this routes the generation recipe.
+- `min_tests` — suite-size floor scaled to the round's scope (a staged 60-90-min
+  build: ~12-20 behavioral tests; a short sprint: the default). OMIT when the
+  material gives no scope signal — never guess.
 
 ## Rules
 

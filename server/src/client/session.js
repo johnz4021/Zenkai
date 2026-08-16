@@ -45,15 +45,15 @@ async function pollStatus() {
     const c = s.counts || {};
     const n = (k) => c[k] || 0;
     const el = document.getElementById('status');
-    // A one-shot round has no Run Tests button, so the debugging-round
-    // trigger ("first failing test run") can NEVER arm — the candidate
-    // would read a status describing an impossible event for the whole
-    // round. State the rule that actually governs their round instead.
-    // No-interviewer rounds get no trigger clause at all: "trigger armed"
-    // describes someone who is not there (QA 2026-08-14). No-run rounds
-    // have nothing to run, at submit or otherwise.
-    const trigger = el.dataset.oneShot === '1'
-      ? (el.dataset.noRun === '1' ? 'nothing runs this round' : 'suite runs once at submit')
+    // Branch on the run loop FIRST (un-conflation 2026-08-15): a no-run
+    // round reads a status describing an impossible event otherwise. A
+    // runnable one-shot round states its grading contract; interviewer
+    // rounds keep the trigger clause; no-interviewer rounds get none —
+    // "trigger armed" describes someone who is not there (QA 2026-08-14).
+    const trigger = el.dataset.noRun === '1'
+      ? 'nothing runs this round'
+      : el.dataset.oneShot === '1'
+      ? 'graded once at Submit'
       : (el.dataset.interviewer === '1'
           ? (s.trigger_armed ? 'trigger armed ✓' : 'waiting for first failing test run')
           : '');
@@ -69,14 +69,26 @@ pollStatus();
 // Interviewer turns arrive here, whether they answer something we asked or
 // land unprompted. Server decides what is said; this only renders it.
 let lastSeq = -1;
+// Solo rounds render NO aside (conversation UI exists iff someone is
+// listening — chrome.ts), so every chat lookup tolerates absence and the
+// aside's other two jobs re-home to the #notice line via notify().
 const log = document.getElementById('log');
 function say(who, text, cls) {
+  if (!log) return null;
   const p = document.createElement('p');
   p.className = 'u' + (cls ? ' ' + cls : '');
   p.innerHTML = '<b>' + who + '</b> ' + text.replace(/</g, '&lt;');
   log.appendChild(p);
   log.scrollTop = log.scrollHeight;
   return p;
+}
+// Time warnings ("2 minutes remaining.", "Time's up — submitting…") and
+// system errors must stay visible without the aside — they overwrite the
+// solo notice line in place.
+function notify(text) {
+  const n = document.getElementById('notice');
+  if (n) n.textContent = text;
+  else say('system', text, 'pending');
 }
 let thinkingEl = null;
 let lastHeardSeq = -1;
@@ -108,10 +120,29 @@ async function pollMessages() {
         say('you (voice)', h.text);
       }
     }
+    // Interviewer health chip (voicechip's dynamic sibling): a model-path
+    // failure used to be pure silence, indistinguishable from being ignored.
+    const intChip = document.getElementById('intchip');
+    if (intChip) {
+      if (s.interviewer_fault) {
+        intChip.hidden = false;
+        intChip.textContent = 'interviewer: unavailable';
+        intChip.title =
+          'The interviewer hit a model error and may not reply right now. ' +
+          'Your work and words are still recorded and graded — keep going. ' +
+          'It recovers on its own when the model path comes back.';
+      } else if (!intChip.hidden) {
+        intChip.hidden = true;
+      }
+    }
     for (const m of s.messages) {
       lastSeq = Math.max(lastSeq, m.seq);
       if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
-      say('interviewer', m.text);
+      // On a solo page the only possible turns are the hard time cap's
+      // (session.ts gates every other emitter on the interviewer) — they
+      // land on the notice line instead of a chat that doesn't exist.
+      if (log) say('interviewer', m.text);
+      else notify(m.text);
       // Voice: the turn's audio is fetched from the STORED (guarded) event.
       // Acks are content-free continuers, and they carry a seq like any other
       // turn — which meant an ack could reassign the <audio> src and cut a
@@ -171,7 +202,8 @@ function markEndedChrome() {
   if (mute) mute.disabled = true;
 }
 
-document.getElementById('f').addEventListener('submit', async (e) => {
+const composerForm = document.getElementById('f');
+if (composerForm) composerForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const input = document.getElementById('msg');
   const text = input.value.trim();
@@ -199,16 +231,14 @@ if (runButton && runButton.dataset.endpoint === '/api/ide-run') {
       const r = await fetch('/api/ide-run', { method: 'POST', headers: sidHeaders() });
       const out = await r.json();
       if (out.error) {
-        say(
-          'system',
+        notify(
           out.error === 'ide_not_connected'
             ? 'The editor is not connected yet — give it a moment and try again.'
             : 'Tests cannot be run in this round.',
-          'pending',
         );
       }
     } catch {
-      say('system', 'Could not reach the session server to run tests.', 'pending');
+      notify('Could not reach the session server to run tests.');
     }
     // The IDE panel owns the result; just restore the control.
     setTimeout(() => {
@@ -252,8 +282,10 @@ function render(card) {
   // The container is torn down after grading — the editor pane is dead.
   // The card takes the room, and the way home gets prominent (ISSUE-004).
   document.body.classList.add('ended');
-  document.getElementById('log').style.display = 'none';
-  document.getElementById('f').style.display = 'none';
+  // Solo pages have neither; body.ended CSS hides the aside anyway — the
+  // inline hiding survives for interviewer pages whose CSS is cached.
+  if (log) log.style.display = 'none';
+  if (composerForm) composerForm.style.display = 'none';
   const el = document.getElementById('feedback');
   el.style.display = 'block';
   let html = '';
@@ -282,7 +314,16 @@ function render(card) {
   html += '<h2>' + (card.mode === 'observations' ? 'Session observations' : 'Session findings') + '</h2>';
   if (card.summary) html += '<div class="row"><p class="desc">' + esc(card.summary) + '</p></div>';
 
-  for (const r of card.rows || []) {
+  // Solo cards collapse unassessable rows into one honest line: a column of
+  // grey "not assessable" rows reads as the product failing, when it's the
+  // round's shape — nobody was listening, so talk dimensions have no
+  // evidence class. Interviewer cards keep every row (there, unassessable IS
+  // signal).
+  const allRows = card.rows || [];
+  const soloCard = card.interviewer === false;
+  const shownRows = soloCard ? allRows.filter((r) => r.verdict !== 'unassessable') : allRows;
+
+  for (const r of shownRows) {
     const cls = r.verdict === 'strong' ? 'v-strong' : r.verdict === 'weak' ? 'v-weak' : r.verdict === 'unassessable' ? 'v-none' : '';
     html += '<div class="row ' + cls + '">';
     html += '<p class="desc"><b class="dim">' + esc(r.dimension) + '</b> · ' +
@@ -304,6 +345,11 @@ function render(card) {
     html += '</div>';
   }
 
+  if (soloCard && shownRows.length < allRows.length) {
+    const hiddenDims = allRows.filter((r) => r.verdict === 'unassessable').map((r) => esc(r.dimension)).join(' · ');
+    html += '<div class="row v-none"><p class="desc">Not observable this round (no interviewer): ' + hiddenDims + '</p></div>';
+  }
+
   // Bug disclosure gated on solved (tension 2): a problem you did not crack
   // stays re-runnable unless you choose to see the answer.
   if (card.bug) {
@@ -321,11 +367,13 @@ function render(card) {
   if (card.mode === 'observations') {
     html += '<p class="meta">Session ' + (3 - card.sessions_until_patterns) + ' of 3 before patterns emerge. These are single-session observations, not yet patterns.</p>';
   }
-  // Beta (WU9): the memory roadmap note sits BELOW the mechanical line, never
-  // replacing it — the claim with a number in it is the credible one. Kept
-  // off the landing on purpose: before a round it's a reason not to start;
-  // after one it's a reason to come back.
-  html += '<p class="meta">Zenkai is learning your patterns across rounds — this card already aims your next problem. Deeper memory is in development: why a gap happens, not just where it showed.</p>';
+  // Beta (WU9, trimmed 2026-08-15): the retention line sits BELOW the
+  // mechanical line, never replacing it — the claim with a number in it is
+  // the credible one. It states only what the system DOES today; the old
+  // "deeper memory is in development" roadmap sentence read as marketing on
+  // every single card. Kept off the landing on purpose: before a round it's
+  // a reason not to start; after one it's a reason to come back.
+  html += '<p class="meta">Zenkai is learning your patterns across rounds — this card already aims your next problem.</p>';
   html += backLink;
   el.innerHTML = html;
   const sb = document.getElementById('showbug');

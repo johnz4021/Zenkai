@@ -172,6 +172,36 @@ export const TASK_FILES: Record<RoundTask, string> = {
  * cannot distinguish algorithmic_set from practical_build — capability-
  * identical; only a hypothesis separates them. Defaults to the volume format.
  */
+/** Which check kinds a task can honestly pair with. Deliberately permissive
+ *  (plan risk #2): only impossible combos are out. A mismatch never sinks a
+ *  draft — coerceTask falls back to the capability derivation. */
+const TASK_CHECK_KINDS: Record<RoundTask, ReadonlyArray<RoundSpec['check']['kind']>> = {
+  algorithmic_set: ['all_failing'],
+  debug: ['one_failing_test'],
+  // all_passing is legal here: a staged build whose part 1 ships working and
+  // later waves extend it IS a practical build the model correctly named —
+  // a live run said practical_build ("requirements escalate", its words) with
+  // all_passing and the old single-pair table silently overrode the
+  // classification to extend_keep_green (QA 2026-08-13).
+  practical_build: ['all_failing', 'all_passing'],
+  comprehend: ['one_failing_test', 'all_passing', 'all_failing'],
+  extend_keep_green: ['all_passing'],
+  review_diff: ['diff_present'],
+};
+
+/** The task hypothesis, trusted only when valid AND coherent with the
+ *  check kind the draft itself carries; otherwise derived from capability
+ *  facts. Never fatal — the same never-sink philosophy as affects/target.
+ *  Lives here (not practice-clarify) since 2026-08-15 so every door —
+ *  practice, wizard, planner — runs the ONE gate. */
+export function coerceTask(raw: unknown, spec: RoundSpec): { task: RoundTask; coerced: boolean } {
+  const t = String(raw ?? '').trim() as RoundTask;
+  if ((ROUND_TASKS as readonly string[]).includes(t) && TASK_CHECK_KINDS[t].includes(spec.check.kind)) {
+    return { task: t, coerced: false };
+  }
+  return { task: deriveTaskFromSpec(spec), coerced: true };
+}
+
 export function deriveTaskFromSpec(spec: RoundSpec): RoundTask {
   switch (spec.check.kind) {
     case 'one_failing_test': return 'debug';
@@ -217,11 +247,11 @@ export function deliveryNotes(spec: RoundSpec): string {
     ? 'no fixed time limit'
     : `a single ${Math.round(caps.time_limit_ms / 60_000)}-minute clock`;
   const submitStyle = caps.submit === 'one_shot'
-    ? 'graded once at submit — no feedback until then'
-    : 'the candidate can run the suite and iterate freely';
+    ? `graded once at submit${caps.can_run_tests ? ' — the visible suite stays runnable while working' : ''}`
+    : 'graded on how they work — the suite is their own tool';
   const interviewer = caps.interviewer
     ? 'a live interviewer listens and probes'
-    : 'no interviewer — unproctored, think-aloud still recorded';
+    : 'no interviewer — unproctored and autograded, like a real OA';
   const tests = caps.can_run_tests ? '' : '; executing code is not permitted in this round';
   return `Delivered in ${surface}; ${time}; ${submitStyle}; ${interviewer}${tests}.`;
 }

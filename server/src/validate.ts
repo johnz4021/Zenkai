@@ -151,10 +151,23 @@ export function checkManifest(problem: GeneratedProblem, repoDir: string): strin
  * by the outside voice): under the judge design, feedback quality is
  * DOWNSTREAM of expectation quality — a vague expectation produces vague
  * feedback on that dimension forever, and it looks like a judge problem.
- * The gate is mechanical: every dimension present, long enough to say
+ * The gate is mechanical: a PRESENT dimension must be long enough to say
  * something, not a known-vague stem, and tied to THIS problem's vocabulary.
+ *
+ * An ABSENT individual dimension is legal (decision 2026-08-15): the judge
+ * already owns the degrade ladder (resolveExpectations: manifest →
+ * round-type default → generic anchor), so absence means slightly generic
+ * feedback on that dimension — never a dead build. That is also what lets
+ * the build path strip a failing sentence instead of discarding a finished
+ * seven-minute artifact (the Palantir chatdelivery incident: the round's
+ * BEST-written expectation lost the vocabulary check on morphology alone).
+ * A manifest with no rubric.dimensions at all is still a generation failure.
  */
 const VAGUE_STEMS = /^(understands?|thinks? about|considers?|is (aware|mindful)|knows?|has a (good|solid) (grasp|understanding))\b/i;
+
+/** Quality failures on individual expectations, as emitted below — the build
+ *  path matches on this to strip-and-degrade rather than fail the round. */
+export const EXPECTATION_FAILURE_RE = /^expectation for ([a-z]+) /;
 
 export function checkExpectations(problem: GeneratedProblem): string[] {
   const failures: string[] = [];
@@ -179,14 +192,21 @@ export function checkExpectations(problem: GeneratedProblem): string[] {
   // docs/problem-generation.md). Strictly additive: nothing that matched
   // before stops matching.
   const tokenize = (s: string) => s.toLowerCase().split(/[^a-z0-9_]+/);
+  // Naive stem, applied to BOTH pools: "registers"/"register" and
+  // "re-checks"/"check" are the same concept, and exact-token equality
+  // scored the chatdelivery round's most problem-specific sentence as
+  // generic (2026-08-15). Strictly additive — equal tokens have equal stems.
+  const stem = (w: string) => (w.endsWith('ss') ? w : w.replace(/e?s$/, ''));
   const specWords = new Set(
     tokenize(`${problem.spec ?? ''} ${problem.planted_bug?.description ?? ''}`)
-      .filter((w) => w.length >= 5),
+      .filter((w) => w.length >= 5)
+      .map(stem),
   );
   for (const key of DIMENSIONS) {
     const exp = dims[key];
     if (!exp || exp.trim().length === 0) {
-      failures.push(`expectation missing for dimension: ${key}`);
+      // Absent = the judge's degrade ladder covers it (header). Only a
+      // PRESENT expectation is held to quality.
       continue;
     }
     if (exp.trim().split(/\s+/).length < 8) {
@@ -195,7 +215,7 @@ export function checkExpectations(problem: GeneratedProblem): string[] {
     if (VAGUE_STEMS.test(exp.trim())) {
       failures.push(`expectation for ${key} starts with a vague stem: "${exp.slice(0, 40)}..."`);
     }
-    const tied = tokenize(exp).some((w) => w.length >= 5 && specWords.has(w));
+    const tied = tokenize(exp).some((w) => w.length >= 5 && specWords.has(stem(w)));
     if (!tied) {
       failures.push(`expectation for ${key} shares no vocabulary with the spec — not problem-specific: "${exp.slice(0, 60)}..."`);
     }
@@ -212,10 +232,22 @@ export function checkExpectations(problem: GeneratedProblem): string[] {
  * Exported for tests.
  */
 export function parseUnittestOutput(text: string): { failed: string[]; total: number } {
-  const failed: string[] = [];
+  // Dedup because subTests report one line PER PARAMETER: a method with
+  // three failing subTests is one failing test, not three.
+  const failed = new Set<string>();
   let total = 0;
   for (const line of text.split('\n')) {
-    const m = line.match(/^(\S+) \(([\w.]+)\) \.\.\. (ok|FAIL|ERROR|skipped)/);
+    // Leading whitespace + optional trailing parenthetical: subTest result
+    // lines are INDENTED and parameterized —
+    //   `  test_rejects_a_blank_body (tests.T.test_rejects) (body="''") ... ERROR`
+    // — and a method whose subTests all report never prints a column-0 line
+    // of its own. The old column-anchored parse counted such methods as
+    // silently PASSING: a fully-red all_failing scaffold read as "2 of 11
+    // pass" and was rejected twice (rep-mstyfgqj, zenkai.run 2026-08-15).
+    // The emitted LC suites avoid subTests for exactly this reason
+    // (lc-convert.ts header) — generator-AUTHORED suites have no such
+    // guarantee, so the parser carries the burden.
+    const m = line.match(/^\s*(\S+) \(([\w.]+)\)(?: \(.*\))? \.\.\. (ok|FAIL|ERROR|skipped)/);
     if (!m) {
       const ran = line.match(/^Ran (\d+) tests?/);
       if (ran) total = Number(ran[1]);
@@ -226,10 +258,10 @@ export function parseUnittestOutput(text: string): { failed: string[]; total: nu
       const parts = cls!.split('.');
       // 3.11+ repeats the test name at the end of the class path — drop it.
       if (parts[parts.length - 1] === name) parts.pop();
-      failed.push(`${parts.join(' > ')} > ${name}`);
+      failed.add(`${parts.join(' > ')} > ${name}`);
     }
   }
-  return { failed, total };
+  return { failed: [...failed], total };
 }
 
 /**

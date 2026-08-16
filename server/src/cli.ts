@@ -13,6 +13,7 @@ import { generateProblem } from './generate.js';
 import { validateProblem } from './validate.js';
 import { buildGraphView, buildTargetNote, loadStore } from './gap-graph.js';
 import { listReady, markUsed, pickProblem } from './pool.js';
+import { appendRun, backfillRunFromUsed, dirRanSession, makePristineArchive, readRuns } from './artifact.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
@@ -31,11 +32,28 @@ const repoRoot = path.resolve(here, '..', '..');
  */
 const envFile = path.join(repoRoot, '.env');
 if (existsSync(envFile)) {
+  const inheritedKey = process.env.ANTHROPIC_API_KEY;
   try {
     process.loadEnvFile(envFile);
   } catch (e) {
     console.warn(`[cli] .env present but unreadable: ${String(e).slice(0, 160)}`);
   }
+  // The key-shadow trap (TODOS #45, bitten live 2026-08-16): a shell-profile
+  // export wins over .env by design, and a STALE one 401s every interviewer
+  // turn and judge call with nothing naming the cause — the owner practiced
+  // through several "interviewer: unavailable" sessions before the 401
+  // surfaced in a log. Name it at boot, where it costs one line.
+  try {
+    const envKey = /^ANTHROPIC_API_KEY=(.+)$/m.exec(readFileSync(envFile, 'utf8'))?.[1]?.trim();
+    if (inheritedKey && envKey && inheritedKey !== envKey) {
+      console.warn(
+        '[cli] WARNING: the shell-inherited ANTHROPIC_API_KEY differs from .env’s and WINS.\n' +
+          '      If model calls 401 (interviewer unavailable, unassessed cards), run\n' +
+          '      `unset ANTHROPIC_API_KEY` in this shell and restart, or remove the\n' +
+          '      export from your shell profile.',
+      );
+    }
+  } catch { /* the warning must never break boot */ }
 }
 const problemsRoot = path.join(repoRoot, 'problems');
 const templatePath = path.join(repoRoot, 'prompts', 'generate-round.md');
@@ -167,17 +185,24 @@ async function generateInto(
     // to the validator and let it rule.
     console.error('[generate] run did not exit cleanly — validating the artifact anyway');
   }
-  if (sourced) {
-    // Tamper-proof re-emit: whatever the agent did to the grading contract,
-    // the validated artifact carries the deterministic one. And the manifest
-    // source stamp is patched from the DATASET record, never trusted from
-    // the generator — the topic ledger records truth.
+  // Tamper-proof re-emit: whatever an agent did to the grading contract,
+  // the validated artifact carries the deterministic one. And the manifest
+  // source stamp is patched from the DATASET record, never trusted from
+  // the generator — the topic ledger records truth. A FUNCTION because the
+  // repair pass (below) runs an agent again — every agent exit re-stamps.
+  const restampSourced = async () => {
+    if (!sourced) return;
     const cv = await import('./lc-convert.js');
     const { writeFileSync: wf, readFileSync: rf } = await import('node:fs');
     cv.writeSourcedTests(targetDir, sourced.parts, sourced.mode);
     try {
       const manifestPath = path.join(targetDir, 'problem.json');
       const manifest = JSON.parse(rf(manifestPath, 'utf8')) as Record<string, unknown>;
+      // The runtime contract is stamped, not trusted: conversion is
+      // python/unittest by construction, and a generator that omits these
+      // fields sends validate (and the session) down the vitest default on
+      // a python workspace (lc-convert.ts SOURCED_RUNTIME has the incident).
+      Object.assign(manifest, cv.SOURCED_RUNTIME);
       const primary = sourced.parts[0]!.problem;
       manifest.source = {
         kind: 'leetcode',
@@ -201,7 +226,8 @@ async function generateInto(
     } catch {
       // Missing/unparseable manifest — the validator reports it properly below.
     }
-  }
+  };
+  await restampSourced();
   // Plan-topic subset filter — same doctrine as the source stamp above: the
   // manifest field is never trusted from the generator. With a frozen list,
   // the declaration is filtered to it (drops logged); without one there is
@@ -226,7 +252,70 @@ async function generateInto(
   // validator's run below re-creates it — only the second sweep decides
   // what the candidate's file tree actually shows.
   removePythonArtifacts(targetDir);
-  const report = validateProblem(targetDir);
+  // Strip-and-degrade (decision 2026-08-15, the Palantir chatdelivery
+  // incident): when the ONLY failures are expectation-quality failures —
+  // suite green, manifest otherwise valid — drop the failing sentence(s)
+  // and re-rule instead of discarding a finished build. The judge's
+  // resolveExpectations ladder (manifest → round-type default → generic
+  // anchor) is the documented replacement for an absent expectation; a
+  // build the system can grade must never die over one it can substitute.
+  // A function because the repair pass gets the same second chance.
+  const ruleOnArtifact = async (): Promise<ReturnType<typeof validateProblem>> => {
+    let report = validateProblem(targetDir);
+    if (!report.ok) {
+      const { EXPECTATION_FAILURE_RE } = await import('./validate.js');
+      const keys = report.failures.map((f) => EXPECTATION_FAILURE_RE.exec(f)?.[1]).filter((k): k is string => Boolean(k));
+      if (keys.length > 0 && keys.length === report.failures.length) {
+        try {
+          const { writeFileSync: wf, readFileSync: rf } = await import('node:fs');
+          const manifestPath = path.join(targetDir, 'problem.json');
+          const manifest = JSON.parse(rf(manifestPath, 'utf8')) as {
+            rubric?: { dimensions?: Record<string, string> };
+          };
+          for (const k of keys) delete manifest.rubric?.dimensions?.[k];
+          wf(manifestPath, JSON.stringify(manifest, null, 2));
+          console.warn(
+            `[validate] stripped ${keys.length} expectation(s) that failed the quality gate (${[...new Set(keys)].join(', ')}) — the judge falls back to round-type defaults for those dimensions`,
+          );
+          report = validateProblem(targetDir);
+        } catch {
+          // Unreadable manifest — the original report stands and rules below.
+        }
+      }
+    }
+    return report;
+  };
+  let report = await ruleOnArtifact();
+  // The repair pass (self-heal layer 2b, 2026-08-15): error-as-context, the
+  // mechanism Claude Code heals by. Gated on a PARSEABLE manifest — an
+  // artifact exists worth fixing; an empty dir (the amazon error_max_turns
+  // case) has nothing to repair and falls to the app's blind retry instead.
+  // One attempt, cheap by construction (generate.ts repairProblem: sonnet,
+  // 15 turns, 3 min). The authoritative re-rule below still decides.
+  if (!report.ok) {
+    let manifestParses = false;
+    try {
+      const { readFileSync: rf } = await import('node:fs');
+      JSON.parse(rf(path.join(targetDir, 'problem.json'), 'utf8'));
+      manifestParses = true;
+    } catch { /* nothing to repair */ }
+    if (manifestParses) {
+      console.log(`[repair] one repair pass (${report.failures.length} failure(s))`);
+      const { repairProblem } = await import('./generate.js');
+      const rep = await repairProblem({
+        targetDir,
+        failures: report.failures,
+        spec,
+        sourced: Boolean(sourced),
+        templatePath: path.join(repoRoot, 'prompts', 'repair-round.md'),
+      });
+      console.log(JSON.stringify({ repair_ok: rep.ok, exitCode: rep.exitCode, durationMs: rep.durationMs }, null, 2));
+      // Every agent exit re-stamps the grading contract on sourced builds.
+      await restampSourced();
+      removePythonArtifacts(targetDir);
+      report = await ruleOnArtifact();
+    }
+  }
   clearGeneratingMarker(targetDir);
   removePythonArtifacts(targetDir);
   console.log(JSON.stringify({ ok: report.ok, failures: report.failures }, null, 2));
@@ -235,6 +324,11 @@ async function generateInto(
     // recover item status without trusting its own memory.
     const { writeFileSync: wf } = await import('node:fs');
     wf(path.join(targetDir, '.validated'), new Date().toISOString());
+    // Pristine copy taken here, after the second sweep and before any session
+    // can bind-mount and mutate the tree (TODOS #48). Never fatal: a failed
+    // archive must not fail a build that already spent real money.
+    const arch = makePristineArchive(targetDir);
+    if (!arch.ok) console.warn(`[artifact] pristine archive skipped: ${arch.skipped}`);
     if (!result.ok) console.log('[generate] the killed run had already finished — kept');
   }
   // 2 = ran clean but the artifact is not a valid round; 1 = died AND left
@@ -532,7 +626,16 @@ if (cmd === 'generate') {
 } else if (cmd === 'app') {
   const { runApp } = await import('./app.js');
   const { resolvePublicConfig } = await import('./public-config.js');
-  runApp({ port: 3300, sessionPort: 3200, userId, pub: resolvePublicConfig(process.env) });
+  // IP_APP_PORT completes the set — IP_SESSION_PORT and IP_IDE_PORT have had
+  // an override all along and this one did not, so trying a config change
+  // (arming the gate, swapping keys) meant stopping the app someone was
+  // actually using. Default 3300 keeps every existing invocation identical.
+  runApp({
+    port: portEnv(process.env.IP_APP_PORT, 3300),
+    sessionPort: portEnv(process.env.IP_SESSION_PORT, 3200),
+    userId,
+    pub: resolvePublicConfig(process.env),
+  });
 } else if (cmd === 'prepare') {
   // Targeting note comes either from the env (set by the session that just
   // ended) or is derived here from the stored gap graph.
@@ -620,13 +723,16 @@ if (cmd === 'generate') {
     .filter((l) => l.trim())
     .map((l) => JSON.parse(l) as import('@interview-prep/shared').TraceEvent);
 
-  // Find the problem this session ran (the .used marker names the session).
-  // ALL THREE universes: the generic pool, every target's problems dir, and
-  // reps/<id>/problem — the lookup predated targets, which silently made
-  // every targeted session un-rejudgeable ("no .used marker names it" on a
-  // marker that existed), and the same regression recurred for rep-based
-  // rounds when the practice door landed (QA 2026-08-14: sess-qa814-lcset4
-  // was named by reps/rep-set67388/problem/.used and still exited 2).
+  // Find the problem this session ran. ALL THREE universes: the generic
+  // pool, every target's problems dir, and reps/<id>/problem — the lookup
+  // predated targets, which silently made every targeted session
+  // un-rejudgeable ("no .used marker names it" on a marker that existed),
+  // and the same regression recurred for rep-based rounds when the practice
+  // door landed (QA 2026-08-14: sess-qa814-lcset4 was named by
+  // reps/rep-set67388/problem/.used and still exited 2). The match is
+  // dirRanSession, not the .used first line: .used names only the LATEST
+  // run, so on a repeated dir every earlier session would be a fourth way to
+  // lose this lookup — the append-only .runs.jsonl ledger covers them.
   const candidateDirs: string[] = [];
   try {
     for (const dir of readdirSync(problemsRoot)) candidateDirs.push(path.join(problemsRoot, dir));
@@ -647,7 +753,7 @@ if (cmd === 'generate') {
   let problemDir: string | null = null;
   for (const dir of candidateDirs) {
     try {
-      if (readFileSync(path.join(dir, '.used'), 'utf8').split('\n')[0] === sessionId) {
+      if (dirRanSession(dir, sessionId)) {
         problemDir = dir;
         break;
       }
@@ -656,20 +762,30 @@ if (cmd === 'generate') {
     }
   }
   if (!problemDir) {
-    console.error(`no problem found for session ${sessionId} (no .used marker names it)`);
+    console.error(`no problem found for session ${sessionId} (no .used marker or run ledger names it)`);
     process.exit(2);
   }
   const problem = JSON.parse(readFileSync(path.join(problemDir, 'problem.json'), 'utf8'));
 
   console.error(`[rejudge] ${sessionId} against ${path.basename(problemDir)}...`);
   console.error(renderTimeline(events).split('\n').slice(0, 3).join('\n') + '\n...');
-  const result = await judgeSession({
-    sessionId,
-    events,
-    problem,
-    problemDir,
-    templatePath: path.join(repoRoot, 'prompts', 'judge-session.md'),
-  });
+  // Same talk-dimension clamp finalize applies (judge.ts): a rejudged solo
+  // trace with zero utterances must not mint communicate/reflect verdicts.
+  const { clampSilentDimensions } = await import('./judge.js');
+  const { resolveRoundSpec: resolveSpecForClamp } = await import('@interview-prep/shared');
+  const result = clampSilentDimensions(
+    await judgeSession({
+      sessionId,
+      events,
+      problem,
+      problemDir,
+      templatePath: path.join(repoRoot, 'prompts', 'judge-session.md'),
+    }),
+    {
+      hasInterviewer: resolveSpecForClamp(problem).capabilities.interviewer,
+      utteranceCount: events.filter((e: { type: string }) => e.type === 'utterance').length,
+    },
+  );
   mkdirSync(path.join(repoRoot, 'assessments'), { recursive: true });
   // A failed judge call must never replace an assessed record with a stub —
   // the same invariant session.ts holds for the gap graph ("a judge failure
@@ -689,10 +805,20 @@ if (cmd === 'generate') {
     writeFileSync(assessPath, JSON.stringify(result, null, 2));
   }
 
+  // Deposits belong to whoever RAN the round, not whoever is at the terminal.
+  // The dir was just resolved through the run ledger, which records the owner,
+  // so read it back: an operator rejudging a beta user's crashed round (the
+  // documented recovery) would otherwise bank the result in their own gap
+  // graph and topic ledger, leaving the user's memory blind to their own
+  // session. Falls back to IP_USER_ID for pre-ledger runs.
+  const owner =
+    readRuns(problemDir).find((r) => r.session_id === sessionId && r.user_id !== 'unknown')?.user_id ?? userId;
+  if (owner !== userId) console.error(`[rejudge] depositing as ${owner} (the user who ran it)`);
+
   // --record writes into the gap graph; plain rejudge is a dry look.
   // QA sessions never deposit — the mint-shape boundary finalize enforces
   // (see isMemorableSessionId for the two pollution incidents behind it).
-  let store = loadStore(path.join(repoRoot, 'gaps'), userId);
+  let store = loadStore(path.join(repoRoot, 'gaps'), owner);
   const { isMemorableSessionId } = await import('./gap-graph.js');
   if (process.argv.includes('--record') && result.status === 'assessed' && isMemorableSessionId(sessionId)) {
     const { resolveRoundSpec } = await import('@interview-prep/shared');
@@ -709,7 +835,7 @@ if (cmd === 'generate') {
       const tg = await import('./topic-graph.js');
       const attempts = tg.attemptsFromSession({ assessment: result, problem, spec, events, origin: 'rejudge' });
       if (attempts.length) {
-        tg.recordTopicAttempts(repoRoot, userId, attempts);
+        tg.recordTopicAttempts(repoRoot, owner, attempts);
         console.error(`[rejudge] topic ledger updated (${attempts.length} row${attempts.length === 1 ? '' : 's'})`);
       }
     } catch (e) {
@@ -736,6 +862,7 @@ if (cmd === 'generate') {
     buildGraphView(store, sessionId),
     events,
     problem.planted_bug?.description,
+    { interviewer: resolveSpecForClamp(problem).capabilities.interviewer },
   );
   // --record also refreshes the persisted card — the planning page reads
   // feedback/<sid>.json, and a rescued session must show its rescue there,
@@ -848,11 +975,18 @@ if (cmd === 'generate') {
   // queue unable to tell a validated problem from an unchecked one — the
   // pipeline diagram's ".validated" step simply never happened on this
   // path.
+  // This sweep runs AFTER validateProblem's own suite run, so the tree the
+  // pristine archive below captures is the one the candidate will see.
   const { removePythonArtifacts } = await import('./generation-state.js');
   removePythonArtifacts(dir);
   if (report.ok) {
     const { writeFileSync: wf } = await import('node:fs');
     wf(path.join(dir, '.validated'), new Date().toISOString());
+    // Same pristine copy the generate path takes (TODOS #48). Refuses on its
+    // own when this command is pointed at a consumed dir or one that already
+    // has an archive — never fatal, the report below is what validate means.
+    const arch = makePristineArchive(dir);
+    if (!arch.ok) console.warn(`[artifact] pristine archive skipped: ${arch.skipped}`);
   }
   console.log(JSON.stringify(report, null, 2));
   process.exit(report.ok ? 0 : 2);
@@ -917,7 +1051,15 @@ if (cmd === 'generate') {
       }
     : undefined;
   await runSession({
-    onReady: () => markUsed(problemDir, sessionId),
+    onReady: () => {
+      // .used stays overwrite-latest (every existing reader depends on that);
+      // the ledger beside it is the history a repeated dir needs. Bank the
+      // OUTGOING sid first: a dir consumed before the ledger existed keeps its
+      // only session binding in .used, and this write is what would erase it.
+      backfillRunFromUsed(problemDir);
+      markUsed(problemDir, sessionId);
+      appendRun(problemDir, { session_id: sessionId, user_id: userId, at: new Date().toISOString() });
+    },
     repoRoot,
     problemDir,
     sessionId,
