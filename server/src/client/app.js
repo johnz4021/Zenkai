@@ -1186,6 +1186,21 @@ function renderPractice() {
         '<span class="attach"><span class="name">' + esc(a.name) + '</span>' +
         '<button type="button" data-ri="' + i + '" aria-label="remove ' + esc(a.name) + '">×</button></span>').join('') + '</div>'
     : '';
+  // Once the round actually RAN, the wait flow is over: the rep lives under
+  // history, and the wait card dead-ends — a consumed 'ready' rep renders a
+  // Start that 409s 'already-used', and a 'done' rep falls into the
+  // 'building' fallback and spins forever (same-tab return after a session,
+  // found 2026-08-16). Fold back to the composer, where the home-status
+  // readout takes over. nav-kill's class carries session_live (render() sets
+  // it before routing here), so a mid-boot or mid-round rep is left alone —
+  // .used lands at session boot, well before the launch poll navigates.
+  if (rep.phase === 'started') {
+    const ran = (lastReps || []).find((x) => x.id === rep.repId);
+    const live = el('nav-kill').classList.contains('on');
+    if (ran && !live && (ran.status === 'done' || (ran.status === 'ready' && ran.repeatable))) {
+      resetRep();
+    }
+  }
   let html = '<div id="practice-wrap">';
   if (rep.phase === 'started') {
     html += renderRepWait() + '</div>';
@@ -1224,9 +1239,19 @@ function renderPractice() {
     // free when nothing changed and an explicit REGENERATE when it did.
     const dirty = repPasteDirty(keep);
     const returning = rep.drafts.length > 0;
-    html += '<h1 class="hero"><label for="rep-paste">What do you want to practice right now?</label></h1>' +
+    // The hint is a HINT, not a second heading: aria-describedby ties it to
+    // the textarea, so a screen reader reads label-then-guidance the way the
+    // page looks. Its content is the ask made explicit — "paste a recruiter
+    // email, a JD…" named three artifacts and never said what to write when
+    // you have none, nor that detail buys round quality (user report
+    // 2026-08-16). The four named facts are the ones the clarifier otherwise
+    // has to ask about or guess; the placeholder shows them in one sentence.
+    html += '<h1 class="hero"><label for="rep-paste">Describe the round you want to practice</label></h1>' +
+      '<p class="herohint" id="rep-hint">Company, round format, length, language. ' +
+      'Paste the recruiter email or JD if you have one. ' +
+      '<b>The more specific you are, the closer the round lands.</b></p>' +
       '<div class="composer-frame">' +
-      '<textarea id="rep-paste" placeholder="paste a recruiter email, a JD, a friend’s description…"></textarea>' + chips +
+      '<textarea id="rep-paste" aria-describedby="rep-hint" placeholder="e.g. Stripe backend screen — 60 min, live interviewer, Python. Recruiter said I’ll debug a failing service in an existing repo, senior bar. …"></textarea>' + chips +
       (rep.linkOpen
         // The explicit link input (planner precedent, user call 2026-08-07:
         // affordances beat discovery). Honest copy: the practice path never
@@ -1472,7 +1497,7 @@ function renderRepWait() {
       (mine.phase === 'drafting' && g.since ? ' · <span class="genclock" data-since="' + esc(g.since) + '"></span>' : '') +
     '</div>' +
     '<div class="progress"><div class="fill det" data-since="' + esc(g.since || '') + '"></div></div>' +
-    '<p class="meta" style="margin-top:16px">You can close this. It’ll be waiting under <b>history</b> — the tab title flips when it’s ready (~5 min).</p>';
+    '<p class="meta" style="margin-top:16px">You can close this. It’ll be ready to start <b>right here</b> — and under <a href="#/history">history</a> — and the tab title flips when it’s done (~5 min).</p>';
 }
 
 function wirePractice() {
@@ -2384,26 +2409,62 @@ function renderIndex(state) {
 
 /** Pick an unfinished plan's conversation back up — replayed from disk, so
  *  a closed tab or restarted app costs nothing. */
-// ---- the landing's one status line (design round2-A-minimal, 2026-08-10):
-//      everything the old strip and NEXT row said, compressed to a sentence.
+// ---- the landing's readout (design round2-A-minimal, 2026-08-10; two
+//      columns 2026-08-16): everything the old strip and NEXT row said.
 //      Repainted every poll — it lives OUTSIDE the composer's repaint guard,
-//      so it stays fresh while a half-typed correction stays protected. ----
+//      so it stays fresh while a half-typed correction stays protected.
+//
+//      TWO COLUMNS, because the rows answer two different questions and a
+//      single stack made the reader classify each one on the way past (user
+//      report 2026-08-16 — nine rows of identical mono, three of which
+//      started a round and six of which built a new one). Left = what
+//      EXISTS and can start now; right = what SHAPE to build another in.
+//      The mono/uppercase telemetry voice stays on the status sentence and
+//      the column heads only: it was unreadable on generated problem titles,
+//      which is what the rows actually are. ----
+/** One readout row: name over shape, action on the right. Both columns use
+ *  it, so a Start row and a build-another row are the same object with a
+ *  different verb — the reader learns the grammar once. */
+function homeRow(name, shape, actionHtml) {
+  return '<div class="homerow"><div class="grow"><b>' + esc(name) + '</b>' +
+    '<div class="shape">' + shape + '</div></div>' + actionHtml + '</div>';
+}
+
 function renderHomeStatus(state) {
   const host = el('home-status');
   if (!host) return;
   const bits = [];
   // Practice segment — suppressed while the wait card is up (it already
   // says "building" in a much bigger voice).
+  const readyRows = [];
+  let readyMore = '';
   if (rep.phase !== 'started') {
     const reps = state.reps || [];
     const building = reps.find((x) => x.status === 'generating');
-    const ready = reps.filter((x) => x.status === 'ready').length;
+    // Startable means genuinely fresh: a consumed-but-unjudged rep is also
+    // 'ready' (reconcile keeps it there) but Start would 409 'already-used' —
+    // those rows live under history as "practice again", never in this count.
+    const startable = reps.filter((x) => x.status === 'ready' && !x.repeatable);
     if (building) {
       const since = (building.generating || {}).since;
       bits.push('building your round' +
         (since ? ' · <span class="genclock" data-since="' + esc(since) + '"></span>' : ''));
-    } else if (ready > 0) {
-      bits.push('<a href="#/history">' + ready + ' ready →</a>');
+    } else if (startable.length && !state.session_live) {
+      // Ready rounds start HERE too, not only under history — "check the
+      // history tab" was the only door (user report 2026-08-16). Newest
+      // first is already the server's order.
+      for (const x of startable.slice(0, 3)) {
+        readyRows.push(homeRow(
+          x.title || x.label,
+          specShapeShort(x.spec.capabilities),
+          '<button type="button" class="rep-go" data-rep="' + esc(x.id) + '">Start →</button>',
+        ));
+      }
+      if (startable.length > 3) {
+        readyMore = '<a class="colmore" href="#/history">' + (startable.length - 3) + ' more ready →</a>';
+      }
+    } else if (startable.length) {
+      bits.push('<a href="#/history">' + startable.length + ' ready →</a>');
     }
   }
   // Recent-formats segment (user calls 2026-08-10): the landing is the
@@ -2421,13 +2482,36 @@ function renderHomeStatus(state) {
     seenShapes.add(x.spec.id);
     // "another like this", never "regenerate": regenerate reads as
     // rebuild-the-same-thing (which is Retry's job on failed reps) — this
-    // link means a FRESH problem in the same confirmed format.
-    rows.push('<div>' + esc(x.spec.label) + ' — ' + specShapeShort(x.spec.capabilities) +
-      ' · <a href="#" class="rep-regen" data-rep="' + esc(x.id) + '">another like this →</a></div>');
+    // button means a FRESH problem in the same confirmed format.
+    rows.push(homeRow(
+      x.spec.label,
+      specShapeShort(x.spec.capabilities),
+      '<button type="button" class="rep-regen" data-rep="' + esc(x.id) + '">another like this →</button>',
+    ));
     if (rows.length >= 3) break;
   }
-  const lines = (bits.length ? ['<div>' + bits.join(' · ') + '</div>'] : []).concat(rows);
-  host.innerHTML = lines.length ? '<div class="statusline">' + lines.join('') + '</div>' : '';
+  let html = bits.length ? '<div class="statusline">' + bits.join(' · ') + '</div>' : '';
+  const cols = [];
+  if (readyRows.length) {
+    cols.push('<section class="homecol"><h2 class="colhead">Ready to start</h2>' +
+      readyRows.join('') + readyMore + '</section>');
+  }
+  if (rows.length) {
+    cols.push('<section class="homecol"><h2 class="colhead">Build another</h2>' +
+      rows.join('') + '</section>');
+  }
+  // auto-fit collapses to ONE column when only one section renders (and on a
+  // narrow viewport), so neither case needs its own markup path.
+  if (cols.length) html += '<div class="homecols">' + cols.join('') + '</div>';
+  host.innerHTML = html;
+  for (const go of host.querySelectorAll('.rep-go')) {
+    go.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (go.dataset.busy) return;
+      go.dataset.busy = '1';
+      launchRep(go.dataset.rep, go);
+    });
+  }
   for (const regen of host.querySelectorAll('.rep-regen')) {
     regen.addEventListener('click', (e) => {
       e.preventDefault();
@@ -2484,8 +2568,14 @@ function renderHistory(state) {
   // from /api/memory (fetched once per history open), never from the poll.
   let html = renderGapsBand();
   html += '<div class="rep-strip"><h2 class="daysleft" style="font-size:15px">practice history</h2>';
+  if (reps.length && state.session_live) {
+    // Start / practice again are hidden below while a round is live (one at
+    // a time) — without this line their absence reads as a bug, not a rule
+    // (QA 2026-08-16: an abandoned live session made every button vanish).
+    html += '<div class="meta">A round is live — rejoin or end it from the masthead. Start and practice again come back when it ends.</div>';
+  }
   if (!reps.length) {
-    html += '<div class="meta">No practice yet — <a href="#/">paste a JD or recruiter email</a> and be mid-problem in ten minutes. No plan needed.</div>';
+    html += '<div class="meta">No practice yet — <a href="#/">describe a round</a> and be mid-problem in ten minutes. No plan needed.</div>';
   }
   for (const x of reps) {
     const shape = x.spec && x.spec.capabilities ? specShapeLine(x.spec.capabilities) : '';
@@ -2493,6 +2583,17 @@ function renderHistory(state) {
     let action = '';
     if (x.status === 'generating') {
       line = (x.phase === 'drafting' ? 'shaping the round' : genProgressLine(x));
+    } else if (x.status === 'ready' && x.repeatable) {
+      // Consumed but never graded: the run crashed or came back unassessed,
+      // so reconcile kept the row 'ready' while `.used` sits on disk. Start
+      // would 409 'already-used' (launchVerdict) — repeat is the only door
+      // out (repeatVerdict's 2026-08-14 reversal), so the row must offer it,
+      // not a Start whose error points at a button that isn't here.
+      line = 'ran, not graded · ' + shape;
+      if (!state.session_live) {
+        action = '<button type="button" class="mini repagain" data-rep="' + esc(x.id) + '">practice again</button>';
+      }
+      if (x.session_id) action += feedbackToggle({ session_id: x.session_id });
     } else if (x.status === 'ready') {
       line = 'ready · ' + shape;
       if (!state.session_live) action = '<button type="button" class="primary repstart" data-rep="' + esc(x.id) + '">Start</button>';

@@ -930,12 +930,20 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   }
   /* The landing hero: the a11y label IS the heading (real-labels rule) —
      the page's voice, centered over the instrument. */
-  #practice-wrap .hero { margin: 0 0 30px; text-align: center; }
+  #practice-wrap .hero { margin: 0 0 14px; text-align: center; }
   #practice-wrap .hero label {
     display: inline; margin: 0;
     font-size: 38px; font-weight: 500; letter-spacing: -.015em;
     line-height: 1.2; color: var(--text-1);
   }
+  /* The hint under the hero: what to actually write, and why detail pays.
+     Narrower than the composer (58ch vs 62ch) so it reads as guidance
+     hanging over the instrument, not another band of chrome. */
+  #practice-wrap .herohint {
+    max-width: 58ch; margin: 0 auto 26px; text-align: center;
+    font-size: 13px; line-height: 1.65; color: var(--text-2);
+  }
+  #practice-wrap .herohint b { color: var(--text-1); font-weight: 500; }
   /* The one status line beneath the composer. Steel-TEXT on the countdown
      (time in its readable tier — raw steel fails contrast on the ground).
      The container keeps the body font-size so 62ch computes the SAME width
@@ -952,6 +960,45 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   #home-status .statusline > div + div { margin-top: 7px; }
   #home-status a { color: var(--text-2); text-decoration: none; }
   #home-status a:hover { color: var(--text-1); }
+  /* The readout's TWO columns (2026-08-16): left is what already exists and
+     can start now, right is what shape to build another in. One stack made
+     the reader classify every row on the way past — nine lines of identical
+     mono, three of which started a round and six of which built a new one.
+     Same 720px break-out as #rep-confirm (symmetric negative inline margins,
+     so it stays centered on the composer's axis) — inside 62ch a column
+     resolves to ~290px and every title wraps to three lines. auto-fit
+     collapses to one column when only one section renders AND on narrow
+     viewports, so there is no second markup path. The track is CAPPED
+     (346px, not 1fr) and centered: a lone column at 1fr stretched to the
+     full 720px and parked its button a screen-width from its title. */
+  .homecols {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 346px));
+    justify-content: center; gap: 4px 28px; margin-top: 26px; text-align: left;
+    margin-inline: calc((720px - 100%) / -2);
+  }
+  .homecol .colhead {
+    margin: 0 0 2px; font-family: var(--mono); font-size: 11px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: .14em; color: var(--text-3);
+  }
+  /* Rows are generated problem TITLES — the one place the telemetry voice had
+     to go: uppercase mono at .14em is unreadable on a sentence. */
+  .homerow {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 0; border-top: 1px solid var(--rule);
+  }
+  .homerow .grow { flex: 1; min-width: 0; }
+  .homerow b { display: block; font-weight: 500; font-size: 14px; color: var(--text-1); line-height: 1.35; }
+  .homerow .shape { margin-top: 3px; font-size: 12px; color: var(--text-2); }
+  /* A real button at a real tap target: these were 11px uppercase links
+     buried in the same mono as the text around them (user report
+     2026-08-16). flex-none so a long title can never squeeze the verb. */
+  .homerow button { flex: none; min-height: 38px; font-size: 13px; padding: 7px 14px; }
+  .homerow .launchline { font-size: 12px; margin-top: 4px; }
+  .colmore { display: inline-block; margin-top: 12px; font-size: 12px; }
+  @media (max-width: 760px) {
+    /* No breakout — it would overflow the shell (the #rep-confirm rule). */
+    .homecols { margin-inline: 0; }
+  }
   /* The composer is ONE instrument: a single frame holding the borderless
      textarea and its footer row (affordances left, the action right). Focus
      lifts the whole frame's hairline to steel — the established focus

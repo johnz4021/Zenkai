@@ -838,7 +838,11 @@ describe('composer-first landing — hero + status line (design round2-A-minimal
   const js = clientScript('app.js') ?? '';
 
   it('the hero is the label — heading semantics and a11y in one element', () => {
-    expect(js).toContain('<h1 class="hero"><label for="rep-paste">What do you want to practice right now?</label></h1>');
+    // The CONVENTION is the invariant, never the sentence: pinning the exact
+    // copy made every wording pass a test edit (the ask was reworded
+    // 2026-08-16 and this was the only thing that broke). What must hold is
+    // that the heading IS the textarea's label — one element, both jobs.
+    expect(js).toMatch(/<h1 class="hero"><label for="rep-paste">[^<>]+<\/label><\/h1>/);
     expect(html).toMatch(/#practice-wrap \.hero label \{[\s\S]{0,200}font-size: 38px/);
     // one instrument: frame holds textarea + footer; focus lifts the hairline
     expect(html).toMatch(/\.composer-frame:focus-within \{ border-color: var\(--steel\)/);
@@ -846,6 +850,21 @@ describe('composer-first landing — hero + status line (design round2-A-minimal
     // link input is progressive disclosure, not standing furniture
     expect(js).toContain('rep.linkOpen');
     expect(js).toContain('id="rep-linktoggle"');
+  });
+
+  it('the ask is stated, not implied — a hint bound to the textarea', () => {
+    // "paste a recruiter email, a JD, a friend's description…" named three
+    // artifacts and never said what to write when you have none, nor that
+    // detail buys round quality (user report 2026-08-16). The guidance is a
+    // HINT, not a second heading: aria-describedby, so a screen reader reads
+    // label-then-guidance exactly the way the page looks.
+    expect(js).toContain('id="rep-hint"');
+    expect(js).toContain('aria-describedby="rep-hint"');
+    expect(js).toContain('The more specific you are');
+    expect(html).toMatch(/#practice-wrap \.herohint \{/);
+    // The placeholder stays an EXAMPLE under a real label (DESIGN.md rule 5),
+    // and it shows the shape a good answer has rather than naming artifacts.
+    expect(js).toMatch(/id="rep-paste"[^>]*placeholder="e\.g\. /);
   });
 
   it('one status line, repainted every poll, outside the typing guard', () => {
@@ -867,7 +886,11 @@ describe('composer-first landing — hero + status line (design round2-A-minimal
     // format they confirmed, never the generated problem's name.
     expect(js).toContain('function specShapeShort');
     expect(js).toMatch(/seenShapes\.has\(x\.spec\.id\)/);
-    expect(js).toMatch(/esc\(x\.spec\.label\) \+ ' — ' \+ specShapeShort/);
+    // The row is spec label + compressed caps. Asserted as ARGUMENTS, not as
+    // one concatenated string: the readout became two columns 2026-08-16 and
+    // both build rows through homeRow(), so pinning the old ' — ' join
+    // tested the string literal rather than the content.
+    expect(js).toMatch(/homeRow\(\s*x\.spec\.label,\s*specShapeShort\(x\.spec\.capabilities\)/);
     expect(js).toContain('class="rep-regen"');
     expect(js).toContain("querySelectorAll('.rep-regen')");
     // one tap re-posts the same confirmed shape under a new id, with a
@@ -877,6 +900,31 @@ describe('composer-first landing — hero + status line (design round2-A-minimal
     expect(js).toContain('do not repeat the previous one');
     // seasons live in their own tab now; the readout doesn't point there
     expect(js).not.toContain('next planned: ');
+  });
+
+  it('two columns, two questions — start what exists vs build another', () => {
+    // One stack made the reader classify every row on the way past (user
+    // report 2026-08-16). The split is semantic: left = artifacts that exist
+    // and can start now, right = shapes to generate a fresh problem in.
+    expect(js).toContain('class="homecols"');
+    expect(js).toContain('Ready to start');
+    expect(js).toContain('Build another');
+    // Both columns render through ONE row builder, so a Start row and a
+    // build-another row are the same object with a different verb.
+    expect(js).toContain('function homeRow');
+    // Real buttons at a real tap target, not 11px uppercase links inside a
+    // wall of identical mono. The action must be a <button> so launchCommon's
+    // disabled/label handling actually bites.
+    expect(js).toMatch(/<button type="button" class="rep-go"/);
+    expect(js).toMatch(/<button type="button" class="rep-regen"/);
+    expect(html).toMatch(/\.homerow button \{[^}]*min-height: 38px/);
+    // auto-fit is what collapses the grid to one column when a single section
+    // renders and on narrow viewports — the reason there is no second path.
+    expect(html).toMatch(/\.homecols \{[\s\S]{0,160}repeat\(auto-fit/);
+    // The breakout keeps the block centered on the composer's axis (the
+    // #rep-confirm precedent) and is dropped under 760px so it can't overflow.
+    expect(html).toMatch(/\.homecols \{[\s\S]{0,220}margin-inline: calc\(\(720px - 100%\) \/ -2\)/);
+    expect(html).toMatch(/@media \(max-width: 760px\) \{[\s\S]{0,400}\.homecols \{ margin-inline: 0/);
   });
 
   it('the ready signal counts the landing as seen — the line shows it there', () => {
