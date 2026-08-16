@@ -86,6 +86,7 @@ env -u ANTHROPIC_API_KEY \
 | `verdicts=weak,adequate,…` (×6), `solved=0` | judge output, in dimension order (clarify, approach, communicate, implement, verify, reflect) |
 | `solved_omit=1` | judge emits a full assessment with NO solved field — exercises the trace-derivation ladder |
 | `say=…`, `intent=yes` | interviewer line / route utterances to the interviewer |
+| `intent=engage` | gate flags thinking-aloud worth a brief reaction — exercises the engagement lane (paced; outside wrap-up it speaks directly, inside it becomes a reply carrying the next wrap question) |
 | `adapt_round=<id>:<check_kind>:<supersedes>` | adaptation that re-points a spec |
 
 Tear down: kill the app, `git worktree remove --force /tmp/zenkai-qa`.

@@ -77,11 +77,15 @@ export function assessAgenda(
 
   // clarify: a prompted `answer` turn means they asked the interviewer
   // something real (the opening is kind 'answer' too, but unprompted).
+  // Engagement turns are excluded: they are prompted by NARRATION the
+  // intent gate flagged, not by a question — counting one as clarify
+  // evidence would credit the candidate with asking when they never did.
   const clarified = events.some(
     (e) =>
       e.type === 'interviewer' &&
       (e.payload as { kind?: string })?.kind === 'answer' &&
-      (e.payload as { unprompted?: boolean })?.unprompted !== true,
+      (e.payload as { unprompted?: boolean })?.unprompted !== true &&
+      (e.payload as { engage?: boolean })?.engage !== true,
   );
 
   // approach: a theory-sized utterance before the first edit — the "state

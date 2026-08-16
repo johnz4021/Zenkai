@@ -43,6 +43,16 @@ describe('assessAgenda — per-dimension evidence', () => {
     expect(assessAgenda(asked, at(5)).clarify).toBe('some');
   });
 
+  it('clarify: an engagement turn is prompted by narration, not a question — no credit', () => {
+    const engaged = new T().start().answer(0, true).fail(1).build();
+    engaged.push({
+      session_id: 'fixture', user_id: 'u1', source: 'chrome', seq: 99, ts: at(3),
+      type: 'interviewer',
+      payload: { text: 'Green — what convinced you?', kind: 'answer', nudge: false, unprompted: false, engage: true },
+    } as TraceEvent);
+    expect(assessAgenda(engaged, at(5)).clarify).toBe('none');
+  });
+
   it('approach: a theory-sized utterance between first failure and first edit', () => {
     const silentEditor = new T().start().fail(1).edit(5).build();
     expect(assessAgenda(silentEditor, at(6)).approach).toBe('none');

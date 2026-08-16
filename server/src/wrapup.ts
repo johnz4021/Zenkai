@@ -35,6 +35,19 @@ export const WRAP_UP_QUESTIONS = 3;
 const DONE_RE =
   /(any (other|more) questions|i'?m done|that'?s (it|all|everything)|we('re| are) (good|done))/i;
 
+/** "Okay. Uh, anything else?" — the phrasing an actual candidate used
+ *  (sess-1786861469215) while DONE_RE sat there matching only "any other
+ *  questions". Deliberately narrow: the phrase must END the utterance and
+ *  the utterance must be short, so a working-phase "is there anything else
+ *  that touches this cache?" never arms the wrap-up. */
+const DONE_TAIL_RE = /\banything else[.?!\s]*$/i;
+const DONE_TAIL_MAX_WORDS = 6;
+
+export function isDonePhrase(text: string): boolean {
+  if (DONE_RE.test(text)) return true;
+  return DONE_TAIL_RE.test(text.trim()) && text.trim().split(/\s+/).length <= DONE_TAIL_MAX_WORDS;
+}
+
 function isGreenRun(e: TraceEvent): boolean {
   return e.type === 'test_run' && (e.payload as { exit_code?: number | null })?.exit_code === 0;
 }
@@ -78,7 +91,7 @@ export function detectWrapSignal(
       const e = events[i]!;
       if (e.type !== 'utterance' || e.ts <= workStartTs) continue;
       const text = String((e.payload as { text?: string })?.text ?? '');
-      if (DONE_RE.test(text)) return e.ts;
+      if (isDonePhrase(text)) return e.ts;
     }
   }
   return null;
@@ -165,14 +178,36 @@ export function selectWrapTopic(
 export const CLOSING_TOPIC =
   'CLOSING — acknowledge the round in one sentence (specific, not flattery), then tell them: that is everything from you, and they can end the session whenever they are ready. Nothing after this.';
 
-/** The {{WRAPUP}} slot value while the phase is active. */
-export function renderWrapState(questionsAsked: number, topic: string): string {
+/** The {{WRAPUP}} slot value while the phase is active. `viaReply` marks a
+ *  reply that carries the next question — see the wrap-up rules' REPLY
+ *  paragraph. Reply-carried questions exist because the lane's unprompted
+ *  turn paces on silence, and a candidate in wrap-up is rarely silent
+ *  (sess-1786861469215: three replies in the wrap window, zero lane turns,
+ *  the candidate ran their own wrap-up). */
+export function renderWrapState(
+  questionsAsked: number,
+  topic: string,
+  opts: { viaReply?: boolean } = {},
+): string {
   if (topic === CLOSING_TOPIC) {
     return `WRAP-UP, closing. ${topic}`;
   }
-  return (
+  const base =
     `WRAP-UP phase (the working part of the round is over; this conversation IS the round now). ` +
-    `Question ${questionsAsked + 1} of ${WRAP_UP_QUESTIONS}. Next: ${topic} ` +
-    `One question per turn; follow up once if their answer is thin, then move on.`
-  );
+    `Question ${questionsAsked + 1} of ${WRAP_UP_QUESTIONS}. Next: ${topic} `;
+  if (opts.viaReply) {
+    return (
+      base +
+      `This turn is a REPLY carrying the next question: answer what they said first, briefly, then ask it in the same breath.`
+    );
+  }
+  return base + `One question per turn; follow up once if their answer is thin, then move on.`;
+}
+
+/** Did a reply-carried wrap turn actually ASK its question? Counting an
+ *  unasked question skips a topic; the check is mechanical on purpose (the
+ *  same no-model-judgment rule as every detector). Lane turns always count
+ *  — their whole job is the question. */
+export function countsAsWrapQuestion(say: string): boolean {
+  return say.includes('?');
 }

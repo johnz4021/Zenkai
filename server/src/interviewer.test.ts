@@ -14,6 +14,7 @@ import {
   leaksImplementationVocabulary,
   stuckVocabOf,
   parseTurn,
+  parseIntentVerdict,
   render,
   renderActivity,
   buildTranscript,
@@ -721,5 +722,27 @@ describe('stuck vocabulary guard — one step, their words only (validated on de
     // the candidate's. Otherwise one slip whitelists itself forever.
     expect(v.allowed).not.toContain('never echo me');
     expect(stuckVocabOf({ spec: SPEC, bug: BUG, bugFile: '', elapsedMs: 0, remainingMs: 0, recentActivity: '', candidateMessage: null, transcript: [] })).toBeUndefined();
+  });
+});
+
+describe('parseIntentVerdict — three-way gate, fail-toward-silence', () => {
+  it('the three words', () => {
+    expect(parseIntentVerdict('yes')).toBe('addressed');
+    expect(parseIntentVerdict('engage')).toBe('engage');
+    expect(parseIntentVerdict('no')).toBe('silent');
+  });
+
+  it('tolerates casing and trailing prose', () => {
+    expect(parseIntentVerdict('Engage.')).toBe('engage');
+    expect(parseIntentVerdict('Yes — they asked directly')).toBe('addressed');
+  });
+
+  it('engage outranks an incidental yes in the same output', () => {
+    expect(parseIntentVerdict('engage (yes, worth reacting)')).toBe('engage');
+  });
+
+  it('anything unrecognized is silent — the binary gate bias survives', () => {
+    expect(parseIntentVerdict('')).toBe('silent');
+    expect(parseIntentVerdict('maybe?')).toBe('silent');
   });
 });

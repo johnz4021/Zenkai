@@ -109,9 +109,22 @@ export function isAnswerToPendingQuestion(
   nowMs: number,
 ): boolean {
   if (!text.trim()) return false;
+  // The live wiring appends the utterance to the store BEFORE routing it
+  // (session.ts emitUtterance), so the backward walk meets the utterance
+  // under classification first. Skip it ONCE by text equality — without
+  // this the detector returns false on every real utterance and the fast
+  // path is dead code, which is exactly how sess-1786861469215's direct
+  // answer to "walk me through why…" fell to the gate and read as
+  // narration. Skipped once only: an identical OLDER utterance is still a
+  // prior word since the question and correctly falls to the gate.
+  let skippedSelf = false;
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i]!;
     if (e.type === 'utterance' && String((e.payload as { text?: string })?.text ?? '').trim()) {
+      if (!skippedSelf && String((e.payload as { text?: string })?.text) === text) {
+        skippedSelf = true;
+        continue;
+      }
       return false; // not the FIRST words since the question — the gate decides
     }
     if (e.type !== 'interviewer') continue;

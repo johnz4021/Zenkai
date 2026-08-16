@@ -10,7 +10,9 @@ import {
   CLOSING_TOPIC,
   WRAP_GREEN_DELAY_MS,
   WRAP_UP_QUESTIONS,
+  countsAsWrapQuestion,
   detectWrapSignal,
+  isDonePhrase,
   renderWrapState,
   selectWrapTopic,
 } from './wrapup.js';
@@ -122,5 +124,43 @@ describe('renderWrapState', () => {
     const out = renderWrapState(3, CLOSING_TOPIC);
     expect(out).toContain('closing');
     expect(out).not.toContain('Question 4');
+  });
+});
+
+describe('isDonePhrase — the short "anything else?" tail (sess-1786861469215)', () => {
+  it('matches the phrasing an actual candidate used', () => {
+    expect(isDonePhrase('Okay. Uh, anything else?')).toBe(true);
+    expect(isDonePhrase('anything else?')).toBe(true);
+    expect(isDonePhrase('Is there anything else?')).toBe(true);
+  });
+
+  it('never matches a working-phase question that happens to contain it', () => {
+    expect(isDonePhrase('is there anything else that touches this cache?')).toBe(false);
+    expect(isDonePhrase('let me check if anything else writes to the ledger here')).toBe(false);
+  });
+
+  it('the done path in detectWrapSignal accepts the tail phrase after work started', () => {
+    const ev = new T().fail(1).say(15, 'Okay. Uh, anything else?').build();
+    expect(detectWrapSignal(ev, at(15) + 1_000)).toBe(at(15));
+  });
+});
+
+describe('reply-carried wrap questions (the lane paces on silence; replies carry the phase)', () => {
+  it('viaReply instructs answer-then-ask and keeps the question number', () => {
+    const s = renderWrapState(1, 'ask why the fix works', { viaReply: true });
+    expect(s).toContain('REPLY');
+    expect(s).toContain(`Question 2 of ${WRAP_UP_QUESTIONS}`);
+    expect(s).toContain('answer what they said first');
+  });
+
+  it('without viaReply the lane wording is unchanged', () => {
+    const s = renderWrapState(0, 'ask why the fix works');
+    expect(s).toContain('One question per turn');
+    expect(s).not.toContain('REPLY');
+  });
+
+  it('countsAsWrapQuestion is mechanical: the turn must actually ask', () => {
+    expect(countsAsWrapQuestion('Good — why did that pass?')).toBe(true);
+    expect(countsAsWrapQuestion('Understood, that matches what I saw.')).toBe(false);
   });
 });

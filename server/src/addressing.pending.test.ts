@@ -72,3 +72,38 @@ describe('isAnswerToPendingQuestion', () => {
     expect(isAnswerToPendingQuestion('thinking out loud here', [ev('utterance', 0, { text: 'hi' })], T0 + 10_000)).toBe(false);
   });
 });
+
+describe('live wiring: the store already holds the utterance being classified', () => {
+  // session.ts emits the utterance to the trace BEFORE routeUtterance runs,
+  // so the detector's backward walk meets the utterance under judgement
+  // first. Before the skip-self fix this made the fast path DEAD CODE in
+  // production — every fixture above passes events WITHOUT the routed
+  // utterance, which is exactly how the bug survived this suite
+  // (sess-1786861469215: a direct answer to "walk me through why…" fell to
+  // the gate and read as narration).
+  it('still addressed when the routed utterance is already the tail event', () => {
+    const events = [
+      ev('interviewer', 0, { text: "What's your leading theory?", kind: 'probe' }),
+      ev('utterance', 20_000, { text: DIAGNOSIS }),
+    ];
+    expect(isAnswerToPendingQuestion(DIAGNOSIS, events, T0 + 20_000)).toBe(true);
+  });
+
+  it('an identical OLDER utterance is still prior words — the gate decides', () => {
+    const events = [
+      ev('interviewer', 0, { text: "What's your leading theory?", kind: 'probe' }),
+      ev('utterance', 10_000, { text: 'the filter is off' }),
+      ev('utterance', 20_000, { text: 'the filter is off' }),
+    ];
+    expect(isAnswerToPendingQuestion('the filter is off', events, T0 + 20_000)).toBe(false);
+  });
+
+  it('untranscribed segments between question and answer do not break it', () => {
+    const events = [
+      ev('interviewer', 0, { text: "What's your leading theory?", kind: 'probe' }),
+      ev('utterance', 8_000, { text: '' }),
+      ev('utterance', 20_000, { text: DIAGNOSIS }),
+    ];
+    expect(isAnswerToPendingQuestion(DIAGNOSIS, events, T0 + 20_000)).toBe(true);
+  });
+});

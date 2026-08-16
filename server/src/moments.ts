@@ -26,6 +26,12 @@ export interface Moment {
   kind: string;
   /** Prompt text: what just happened, in identity terms. */
   observation: string;
+  /** The suite just went GREEN — the climax of the round. The session tick
+   *  lets urgent moments bypass the moment-cadence gate and use a shorter
+   *  anti-stack guard: reacting to a pass three minutes later reads as not
+   *  watching (sess-1786861469215 — "Fully passing." met silence, and the
+   *  candidate had to ask "anything else?"). */
+  urgent?: boolean;
 }
 
 /** Reading time after a failure before the read is worth probing. */
@@ -55,6 +61,28 @@ export function detectMoment(
   }
   // all_passing / diff_present: no mechanical moments in v1.
   return null;
+}
+
+/**
+ * The green-run producers ONLY, for the session tick's short-guard
+ * pre-check. Exists because detectMoment's priority chain let a STALE
+ * unfired moment mask the climax: in the first live probe of the urgent
+ * lane, first_failure_read (pending since minute one, never released by
+ * the cadence) outranked pass_after_struggle, and the suite going green
+ * got no reaction — the exact staleness `urgent` was built to kill.
+ */
+export function detectUrgentMoment(
+  events: TraceEvent[],
+  checkKind: RoundSpec['check']['kind'],
+  fired: ReadonlySet<string>,
+): Moment | null {
+  const m =
+    checkKind === 'one_failing_test'
+      ? (passAfterStruggle(events, fired) ?? firstFixRan(events, fired))
+      : checkKind === 'all_failing'
+        ? firstPass(events, fired)
+        : null;
+  return m?.urgent ? m : null;
 }
 
 /** First failing run, followed by sustained reading (opens allowed, no
@@ -89,6 +117,7 @@ function firstFixRan(events: TraceEvent[], fired: ReadonlySet<string>): Moment |
       return {
         kind: 'first_fix_ran',
         observation: `Their first edit-and-run attempt just completed and the suite ${passed ? 'PASSED' : 'still fails'}.`,
+        ...(passed ? { urgent: true } : {}),
       };
     }
   }
@@ -106,6 +135,7 @@ function passAfterStruggle(events: TraceEvent[], fired: ReadonlySet<string>): Mo
       return {
         kind: 'pass_after_struggle',
         observation: `The suite just passed after ${failures} failing runs.`,
+        urgent: true,
       };
     }
   }
@@ -179,6 +209,7 @@ function firstPass(events: TraceEvent[], fired: ReadonlySet<string>): Moment | n
       return {
         kind: 'first_pass',
         observation: 'The whole suite just went green for the first time.',
+        urgent: true,
       };
     }
   }
