@@ -237,7 +237,25 @@ async function initAuth() {
     window.history.replaceState(null, '', '#/');
   }
   if (!jwt()) { renderLogin(); return false; }
+  showSignout();
   return true;
+}
+
+/**
+ * Reveal the masthead's sign out. Driven by AUTH state — auth is on and this
+ * browser holds a token — never by a successful /api/state.
+ *
+ * That distinction is the whole point (live report 2026-08-15: "I can't sign
+ * out right now"). Visibility used to be set inside render(), and render is
+ * exactly what does NOT run when the app is unhappy: a thrown state fetch
+ * returns at the banner, and a render that throws returns at "this page is
+ * out of date". Both leave a signed-in user with no exit — and a stuck app is
+ * when you most want to leave the account, not least. The class is applied
+ * once at boot and nothing clears it but renderLogin's own reload.
+ */
+function showSignout() {
+  const s = el('nav-signout');
+  if (s) s.classList.toggle('on', Boolean(authCfg && authCfg.enabled && jwt()));
 }
 
 // ---- routing: the route decides what's visible; the poll only fills it ----
@@ -3058,12 +3076,10 @@ function render(state) {
   el('nav-live').classList.toggle('on', Boolean(state.session_live));
   el('nav-live').href = state.session_url ? sessionHref(state.session_url) : '#/';
   el('nav-kill').classList.toggle('on', Boolean(state.session_live));
-  // Sign out appears only where there is a session to leave (auth off = the
-  // local single-user box). The email rides in the tooltip rather than the
-  // masthead: useful when you need it, never a permanent chrome tax.
+  // Only the NAME is a render concern — visibility is owned by initAuth, so
+  // a broken state fetch can never take the exit away (see showSignout).
   const signout = el('nav-signout');
   if (signout) {
-    signout.classList.toggle('on', Boolean(authCfg && authCfg.enabled));
     const who = state.user && state.user.email;
     signout.title = who ? 'Signed in as ' + who + ' — sign out' : 'Sign out';
   }

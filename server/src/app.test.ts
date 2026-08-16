@@ -89,7 +89,18 @@ describe('home app page', () => {
     // no-auth box would sign you out of nothing.
     expect(html).toMatch(/#nav-signout \{[^}]*display: none/);
     expect(html).toMatch(/#nav-signout\.on \{ display: inline; \}/);
-    expect(js).toMatch(/signout\.classList\.toggle\('on', Boolean\(authCfg && authCfg\.enabled\)\)/);
+    // Visibility is owned by AUTH state, never by a successful /api/state:
+    // live report 2026-08-15 ("I can't sign out right now") — render is
+    // exactly what does not run when the app is unhappy, and a stuck app is
+    // when you most want to leave the account.
+    expect(js).toContain('function showSignout()');
+    expect(js).toMatch(/s\.classList\.toggle\('on', Boolean\(authCfg && authCfg\.enabled && jwt\(\)\)\)/);
+    expect(js).toMatch(/if \(!jwt\(\)\) \{ renderLogin\(\); return false; \}\s*\n\s*showSignout\(\);/);
+    // render() may only set the NAME — never the visibility.
+    const renderStart = js.indexOf('function render(state)');
+    const renderSlice = js.slice(renderStart, renderStart + 2600);
+    expect(renderSlice).toContain('signout.title');
+    expect(renderSlice).not.toContain('signout.classList');
     // One signed-out surface: sign-out lands exactly where a 401 lands.
     const start = js.indexOf("el('nav-signout').addEventListener");
     expect(start).toBeGreaterThan(0);
