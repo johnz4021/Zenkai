@@ -208,8 +208,10 @@ describe('home app page', () => {
     // Armed state survives only deliberate intent.
     expect(js).toContain('function disarmBuild');
     expect(js).toMatch(/plan\.buildArmed = false;\s*\n\s*plan\.busy = true/); // planTurn
-    // The slow accept shows the shared progress bar, not a bare text line.
-    expect(js).toMatch(/building your plan…<div class="progress">/);
+    // The slow accept shows the shared wait notice, not a bare text line —
+    // waitNote carries the progress bar AND the expected duration, so the
+    // assertion moved off the inlined markup and onto the helper call.
+    expect(js).toMatch(/waitNote\(\s*'building your plan…'/);
     expect(html).toMatch(/\.pfoot \.meta\.settled \{ color: var\(--steel-text\)/);
     expect(html).toMatch(/\.pfoot \.meta\.armed \{ color: var\(--text-1\)/);
   });
@@ -780,9 +782,34 @@ describe('practice door — re-infer interaction (decision 6A + T10, 2026-08-12)
     // The busy line renders at the TOP of the question column, but the
     // correction box is at the BOTTOM — measured off-screen at y=-123 when
     // triggered from there. Feedback must also live where the click happened.
-    expect(js).toMatch(/re-checking the shape…<\/div>' \+\s*'<div class="progress">/);
+    expect(js).toMatch(/waitNote\(\s*'re-checking the shape…'/);
     expect(js).toContain("(rep.busy ? 'applying…' : 'apply')");
     expect(js).toMatch(/id="rep-rechecks"[^']*'\s*\+ dis \+/);
+  });
+
+  it('every model wait says how long it takes — one notice, all five sites', () => {
+    // A planner turn runs server-side web_search inside the turn and can take
+    // a minute; a wait that long with no stated length reads as a hang, and
+    // the obvious next move (reload) is the one that throws the work away
+    // (owner call 2026-08-16). ONE helper, so the wording can never drift
+    // between the five places the app blocks on a model.
+    expect(js).toContain('function waitNote');
+    for (const doing of [
+      'working',                    // planner chat — the research turn
+      'building your plan…',        // accept-spec: sourcing + a naming call per spec
+      'reading your notes…',        // practice: first inference
+      're-checking the shape…',     // practice: background re-infer
+      'reading it…',                // adapt preview
+    ]) expect(js).toContain(doing);
+    // The research turn is the long one and says so; the durations are the
+    // measured ranges, never rounded down to look fast.
+    expect(js).toMatch(/30–60 seconds/);
+    expect(js).toContain('researching, not stuck');
+    // The notice is GLOBAL css: .metaline is surface-scoped and would render
+    // unstyled in the adapt panel, which is not inside #practice-wrap.
+    expect(js).toContain('class="meta waitdoing"');
+    expect(html).toMatch(/\.waitfine \{[^}]*color: var\(--text-3\)/);
+    expect(html).toMatch(/\.waitdoing \{/);
   });
 
   it('one diff drives both the flash and the announcement (decision 6A)', () => {

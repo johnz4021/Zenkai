@@ -1234,6 +1234,13 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   .specbox.dropped { opacity: .55; }
   .specbox .keep { display: inline-flex; gap: 6px; margin-left: 12px; color: var(--text-2); font-weight: 400; }
   .specbox .keep input { width: auto; }
+  /* The shared model-wait notice (waitNote, 2026-08-16): what it is doing,
+     an indeterminate bar, then how long that is expected to take. GLOBAL and
+     unscoped on purpose — the same notice renders in the planner chat, the
+     practice composer and the adapt panel, and a surface-scoped rule would
+     silently drop the styling in whichever surface got added next. */
+  .waitdoing { margin: 0; font-size: 13px; }
+  .waitfine { margin: 0; max-width: 54ch; color: var(--text-3); font-size: 12px; line-height: 1.55; }
   .progress { height: 2px; background: var(--line); margin: 16px 0; overflow: hidden; }
   .progress .fill { height: 100%; background: var(--steel); width: 30%; animation: slide 1.5s ease-in-out infinite alternate; }
   /* Determinate variant: width measures real elapsed vs the 8-min wall. */

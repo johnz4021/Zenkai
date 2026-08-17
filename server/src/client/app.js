@@ -365,6 +365,29 @@ function specShapeShort(c) {
     (c.starts_from === 'blank' ? 'from scratch' : c.starts_from === 'diff' ? 'review' : 'repo');
 }
 
+/**
+ * The one wait notice. Everywhere the app is blocked on a model it shows the
+ * same three things: what it is doing, an indeterminate bar, and how long
+ * that is EXPECTED to take.
+ *
+ * The duration line is the addition (owner call 2026-08-16). A planner turn
+ * runs server-side web_search INSIDE the turn (planner.ts, 180s client
+ * timeout) and can genuinely take a minute; a wait that long with no stated
+ * length reads as a hang, and the obvious next move — reload — is the one
+ * move that throws the work away. Ranges here are the measured ones from
+ * each call site, never rounded down to look fast: a notice that under-
+ * promises is worse than none, because the second half of the wait then
+ * reads as the failure the first half denied.
+ *
+ * `.meta` is global; `.metaline` is surface-scoped, so it would render
+ * unstyled in the adapt panel.
+ */
+function waitNote(doing, howLong) {
+  return '<p class="meta waitdoing">' + doing + '</p>' +
+    '<div class="progress"><div class="fill"></div></div>' +
+    '<p class="waitfine">' + howLong + '</p>';
+}
+
 function specDateLine(spec) {
   if (!spec.date) return 'date not set';
   const n = daysUntil(spec.date);
@@ -567,9 +590,16 @@ function renderTurns() {
     }
   });
   if (plan.busy) {
-    html += '<div class="turn-planner"><p class="meta">working' +
-      (plan.turns.length <= 1 ? ' — reading your material' : '') + '…</p>' +
-      '<div class="progress"><div class="fill"></div></div></div>';
+    // The FIRST turn is the research turn: it searches the web and reads what
+    // it finds before it proposes anything, which is why it is the longest
+    // wait in the product and the one that most needs saying so.
+    const first = plan.turns.length <= 1;
+    html += '<div class="turn-planner">' + waitNote(
+      'working' + (first ? ' — reading your material' : '') + '…',
+      first
+        ? 'It searches the web and reads what it finds before proposing rounds, so this one takes 30–60 seconds. That wait is normal — it is researching, not stuck.'
+        : 'Usually 10–30 seconds — longer when it goes back to the web. Nothing is wrong.',
+    ) + '</div>';
   }
   if (plan.error) html += '<p class="err">' + esc(plan.error) + '</p>';
   return html;
@@ -940,7 +970,10 @@ function wirePlan(f) {
     el('gate-confirm').disabled = true;
     // The accept is SLOW (queue sourcing + one naming call per spec) — the
     // same indeterminate bar the chat's busy state uses, not a bare line.
-    el('gate-note').innerHTML = 'building your plan…<div class="progress"><div class="fill"></div></div>';
+    el('gate-note').innerHTML = waitNote(
+      'building your plan…',
+      'Usually 20–40 seconds — it sources and names a round for each one you kept. Don’t reload; the plan lands on this page.',
+    );
     const r = await fetch('/api/accept-spec', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1303,8 +1336,10 @@ function renderPractice() {
       // was invisible (live report 2026-08-12: "sudden generation after a
       // wait with no indicator"). Only the correction box disables — it
       // rewrites the description and stays a blocking, explicit apply.
-      html += '<div class="metaline" style="margin-top:8px">re-checking the shape…</div>' +
-        '<div class="progress"><div class="fill"></div></div>';
+      html += '<div style="margin-top:8px">' + waitNote(
+        're-checking the shape…',
+        'Usually 10–20 seconds. Keep answering while it runs — it works in the background and nothing you type is lost.',
+      ) + '</div>';
     }
     if (open.length === 0 && !rep.busy) {
       // The column degrades, never empties (the zero-gap COMMON case).
@@ -1386,8 +1421,10 @@ function renderPractice() {
     html += '</div>'; // #rep-confirm
   }
   if (rep.phase === 'clarifying') {
-    html += '<div class="metaline" style="margin-top:18px">reading your notes…</div>' +
-      '<div class="progress"><div class="fill"></div></div>';
+    html += '<div style="margin-top:18px">' + waitNote(
+      'reading your notes…',
+      'About 10–20 seconds while it works out the round shape. Stay on this page — the questions appear here.',
+    ) + '</div>';
   }
   if (rep.error) html += '<div class="err" style="margin-top:12px">' + esc(rep.error) + '</div>';
   html += '</div>';
@@ -2996,7 +3033,10 @@ function renderAdaptPanel(container) {
     return;
   }
   if (adapt.phase === 'busy') {
-    panel.innerHTML = '<p class="meta">reading it…</p><div class="progress"><div class="fill"></div></div>';
+    panel.innerHTML = waitNote(
+      'reading it…',
+      'Usually 10–30 seconds while it works out what would change. Nothing is written until you approve the diff.',
+    );
     return;
   }
   // preview — the confirm gate: nothing is written until "re-shape".
