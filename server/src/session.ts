@@ -158,9 +158,14 @@ const WRAP_TURN_GUARD_MS = 30_000;
 const WRAP_CANDIDATE_QUIET_MS = 15_000;
 /** Engagement lane (intent verdict 'engage'): no reaction within this of
  *  any spoken turn, and at most one reaction per cooldown — seasoning,
- *  never a metronome. */
-const ENGAGE_GUARD_MS = 45_000;
-const ENGAGE_COOLDOWN_MS = 2 * 60_000;
+ *  never a metronome. Loosened 45s/2min → 15s/90s (Codex consult,
+ *  2026-08-17): post-endpointing a false engage lands after a COMPLETED
+ *  turn, not mid-thought, and the busy lock + endpoint buffer + question
+ *  governor now carry the barge-in protection the old timidity was
+ *  standing in for. Live evidence: engage fired once in ~23 gated turns
+ *  while three engage-worthy statements dropped to silence. */
+const ENGAGE_GUARD_MS = 15_000;
+const ENGAGE_COOLDOWN_MS = 90_000;
 const PRESSURE_TICK_MS = 30_000;
 
 const IDE_IMAGE = 'gitpod/openvscode-server:latest';

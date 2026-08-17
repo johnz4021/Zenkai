@@ -146,8 +146,11 @@ returns a three-way verdict:
   it can route a bare "no" that answers the interviewer's question — judged
   in context, per speaker.
 - **`engage`** → the utterance is thinking-aloud that *completed a
-  substantive thought* (a theory, a claim, a result, a decision). See the
-  engage lane below.
+  substantive thought* — a theory, a claim, a result, a stated decision or
+  assumption, or voiced confusion about the problem. See the engage lane
+  below. (Post-endpointing the gate is told the turn is COMPLETE and to
+  lean toward engaging on finished thoughts — the fragment-era "when in
+  doubt, narration" bias cost three dropped statements in two sessions.)
 - **`silent`** → traced, no reply. The gate's standing bias: when in doubt,
   narration. A missed question costs a rephrase; a false reply interrupts
   someone mid-thought, which is worse than any latency number.
@@ -272,9 +275,12 @@ evidence, receive a result — under hard limits: one or two sentences, never
 confirm or deny a theory about the cause (confirming is the answer leaking;
 denying narrows the field), and silence stays valid.
 
-It is seasoning, never a metronome: no engagement within 45s of any spoken
-turn, at most one per 2-minute cooldown (burned only when the turn actually
-speaks), never while a reply is in flight or queued. During wrap-up an
+It is seasoning, never a metronome: no engagement within 15s of any spoken
+turn, at most one per 90-second cooldown (burned only when the turn
+actually speaks), never while a reply is in flight or queued. (Loosened
+from 45s/2min after endpointing — a false engage now lands after a
+completed turn, and the busy lock plus question governor carry the
+barge-in protection.) During wrap-up an
 engage-worthy thought gets the full reply treatment instead — the
 conversation *is* the round there, and the reply carries the next wrap
 question anyway.
@@ -320,7 +326,7 @@ feedback card renders from verified citations. From there on it's
 | `WRAP_TURN_GUARD_MS` | 30s | wrap lane's own pacing |
 | `WRAP_CANDIDATE_QUIET_MS` | 15s | wrap lane waits for speech-free air |
 | `WRAP_UP_QUESTIONS` | 3 | evaluation questions before the closing |
-| `ENGAGE_GUARD_MS` / `ENGAGE_COOLDOWN_MS` | 45s / 2min | engage lane pacing |
+| `ENGAGE_GUARD_MS` / `ENGAGE_COOLDOWN_MS` | 15s / 90s | engage lane pacing |
 | `PENDING_QUESTION_WINDOW_MS` | 60s | how long a question stays pending |
 | `MIN_ANSWER_WORDS` | 8 | substance floor on the answer fast path |
 | `CORRECTION_WINDOW_MS` | 45s | "no, I mean…" after a turn |
