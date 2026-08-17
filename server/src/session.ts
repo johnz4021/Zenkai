@@ -1177,6 +1177,16 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       // The once-per-session redirect budget burns on a SPOKEN redirect only.
       if (adriftObservation) adriftFired = true;
       if (narrationEngage) lastEngageTs = lastInterviewerTs;
+      // Governor observability: a COMPLIANT governed turn used to be
+      // indistinguishable from a voluntary statement — the one brake we
+      // built was invisible when it worked (diagnosis 2026-08-17).
+      if (governed) {
+        console.log(
+          `[governor] question budget spent (streak ${streak}) — ${
+            turn.say.includes('?') ? 'turn LEAKED a question (marked non-pending)' : 'turn complied'
+          }`,
+        );
+      }
       const wrapQuestionViaReply = replyWrapTopic !== null && countsAsWrapQuestion(turn.say);
       if (wrapTopic !== null) {
         // Count only turns that actually spoke; a silent wrap turn retries.
