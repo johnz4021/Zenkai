@@ -1315,6 +1315,15 @@ function renderPractice() {
     // (prod, 2026-08-18) — that banner fires on ANY render throw.
     let appState = {};
     try { appState = lastStateJson ? JSON.parse(lastStateJson) : {}; } catch { appState = {}; }
+    // A live round outranks everything on this page: the person who backed
+    // out of a warming-up session (or closed the tab) needs one obvious way
+    // back in, not a hunt through the masthead (owner report 2026-08-18).
+    if (appState.session_live && appState.session_url) {
+      html = '<div class="sample-card" id="resume-card">' +
+        '<div class="grow"><div class="title">Your round is live</div>' +
+        '<div class="metaline">it kept running — jump back in where you left off</div></div>' +
+        '<a href="' + esc(sessionHref(appState.session_url)) + '"><button type="button">Rejoin →</button></a></div>' + html;
+    }
     if (appState.sample_available && rep.phase === 'input' && !appState.session_live) {
       html += '<div class="sample-card" id="sample-card">' +
         '<div class="grow"><div class="title">Not sure what to type? Try a sample round</div>' +
