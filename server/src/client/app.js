@@ -1315,15 +1315,6 @@ function renderPractice() {
     // (prod, 2026-08-18) — that banner fires on ANY render throw.
     let appState = {};
     try { appState = lastStateJson ? JSON.parse(lastStateJson) : {}; } catch { appState = {}; }
-    // A live round outranks everything on this page: the person who backed
-    // out of a warming-up session (or closed the tab) needs one obvious way
-    // back in, not a hunt through the masthead (owner report 2026-08-18).
-    if (appState.session_live && appState.session_url) {
-      html = '<div class="sample-card" id="resume-card">' +
-        '<div class="grow"><div class="title">Your round is live</div>' +
-        '<div class="metaline">it kept running — jump back in where you left off</div></div>' +
-        '<a href="' + esc(sessionHref(appState.session_url)) + '"><button type="button">Rejoin →</button></a></div>' + html;
-    }
     if (appState.sample_available && rep.phase === 'input' && !appState.session_live) {
       html += '<div class="sample-card" id="sample-card">' +
         '<div class="grow"><div class="title">Not sure what to type? Try a sample round</div>' +
@@ -1575,13 +1566,43 @@ function wirePractice() {
       try {
         const r = await fetch('/api/practice/sample', { method: 'POST' });
         const b = await r.json();
-        if (b && b.url) { window.location.href = sessionHref(b.url); return; }
-        el('banner').innerHTML = '<div class="banner">' + esc((b && b.error) || 'could not start the sample') + '</div>';
+        if (!b || !b.url || !b.session_id) {
+          el('banner').innerHTML = '<div class="banner">' + esc((b && b.error) || 'could not start the sample') + '</div>';
+          sampleBtn.disabled = false;
+          sampleBtn.textContent = 'Try it →';
+          return;
+        }
+        // Stay HERE while the room boots (owner call 2026-08-18): the first
+        // version redirected into the router's warm-up page, which reads as
+        // a hang even while it retries. The card becomes the progress
+        // surface, and the redirect fires only once the session actually
+        // answers — nobody ever sees a not-ready page.
+        const card = el('sample-card');
+        if (card) {
+          card.innerHTML = '<div class="grow"><div class="title">Setting your room up…</div>' +
+            '<div class="progress"><div class="fill"></div></div>' +
+            '<div class="metaline">usually 10–20 seconds — you\'ll be dropped straight in</div></div>';
+        }
+        const t0 = Date.now();
+        const poll = async () => {
+          if (Date.now() - t0 > 90000) {
+            if (card) card.innerHTML = '<div class="grow"><div class="metaline">taking longer than it should — ' +
+              '<a href="' + esc(sessionHref(b.url)) + '">open it directly</a> or try again in a minute</div></div>';
+            return;
+          }
+          try {
+            const s = await fetch('/api/session-ready?sid=' + encodeURIComponent(b.session_id));
+            const j = await s.json();
+            if (j && j.ready) { window.location.href = sessionHref(b.url); return; }
+          } catch { /* transient — keep polling */ }
+          setTimeout(poll, 1500);
+        };
+        poll();
       } catch {
         el('banner').innerHTML = '<div class="banner">could not start the sample — try again</div>';
+        sampleBtn.disabled = false;
+        sampleBtn.textContent = 'Try it →';
       }
-      sampleBtn.disabled = false;
-      sampleBtn.textContent = 'Try it →';
     });
   }
   const linktoggle = el('rep-linktoggle');

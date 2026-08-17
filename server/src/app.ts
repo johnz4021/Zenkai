@@ -2995,6 +2995,25 @@ export function runApp(cfg: AppConfig): http.Server {
         spawnRepBuild(rep);
         return json(200, { ok: true, rep_id: rep.id });
       }
+      if (url.startsWith('/api/session-ready') && req.method === 'GET') {
+        // Launch-time readiness for the stay-and-poll flow (owner call
+        // 2026-08-18): the client keeps the user on the home page and
+        // redirects only once the spawned session actually answers HTTP —
+        // the router's warm-up page becomes a fallback nobody sees on the
+        // normal path. Ownership-checked: sid enumeration must not leak
+        // whether someone else's room is up.
+        const sid = new URL(url, 'http://x').searchParams.get('sid') ?? '';
+        if (cfg.pub.multiSession) {
+          const reg = loadRegistry(repoRoot);
+          const entry = reg.entries.find((e) => e.sid === sid && e.ended_at === undefined);
+          if (!entry) return json(200, { ready: false, gone: true });
+          if (entry.user_id !== user!.id && !user!.admin) return json(403, { error: 'not yours' });
+          const p = await probeSession(entry.port);
+          return json(200, { ready: p.reachable && !p.ended });
+        }
+        const p = await probeSession(cfg.sessionPort);
+        return json(200, { ready: p.reachable && !p.ended });
+      }
       if (url === '/api/practice/sample' && req.method === 'POST') {
         // The activation door (owner call 2026-08-18): a hand-picked round,
         // launched instantly from its pristine archive into a THROWAWAY
