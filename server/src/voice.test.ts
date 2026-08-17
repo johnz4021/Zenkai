@@ -383,3 +383,21 @@ describe('onSpeechStart hook — the endpointing signal (2026-08-17)', () => {
     expect(h.sensors.length).toBeGreaterThanOrEqual(0); // no throw is the assertion
   });
 });
+
+describe('onSpeechEnd hook — the silence anchor (2026-08-17)', () => {
+  it('fires when the segment closes, before any transcript exists', () => {
+    const ends: number[] = [];
+    const h = hooks();
+    (h as VoiceHooks).onSpeechEnd = (ts) => ends.push(ts);
+    const up = fakeUpstream();
+    const rt = new VoiceRuntime({ apiKey: 'test', upstreamFactory: () => up }, h);
+    rt.handleClientMessage({ type: 'speech_start', ts: 1_000 });
+    rt.handleClientMessage({ type: 'speech_end', ts: 3_000 });
+    expect(ends).toEqual([3_000]);
+    // A duplicate speech_end while the segment still awaits its transcript
+    // fires again — the segment is "current" until the commit resolves.
+    // Harmless downstream: the buffer's clock just takes the later stamp.
+    rt.handleClientMessage({ type: 'speech_end', ts: 4_000 });
+    expect(ends).toEqual([3_000, 4_000]);
+  });
+});

@@ -110,6 +110,14 @@ export interface VoiceHooks {
    * tests and non-endpointing callers need no stub.
    */
   onSpeechStart?(ts: number): void;
+  /**
+   * The VAD segment just closed — sound stopped. The endpointing silence
+   * clock anchors HERE, not at transcript arrival: anchoring on arrival
+   * stacked the STT round trip onto every reply wait and let noise
+   * segments compound it to 15-37s (sess-1786984222355). Optional, same
+   * reason as above.
+   */
+  onSpeechEnd?(ts: number): void;
 }
 
 export interface VoiceConfig {
@@ -214,6 +222,7 @@ export class VoiceRuntime extends EventEmitter {
       }
       case 'speech_end': {
         if (this.currentSpeechStart === null) return;
+        this.hooks.onSpeechEnd?.(msg.ts);
         if (!this.upstream) {
           // No socket and none coming: presence heard a segment, record it.
           this.flushUntranscribed();

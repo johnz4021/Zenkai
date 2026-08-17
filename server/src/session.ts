@@ -849,7 +849,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         {
           emitSensor: (sensor, state, reason) =>
             store.emitChrome('sensor', { sensor, state, reason }),
-          onSpeechStart: (ts) => speechBuffer.speechStarted(ts),
+          // SERVER clock for the buffer, never the browser's msg.ts: the
+          // flush compares against Date.now(), and browser clock skew
+          // would silently stretch or collapse the settle window.
+          onSpeechStart: () => speechBuffer.speechStarted(Date.now()),
+          onSpeechEnd: () => speechBuffer.speechEnded(Date.now()),
           emitUtterance: (text, speechStartTs) => {
             store.emitChrome(
               'utterance',
@@ -865,7 +869,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   if (voice) {
     endpointTimer = setInterval(() => {
       if (speechBuffer.shouldFlush(Date.now())) {
-        routeUtterance(speechBuffer.flush());
+        const turn = speechBuffer.flush();
+        // Visibility for tuning: the 15-37s lag diagnosis took trace
+        // archaeology; one line here makes the next one a grep.
+        console.log(`[endpoint] turn routed (${turn.length} chars): ${turn.slice(0, 80)}`);
+        routeUtterance(turn);
       }
     }, 500);
     endpointTimer.unref();

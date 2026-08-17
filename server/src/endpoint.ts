@@ -2,6 +2,7 @@
  * Speech endpointing — one routed turn per human turn, not per VAD breath.
  *
  *   voice hook: speechStarted(ts) ──► buffer (segment open: HOLD)
+ *   voice hook: speechEnded(ts)   ──► buffer (silence clock anchors here)
  *   voice hook: push(text, ts)    ──► buffer (segment closed; text kept)
  *   session 500ms check ──► shouldFlush(now) ──► flush() ──► routeUtterance
  *
@@ -29,12 +30,16 @@
  * timers, no clock reads. The session owns the 500ms check loop.
  */
 
-/** Silence after the last speech signal before the turn is considered
- *  finished. Tuned for a slow deliberate speaker's inter-clause pauses
- *  (~1.5-3s observed live); the cost of being generous is reply latency,
- *  the cost of being tight is barging mid-thought — and barging is the
- *  failure this module exists to kill. */
-export const SPEECH_SETTLE_MS = 2_500;
+/** Silence after the last VAD BOUNDARY before the turn is finished. The
+ *  clock anchors on speech_start/speech_end arrival (server clock), never
+ *  on transcript arrival — anchoring on transcripts stacked the STT round
+ *  trip onto every wait, and let each background-noise segment restart
+ *  the window at resolve time: measured live (sess-1786984222355),
+ *  replies lagged 15-37s behind the candidate's words with 1-2 noise
+ *  segments compounding in every gap. The browser VAD already holds ~1s
+ *  before emitting speech_end, so real felt silence is about 1s more
+ *  than this number. Tuned 2500 → 2000 with the anchor fix (2026-08-17). */
+export const SPEECH_SETTLE_MS = 2_000;
 
 /** An open segment older than this is presumed dead (browser gone
  *  mid-segment: no speech_end, no commit, no watchdog) and stops holding
@@ -48,6 +53,9 @@ export class SpeechTurnBuffer {
   private openSegments = 0;
   private lastActivity = 0;
   private lastOpenTs = 0;
+  /** True once speechEnded has ever fired — the wiring provides VAD
+   *  boundaries, so transcript arrival stops driving the clock. */
+  private boundaryDriven = false;
 
   /** A VAD segment opened — the candidate is talking. Holds the flush. */
   speechStarted(ts: number): void {
@@ -56,13 +64,27 @@ export class SpeechTurnBuffer {
     this.lastActivity = Math.max(this.lastActivity, ts);
   }
 
+  /** The VAD segment closed — sound just stopped. THIS is the silence
+   *  anchor: the settle window counts from here, so the STT round trip
+   *  burns down inside the window instead of stacking on top of it. */
+  speechEnded(ts: number): void {
+    this.boundaryDriven = true;
+    this.lastActivity = Math.max(this.lastActivity, ts);
+  }
+
   /** An utterance event landed for a segment ('' = untranscribed — it
    *  closes its segment and contributes nothing to the text). A push with
    *  no matching speechStarted (e.g. a relay-side untranscribed flush
-   *  after reconnect) never drives openSegments negative. */
+   *  after reconnect) never drives openSegments negative.
+   *
+   *  In boundary-driven wiring, arrival does NOT touch the clock: a noise
+   *  segment resolving empty two seconds later must not restart the wait
+   *  — that restart, compounded per noise burst, was the 15-37s reply lag
+   *  measured live. Without boundaries (legacy/tests), arrival is the
+   *  only clock there is. */
   push(text: string, ts: number): void {
     this.openSegments = Math.max(0, this.openSegments - 1);
-    this.lastActivity = Math.max(this.lastActivity, ts);
+    if (!this.boundaryDriven) this.lastActivity = Math.max(this.lastActivity, ts);
     const t = text.trim();
     if (t) this.segments.push(t);
   }

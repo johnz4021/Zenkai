@@ -102,8 +102,14 @@ downstream.
 **Voice routes per human turn, not per VAD segment** (`endpoint.ts`): the
 `SpeechTurnBuffer` holds while any segment is open (the relay's
 `onSpeechStart` hook says the candidate's mouth is open) and flushes only
-after `SPEECH_SETTLE_MS` (2.5s) of full silence — a dangling segment
-releases after `STALE_OPEN_MS` (30s). Segments join in order into one
+after `SPEECH_SETTLE_MS` (2s) of full silence — a dangling segment
+releases after `STALE_OPEN_MS` (30s). The silence clock anchors on the
+VAD boundaries (`onSpeechEnd`, server clock), never on transcript
+arrival: arrival-anchoring stacked the STT round trip onto every wait and
+let each background-noise segment restart the window at resolve —
+measured live at 15-37s of reply lag with keyboard noise
+(sess-1786984222355). A noise segment now only holds while actually
+open; its empty transcript closes the slot without touching the clock. Segments join in order into one
 routed turn, so the classifiers judge a complete thought and the gate runs
 once per thought, not per breath. Trace fidelity is untouched — utterance
 events still land per segment, stamped at speech start. Text routes
@@ -300,7 +306,7 @@ feedback card renders from verified citations. From there on it's
 | Constant | Value | What it paces |
 | --- | --- | --- |
 | `SETTLE_MS` | 600ms | merge stragglers before a reply |
-| `SPEECH_SETTLE_MS` | 2.5s | silence before a voice turn routes (endpoint.ts) |
+| `SPEECH_SETTLE_MS` | 2s | silence after the last VAD boundary before a voice turn routes |
 | `STALE_OPEN_MS` | 30s | a dangling VAD segment stops holding the buffer |
 | `QUESTION_STREAK_LIMIT` | 2 | question-ended turns before the governor trips |
 | `WRAP_FINALIZE_QUIET_MS` | 45s | unanswered closing before auto-finalize |
