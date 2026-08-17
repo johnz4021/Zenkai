@@ -1308,7 +1308,14 @@ function renderPractice() {
     // no idea yet what to type into the composer. Only while the composer is
     // idle — mid-clarify it would be a distraction, and after their own
     // round exists it has done its job.
-    if (state.sample_available && rep.phase === 'input' && !state.session_live) {
+    // renderPractice has no state param — the last /api/state payload is
+    // the module's lastStateJson (the render(state) arg is function-local).
+    // Referencing a bare `state` here threw a ReferenceError on every
+    // practice render and lit the "page is out of date" banner for everyone
+    // (prod, 2026-08-18) — that banner fires on ANY render throw.
+    let appState = {};
+    try { appState = lastStateJson ? JSON.parse(lastStateJson) : {}; } catch { appState = {}; }
+    if (appState.sample_available && rep.phase === 'input' && !appState.session_live) {
       html += '<div class="sample-card" id="sample-card">' +
         '<div class="grow"><div class="title">Not sure what to type? Try a sample round</div>' +
         '<div class="metaline">a real problem with a live interviewer, ready instantly — nothing is saved, nothing counts against your rounds</div></div>' +
