@@ -193,9 +193,16 @@ function firstRun(events: TraceEvent[], fired: ReadonlySet<string>): Moment | nu
   if (fired.has('first_run')) return null;
   const run = events.find((e) => e.type === 'test_run' && (e.payload as TestRunPayload | null)?.exit_code !== null);
   if (!run) return null;
+  // The observation must tell the truth about the outcome: a builder who
+  // implements first can pass on their very first run, and "have seen the
+  // full set of failing behaviors" handed the interviewer a false premise
+  // for a green run (sess-1786984222355).
+  const passed = isPassingRun(run);
   return {
     kind: 'first_run',
-    observation: 'They just ran the suite for the first time and have seen the full set of failing behaviors.',
+    observation: passed
+      ? 'They just ran the suite for the first time and it PASSED outright.'
+      : 'They just ran the suite for the first time and have seen the full set of failing behaviors.',
   };
 }
 

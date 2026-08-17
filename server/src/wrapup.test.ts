@@ -186,3 +186,40 @@ describe('shouldAutoFinalize — the interviewer owns the ending (owner call 202
     expect(shouldAutoFinalize(C, replied, C + 25_000, replied + WRAP_FINALIZE_QUIET_MS)).toBe(true);
   });
 });
+
+describe('the one-shot green build (sess-1786984222355) — green proves work per kind', () => {
+  it('all_failing: implement-first-pass-first-run arms the wrap after 60s', () => {
+    const events = new T().say(1, 'starting').build();
+    // edit before the run, then the only run is green
+    const edits = [
+      { session_id: 'fixture', user_id: 'u1', source: 'chrome', seq: 90, ts: at(3), type: 'edit', payload: { path: 'solution.py' } },
+    ] as unknown as TraceEvent[];
+    const green = new T().pass(7).build();
+    const all = [...events, ...edits, ...green];
+    expect(detectWrapSignal(all, at(7) + WRAP_GREEN_DELAY_MS - 1_000, { checkKind: 'all_failing' })).toBeNull();
+    expect(detectWrapSignal(all, at(7) + WRAP_GREEN_DELAY_MS + 1_000, { checkKind: 'all_failing' })).not.toBeNull();
+    // Same trace, no kind: hadFailure-only rule — never arms.
+    expect(detectWrapSignal(all, at(7) + WRAP_GREEN_DELAY_MS + 1_000)).toBeNull();
+  });
+
+  it('born green and untouched still never wraps — no edits before the run', () => {
+    const all = new T().pass(1).build();
+    expect(detectWrapSignal(all, at(1) + WRAP_GREEN_DELAY_MS + 1_000, { checkKind: 'all_failing' })).toBeNull();
+  });
+
+  it('all_passing kinds never wrap on green — their suite is green the whole round', () => {
+    const edits = [
+      { session_id: 'fixture', user_id: 'u1', source: 'chrome', seq: 91, ts: at(2), type: 'edit', payload: { path: 'refactor.py' } },
+    ] as unknown as TraceEvent[];
+    const all = [...edits, ...new T().pass(5).build()];
+    expect(detectWrapSignal(all, at(5) + WRAP_GREEN_DELAY_MS + 1_000, { checkKind: 'all_passing' })).toBeNull();
+  });
+
+  it('one_failing_test gets the same edit-witness escape — a fix on the first recorded run', () => {
+    const edits = [
+      { session_id: 'fixture', user_id: 'u1', source: 'chrome', seq: 92, ts: at(2), type: 'edit', payload: { path: 'bugged.py' } },
+    ] as unknown as TraceEvent[];
+    const all = [...edits, ...new T().pass(6).build()];
+    expect(detectWrapSignal(all, at(6) + WRAP_GREEN_DELAY_MS + 1_000, { checkKind: 'one_failing_test' })).not.toBeNull();
+  });
+});

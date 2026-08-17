@@ -62,36 +62,60 @@ function isGreenRun(e: TraceEvent): boolean {
  * Is the working phase over? Non-null = yes, with the ts the signal fired.
  *
  * Two ways in:
- *  - the suite's LATEST completed run is green, a failing run preceded it
- *    (so this is a fix, not a round that started green), and it has stood
- *    for WRAP_GREEN_DELAY_MS;
- *  - the candidate said a done-phrase after real work started. On a
- *    runnable round "work started" means at least one completed run ("we
- *    good?" in minute one is a mic check, not a surrender). On a no-run
- *    round (can_run_tests:false) no run can EVER exist during
- *    the session, which used to make the wrap-up — evaluation questions,
- *    closing, all of it — unreachable even when the candidate said "I'm
- *    done" (QA 2026-08-14; the exact round-just-stops failure this module
- *    was built to kill). There, the first edit/save is the work anchor.
+ *  - the suite's LATEST completed run is green, it has stood for
+ *    WRAP_GREEN_DELAY_MS, and the green PROVES WORK: either a failing run
+ *    preceded it (the debugging shape — green means fixed), or the round's
+ *    kind is failing-by-construction (one_failing_test / all_failing) and
+ *    edits preceded the run — a builder who implements first and passes on
+ *    the first run finished the round, they didn't skip it
+ *    (sess-1786984222355). A round BORN green and untouched still never
+ *    wraps, and all_passing kinds never wrap on green at all.
+ *  - the candidate said a done-phrase after real work started — anchored
+ *    at the first completed run OR the first edit/save, whichever exists
+ *    ("we good?" in minute one is a mic check, not a surrender). The old
+ *    runnable-rounds-need-a-run anchor made the wrap unreachable on a
+ *    round where the candidate edited for 8 minutes and never ran
+ *    (sess-1786985531151), the same round-just-stops failure this module
+ *    was built to kill on no-run rounds (QA 2026-08-14).
  */
 export function detectWrapSignal(
   events: TraceEvent[],
   nowMs: number,
-  opts: { runnable?: boolean } = {},
+  opts: { checkKind?: string } = {},
 ): number | null {
-  const runnable = opts.runnable ?? true;
   const runs = events.filter(
     (e) => e.type === 'test_run' && (e.payload as { exit_code?: number | null })?.exit_code != null,
   );
   const latest = runs[runs.length - 1];
   const hadFailure = events.some(isFailingRun);
+  const editedBefore = (ts: number) =>
+    events.some((e) => (e.type === 'edit' || e.type === 'file_save') && e.ts < ts);
 
-  if (latest && isGreenRun(latest) && hadFailure && nowMs - latest.ts >= WRAP_GREEN_DELAY_MS) {
+  // hadFailure guards against wrapping a round that was BORN green — but it
+  // silently assumed the debugging shape, where green means "fixed". On a
+  // build round the suite is failing BY CONSTRUCTION until the work is
+  // done, so a candidate who implements first and passes on their first
+  // run (sess-1786984222355: one run, exit 0, wrap never armed, the
+  // candidate had to ask for the ending) is the ideal performance, not a
+  // no-op. For failing-by-construction kinds, edits-before-the-green-run
+  // is the "real work happened" witness; all_passing stays hadFailure-only
+  // — its suite is green the whole round and a green run proves nothing.
+  const failingByConstruction =
+    opts.checkKind === 'one_failing_test' || opts.checkKind === 'all_failing';
+  const greenProvesWork =
+    hadFailure || (failingByConstruction && latest !== undefined && editedBefore(latest.ts));
+
+  if (latest && isGreenRun(latest) && greenProvesWork && nowMs - latest.ts >= WRAP_GREEN_DELAY_MS) {
     return latest.ts + WRAP_GREEN_DELAY_MS;
   }
-  const workStartTs = runnable
-    ? runs[0]?.ts
-    : events.find((e) => e.type === 'edit' || e.type === 'file_save')?.ts;
+  // "Work started" anchors at the first run OR the first edit/save — a
+  // runnable round with zero runs used to make the done-phrase path
+  // unreachable entirely (sess-1786985531151: 8 minutes of editing, no
+  // runs, nothing the candidate said could have armed the wrap). The
+  // minute-one "we good?" mic check stays ignored: with no run and no
+  // edit there is still no anchor.
+  const workStartTs =
+    runs[0]?.ts ?? events.find((e) => e.type === 'edit' || e.type === 'file_save')?.ts;
   if (workStartTs !== undefined) {
     for (let i = events.length - 1; i >= 0; i--) {
       const e = events[i]!;

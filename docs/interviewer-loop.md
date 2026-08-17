@@ -216,9 +216,15 @@ elapsing).
 In order:
 
 1. **Wrap signal, checked every tick and set once.** `detectWrapSignal`
-   arms the wrap-up when the suite's latest run is green after a failure
-   and has stood 60s, or the candidate said a done-phrase ("any other
-   questions", a short trailing "anything else?") after real work started.
+   arms the wrap-up when the suite's latest run is green, has stood 60s,
+   and proves work — a failing run preceded it, or (on
+   failing-by-construction kinds: `one_failing_test`, `all_failing`) edits
+   preceded the run, so a builder who passes on their first run still gets
+   an ending (sess-1786984222355). `all_passing` rounds never wrap on
+   green. Or: the candidate said a done-phrase ("any other questions", a
+   short trailing "anything else?") after work started — anchored at the
+   first run OR first edit, so a round with zero runs stays wrappable
+   (sess-1786985531151).
 2. **The wrap-up lane** (if armed) *owns* initiative — no scaffolding, no
    moments, no pressure at work that is already done. It paces on its own
    30s guard plus a 15s candidate-quiet window (a talking candidate gets

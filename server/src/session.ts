@@ -2009,7 +2009,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
       // Wrap signal: checked every tick regardless of clocks, set once.
       if (wrapUpAt === null) {
-        const sig = detectWrapSignal(events, now, { runnable: agendaCaps.runnable });
+        const sig = detectWrapSignal(events, now, { checkKind: roundSpec.check.kind });
         if (sig !== null) {
           wrapUpAt = now;
           console.log('[wrapup] working phase over — evaluation questions begin');

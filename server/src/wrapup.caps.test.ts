@@ -25,7 +25,7 @@ describe('detectWrapSignal on a no-run round', () => {
       ev('edit', 60_000, { path: 'REVIEW.md' }),
       ev('utterance', 300_000, { text: "I'm done — that's everything I found." }),
     ];
-    expect(detectWrapSignal(events, T0 + 301_000, { runnable: false })).not.toBeNull();
+    expect(detectWrapSignal(events, T0 + 301_000)).not.toBeNull();
   });
 
   it('a done-phrase before any work is still a mic check, not a surrender', () => {
@@ -33,17 +33,19 @@ describe('detectWrapSignal on a no-run round', () => {
       ev('session_start', 0),
       ev('utterance', 30_000, { text: "we're good, right?" }),
     ];
-    expect(detectWrapSignal(events, T0 + 31_000, { runnable: false })).toBeNull();
+    expect(detectWrapSignal(events, T0 + 31_000)).toBeNull();
   });
 
-  it('the runnable behavior is unchanged: no run, no done-phrase path', () => {
+  it('a runnable round with zero runs still wraps on a done-phrase — edits anchor it (sess-1786985531151)', () => {
+    // The old runnable-rounds-need-a-run anchor made the wrap-up
+    // structurally unreachable on a round where the candidate edited for
+    // 8 minutes and never ran the suite.
     const events = [
       ev('session_start', 0),
       ev('edit', 60_000, { path: 'a.py' }),
       ev('utterance', 300_000, { text: "I'm done." }),
     ];
-    expect(detectWrapSignal(events, T0 + 301_000)).toBeNull();
-    expect(detectWrapSignal(events, T0 + 301_000, { runnable: true })).toBeNull();
+    expect(detectWrapSignal(events, T0 + 301_000)).not.toBeNull();
   });
 });
 
