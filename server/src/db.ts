@@ -54,12 +54,27 @@ export interface SessionRow {
   completed_at: string;
 }
 
+export interface ContactRow {
+  id: string;
+  user_id: string;
+  email: string | null;
+  kind: string;
+  message: string;
+  reply_to: string | null;
+  created_at: string;
+}
+
 export interface Db {
   enabled: boolean;
   upsertUsers(rows: UserRow[]): void;
   mirrorReps(rows: RepRow[]): void;
   mirrorTargets(rows: TargetRow[]): void;
   mirrorSessions(rows: SessionRow[]): void;
+  /** Contact notes (contact.ts): the one mirror whose LATENCY matters — a
+   *  bug report on the box is invisible until someone SSHes, and the
+   *  nightly backup delivers it a day late. Write-only like every mirror;
+   *  contact.jsonl remains truth (owner call 2026-08-17). */
+  mirrorContact(rows: ContactRow[]): void;
 }
 
 const NOOP: Db = {
@@ -68,6 +83,7 @@ const NOOP: Db = {
   mirrorReps: () => {},
   mirrorTargets: () => {},
   mirrorSessions: () => {},
+  mirrorContact: () => {},
 };
 
 export function makeDb(
@@ -111,6 +127,7 @@ export function makeDb(
     mirrorReps: (rows) => upsert('reps', rows),
     mirrorTargets: (rows) => upsert('targets', rows),
     mirrorSessions: (rows) => upsert('sessions', rows),
+    mirrorContact: (rows) => upsert('contact', rows),
   };
 }
 

@@ -77,29 +77,52 @@ export interface GateView {
 /**
  * The closed vocabulary of recordable actions.
  *
- * `would_pay` is the intent signal AND the grant trigger. `would_pay_confirmed`
- * is the honest one: agreeing to be emailed about paying is a second
- * deliberate act that costs something real, and it is where people who merely
- * wanted their round fall away. Reading them as a pair measures the size of
- * the cheap-talk problem instead of assuming it.
+ * `would_pay` is the intent signal AND the grant trigger; `not_yet` is the
+ * decline. Those two are the ratio the whole instrument exists to measure,
+ * and both are still recorded exactly as before.
  */
 export const PROBE_ACTIONS = [
   'gated',
   'would_pay',
   'not_yet',
+  /** HISTORICAL (retired 2026-08-16). The email-capture card between the
+   *  price and the questions is gone — it read as a second obstacle in front
+   *  of a round the user had already won. The client no longer emits either
+   *  action, but they MUST stay in this vocabulary: paywall.jsonl is
+   *  append-only, dropping them would make existing rows parse as 'unknown',
+   *  and `would_pay_confirmed` is in GRANTING — removing it would revoke
+   *  access from everyone who confirmed. */
   'would_pay_confirmed',
   'notify_declined',
-  /** The post-reveal favor (owner request 2026-08-15): after the grant is
-   *  already theirs, two optional free-text questions — most valuable part,
-   *  most wanted improvement. Sent only when at least one box has text, so
-   *  the response RATE needs no skip row: the denominator is every
-   *  would_pay_confirmed/notify_declined row (everyone who saw the ask). */
+  /** The favor (owner request 2026-08-15): after the grant is already theirs,
+   *  two optional free-text questions — most valuable part, most wanted
+   *  improvement. Sent only when at least one box has text, so the response
+   *  RATE needs no skip row: the denominator is every would_pay/not_yet row
+   *  (which, since 2026-08-16, is everyone who saw the ask). */
   'feedback',
 ] as const;
 export type ProbeAction = (typeof PROBE_ACTIONS)[number] | 'unknown';
 
 /** Actions that put a user through for the rest of the beta. */
 const GRANTING: readonly string[] = ['would_pay', 'would_pay_confirmed'];
+
+/**
+ * The same list for a box with NO billing configured — the beta measurement
+ * mode — where `not_yet` also lets the round run (owner call 2026-08-16).
+ *
+ * This is the one place the "THIS GATE REALLY DENIES" rule above is
+ * deliberately suspended, and only where denying was never honest: with no
+ * Stripe key there is nothing to buy, the card itself says Zenkai is free for
+ * the rest of the beta, and both answers now lead to the same follow-up
+ * questions. Charging a real round for the wrong answer to a hypothetical
+ * price question measures resentment, not willingness to pay.
+ *
+ * The SIGNAL is untouched: `not_yet` is still recorded as `not_yet`, so
+ * would_pay ÷ (would_pay + not_yet) reads exactly as it did before. Only the
+ * consequence changed. The moment a Stripe key is configured, the decline
+ * denies again — that path is `GRANTING`, unchanged.
+ */
+const GRANTING_BETA: readonly string[] = [...GRANTING, 'not_yet'];
 
 /** Free-text answers arrive on a route whose body reader has no size cap
  *  (readBody, app.ts) — bounded here, beside the vocabulary it belongs to. */
@@ -198,9 +221,13 @@ export function countRoundsRun(
  * session's ~$0.85. A gate that only counted launches let someone queue builds
  * forever and simply never start them — the expensive half, ungated.
  *
- * "Built" means a build was KICKED, not that it finished: a failed or
- * abandoned build spent the same opus run as a successful one. Anything past
- * `pending` therefore counts, and so does anything that already has a session.
+ * "Built" means a build was KICKED and did not fail: a failed build spent
+ * real money, but that spend is bounded by the GLOBAL daily build caps —
+ * charging the user's personal allowance for the system's failure turned our
+ * flakiness into their rationing (owner call 2026-08-17, superseding the
+ * kicked-means-spent rule). Anything non-pending and non-failed counts, and
+ * so does anything that already has a session (a played round is a round
+ * however its status row ended up).
  */
 export function countBuilds(
   reps: CountableRep[],
@@ -210,7 +237,8 @@ export function countBuilds(
   sinceMs: number | null = null,
 ): number {
   const kicked = (x: { status?: string; session_id?: string }): boolean =>
-    Boolean(x.session_id) || (typeof x.status === 'string' && x.status !== 'pending');
+    Boolean(x.session_id) ||
+    (typeof x.status === 'string' && x.status !== 'pending' && x.status !== 'failed');
   let n = 0;
   for (const rep of reps) if (kicked(rep) && inWindow(rep.created, sinceMs)) n++;
   for (const it of items) if (kicked(it) && inWindow(it.done_at, sinceMs)) n++;
@@ -277,8 +305,12 @@ export function countPlans(
  * recoverable-closed, and the recovery is that they press Subscribe a second
  * time — a duplicate row, which dedup-by-user_id at read time absorbs.
  */
-export function hasGrant(rows: PaywallRow[], userId: string): boolean {
-  return rows.some((r) => r.user_id === userId && GRANTING.includes(r.action ?? ''));
+export function hasGrant(rows: PaywallRow[], userId: string, betaFree = false): boolean {
+  // betaFree = no billing configured, so a decline lets the round run too
+  // (GRANTING_BETA). Defaults to false: a caller that has not been taught
+  // this flag keeps the strict, denying behavior.
+  const granting = betaFree ? GRANTING_BETA : GRANTING;
+  return rows.some((r) => r.user_id === userId && granting.includes(r.action ?? ''));
 }
 
 /**

@@ -80,6 +80,7 @@ import {
   type GateView,
   type PaywallRow,
 } from './paywall.js';
+import { CONTACT_EMAIL, gateContactNote } from './contact.js';
 import {
   acquireRepLock,
   admissionVerdict,
@@ -906,8 +907,8 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
      under the wordmark now; plans and history are secondary destinations.
      Active tab = 2px steel underline — steel marks POSITION, never action.
      The attribute selector outranks the nav-wide text-decoration reset. */
-  #nav-practice, #nav-plans, #nav-history { color: var(--text-2); font-size: 12px; transition: color .18s; }
-  #nav-practice:hover, #nav-plans:hover, #nav-history:hover { color: var(--text-1); }
+  #nav-practice, #nav-plans, #nav-history, #nav-contact { color: var(--text-2); font-size: 12px; transition: color .18s; }
+  #nav-practice:hover, #nav-plans:hover, #nav-history:hover, #nav-contact:hover { color: var(--text-1); }
   .navright a[aria-current="page"] {
     color: var(--text-1);
     text-decoration: underline;
@@ -1149,6 +1150,49 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   .reprow .metaline { color: var(--text-2); margin-top: 3px; font-size: 12px; }
   .reprow .primary { min-width: 96px; min-height: 44px; }
   .reprow b { font-weight: 500; }
+
+  /* ---- contact + feedback (#/contact, contact.ts) ----------------------
+     Same 62ch measure and same composer grammar as the landing: one framed
+     instrument, quiet affordances, the action bottom-right. It is a form on
+     a page of forms — inventing a look for it would make the one surface
+     that says "tell us anything" feel like it came from somewhere else. */
+  #contact-wrap { max-width: 62ch; margin: 0 auto; }
+  #contact-wrap h1 {
+    margin: 0 0 10px; font-size: 26px; font-weight: 500;
+    letter-spacing: -.01em; color: var(--text-1);
+  }
+  #contact-wrap .lede { margin: 0 0 4px; color: var(--text-2); font-size: 14px; line-height: 1.6; }
+  /* The address is a real link and looks like one: the mailto is the door
+     that still works when the form is the thing that is broken, so it must
+     never read as decoration. */
+  #contact-wrap .lede a { color: var(--steel-text); text-decoration: none; border-bottom: 1px solid var(--line); }
+  #contact-wrap .lede a:hover { color: var(--text-1); border-bottom-color: var(--steel-text); }
+  .contact-kinds { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 14px; }
+  .contact-kinds button {
+    min-height: 34px; padding: 5px 14px; font-size: 13px; color: var(--text-2);
+    border-radius: 999px;
+  }
+  .contact-kinds button[aria-pressed="true"] {
+    color: var(--text-1); border-color: var(--steel); background: var(--panel);
+  }
+  #contact-msg {
+    width: 100%; min-height: 150px; resize: vertical; display: block;
+    background: transparent; color: var(--text-1); border: 0;
+    padding: 16px 18px 8px; font: inherit; font-size: 15px; line-height: 1.6;
+  }
+  #contact-msg::placeholder { color: var(--text-3); }
+  .contact-reply { display: flex; align-items: center; gap: 10px; margin: 4px 18px 0; }
+  .contact-reply label { font-size: 12px; color: var(--text-3); white-space: nowrap; }
+  .contact-reply input {
+    flex: 1; min-width: 0; background: transparent; border: 0; color: var(--text-1);
+    font: inherit; font-size: 13px; padding: 6px 0;
+  }
+  /* Sent: the form is REPLACED, not merely annotated. A send that leaves the
+     filled box on screen reads as "did that go?" and gets pressed twice. */
+  #contact-sent { border: 1px solid var(--line); border-radius: 8px; padding: 22px 24px; background: var(--panel); }
+  #contact-sent h2 { margin: 0 0 8px; font-size: 17px; font-weight: 500; color: var(--text-1); }
+  #contact-sent p { margin: 0; color: var(--text-2); font-size: 13px; line-height: 1.6; }
+  #contact-sent .btnrow { margin-top: 18px; }
 
   /* ---- first paint: the shape of the page before data lands ---- */
   #boot { padding-top: 6px; }
@@ -1607,6 +1651,7 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
       <a href="#/" id="nav-practice">practice</a>
       <a href="#/plans" id="nav-plans">plans</a>
       <a href="#/history" id="nav-history">history</a>
+      <a href="#/contact" id="nav-contact">contact</a>
       <a href="#" id="nav-signout">sign out</a>
     </span>
   </nav>
@@ -1645,6 +1690,11 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   <section id="history" hidden>
     <!-- Practice history: the reps strip + judged cards. Reps and seasons
          never share a page (design review 2026-08-10). -->
+  </section>
+
+  <section id="contact" hidden>
+    <!-- Contact + feedback (contact.ts, owner request 2026-08-16): the one
+         surface the app does not ask for. Rendered whole by the client. -->
   </section>
 
   <section id="timeline" hidden></section>
@@ -1952,7 +2002,11 @@ export function runApp(cfg: AppConfig): http.Server {
           // user_id and they are through) — that lever predates billing and
           // stays, for handing free access to people whose feedback is worth
           // having.
-          if (hasGrant(readPaywallRows(), user!.id)) return null;
+          // betaFree: with no Stripe key there is nothing to buy, so a
+          // `not_yet` grants too — both gate answers lead to the same
+          // follow-up questions and the round runs either way (paywall.ts
+          // GRANTING_BETA). Configuring billing restores the denial.
+          if (hasGrant(readPaywallRows(), user!.id, cfg.pub.stripe === null)) return null;
           const subs = readSubscriptionRows();
           // A SUBSCRIBER is not ungated — they get a per-period allowance.
           // `since` is their billing period start, so last month's rounds do
@@ -2324,6 +2378,10 @@ export function runApp(cfg: AppConfig): http.Server {
           session_live: live,
           session_url: sessionUrl,
           user: { id: user!.id, email: user!.email, admin: user!.admin },
+          // Served, never hardcoded in markup: contact.ts owns the address, so
+          // changing it is one edit and the mailto can never drift from the
+          // one the 500 path tells people to use.
+          contact_email: CONTACT_EMAIL,
           ...(allowance ? { paywall: allowance } : {}),
         });
       }
@@ -2452,6 +2510,67 @@ export function runApp(cfg: AppConfig): http.Server {
         // looping on the same gate. True for an admin/gate-off box too — they
         // were never gated in the first place.
         return json(200, { ok: true, granted: !recorded || grantsAccess(action) });
+      }
+      if (url === '/api/contact' && req.method === 'POST') {
+        // The unprompted door (contact.ts). Distinct from /api/feedback, which
+        // serves a JUDGED ROUND's card and is keyed by session id — this one
+        // is attached to nothing and can be sent at any time.
+        //
+        // Every failure here is the sender's sentence, shown verbatim: a
+        // person who took the trouble to write must never meet a status code.
+        let note;
+        try {
+          note = gateContactNote(JSON.parse((await readBody(req)) || '{}'));
+        } catch (e) {
+          return json(400, { error: e instanceof Error ? e.message : 'could not read that' });
+        }
+        // The write is SYNCHRONOUS and its failure is reported. logPaywall
+        // swallows errors because a lost metric must never block a launch;
+        // the opposite holds here — telling someone their report was sent
+        // when it was not is the one outcome worth a 500.
+        const noteId = `ct-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        const noteTs = new Date().toISOString();
+        try {
+          appendFileSync(
+            path.join(repoRoot, 'contact.jsonl'),
+            JSON.stringify({
+              id: noteId,
+              ts: noteTs,
+              user_id: user!.id,
+              // The account address, so a reply needs no typed reply-to. The
+              // optional one overrides it only as a preference, never as
+              // identity — identity is always the session's.
+              email: user!.email,
+              kind: note.kind,
+              message: note.message,
+              ...(note.reply_to ? { reply_to: note.reply_to } : {}),
+            }) + '\n',
+          );
+        } catch (e) {
+          console.error('[contact] append failed:', String(e).slice(0, 200));
+          return json(500, {
+            error: `could not save that — please email it to ${CONTACT_EMAIL} instead`,
+          });
+        }
+        // Kind ONLY on the wire. The note itself is user-authored prose and
+        // stays in the JSONL, exactly like the paywall's expect/value/improve
+        // (owner decision 2026-08-15).
+        ph.capture(user!.id, 'contact_note', { kind: note.kind });
+        // Write-only mirror (owner call 2026-08-17): the note lands in the
+        // founder-visible Postgres table within seconds instead of riding
+        // the nightly backup a day late. Fire-and-forget like every db.ts
+        // mirror — disk remains truth, and a missing table costs one warn.
+        db.mirrorContact([{
+          id: noteId,
+          user_id: user!.id,
+          email: user!.email ?? null,
+          kind: note.kind,
+          message: note.message,
+          reply_to: note.reply_to ?? null,
+          created_at: noteTs,
+        }]);
+        console.log(`[contact] ${note.kind} from ${user!.id}`);
+        return json(200, { ok: true });
       }
       if (url === '/api/target' && req.method === 'POST') {
         // The plan guardrail, checked FIRST — before label validation, before

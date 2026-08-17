@@ -130,11 +130,14 @@ describe('countRoundsRun — rounds STARTED, from the append-only ledger', () =>
 });
 
 describe('countBuilds / roundsUsed — the money is spent at BUILD time', () => {
-  it('counts a build the moment it is kicked, not when it finishes', () => {
-    // A failed or abandoned build spent the same opus run as a good one.
-    for (const status of ['generating', 'ready', 'done', 'failed']) {
+  it('counts a build the moment it is kicked — unless it FAILED (owner call 2026-08-17)', () => {
+    // The old rule charged failed builds ("spent the same opus run"); the
+    // spend is real but it is bounded by the GLOBAL daily caps — the
+    // personal allowance no longer pays for the system's failures.
+    for (const status of ['generating', 'ready', 'done']) {
       expect(countBuilds([{ status }], [], 'u2', 'u1')).toBe(1);
     }
+    expect(countBuilds([{ status: 'failed' }], [], 'u2', 'u1')).toBe(0);
     expect(countBuilds([{ status: 'pending' }], [], 'u2', 'u1')).toBe(0);
     expect(countBuilds([{}], [], 'u2', 'u1')).toBe(0);
   });
@@ -237,6 +240,27 @@ describe('hasGrant — derived from the event log, not stored', () => {
     expect(hasGrant([{ user_id: 'u2', action: 'notify_declined' }], 'u2')).toBe(false);
   });
 
+  it('with no billing configured, a decline grants too — the beta gate measures, it never blocks', () => {
+    // Owner call 2026-08-16: both gate answers now land on the same two
+    // questions and the round runs either way. Without this the client would
+    // ask a decliner two questions and then hand them a 402 for answering.
+    expect(hasGrant([{ user_id: 'u2', action: 'not_yet' }], 'u2', true)).toBe(true);
+    // The signal is untouched — the row is still `not_yet`, so the
+    // would_pay ÷ (would_pay + not_yet) ratio reads exactly as before.
+    expect(hasGrant([{ user_id: 'u2', action: 'gated' }], 'u2', true)).toBe(false);
+    // Someone else's decline still grants nothing.
+    expect(hasGrant([{ user_id: 'other', action: 'not_yet' }], 'u2', true)).toBe(false);
+  });
+
+  it('configuring billing restores the denial — betaFree defaults off', () => {
+    // The default is the strict list, so a caller that has not been taught
+    // the flag keeps the "THIS GATE REALLY DENIES" behavior.
+    expect(hasGrant([{ user_id: 'u2', action: 'not_yet' }], 'u2', false)).toBe(false);
+    expect(hasGrant([{ user_id: 'u2', action: 'not_yet' }], 'u2')).toBe(false);
+    // Subscribe grants in both modes.
+    expect(hasGrant([{ user_id: 'u2', action: 'would_pay' }], 'u2', true)).toBe(true);
+  });
+
   it('an empty log grants nobody — a lost file re-gates rather than crashing', () => {
     // Recoverable-closed, not fail-open: they press Subscribe again, and
     // dedup-by-user_id at read time absorbs the duplicate row.
@@ -288,5 +312,22 @@ describe('expectedText — bounded free text', () => {
 
   it('empty and non-strings are undefined, so the row omits the key', () => {
     for (const v of ['', '   ', null, undefined, 42, {}]) expect(expectedText(v)).toBeUndefined();
+  });
+});
+
+describe('failed builds do not spend the personal allowance (owner call 2026-08-17)', () => {
+  it('countBuilds skips failed reps and failed plan items; a played round always counts', () => {
+    const reps = [
+      { user_id: 'u9', status: 'failed', created: '2026-08-17T01:00:00Z' },
+      { user_id: 'u9', status: 'done', created: '2026-08-17T02:00:00Z' },
+      { user_id: 'u9', status: 'failed', created: '2026-08-17T03:00:00Z', session_id: 's1' },
+    ] as never[];
+    const items = [
+      { user_id: 'u9', status: 'failed', done_at: '2026-08-17T04:00:00Z' },
+      { user_id: 'u9', status: 'ready', done_at: '2026-08-17T05:00:00Z' },
+    ] as never[];
+    // done rep + session-bearing rep + ready item = 3; the two bare
+    // failures are the system's cost, not the user's.
+    expect(countBuilds(reps, items, 'u9', 'u1')).toBe(3);
   });
 });

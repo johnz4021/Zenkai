@@ -320,10 +320,19 @@ export function admissionVerdict(
 ): 'ok' | 'daily-cap' | 'pending-cap' | 'global-cap' {
   const mine = reps.filter((r) => repOwnedBy(r, userId, legacyOwnerId));
   const today = localDate(nowMs);
-  const createdToday = mine.filter((r) => localDate(Date.parse(r.created)) === today).length;
+  // Failed generations do not spend the user's allowance (owner call
+  // 2026-08-17): a build that died is the SYSTEM's failure, and charging a
+  // daily slot for it turns our flakiness into their rationing. The global
+  // builds/day ceiling below still counts everything — that one bounds
+  // SPEND, and a failed opus run cost the same money as a good one.
+  const createdToday = mine.filter(
+    (r) => r.status !== 'failed' && localDate(Date.parse(r.created)) === today,
+  ).length;
   if (createdToday >= caps.maxRepsPerUserDay) return 'daily-cap';
+  // Same rule for pending: a failed rep is not a playable round waiting,
+  // and counting it forced a retry-or-blocked choice on the user.
   const pending = mine.filter(
-    (r) => r.status === 'generating' || r.status === 'ready' || r.status === 'failed',
+    (r) => r.status === 'generating' || r.status === 'ready',
   ).length;
   if (pending >= caps.maxPendingPerUser) return 'pending-cap';
   // Absent = Infinity, so local dev and any caller that has not been taught

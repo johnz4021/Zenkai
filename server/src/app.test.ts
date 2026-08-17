@@ -534,13 +534,13 @@ describe('practice door — client surface', () => {
   const js = clientScript('app.js') ?? '';
 
   it('the masthead is tabs with a steel you-are-here (composer-first, 2026-08-10)', () => {
-    // Three tabs: practice (→ '#/', the generator — the wordmark alone was
-    // an undiscoverable way back), plans, history. Active tab wears the
-    // steel underline via aria-current — wayfinding and a11y as one
-    // mechanism.
+    // Four tabs: practice (→ '#/', the generator — the wordmark alone was
+    // an undiscoverable way back), plans, history, and contact (2026-08-16).
+    // Active tab wears the steel underline via aria-current — wayfinding and
+    // a11y as one mechanism.
     expect(html).toContain('href="#/" id="nav-practice"');
     expect(html).not.toContain('id="nav-new"');
-    expect(html).toMatch(/#nav-practice, #nav-plans, #nav-history \{ color: var\(--text-2\)/);
+    expect(html).toMatch(/#nav-practice, #nav-plans, #nav-history, #nav-contact \{ color: var\(--text-2\)/);
     expect(html).toMatch(/\.navright a\[aria-current="page"\]/);
     expect(html).toMatch(/text-decoration-color: var\(--steel\)/);
     expect(js).toContain("el('nav-practice').setAttribute('aria-current', 'page')");
@@ -564,6 +564,59 @@ describe('practice door — client surface', () => {
     // page IS the composer. (Condition pin, not a hash pin: resumeIntake
     // legitimately sets '#/new'.)
     expect(js).not.toContain('!state.targets.length');
+  });
+
+  it('contact is a route, a tab, and a section — reachable from anywhere (2026-08-16)', () => {
+    expect(js).toContain("h.startsWith('#/contact')");
+    expect(html).toContain('href="#/contact" id="nav-contact"');
+    expect(html).toContain('<section id="contact" hidden>');
+    expect(js).toContain("el('contact').hidden = r.page !== 'contact'");
+    expect(js).toContain("el('nav-contact').setAttribute('aria-current', 'page')");
+    expect(js).toContain("document.title = prefix + 'contact · Zenkai'");
+  });
+
+  it('a half-typed report survives the 5s poll', () => {
+    // The adapt/rep precedent: state lives OUTSIDE the DOM and the surface is
+    // built once, or the poll would wipe a report mid-sentence.
+    expect(js).toMatch(/const contact = \{[^}]*draft: ''/);
+    expect(js).toMatch(/if \(!el\('contact-wrap'\)\) renderContact\(state\)/);
+    // Choosing a kind repaints only the pressed state — a full re-render
+    // would drop the caret out of the box.
+    expect(js).toContain("other.setAttribute('aria-pressed'");
+  });
+
+  it('both doors: the form posts, and the mailto works when the form is what is broken', () => {
+    expect(js).toContain("fetch('/api/contact'");
+    expect(js).toMatch(/'<a href="mailto:' \+ esc\(addr\)/);
+    // Served from state, never a literal in the client.
+    expect(js).toMatch(/state\.contact_email/);
+    // Sending REPLACES the form: a send that leaves the filled box on screen
+    // reads as "did that go?" and gets pressed twice.
+    expect(js).toContain('contact.sent = true');
+    expect(js).toContain('id="contact-sent"');
+    // The server's sentence is shown verbatim — never a status code.
+    expect(js).toMatch(/if \(s\.error\) \{ contact\.error = s\.error/);
+  });
+
+  it('the route gates, records, and never lies about a lost report', () => {
+    const appSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'app.ts'), 'utf8');
+    const start = appSource.indexOf("url === '/api/contact' && req.method === 'POST'");
+    expect(start).toBeGreaterThan(0);
+    const block = appSource.slice(start, appSource.indexOf("if (url === '/api/", start + 40));
+    expect(block).toContain('gateContactNote(');
+    // Identity is the SESSION's, never the body's.
+    expect(block).toContain('user_id: user!.id');
+    // Unlike logPaywall, a failed write is reported: telling someone their
+    // report was sent when it was not is worth a 500.
+    expect(block).toMatch(/return json\(500, \{[\s\S]*could not save that/);
+    expect(block).toContain('CONTACT_EMAIL');
+    // Free text stays in the JSONL and off the analytics wire (the paywall's
+    // expect/value/improve rule, 2026-08-15).
+    expect(block).toMatch(/ph\.capture\(user!\.id, 'contact_note', \{ kind: note\.kind \}\)/);
+    expect(block).not.toMatch(/ph\.capture[^\n]*message/);
+    // Irreplaceable and box-only, like the other two append-only logs.
+    const backupSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'backup.ts'), 'utf8');
+    expect(backupSource).toContain("'contact.jsonl'");
   });
 
   it('the confirm screen is gap-derived: model authors questions, client renders controls (4A)', () => {
@@ -1348,7 +1401,7 @@ describe('queue-door ownership (the 2026-08-15 doors-QA IDOR pins)', () => {
 describe('the beta measurement mode (gate armed, billing unconfigured)', () => {
   const js = clientScript('app.js') ?? '';
 
-  it('Subscribe reveals the beta instead of calling a checkout route that 503s', () => {
+  it('Subscribe goes straight to the questions, never a checkout route that 503s', () => {
     // The whole point: with no Stripe configured, pressing Subscribe used to
     // POST /api/stripe/checkout, get 503 "billing is not configured", and
     // leave the user reading a server error inside the overlay — having
@@ -1356,11 +1409,11 @@ describe('the beta measurement mode (gate armed, billing unconfigured)', () => {
     const start = js.indexOf("yes.addEventListener('click'");
     expect(start).toBeGreaterThan(0);
     const handler = js.slice(start, start + 900);
-    const revealAt = handler.indexOf('betaReveal()');
+    const askAt = handler.indexOf('betaFeedback()');
     const fetchAt = handler.indexOf("fetch('/api/stripe/checkout'");
-    expect(revealAt).toBeGreaterThan(0);
+    expect(askAt).toBeGreaterThan(0);
     expect(fetchAt).toBeGreaterThan(0);
-    expect(revealAt).toBeLessThan(fetchAt); // the branch comes FIRST
+    expect(askAt).toBeLessThan(fetchAt); // the branch comes FIRST
     expect(handler).toContain('if (!pw.billing_enabled)');
   });
 
@@ -1372,35 +1425,61 @@ describe('the beta measurement mode (gate armed, billing unconfigured)', () => {
     );
   });
 
-  it('step 2 records the honest pair and NEVER costs the user their round', () => {
-    const start = js.indexOf('function betaReveal()');
-    expect(start).toBeGreaterThan(0);
-    const fn = js.slice(start, js.indexOf("yes.addEventListener('click'", start));
-    // would_pay is cheap talk; agreeing to be emailed costs something. The
-    // gap between them is the measurement.
-    expect(fn).toContain("probeBeacon('would_pay_confirmed'");
-    expect(fn).toContain("probeBeacon('notify_declined'");
-    // Both buttons, and the defensive path, proceed. Nothing resolves false.
-    expect(fn).not.toContain('teardown(false)');
-    expect((fn.match(/teardown\(true\)/g) ?? []).length).toBeGreaterThanOrEqual(3);
-    // The optional expected-price answer rides along, bounded server-side.
-    expect(fn).toContain('paywall-expect');
+  it('the email-capture card is gone — nothing stands between the price and the questions', () => {
+    // It read as a second obstacle in front of a round the user had already
+    // won, and the waitlist it built was worth less than the two questions
+    // behind it (owner call 2026-08-16).
+    expect(js).not.toContain('betaReveal');
+    expect(js).not.toContain('paywall-expect');
+    expect(js).not.toContain('paywall-notify');
+    expect(js).not.toContain("probeBeacon('would_pay_confirmed'");
+    expect(js).not.toContain("probeBeacon('notify_declined'");
+    // The retired actions MUST survive in the server vocabulary: the log is
+    // append-only, and would_pay_confirmed still grants historical users.
+    const pwSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'paywall.ts'), 'utf8');
+    expect(pwSource).toContain("'would_pay_confirmed'");
+    expect(pwSource).toContain("'notify_declined'");
   });
 
-  it('Escape during step 2 also proceeds — the grant is already spent', () => {
+  it('both answers reach the questions, and a decline costs nothing in beta mode', () => {
+    // "Routes to the two questions no matter if they press willing to pay or
+    // not" (owner call 2026-08-16). The signal is untouched — would_pay and
+    // not_yet are still recorded — only the consequence changed.
+    const start = js.indexOf("no.addEventListener('click'");
+    expect(start).toBeGreaterThan(0);
+    const handler = js.slice(start, start + 700);
+    expect(handler).toContain("probeBeacon('not_yet')");
+    expect(handler).toMatch(/if \(!pw\.billing_enabled\) \{ betaFeedback\(\); return; \}/);
+    // With billing ON the decline still denies — that path is unchanged.
+    expect(handler).toContain('teardown(false)');
+    // The server has to agree, or the retry after the questions would 402 and
+    // hand the user an error for answering: a decline grants when there is no
+    // billing configured, and only then.
+    const pwSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'paywall.ts'), 'utf8');
+    expect(pwSource).toMatch(/GRANTING_BETA[^\n]*=[^\n]*GRANTING,\s*'not_yet'/);
+    expect(pwSource).toMatch(/hasGrant\([^)]*betaFree = false\)/);
+    const appSource = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'app.ts'), 'utf8');
+    expect(appSource).toMatch(/hasGrant\(readPaywallRows\(\), user!\.id, cfg\.pub\.stripe === null\)/);
+  });
+
+  it('Escape during the questions proceeds — the round is already theirs', () => {
     const start = js.indexOf('function onKey(e)');
     const fn = js.slice(start, start + 700);
     expect(fn).toContain("host.dataset.step === '2'");
     expect(fn).toContain('teardown(true)');
+    // Escaping the PRICE card is not an answer, but in beta it still yields
+    // the round — the gate there measures, it does not block.
+    expect(fn).toContain('teardown(!pw.billing_enabled)');
   });
 
-  it('step 3 asks the feedback pair as a favor — optional on every path (owner 2026-08-15)', () => {
+  it('the questions are a favor — optional on every path (owner 2026-08-15)', () => {
     const start = js.indexOf('function betaFeedback()');
     expect(start).toBeGreaterThan(0);
     const fn = js.slice(start, js.indexOf("yes.addEventListener('click'", start));
-    // Both step-2 buttons route here — the ask reaches decliners too.
-    const reveal = js.slice(js.indexOf('function betaReveal()'), start);
-    expect((reveal.match(/betaFeedback\(\)/g) ?? []).length).toBe(2);
+    // Exactly two callers route here — Subscribe and Maybe later — so the ask
+    // reaches decliners too. Counted OUTSIDE the function so a recursive or
+    // stray call site would fail this.
+    expect((js.match(/betaFeedback\(\); return; \}/g) ?? []).length).toBe(2);
     // The two questions, broad by design.
     expect(fn).toContain('most valuable part of Zenkai');
     expect(fn).toContain('most want improved or added');
@@ -1409,9 +1488,10 @@ describe('the beta measurement mode (gate armed, billing unconfigured)', () => {
     // Every way out proceeds; a survey must never cost the round.
     expect(fn).not.toContain('teardown(false)');
     expect((fn.match(/teardown\(true\)/g) ?? []).length).toBeGreaterThanOrEqual(3);
-    // Escape at step 3 is a silent skip.
+    // Escape on the questions (now step 2, the last card) is a silent skip.
     const key = js.slice(js.indexOf('function onKey(e)'), js.indexOf('function onKey(e)') + 700);
-    expect(key).toContain("host.dataset.step === '3'");
+    expect(key).toContain("host.dataset.step === '2'");
+    expect(key).not.toContain("host.dataset.step === '3'");
   });
 
   it('feedback free text stays in the JSONL and off the analytics wire', () => {

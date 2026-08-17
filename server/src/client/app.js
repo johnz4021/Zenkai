@@ -264,6 +264,7 @@ function showSignout() {
 // #/plans    all plans (the old index)
 // #/history  practice history — the reps strip + judged cards
 // #/new      make a plan (intake + flow)
+// #/contact  contact + feedback (contact.ts) — the one surface nothing asks for
 // #/t/<id>   one season timeline
 // #/practice legacy alias — render() canonicalizes it to #/
 // The old design derived visibility from hasTargets on every poll and
@@ -274,6 +275,7 @@ function route() {
   if (h.startsWith('#/new')) return { page: 'new' };
   if (h.startsWith('#/plans')) return { page: 'plans' };
   if (h.startsWith('#/history')) return { page: 'history' };
+  if (h.startsWith('#/contact')) return { page: 'contact' };
   if (h.startsWith('#/t/')) return { page: 'timeline', id: decodeURIComponent(h.slice(4)) };
   // '#/' and the legacy '#/practice' alias are both the composer landing.
   return { page: 'practice' };
@@ -2692,6 +2694,133 @@ function renderHistory(state) {
   }
 }
 
+// ---- contact + feedback (#/contact, contact.ts) -------------------------
+// The one surface the app never asks for. Every other feedback path in here
+// is reactive and round-attached — the judged card's confirms, the paywall's
+// two questions — so a beta user who simply wanted to say "this broke" had
+// to already know the founder's address (owner request 2026-08-16).
+//
+// State lives OUTSIDE the DOM (the `adapt`/`rep` precedent) so the 5s poll
+// can never wipe a half-typed report. That is the whole reason this is not
+// re-rendered from render() on every tick.
+const contact = { kind: 'idea', sent: false, busy: false, error: '', draft: '', replyTo: '' };
+
+const CONTACT_KINDS = [
+  { id: 'bug', label: 'Something broke' },
+  { id: 'idea', label: 'Idea or request' },
+  { id: 'question', label: 'Question' },
+  { id: 'other', label: 'Something else' },
+];
+
+function renderContact(state) {
+  const host = el('contact');
+  if (!host) return;
+  // Served by the app, never hardcoded here — contact.ts owns the address.
+  const addr = (state && state.contact_email) || '';
+  const mailto = addr
+    ? '<a href="mailto:' + esc(addr) + '?subject=' + encodeURIComponent('Zenkai feedback') + '">' + esc(addr) + '</a>'
+    : '';
+  if (contact.sent) {
+    // The form is REPLACED, not annotated: a send that leaves the filled box
+    // on screen reads as "did that go?" and gets pressed twice.
+    host.innerHTML = '<div id="contact-wrap"><div id="contact-sent">' +
+      '<h2>Got it — thank you.</h2>' +
+      '<p>It landed on the box with your account attached, so a reply can find you.' +
+      (mailto ? ' Anything else, any time: ' + mailto + '.' : '') + '</p>' +
+      '<div class="btnrow"><button type="button" id="contact-again">Send another</button></div>' +
+      '</div></div>';
+    const again = el('contact-again');
+    if (again) again.addEventListener('click', () => {
+      contact.sent = false; contact.draft = ''; contact.error = '';
+      renderContact(state);
+      const box = el('contact-msg');
+      if (box && box.focus) box.focus();
+    });
+    return;
+  }
+  let html = '<div id="contact-wrap">' +
+    '<h1>Get in touch</h1>' +
+    '<p class="lede">Bugs, ideas, questions, or a round that came out wrong — it all helps, ' +
+      'and it all reaches me directly.</p>' +
+    (mailto ? '<p class="lede">Prefer email? ' + mailto + ' — always open.</p>' : '') +
+    '<div class="contact-kinds" role="group" aria-label="What kind of note is this?">';
+  for (const k of CONTACT_KINDS) {
+    html += '<button type="button" class="ckind" data-k="' + esc(k.id) + '" aria-pressed="' +
+      (contact.kind === k.id ? 'true' : 'false') + '">' + esc(k.label) + '</button>';
+  }
+  html += '</div>' +
+    '<div class="composer-frame">' +
+    '<label for="contact-msg" class="rep-srlabel" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Your message</label>' +
+    '<textarea id="contact-msg" maxlength="4000" placeholder="What happened, what you expected, or what you wish it did. Detail helps but is not required — a sentence is fine."></textarea>' +
+    '<div class="contact-reply">' +
+      '<label for="contact-reply">Reply to (optional)</label>' +
+      '<input id="contact-reply" type="email" autocomplete="email" placeholder="' +
+        esc((state && state.user && state.user.email) || 'your@email') + '" />' +
+    '</div>' +
+    '<div class="composer-foot">' +
+      '<span class="quiet-affordances">Goes straight to the founder.</span>' +
+      '<button type="button" class="primary" id="contact-send"' + (contact.busy ? ' disabled' : '') + '>' +
+        (contact.busy ? 'Sending…' : 'Send →') + '</button>' +
+    '</div></div>';
+  if (contact.error) html += '<div class="err" style="margin-top:12px">' + esc(contact.error) + '</div>';
+  html += '</div>';
+  host.innerHTML = html;
+
+  const box = el('contact-msg');
+  if (box) {
+    box.value = contact.draft;
+    box.addEventListener('input', () => { contact.draft = box.value; });
+  }
+  const reply = el('contact-reply');
+  if (reply) {
+    reply.value = contact.replyTo;
+    reply.addEventListener('input', () => { contact.replyTo = reply.value; });
+  }
+  for (const b of host.querySelectorAll('.ckind')) {
+    b.addEventListener('click', () => {
+      contact.kind = b.dataset.k;
+      // Repaint only the pressed state — a full re-render would drop the
+      // caret out of a half-typed report.
+      for (const other of host.querySelectorAll('.ckind')) {
+        other.setAttribute('aria-pressed', other === b ? 'true' : 'false');
+      }
+    });
+  }
+  const send = el('contact-send');
+  if (send) send.addEventListener('click', () => sendContact(state));
+}
+
+async function sendContact(state) {
+  if (contact.busy) return;
+  if (!contact.draft.trim()) {
+    contact.error = 'write a line or two first — anything at all';
+    renderContact(state);
+    return;
+  }
+  contact.busy = true; contact.error = '';
+  renderContact(state);
+  try {
+    const r = await fetch('/api/contact', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: contact.kind,
+        message: contact.draft,
+        reply_to: contact.replyTo.trim() || undefined,
+      }),
+    });
+    const s = await r.json();
+    contact.busy = false;
+    // The server's sentence, shown verbatim — somebody who took the trouble
+    // to write must never meet a status code.
+    if (s.error) { contact.error = s.error; renderContact(state); return; }
+    contact.sent = true;
+  } catch {
+    contact.busy = false;
+    contact.error = 'could not reach the app server — try again, or email it instead';
+  }
+  renderContact(state);
+}
+
 function resumeIntake(id) {
   window.location.hash = '#/new';
   flowTargetId = id;
@@ -3183,6 +3312,7 @@ function setTitle(r, state) {
   if (r.page === 'plans') { document.title = prefix + 'your plans · Zenkai'; return; }
   if (r.page === 'history') { document.title = prefix + 'practice history · Zenkai'; return; }
   if (r.page === 'new') { document.title = prefix + 'new plan · Zenkai'; return; }
+  if (r.page === 'contact') { document.title = prefix + 'contact · Zenkai'; return; }
   if (r.page === 'timeline') {
     const row = state.targets.find((x) => x.target.id === r.id);
     if (row) {
@@ -3250,6 +3380,7 @@ function render(state) {
   el('entry').hidden = r.page !== 'new';
   el('practice').hidden = r.page !== 'practice';
   el('history').hidden = r.page !== 'history';
+  el('contact').hidden = r.page !== 'contact';
   el('timeline').hidden = r.page !== 'timeline';
   // You-are-here: the active tab wears the steel underline (aria-current
   // drives the CSS, so wayfinding and a11y are one mechanism). The landing
@@ -3261,6 +3392,8 @@ function render(state) {
   else el('nav-plans').removeAttribute('aria-current');
   if (r.page === 'history') el('nav-history').setAttribute('aria-current', 'page');
   else el('nav-history').removeAttribute('aria-current');
+  if (r.page === 'contact') el('nav-contact').setAttribute('aria-current', 'page');
+  else el('nav-contact').removeAttribute('aria-current');
   // The planning surface gets a wider page column for its two-pane layout.
   document.body.classList.toggle('wide', r.page === 'new');
 
@@ -3274,6 +3407,13 @@ function render(state) {
   }
   if (r.page === 'history') {
     renderHistory(state);
+    return;
+  }
+  if (r.page === 'contact') {
+    // Same repaint guard as the composer and the plan surface: the poll must
+    // never redraw under a half-typed report. State lives outside the DOM, so
+    // building the surface once is enough.
+    if (!el('contact-wrap')) renderContact(state);
     return;
   }
   if (r.page === 'practice') {
@@ -3458,23 +3598,24 @@ function showPaywallGate(pw) {
     }
     function onKey(e) {
       if (e.key !== 'Escape') return;
-      // Steps 2 and 3 are PAST the decision: they already pressed Subscribe,
-      // the grant is already recorded, and the action goes through either
-      // way. Escaping out of a follow-up must never cost them the round.
-      // Step 3 records nothing — an escape IS a skip, and skips are the
+      // Step 2 is PAST the decision: the price answer is already recorded and
+      // the round is already theirs, so escaping the follow-up must never
+      // cost it. An escape IS a skip, and skips write nothing — they are the
       // denominator's silence, not a row.
-      if (host.dataset.step === '3') { teardown(true); return; }
-      if (host.dataset.step === '2') { probeBeacon('notify_declined'); teardown(true); return; }
+      if (host.dataset.step === '2') { teardown(true); return; }
       probeBeacon('not_yet');
-      teardown(false);
+      // Beta mode never denies (paywall.ts GRANTING_BETA), so an escape off
+      // the price card still yields the round — it just skips the questions,
+      // because an escape is not an answer to them.
+      teardown(!pw.billing_enabled);
     }
 
     // TWO steps, and which one is last depends on whether billing is wired.
-    // With Stripe configured, Subscribe leaves for hosted Checkout and the
-    // card is the whole story. Without it — the beta measurement mode — the
-    // same click reveals that the round is free and asks the follow-up that
-    // actually costs something (betaReveal below). Either way the gated
-    // action goes through; nothing in here can strand the user.
+    // With Stripe configured, Subscribe leaves for hosted Checkout, the card
+    // is the whole story, and a decline really denies. Without it — the beta
+    // measurement mode — BOTH answers record their signal and land on the
+    // same two questions (betaFeedback below), and the round goes through
+    // either way. Nothing in here can strand the user.
     try {
       host.dataset.step = '';
       // A SUBSCRIBER who has spent this period's rounds gets a different card:
@@ -3536,71 +3677,33 @@ function showPaywallGate(pw) {
       if (!yes || !no) { teardown(false); return; }
       no.addEventListener('click', function () {
         probeBeacon('not_yet');
+        // Beta mode: the decline is RECORDED but costs nothing (owner call
+        // 2026-08-16). With no billing configured there is nothing to buy,
+        // so both answers go to the same two questions and the round runs
+        // either way — the server grants on `not_yet` too (paywall.ts
+        // GRANTING_BETA). With billing on, a decline still means no round.
+        if (!pw.billing_enabled) { betaFeedback(); return; }
         teardown(false);
       });
-      /**
-       * Step 2, the beta reveal. Reached only by pressing Subscribe on a box
-       * where billing is NOT configured.
-       *
-       * The click that got here already recorded `would_pay`, which is also
-       * the grant — so by this point the round is theirs no matter what they
-       * do next, and this card must never read as another obstacle. It says
-       * the true thing (free during the beta) and then asks the question that
-       * is actually worth something.
-       *
-       * `would_pay` alone is cheap talk: pressing a button that costs nothing
-       * and blocks nothing measures very little, which is exactly why the
-       * earlier probe-only draft was rejected. Agreeing to be EMAILED about
-       * paying is a second deliberate act with a real cost attached, and the
-       * fall-off between the two is the size of the cheap-talk problem —
-       * measured rather than assumed. The expected-price box is optional and
-       * bounded server-side (expectedText, EXPECTED_MAX).
-       */
-      function betaReveal() {
-        host.dataset.step = '2';
-        host.innerHTML =
-          '<div class="card" role="dialog" aria-modal="true" aria-labelledby="paywall-h">' +
-            '<h2 id="paywall-h">Zenkai is free for the rest of the beta</h2>' +
-            '<p>Going ahead now — there is nothing to pay. When paid plans open ' +
-              'it will be ' + esc(price) + '.</p>' +
-            '<p>Want an email when that happens?</p>' +
-            '<label class="sub" for="paywall-expect">What would you expect to pay? (optional)</label>' +
-            '<input type="text" id="paywall-expect" maxlength="200" autocomplete="off" />' +
-            '<div class="btnrow">' +
-              '<button type="button" class="primary" id="paywall-notify">Email me</button>' +
-              '<button type="button" id="paywall-nothanks">No thanks</button>' +
-            '</div>' +
-          '</div>';
-        var expect = function () {
-          var box = el('paywall-expect');
-          return box && box.value ? { expect: box.value } : undefined;
-        };
-        var notify = el('paywall-notify');
-        var nothanks = el('paywall-nothanks');
-        // Defensive: if the card failed to build, they still get their round.
-        if (!notify || !nothanks) { teardown(true); return; }
-        notify.addEventListener('click', function () {
-          probeBeacon('would_pay_confirmed', expect());
-          betaFeedback();
-        });
-        nothanks.addEventListener('click', function () {
-          probeBeacon('notify_declined', expect());
-          betaFeedback();
-        });
-        if (notify.focus) notify.focus();
-      }
 
       /**
-       * Step 3, the favor (owner request 2026-08-15). The round is already
-       * granted and the email decision already recorded — this card asks the
-       * two questions worth the most from someone who just tried to PAY:
-       * what earned that click, and what would make it worth more. Broad on
-       * purpose, both optional, and every way out (Send with empty boxes,
-       * Skip, Escape) proceeds identically. Skips write nothing: the response
-       * rate reads against the step-2 rows, so silence needs no row.
+       * Step 2, the favor (owner request 2026-08-15) — and in beta mode the
+       * LAST card, reached from both buttons (owner call 2026-08-16). The
+       * price answer is already recorded and the round is already theirs, so
+       * this asks the two questions worth the most from someone who just
+       * answered a price question either way: what earned the round, and what
+       * would make it worth more. Broad on purpose, both optional, and every
+       * way out (Send with empty boxes, Skip, Escape) proceeds identically.
+       * Skips write nothing: the response rate reads against the
+       * would_pay/not_yet rows, so silence needs no row of its own.
+       *
+       * It used to be step 3, behind an email-capture card that asked to be
+       * notified when paid plans opened. That card was cut: it read as a
+       * second obstacle in front of a round the user had already won, and the
+       * waitlist it built was worth less than the answers on this one.
        */
       function betaFeedback() {
-        host.dataset.step = '3';
+        host.dataset.step = '2';
         host.innerHTML =
           '<div class="card" role="dialog" aria-modal="true" aria-labelledby="paywall-h">' +
             '<h2 id="paywall-h">Two quick questions?</h2>' +
@@ -3645,7 +3748,7 @@ function showPaywallGate(pw) {
         // No billing on this box: the honest reveal, not a 503. Checking the
         // server-supplied flag rather than trying the route and reading the
         // error keeps the beta path off the failure branch entirely.
-        if (!pw.billing_enabled) { betaReveal(); return; }
+        if (!pw.billing_enabled) { betaFeedback(); return; }
         yes.textContent = 'Opening checkout...';
         try {
           var r = await fetch('/api/stripe/checkout', { method: 'POST' });
