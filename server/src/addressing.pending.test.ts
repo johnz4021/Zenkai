@@ -12,7 +12,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { TraceEvent } from '@interview-prep/shared';
-import { PENDING_QUESTION_WINDOW_MS, isAnswerToPendingQuestion } from './addressing.js';
+import { MIN_ANSWER_WORDS, PENDING_QUESTION_WINDOW_MS, isAnswerToPendingQuestion } from './addressing.js';
 
 const T0 = 1_700_000_000_000;
 const ev = (type: TraceEvent['type'], atMs: number, payload: unknown = {}): TraceEvent =>
@@ -53,12 +53,16 @@ describe('isAnswerToPendingQuestion', () => {
   });
 
   it('acks and time announcements neither ask nor cancel the pending question', () => {
+    // Times sit inside the 60s window — the pin here is the SKIP rule for
+    // content-free turns, not the window length.
     const events = [
       ev('interviewer', 0, { text: "What's your leading theory?", kind: 'probe' }),
-      ev('interviewer', 30_000, { text: 'Mm-hm.', kind: 'ack' }),
-      ev('interviewer', 60_000, { text: '5 minutes remaining.', kind: 'time' }),
+      ev('interviewer', 15_000, { text: 'Mm-hm.', kind: 'ack' }),
+      ev('interviewer', 25_000, { text: '5 minutes remaining.', kind: 'time' }),
     ];
-    expect(isAnswerToPendingQuestion('the eligibility filter is off by one', events, T0 + 90_000)).toBe(true);
+    expect(
+      isAnswerToPendingQuestion('the eligibility filter is off by one at the boundary', events, T0 + 40_000),
+    ).toBe(true);
   });
 
   it('an expired window is narration again', () => {
@@ -90,12 +94,15 @@ describe('live wiring: the store already holds the utterance being classified', 
   });
 
   it('an identical OLDER utterance is still prior words — the gate decides', () => {
+    // Long enough to clear the substance floor, so the false here pins the
+    // skip-once rule and nothing else.
+    const said = 'the eligibility filter is off by one at the boundary';
     const events = [
       ev('interviewer', 0, { text: "What's your leading theory?", kind: 'probe' }),
-      ev('utterance', 10_000, { text: 'the filter is off' }),
-      ev('utterance', 20_000, { text: 'the filter is off' }),
+      ev('utterance', 10_000, { text: said }),
+      ev('utterance', 20_000, { text: said }),
     ];
-    expect(isAnswerToPendingQuestion('the filter is off', events, T0 + 20_000)).toBe(false);
+    expect(isAnswerToPendingQuestion(said, events, T0 + 20_000)).toBe(false);
   });
 
   it('untranscribed segments between question and answer do not break it', () => {
@@ -105,5 +112,49 @@ describe('live wiring: the store already holds the utterance being classified', 
       ev('utterance', 20_000, { text: DIAGNOSIS }),
     ];
     expect(isAnswerToPendingQuestion(DIAGNOSIS, events, T0 + 20_000)).toBe(true);
+  });
+});
+
+describe('the substance floor — fragments never fast-path (sess-1786924315899)', () => {
+  // The live loop: the interviewer ends most turns with a question, each
+  // reply re-armed the window, and every VAD breath became its "answer" —
+  // 26 spoken turns, gaps down to 1 second, a round-long interruption
+  // loop. These are the actual utterances that fast-pathed that round.
+  const probe = () => [
+    ev('interviewer', 0, { text: 'What makes you say that?', kind: 'probe' }),
+  ];
+
+  it.each([
+    'Um...',
+    'Oh my God.',
+    'Uh, taking modulo.',
+    'Um, okay. Anyways, um...',
+    'Yeah, the divisors of the items, so...',
+  ])('"%s" falls to the gate', (frag) => {
+    expect(isAnswerToPendingQuestion(frag, probe(), T0 + 10_000)).toBe(false);
+  });
+
+  it('the accepted tradeoff: a filler-heavy sentence over the floor still fast-paths', () => {
+    // 9 words by pure count — a lexicon would call it filler, and a lexicon
+    // is exactly what was rejected (it fails open for every speaker it
+    // didn't anticipate). One reply that may choose silence is the cost.
+    expect(isAnswerToPendingQuestion('I just need to find a way, I guess.', probe(), T0 + 10_000)).toBe(true);
+  });
+
+  it('a substantive first response still fast-paths — the qa814 guarantee survives', () => {
+    expect(isAnswerToPendingQuestion(DIAGNOSIS, probe(), T0 + 10_000)).toBe(true);
+    expect(
+      isAnswerToPendingQuestion('I think the check compares raw strings instead of path segments here', probe(), T0 + 10_000),
+    ).toBe(true);
+  });
+
+  it('the floor is MIN_ANSWER_WORDS by pure count — no lexicon (owner decision 2026-08-17)', () => {
+    const words = (n: number) => Array.from({ length: n }, (_, i) => 'w' + i).join(' ');
+    expect(isAnswerToPendingQuestion(words(MIN_ANSWER_WORDS), probe(), T0 + 10_000)).toBe(true);
+    expect(isAnswerToPendingQuestion(words(MIN_ANSWER_WORDS - 1), probe(), T0 + 10_000)).toBe(false);
+  });
+
+  it('the window is 60s — the incident this detector serves was a 26s gap', () => {
+    expect(PENDING_QUESTION_WINDOW_MS).toBe(60_000);
   });
 });
