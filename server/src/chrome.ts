@@ -190,6 +190,14 @@ ${view.analytics ? view.analytics + '\n' : ''}<style>
      #status is the one designated shrinker and ellipsizes instead. */
   header > span, header a#back { white-space: nowrap; }
   header #status { overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
+  /* The voice chip cycles listening ↔ hearing you on EVERY speech segment;
+     nowrap killed the height pump, but the width change still shifted the
+     whole right-side button cluster each swap (owner report, 2026-08-17).
+     18ch seats the longest routine state exactly ("voice: hearing you" —
+     mono, so ch is per-character). The rare failure states ("voice link
+     lost — text only") overflow it once and stay put — a one-time shift on
+     an exceptional event, not per-segment jitter. */
+  header #voicechip { min-width: 18ch; }
   header .t { color: var(--text-2); font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
   header #clock { color: var(--steel-text); }  /* the timer is steel: time is steel's whole job */
   header a#back { color: var(--text-2); text-decoration: none; }

@@ -450,4 +450,10 @@ describe('the header holds one line (2026-08-16 — the TTS pump)', () => {
     expect(html).toContain('header > span, header a#back { white-space: nowrap; }');
     expect(html).toContain('header #status { overflow: hidden; text-overflow: ellipsis; min-width: 0;');
   });
+
+  it('the voice chip has a fixed seat — listening ↔ hearing you must not shift the header', () => {
+    // Width, not just height: the chip swaps on every speech segment, and
+    // its width change walked the right-side button cluster back and forth.
+    expect(html).toContain('header #voicechip { min-width: 18ch; }');
+  });
 });
