@@ -29,7 +29,7 @@ import { loadTopicLog, rollupTopics } from './topic-log.js';
 import { applyAdaptation, pickAdapter, planAdaptation, reconcileAdaptation, retiredSpecIds, type AdaptDiff } from './adapt.js';
 import { appendLearnings, gateBlueprint, loadBlueprint, writeBlueprintWithBackup } from './blueprint.js';
 import { clearGeneratingMarker, generationProgress, pidAlive, readGeneratingMarker, sweepVerdict, writeGeneratingMarker } from './generation-state.js';
-import { pickTopicNamer } from './plan-topics.js';
+import { pickTopicNamer, stripDefectTail } from './plan-topics.js';
 import { clientScript } from './chrome.js';
 import { authConfigFromPublic, makeAuth } from './auth.js';
 import { childEnv } from './child-env.js';
@@ -576,7 +576,12 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
   if (item.source?.kind === 'leetcode') {
     const slugs = (item.source.parts ?? [item.source]).map((p) => p.slug).join(',');
     args.push('--source', `lc:${slugs}`);
-  } else if (item.planned_title) args.push('--title', item.planned_title);
+  } else if (item.planned_title) {
+    // A legacy stored title may still carry a defect tail — the brief keeps
+    // the surface commitment; the defect stays the generator's own secret.
+    const surface = stripDefectTail(item.planned_title);
+    if (surface) args.push('--title', surface);
+  }
   liveGenerations.add(dir);
   mkdirSync(dir, { recursive: true });
   const logFd = openBuildLog(dir);
@@ -750,25 +755,18 @@ function resolveTitle(item: QueueItem): string | null {
       }
     }
   }
-  // A bound-but-unbuilt item: display follows provenance. The candidate
-  // NAMED a user pick, so its real title is theirs to see; an auto pick
-  // stays hidden — the reskin is what keeps the round fresh, and the plan
-  // view is read the night before.
-  if (item.source) {
-    const parts = item.source.parts ?? [item.source];
-    const named = parts.filter((p) => p.picked_by === 'user');
-    if (parts.length === 1) {
-      return item.source.picked_by === 'user'
-        ? `${item.source.title} · ${item.source.difficulty} · from the real set`
-        : `sourced · ${item.source.difficulty} — revealed when the round starts`;
-    }
-    if (named.length) {
-      const extra = parts.length - named.length;
-      return `${named.map((p) => p.title).join(', ')}${extra ? ` + ${extra} more` : ''} · from the real set`;
-    }
-    return `${parts.length} from the real set — revealed when the round starts`;
-  }
-  return item.planned_title ?? null;
+  // A bound-but-unbuilt item has no title of its own — provenance is the
+  // CLIENT's chip (app.js sourceBits), and composing it here too rendered
+  // the same fact twice back to back on every sourced row ("sourced ·
+  // medium — revealed…" as the title, "real set · medium — revealed…" as
+  // the chip — the doubled Google-plan rows, 2026-08-16). Returning null
+  // lets the row fall back to its label; what the candidate may see of a
+  // pick (user-named vs auto-hidden) is entirely the chip's rule.
+  if (item.source) return null;
+  // Display-time defect gate: planned titles stored BEFORE the authoring
+  // trim existed still carry "<surface> — <defect>" tails on disk; trimming
+  // at render heals them without a data migration.
+  return item.planned_title ? (stripDefectTail(item.planned_title) ?? null) : null;
 }
 
 /** Reconcile a target's queue with disk, re-pace, persist if changed, and
@@ -2202,6 +2200,12 @@ export function runApp(cfg: AppConfig): http.Server {
                     return {
                       ...i,
                       title: resolveTitle(i),
+                      // The raw stored planned_title may predate the defect
+                      // gate — never let it reach the client unsanitized
+                      // (itemTitle falls back to it when title is null).
+                      ...(i.planned_title
+                        ? { planned_title: stripDefectTail(i.planned_title) }
+                        : {}),
                       // Honest progress (ISSUE-007): start time from the
                       // .generating marker, live file count, and a phase —
                       // replaces the decorative infinite bar.
@@ -3252,8 +3256,14 @@ export function runApp(cfg: AppConfig): http.Server {
                 t.description ? `The candidate describes it as: ${t.description}` : '',
               ].filter(Boolean).join('\n');
               const titles = await stripSpoilerTitles(await namer(brief, mine.length));
+              // Defect gate (Google-plan leak, 2026-08-16): a planted-bug
+              // round's title cuts ANY qualifier tail — the namer wrote
+              // "<surface> — off-by-one bug" and the rail showed the answer
+              // the night before. Other kinds cut only defect vocabulary.
+              const planted = spec.check.kind === 'one_failing_test';
               mine.forEach((item, i) => {
-                if (titles[i]) item.planned_title = titles[i];
+                const clean = titles[i] ? stripDefectTail(titles[i]!, { always: planted }) : undefined;
+                if (clean) item.planned_title = clean;
               });
             } catch (e) {
               console.warn(`[app] topic naming failed for ${spec.id} (quiet rows): ${String(e).slice(0, 200)}`);
@@ -3324,8 +3334,11 @@ export function runApp(cfg: AppConfig): http.Server {
                 `The candidate just learned: ${material.slice(0, 2000)}`,
               ].filter(Boolean).join('\n');
               const titles = await stripSpoilerTitles(await namer(brief, rows.length));
+              // Same defect gate as plan naming above.
+              const planted = spec.check.kind === 'one_failing_test';
               rows.forEach((r, i) => {
-                if (titles[i]) r.new_title = titles[i];
+                const clean = titles[i] ? stripDefectTail(titles[i]!, { always: planted }) : undefined;
+                if (clean) r.new_title = clean;
               });
             } catch (e) {
               console.warn(`[app] adapt naming failed for ${specId} (quiet rows): ${String(e).slice(0, 200)}`);

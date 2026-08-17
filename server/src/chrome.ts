@@ -182,6 +182,14 @@ ${view.analytics ? view.analytics + '\n' : ''}<style>
   * { box-sizing: border-box; }
   body { margin: 0; font: 13.5px/1.45 'Archivo', system-ui, sans-serif; background: var(--bg); color: var(--text-1); display: flex; flex-direction: column; height: 100vh; }
   header { display: flex; align-items: center; gap: 16px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+  /* One line, always. The header's spans are flex items with default
+     shrink, so a chip growing ("voice: speaking" during TTS) squeezed a
+     sibling until its text wrapped to a second line — the whole header
+     pumped taller and back with every interviewer turn (measured live,
+     2026-08-16: 46px → 62px at 1200px viewport). nowrap forbids the wrap;
+     #status is the one designated shrinker and ellipsizes instead. */
+  header > span, header a#back { white-space: nowrap; }
+  header #status { overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
   header .t { color: var(--text-2); font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
   header #clock { color: var(--steel-text); }  /* the timer is steel: time is steel's whole job */
   header a#back { color: var(--text-2); text-decoration: none; }

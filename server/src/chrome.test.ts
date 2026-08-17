@@ -435,3 +435,19 @@ describe('session page analytics (posthog.ts builds it; this pins the seam)', ()
     expect(inline).toContain('window.posthog.identify("user-1")');
   });
 });
+
+describe('the header holds one line (2026-08-16 — the TTS pump)', () => {
+  // Live symptom: every interviewer turn swapped the voice chip to a longer
+  // string, a squeezed sibling span wrapped to a second line, and the whole
+  // header grew and shrank in rhythm with the audio (measured 46px → 62px
+  // at a 1200px viewport). The guard is CSS: spans never wrap; #status is
+  // the one designated shrinker and ellipsizes instead.
+  const html = sessionPage('sess-test', {
+    interviewer: true, time_limit_ms: null, one_shot: false, autorun: true,
+  });
+
+  it('header spans are nowrap and #status ellipsizes', () => {
+    expect(html).toContain('header > span, header a#back { white-space: nowrap; }');
+    expect(html).toContain('header #status { overflow: hidden; text-overflow: ellipsis; min-width: 0;');
+  });
+});

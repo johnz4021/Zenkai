@@ -232,7 +232,11 @@ export function startVoice({ onState, onAgentAudioWanted }) {
     const el = state.audioEl || (state.audioEl = document.createElement('audio'));
     el.src = '/voice/tts/' + seq;
     state.playing = true;
-    setChip('interviewer speaking');
+    // 'speaking', not 'interviewer speaking': the chip swelling by ten
+    // characters on every turn is what made the header jitter visible in
+    // the first place (2026-08-16) — near-constant chip widths keep the
+    // header still even before the CSS nowrap guard.
+    setChip('speaking');
     const done = () => {
       state.playing = false;
       setChip(state.muted ? 'muted' : 'listening');
