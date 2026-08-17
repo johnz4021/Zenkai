@@ -923,8 +923,13 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   }
   #nav-home:hover .word { color: #fff; }
   .navright { display: flex; align-items: center; gap: 18px; }
-  #nav-live { display: none; align-items: center; gap: 7px; color: var(--steel-text); font-size: 12px; font-family: var(--mono); }
+  /* An ACTION, not a status light: "session live" read as an indicator and
+     the way back into a running round went undiscovered (owner call
+     2026-08-18). Button chrome + verb label; the pulse keeps the live tell. */
+  #nav-live { display: none; align-items: center; gap: 7px; color: var(--steel-text); font-size: 12px; font-family: var(--mono); border: 1px solid var(--steel); border-radius: 6px; padding: 5px 12px; text-decoration: none; transition: background .18s, color .18s; }
   #nav-live.on { display: flex; }
+  #nav-live:hover { background: var(--steel); color: var(--bg); }
+  #nav-live:hover .pulse { background: var(--bg); }
   #nav-kill { display: none; color: var(--text-2); font-size: 12px; }
   #nav-kill.on { display: inline; }
   #nav-kill:hover { color: var(--weak-text); }
@@ -1687,7 +1692,7 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
       <span class="betatag">beta</span>
     </a>
     <span class="navright">
-      <a href="#/t/" id="nav-live" aria-live="polite"><span class="pulse"></span>session live</a>
+      <a href="#/t/" id="nav-live" aria-live="polite"><span class="pulse"></span>return to session →</a>
       <a href="#" id="nav-kill" title="end the running session without grading">end session</a>
       <a href="#/" id="nav-practice">practice</a>
       <a href="#/plans" id="nav-plans">plans</a>
