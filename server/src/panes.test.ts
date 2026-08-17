@@ -12,7 +12,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { RoundCapabilities } from '@interview-prep/shared';
-import { isModelPath, listWorkspaceFiles, parseRunCounts, runGuard, safeWorkspacePath, summarizeTail } from './panes.js';
+import { isModelPath, listWorkspaceFiles, parseRunCounts, runGuard, safeWorkspacePath, summarizeTail, partitionWorkspaceFiles } from './panes.js';
 
 describe('safeWorkspacePath — the traversal gate', () => {
   const root = '/srv/problems/p-1';
@@ -126,5 +126,35 @@ describe('parseRunCounts — summary lines only, never a guess', () => {
     expect(parseRunCounts('Segmentation fault')).toBeNull();
     expect(parseRunCounts('Ran 16 tests in 0.01s\n')).toBeNull(); // verdict line truncated away
     expect(parseRunCounts('Ran 4 tests in 0.01s\nFAILED (skipped=4)\n')).toBeNull();
+  });
+});
+
+describe('partitionWorkspaceFiles — the tab strip shows the task, not the toolchain (2026-08-18)', () => {
+  it('model paths lead in manifest order; infra goes behind the overflow', () => {
+    const files = [
+      'package-lock.json', 'package.json', 'src/limiter.ts', 'src/types.ts',
+      'tests/limiter.test.ts', 'tsconfig.json', 'vitest.config.ts',
+    ];
+    const { primary, infra } = partitionWorkspaceFiles(files, ['src/limiter.ts']);
+    expect(primary).toEqual(['src/limiter.ts', 'src/types.ts', 'tests/limiter.test.ts']);
+    expect(infra).toEqual(['package-lock.json', 'package.json', 'tsconfig.json', 'vitest.config.ts']);
+  });
+
+  it('a tidy python round is untouched — nothing demoted, model file first', () => {
+    const files = ['test_traffic_window.py', 'traffic_window.py'];
+    const { primary, infra } = partitionWorkspaceFiles(files, ['traffic_window.py']);
+    expect(primary).toEqual(['traffic_window.py', 'test_traffic_window.py']);
+    expect(infra).toEqual([]);
+  });
+
+  it('a model path not on disk is skipped, never invented', () => {
+    const { primary } = partitionWorkspaceFiles(['solution.py'], ['./solution.py', 'ghost.py']);
+    expect(primary).toEqual(['solution.py']);
+  });
+
+  it('an unknown config flavor fails open as a primary tab — one extra tab, never a lost file', () => {
+    const { primary, infra } = partitionWorkspaceFiles(['weird.config.mjs', 'solution.py'], []);
+    expect(primary).toContain('weird.config.mjs');
+    expect(infra).toEqual([]);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clientScript, sessionPage } from './chrome.js';
+import { clientScript, sessionPage, statementHtml } from './chrome.js';
 
 /**
  * The client script has no build step and no module loader, so a syntax
@@ -455,5 +455,19 @@ describe('the header holds one line (2026-08-16 — the TTS pump)', () => {
     // Width, not just height: the chip swaps on every speech segment, and
     // its width change walked the right-side button cluster back and forth.
     expect(html).toContain('header #voicechip { min-width: 18ch; }');
+  });
+});
+
+describe('panes statement + markdown affordances (2026-08-18)', () => {
+  it('backticked spans in the statement render as code, everything else stays escaped', () => {
+    const html = statementHtml('Implement `busiest_window(log)` — return <b>the</b> count.');
+    expect(html).toContain('<code>busiest_window(log)</code>');
+    expect(html).toContain('&lt;b&gt;the&lt;/b&gt;'); // injection stays escaped
+  });
+
+  it('the panes page ships the md preview pane and its styles', () => {
+    const html = sessionPage('sess-test', { surface: 'panes', statement: 'x' });
+    expect(html).toContain('<div id="mdpreview"></div>');
+    expect(html).toContain('#tabs button.mdtoggle');
   });
 });

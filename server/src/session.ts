@@ -45,7 +45,7 @@ import { describeStuck, detectStuck, type StuckState } from './stuck.js';
 import { describeAdrift, describeWarm, detectAdrift, regionContainsAnswer } from './adrift.js';
 import { assessAgenda, renderAgenda } from './agenda.js';
 import { CLOSING_TOPIC, WRAP_UP_QUESTIONS, countsAsWrapQuestion, detectWrapSignal, renderWrapState, selectWrapTopic, shouldAutoFinalize } from './wrapup.js';
-import { isModelPath, listWorkspaceFiles, parseRunCounts, runGuard, safeWorkspacePath, shadowsTestRunner, summarizeTail } from './panes.js';
+import { isModelPath, listWorkspaceFiles, parseRunCounts, partitionWorkspaceFiles, runGuard, safeWorkspacePath, shadowsTestRunner, summarizeTail } from './panes.js';
 import { isAnswerToPendingQuestion, isCorrectionFollowUp, isExplicitAsk } from './addressing.js';
 import { decideAck } from './ack.js';
 import { renderWorkspaceView, selectRecentlyEdited, snapshotWorkspace } from './workspace-view.js';
@@ -1677,8 +1677,15 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     // route emits test_run, and the server owns every seq (emitChrome) so
     // client events can never collide with interviewer/sensor seqs.
     if (url === '/api/files' && req.method === 'GET') {
+      // `files` stays the full flat list (client back-compat); primary/infra
+      // partition the tab strip and `model` drives per-file defaults (the
+      // md preview opens rendered for docs, as source for files the
+      // candidate is meant to write). See partitionWorkspaceFiles.
+      const files = listWorkspaceFiles(cfg.problemDir);
+      const model = (problem.model_paths ?? []).map((m) => m.replace(/^\.\//, ''));
+      const { primary, infra } = partitionWorkspaceFiles(files, model);
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ files: listWorkspaceFiles(cfg.problemDir) }));
+      return res.end(JSON.stringify({ files, primary, infra, model }));
     }
     if (url.startsWith('/api/file') && req.method === 'GET') {
       const rel = new URL(url, 'http://x').searchParams.get('path') ?? '';

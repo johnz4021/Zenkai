@@ -81,6 +81,14 @@ const DEFAULT_VIEW: SessionPageView = {
 const esc = (s: string) =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+/** The statement pane's one formatting concession: escaped first, then
+ *  backticked spans become <code>. Generators backtick identifiers despite
+ *  the plain-prose statement rules, and raw backticks read as typos to a
+ *  candidate under a clock. Exported for the pin test. */
+export function statementHtml(statement: string): string {
+  return esc(statement).replace(/`([^`\n]+)`/g, '<code>$1</code>');
+}
+
 /**
  * The panes main pane — HackerRank-classic layout: statement left, Monaco
  * center with file tabs, run/output panel bottom. Everything around it
@@ -89,10 +97,11 @@ const esc = (s: string) =>
  */
 function panesMain(view: SessionPageView): string {
   return /* html */ `<div id="panes">
-    <section id="statement"><h1>Problem</h1><div class="body">${esc(view.statement)}</div></section>
+    <section id="statement"><h1>Problem</h1><div class="body">${statementHtml(view.statement)}</div></section>
     <section id="work">
       <div id="tabs"></div>
       <div id="editor"></div>
+      <div id="mdpreview"></div>
       <div id="testpanel">
         <div id="testbar"><span class="lbl">test results</span><span id="runstate"></span></div>
         <pre id="runout"></pre>
@@ -254,6 +263,19 @@ ${view.analytics ? view.analytics + '\n' : ''}<style>
   #statement { width: 34%; min-width: 260px; max-width: 480px; overflow-y: auto; padding: 16px 18px; border-right: 1px solid var(--line); }
   #statement h1 { font-family: var(--mono); font-size: 11px; font-weight: normal; color: var(--text-3); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 10px; }
   #statement .body { white-space: pre-wrap; line-height: 1.55; }
+  #statement .body code, #mdpreview code { font-family: var(--mono); font-size: .92em; background: var(--sunk); padding: 1px 5px; border-radius: 4px; }
+  /* Markdown preview: the read-side view for .md tabs (panes.js applyView
+     toggles it against #editor). Hidden until a markdown tab is active. */
+  #mdpreview { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 22px; display: none; line-height: 1.6; max-width: 72ch; }
+  #mdpreview h2, #mdpreview h3, #mdpreview h4 { margin: 18px 0 8px; line-height: 1.3; }
+  #mdpreview h2 { font-size: 17px; } #mdpreview h3 { font-size: 15px; } #mdpreview h4 { font-size: 13px; }
+  #mdpreview p { margin: 0 0 10px; } #mdpreview ul { margin: 0 0 10px; padding-left: 22px; }
+  #mdpreview pre { background: var(--sunk); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 0 0 12px; }
+  #mdpreview pre code { background: none; padding: 0; }
+  /* Tab-strip controls: the infra overflow and the md preview toggle are
+     controls, not files — quieter than tabs, and the toggle hugs the right. */
+  #tabs button.more { color: var(--text-3); }
+  #tabs button.mdtoggle { margin-left: auto; color: var(--steel-text); border-right: 0; border-left: 1px solid var(--line); }
   #work { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   #tabs { display: flex; border-bottom: 1px solid var(--line); overflow-x: auto; }
   #tabs button { background: none; border: 0; border-right: 1px solid var(--line); color: var(--text-2); padding: 7px 14px; font: 12px/1.45 var(--mono); cursor: pointer; white-space: nowrap; border-radius: 0; }

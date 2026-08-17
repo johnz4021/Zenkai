@@ -68,6 +68,41 @@ export function listWorkspaceFiles(rootDir: string): string[] {
 }
 
 /**
+ * Build-infrastructure files: real, legitimately readable, but never the
+ * candidate's task. Matched by basename against the ecosystem's OWN
+ * vocabulary (lockfiles, tool configs) — these are our generated repos, so
+ * the set is closed in practice. Pattern-not-list would fail open for a
+ * new config flavor, which costs one extra tab, not a lost file.
+ */
+const INFRA_FILE_RE =
+  /^(package(-lock)?\.json|yarn\.lock|pnpm-lock\.yaml|tsconfig[^/]*\.json|(vitest|jest|vite|babel)\.config\.[^/]+|\.eslintrc[^/]*|pyproject\.toml|setup\.(py|cfg)|requirements[^/]*\.txt|Makefile)$/;
+
+/**
+ * Split the tab strip into what the round is ABOUT and what merely ships
+ * with it. Why (owner report, 2026-08-18): the panes tab strip rendered
+ * every file as a co-equal alphabetical tab, so a TS one-shot opened with
+ * `package-lock.json` — a 46KB generated lockfile — sorted ahead of the
+ * solution, and `files[0]` (the initial open) could be a config file.
+ * Primary = manifest model_paths in manifest order, then every remaining
+ * non-infra file in listing order; infra keeps its files reachable behind
+ * the client's overflow control, never hidden outright — reading
+ * package.json is sometimes the right move.
+ */
+export function partitionWorkspaceFiles(
+  files: string[],
+  modelPaths: string[],
+): { primary: string[]; infra: string[] } {
+  const norm = (p: string) => p.replace(/^\.\//, '').replace(/\\/g, '/');
+  const isInfra = (f: string) => INFRA_FILE_RE.test(f.split('/').pop() ?? f);
+  const model = modelPaths.map(norm).filter((m) => files.includes(m));
+  const rest = files.filter((f) => !model.includes(f));
+  return {
+    primary: [...model, ...rest.filter((f) => !isInfra(f))],
+    infra: rest.filter(isInfra),
+  };
+}
+
+/**
  * Server-side enrichment for panes file_save events: the client stays dumb
  * and the server decides model-path membership, same division of labor as
  * the extension's save handler.
