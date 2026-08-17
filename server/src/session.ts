@@ -97,6 +97,10 @@ export interface SessionConfig {
   targetId?: string;
   /** The home app's origin (IP_APP_URL) — where "back to plan" points. */
   appUrl?: string;
+  /** Sample round (IP_SAMPLE=1): the full loop runs — interviewer, judge,
+   *  card — but finalize's ONE persist seam is skipped, so nothing lands in
+   *  the user's history, memory, or counts. See the seam in finalize. */
+  sample?: boolean;
   /** Called once the server is listening — the point after which this session
    *  really exists. The caller marks the problem used here, so a start that
    *  fails on the port check leaves the pool untouched. */
@@ -1290,11 +1294,21 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       },
     );
 
-    mkdirSync(path.join(cfg.repoRoot, 'assessments'), { recursive: true });
-    writeFileSync(
-      path.join(cfg.repoRoot, 'assessments', `${cfg.sessionId}.json`),
-      JSON.stringify(result, null, 2),
-    );
+    // THE PERSIST SEAM — the one gate between a judged round and durable
+    // state (owner call 2026-08-18, the sample-session design). A sample
+    // round runs the entire loop — interviewer, judge, card — but writes
+    // NOTHING here: no assessment file, no feedback file, no gap or topic
+    // deposit. Everything below that durably records the round must sit
+    // inside `persist`; anything added to finalize later that writes to
+    // disk belongs behind this same flag or it breaks the sample contract.
+    const persist = cfg.sample !== true;
+    if (persist) {
+      mkdirSync(path.join(cfg.repoRoot, 'assessments'), { recursive: true });
+      writeFileSync(
+        path.join(cfg.repoRoot, 'assessments', `${cfg.sessionId}.json`),
+        JSON.stringify(result, null, 2),
+      );
+    }
 
     let gapStore = loadStore(gapsDir, cfg.userId);
     // QA harness sessions run this same finalize with fabricated ids and
@@ -1302,7 +1316,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     // beat a prefix guard). Only ids shaped like a real mint deposit —
     // see isMemorableSessionId for the arms-race record.
     const realSession = isMemorableSessionId(cfg.sessionId);
-    if (result.status === 'assessed' && realSession) {
+    if (persist && result.status === 'assessed' && realSession) {
       // Unassessed writes NOTHING — a judge failure must not become history.
       const spec = resolveRoundSpec(problem);
       gapStore = recordAssessment(gapStore, result, spec.label, spec.memory_tags, cfg.targetId);
@@ -1340,6 +1354,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     const card = buildAssessmentCard(result, view, events, problem.planted_bug?.description, {
       interviewer: interviewer !== null,
     });
+    if (persist) {
     mkdirSync(path.join(cfg.repoRoot, 'feedback'), { recursive: true });
     writeFileSync(
       path.join(cfg.repoRoot, 'feedback', `${cfg.sessionId}.json`),
@@ -1361,6 +1376,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         2,
       ),
     );
+    }
 
     // The round's lifecycle record, mirrored (posthog.ts; the trace stays
     // authoritative). Plain capture, NOT captureAndWait: finalize's return
@@ -1374,6 +1390,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     }
     phSession.capture(cfg.userId, 'round_ended', {
       session_id: cfg.sessionId,
+      sample: cfg.sample === true,
       status: result.status,
       solved: result.status === 'assessed' ? (result.solved ?? null) : null,
       interviewer: interviewer !== null,

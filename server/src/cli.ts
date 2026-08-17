@@ -1074,6 +1074,7 @@ if (cmd === 'generate') {
     idePort: portEnv(process.env.IP_IDE_PORT, 3100),
     autorunTests: process.env.IP_AUTORUN_TESTS !== '0',
     prepareNext: process.env.IP_PREPARE_NEXT !== '0',
+    sample: process.env.IP_SAMPLE === '1',
     interviewer: process.env.IP_INTERVIEWER === '0' ? null : undefined,
     intentCheck: process.env.IP_INTERVIEWER === '0' ? null : undefined,
     voice: process.env.IP_VOICE !== '0',

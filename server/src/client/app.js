@@ -1304,6 +1304,16 @@ function renderPractice() {
           '</button>'
         : '<span></span>') +
       '</div></div>';
+    // The activation door: an instant, throwaway round for someone who has
+    // no idea yet what to type into the composer. Only while the composer is
+    // idle — mid-clarify it would be a distraction, and after their own
+    // round exists it has done its job.
+    if (state.sample_available && rep.phase === 'input' && !state.session_live) {
+      html += '<div class="sample-card" id="sample-card">' +
+        '<div class="grow"><div class="title">Not sure what to type? Try a sample round</div>' +
+        '<div class="metaline">a real problem with a live interviewer, ready instantly — nothing is saved, nothing counts against your rounds</div></div>' +
+        '<button type="button" id="sample-start">Try it →</button></div>';
+    }
     // Say what the button will DO before it does it — the whole point of
     // making this deliberate instead of asynchronous.
     if (returning && dirty) {
@@ -1541,6 +1551,23 @@ function renderRepWait() {
 }
 
 function wirePractice() {
+  const sampleBtn = el('sample-start');
+  if (sampleBtn) {
+    sampleBtn.addEventListener('click', async () => {
+      sampleBtn.disabled = true;
+      sampleBtn.textContent = 'starting…';
+      try {
+        const r = await fetch('/api/practice/sample', { method: 'POST' });
+        const b = await r.json();
+        if (b && b.url) { window.location.href = sessionHref(b.url); return; }
+        el('banner').innerHTML = '<div class="banner">' + esc((b && b.error) || 'could not start the sample') + '</div>';
+      } catch {
+        el('banner').innerHTML = '<div class="banner">could not start the sample — try again</div>';
+      }
+      sampleBtn.disabled = false;
+      sampleBtn.textContent = 'Try it →';
+    });
+  }
   const linktoggle = el('rep-linktoggle');
   if (linktoggle) linktoggle.addEventListener('click', (e) => {
     e.preventDefault();

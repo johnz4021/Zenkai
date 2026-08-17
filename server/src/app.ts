@@ -15,7 +15,7 @@
  * port 3200 (assertPortFree guards the double-launch case).
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -308,6 +308,40 @@ function attachmentBlocksFromDecoded(
  *  values ('repeat' joined them with practice-again, which must be countable
  *  separately from a first run); console scrollback is not a metric, a JSONL
  *  file is. */
+/** The demo round (IP_SAMPLE_REP): a hand-picked, already-generated rep
+ *  whose pristine archive seeds a throwaway per-launch copy. Absent or
+ *  unrestorable → the card never renders and the endpoint 404s. */
+const SAMPLE_REP_ID = process.env.IP_SAMPLE_REP ?? '';
+const SAMPLE_RUNS_DIR = '.sample-runs';
+const SAMPLE_RUNS_PER_DAY = 3;
+
+function sampleArchivePath(): string | null {
+  if (!SAMPLE_REP_ID) return null;
+  const archive = repProblemDir(repoRoot, SAMPLE_REP_ID) + '.pristine.tar.gz';
+  return existsSync(archive) ? archive : null;
+}
+
+/** Per-user sample throttle: nothing else caps a sample (no rep row, no
+ *  paywall round), and a free container + interviewer turns should not be
+ *  a loop anyone can run all day. Disk-derived like every count. */
+function sampleRunsToday(userId: string, nowMs: number): number {
+  try {
+    const rows = readFileSync(path.join(repoRoot, 'samples.jsonl'), 'utf8').split('\n');
+    const today = new Date(nowMs).toISOString().slice(0, 10);
+    let n = 0;
+    for (const line of rows) {
+      if (!line.trim()) continue;
+      try {
+        const r = JSON.parse(line) as { user_id?: string; ts?: string };
+        if (r.user_id === userId && (r.ts ?? '').startsWith(today)) n++;
+      } catch { /* torn tail */ }
+    }
+    return n;
+  } catch {
+    return 0;
+  }
+}
+
 function logLaunch(origin: unknown, sessionId: string, userId?: string): void {
   const o = origin === 'repeat' || origin === 'plans' || origin === 'practice' ? origin : 'unknown';
   try {
@@ -1013,6 +1047,13 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
     padding: 16px 18px 8px; font: inherit; font-size: 15px; line-height: 1.6;
   }
   #rep-paste::placeholder { color: var(--text-3); }
+  /* The sample-round card: quiet sibling of the composer — an exit for the
+     blank-page moment, never competing with the primary Generate action. */
+  .sample-card { display: flex; align-items: center; gap: 18px; border: 1px solid var(--line); border-radius: 8px; padding: 14px 18px; margin-top: 14px; background: var(--panel); }
+  .sample-card .title { font-size: 14px; color: var(--text-1); margin-bottom: 3px; }
+  .sample-card .grow { flex: 1; min-width: 0; }
+  .sample-card button { background: none; border: 1px solid var(--line); color: var(--text-1); padding: 7px 16px; font: inherit; cursor: pointer; border-radius: 6px; white-space: nowrap; }
+  .sample-card button:hover:not(:disabled) { border-color: var(--steel); color: var(--steel-text); }
   .composer-foot {
     display: flex; align-items: center; justify-content: space-between;
     gap: 12px; padding: 8px 10px 10px 18px;
@@ -1753,7 +1794,7 @@ export function runApp(cfg: AppConfig): http.Server {
   const multiLaunch = async (
     who: { id: string; admin: boolean },
     problemDirArg: string,
-    opts?: { ignoreEndedOnSameDir?: boolean; beforeSpawn?: () => void },
+    opts?: { ignoreEndedOnSameDir?: boolean; beforeSpawn?: () => void; extraEnv?: Record<string, string> },
   ): Promise<{ code: number; body: Record<string, unknown> }> => {
     await reconcileRegistryNow();
     let result: { code: number; body: Record<string, unknown> } = {
@@ -1805,6 +1846,7 @@ export function runApp(cfg: AppConfig): http.Server {
         ...(internalHeaders['x-ip-internal']
           ? { IP_INTERNAL_TOKEN: internalHeaders['x-ip-internal'] }
           : {}),
+        ...(opts?.extraEnv ?? {}),
       });
       reg.entries.push({
         sid, user_id: who.id, port: slot.port, ide_port: slot.idePort,
@@ -2377,6 +2419,7 @@ export function runApp(cfg: AppConfig): http.Server {
           today: new Date(now).toISOString(),
           session_live: live,
           session_url: sessionUrl,
+          sample_available: sampleArchivePath() !== null && cfg.pub.multiSession,
           user: { id: user!.id, email: user!.email, admin: user!.admin },
           // Served, never hardcoded in markup: contact.ts owns the address, so
           // changing it is one edit and the mailto can never drift from the
@@ -2951,6 +2994,59 @@ export function runApp(cfg: AppConfig): http.Server {
         console.log(`[app] rep ${rep.id} requested (${rep.spec.label})`);
         spawnRepBuild(rep);
         return json(200, { ok: true, rep_id: rep.id });
+      }
+      if (url === '/api/practice/sample' && req.method === 'POST') {
+        // The activation door (owner call 2026-08-18): a hand-picked round,
+        // launched instantly from its pristine archive into a THROWAWAY
+        // copy, run as a completely normal session except for the one
+        // persist seam (session.ts finalize) — full loop, no history, no
+        // counts. Deliberately no paywall gate and no admission checks:
+        // there is no rep row for them to count, and the sample exists to
+        // earn the signup, not to spend it.
+        const archive = sampleArchivePath();
+        if (!archive) return json(404, { error: 'no sample round is configured' });
+        if (!cfg.pub.multiSession) return json(409, { error: 'sample rounds need multi-session mode' });
+        if (sampleRunsToday(user!.id, Date.now()) >= SAMPLE_RUNS_PER_DAY) {
+          return json(429, { error: "you've taken the sample a few times today — describe your own round instead, that's the real thing" });
+        }
+        // Throwaway copy per launch: sessions edit their dir in place, so
+        // two people sampling at once must never share one. Old copies are
+        // swept here (>24h) — launch-time is the one moment this dir is
+        // guaranteed to matter to someone.
+        const runsRoot = path.join(repoRoot, SAMPLE_RUNS_DIR);
+        mkdirSync(runsRoot, { recursive: true });
+        try {
+          for (const e of readdirSync(runsRoot)) {
+            const p = path.join(runsRoot, e);
+            try {
+              if (Date.now() - statSync(p).mtimeMs > 24 * 3600_000) rmSync(p, { recursive: true, force: true });
+            } catch { /* sweep is best-effort */ }
+          }
+        } catch { /* sweep is best-effort */ }
+        const dir = path.join(runsRoot, `smp-${Date.now().toString(36)}`);
+        mkdirSync(dir, { recursive: true });
+        const x = spawnSync('tar', ['-xzf', archive, '-C', dir], { encoding: 'utf8' });
+        if (x.status !== 0) {
+          rmSync(dir, { recursive: true, force: true });
+          console.error(`[sample] pristine extract failed: ${(x.stderr ?? '').slice(0, 200)}`);
+          return json(500, { error: 'could not prepare the sample round — try again in a minute' });
+        }
+        const out = await multiLaunch({ id: user!.id, admin: user!.admin }, dir, {
+          extraEnv: { IP_SAMPLE: '1' },
+        });
+        if (out.code === 200) {
+          try {
+            appendFileSync(
+              path.join(repoRoot, 'samples.jsonl'),
+              JSON.stringify({ ts: new Date().toISOString(), user_id: user!.id, session_id: out.body.session_id }) + '\n',
+            );
+          } catch { /* throttle row is best-effort */ }
+          logLaunch('sample', String(out.body.session_id), user!.id);
+          console.log(`[app] sample round launching as ${String(out.body.session_id)}`);
+        } else {
+          rmSync(dir, { recursive: true, force: true });
+        }
+        return json(out.code, out.body);
       }
       if (url === '/api/practice/launch' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { rep_id?: string; origin?: string };
