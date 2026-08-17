@@ -152,8 +152,17 @@ export function isAnswerToPendingQuestion(
       return false; // not the FIRST words since the question — the gate decides
     }
     if (e.type !== 'interviewer') continue;
-    const p = e.payload as { kind?: string; text?: string; nudge?: boolean } | null;
+    const p = e.payload as {
+      kind?: string;
+      text?: string;
+      nudge?: boolean;
+      governed?: boolean;
+    } | null;
     if (p?.kind === 'ack' || p?.kind === 'time') continue;
+    // A governed turn leaked its '?' past the question-budget order — it
+    // must not open a pending window, or one leak restarts the
+    // interrogation loop the governor exists to stop (2026-08-17 review).
+    if (p?.governed === true) return false;
     const asked =
       p?.kind === 'probe' ||
       p?.kind === 'pressure' ||

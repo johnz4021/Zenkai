@@ -99,9 +99,19 @@ downstream.
 
 ## 2. Routing: who was that addressed to?
 
-Every utterance goes through `routeUtterance` the moment it lands —
-classification runs *outside* the reply lock, so narration never delays a
-real question behind a busy interviewer.
+**Voice routes per human turn, not per VAD segment** (`endpoint.ts`): the
+`SpeechTurnBuffer` holds while any segment is open (the relay's
+`onSpeechStart` hook says the candidate's mouth is open) and flushes only
+after `SPEECH_SETTLE_MS` (2.5s) of full silence — a dangling segment
+releases after `STALE_OPEN_MS` (30s). Segments join in order into one
+routed turn, so the classifiers judge a complete thought and the gate runs
+once per thought, not per breath. Trace fidelity is untouched — utterance
+events still land per segment, stamped at speech start. Text routes
+immediately; a typed message is already a complete turn.
+
+Every routed turn goes through `routeUtterance` — classification runs
+*outside* the reply lock, so narration never delays a real question behind
+a busy interviewer.
 
 Three deterministic fast paths run first. Each is deliberately narrow, and
 each errs toward the model: a miss falls to the LLM gate, never to the
@@ -154,6 +164,15 @@ privately — the planted bug's ground truth. The evaluation **agenda**
 reply's job is the answer, and agenda-on-replies once bolted the same
 follow-up question onto three consecutive replies in 43 seconds.
 
+Before dispatch, the **question-density governor** checks
+`questionStreak(events)`: when the last `QUESTION_STREAK_LIMIT` (2)
+consecutive turns ended with questions, a non-wrap turn's prompt is ordered
+to give — answer, observe, confirm — and end with a period. If the model
+leaks a `?` anyway, the turn is emitted with `governed: true` and
+`isAnswerToPendingQuestion` refuses to treat it as pending — one leaked
+question must not restart the interrogation loop. Wrap turns are exempt;
+their job is questions.
+
 The model returns `{say, kind, nudge}`. Two things stand between that and
 the candidate:
 
@@ -198,9 +217,14 @@ In order:
    to three evaluation questions chosen from the agenda's gaps
    (`selectWrapTopic`: reflect → approach → clarify-inverse → verify, then
    depth questions), then delivers the closing: one specific
-   acknowledgment, and "that's everything from me — end whenever you're
-   ready." After the closing the interviewer stays silent unless directly
-   asked.
+   acknowledgment and a sign-off. After the closing the interviewer stays
+   silent unless directly asked — and once the closing has stood unanswered
+   for `WRAP_FINALIZE_QUIET_MS` (45s of no speech and no turns), the
+   session announces once and runs the *same* finalize path as the End
+   button (the time-cap grace sequence). The interviewer owns the ending
+   (owner call 2026-08-17, superseding the original verbal-only decision);
+   the End button remains a graded path, no longer the only one. Any
+   post-closing question or sound resets the grace.
    **Reply-carried questions:** while the phase is open, every *reply* also
    carries the next evaluation question as a first-class assignment
    ("answer what they said, briefly, then ask"), and it counts only if the
@@ -261,10 +285,10 @@ clocks — they never delay or replace a real turn.
 
 ## 7. The ending
 
-Three ways a session ends: the End button (the one graded path), the hard
-time cap (anchored to candidate arrival, with a grace period before
-server-side finalize), or a one-shot Submit (which is also the round's
-single graded run). Finalize closes the voice session (frames from a
+Four ways a session ends: the End button, the wrap-up's auto-finalize
+grace (above), the hard time cap (anchored to candidate arrival, with a
+grace period before server-side finalize), or a one-shot Submit (which is
+also the round's single graded run). Finalize closes the voice session (frames from a
 still-open tab must not append phantom utterances to an ended trace), then
 hands the trace to the judge — where `solved` is derived from the graded
 run on one-shot rounds, dimension clamps follow the surface, and the
@@ -276,6 +300,10 @@ feedback card renders from verified citations. From there on it's
 | Constant | Value | What it paces |
 | --- | --- | --- |
 | `SETTLE_MS` | 600ms | merge stragglers before a reply |
+| `SPEECH_SETTLE_MS` | 2.5s | silence before a voice turn routes (endpoint.ts) |
+| `STALE_OPEN_MS` | 30s | a dangling VAD segment stops holding the buffer |
+| `QUESTION_STREAK_LIMIT` | 2 | question-ended turns before the governor trips |
+| `WRAP_FINALIZE_QUIET_MS` | 45s | unanswered closing before auto-finalize |
 | `PRESSURE_TICK_MS` | 30s | the initiative tick itself |
 | `ANY_TURN_GUARD_MS` | 60s | anti-stacking for lanes below wrap/urgent |
 | `SCAFFOLD_FLOOR_MS` | 90s | stuck/adrift after the last exchange |
@@ -314,10 +342,11 @@ feedback card renders from verified citations. From there on it's
   substance floor and the 60s window.
 - **sess-1786948725100** — a slow speaker's clause-sized segments each
   cleared the floor; 10 of 12 turns ended in questions; the candidate quit
-  at 5.4 minutes without ever running the suite. Open at time of writing —
-  proposed: speech-aware settle (reply only after real silence), a
-  once-per-exchange claim on the answer fast path, a question-density
-  governor, a gate carve-out for fillers, and respect for "don't tell me".
+  at 5.4 minutes without ever running the suite. Resolved by the
+  turn-taking pass (2026-08-17): speech endpointing (`endpoint.ts` — the
+  missing primitive both architecture reviews named), the question-density
+  governor with its non-re-arming backstop, the gate's filler carve-out,
+  the hold-off rule, and the wrap auto-finalize grace.
 
 The through-line of every incident: deterministic paths are reserved for
 shapes where precision is near-certain (our own vocabulary, event

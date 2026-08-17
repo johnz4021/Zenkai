@@ -15,6 +15,8 @@ import {
   stuckVocabOf,
   parseTurn,
   parseIntentVerdict,
+  questionStreak,
+  QUESTION_STREAK_LIMIT,
   render,
   renderActivity,
   buildTranscript,
@@ -744,5 +746,32 @@ describe('parseIntentVerdict — three-way gate, fail-toward-silence', () => {
   it('anything unrecognized is silent — the binary gate bias survives', () => {
     expect(parseIntentVerdict('')).toBe('silent');
     expect(parseIntentVerdict('maybe?')).toBe('silent');
+  });
+});
+
+describe('questionStreak — the governor\'s mechanical half (2026-08-17)', () => {
+  const iv = (text: string, kind = 'probe'): TraceEvent =>
+    ({ session_id: 's', user_id: 'u', source: 'chrome', seq: 0, ts: 0, type: 'interviewer', payload: { text, kind, nudge: false } }) as TraceEvent;
+  const utt = (text: string): TraceEvent =>
+    ({ session_id: 's', user_id: 'u', source: 'chrome', seq: 0, ts: 0, type: 'utterance', payload: { text, via: 'voice' } }) as TraceEvent;
+
+  it('counts consecutive question-ended turns from the tail', () => {
+    const events = [iv('Start here.', 'answer'), iv('Why?'), utt('because'), iv('And then?')];
+    expect(questionStreak(events)).toBe(2);
+  });
+
+  it('a statement turn resets the streak', () => {
+    const events = [iv('Why?'), iv('Right — that matches.', 'answer'), iv('What next?')];
+    expect(questionStreak(events)).toBe(1);
+  });
+
+  it('acks and time announcements neither ask nor break the streak', () => {
+    const events = [iv('Why?'), iv('Mm-hm.', 'ack'), iv('5 minutes remaining.', 'time'), iv('And then?')];
+    expect(questionStreak(events)).toBe(2);
+  });
+
+  it('the sess-1786948725100 shape trips the limit fast', () => {
+    const events = [iv('Walk it through: does 10+5=15 include 20?'), utt('no'), iv("What's your rule for the far edge?")];
+    expect(questionStreak(events)).toBeGreaterThanOrEqual(QUESTION_STREAK_LIMIT);
   });
 });

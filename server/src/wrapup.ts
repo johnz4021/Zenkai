@@ -12,9 +12,15 @@
  * wrap-up is where a real interview actually evaluates — and it did not
  * exist.
  *
- * The ending is verbal only (decided): the interviewer signs off and tells
- * the candidate to end the session whenever they're ready. The End button
- * stays the one graded path; nothing here touches /api/end.
+ * The ending was verbal-only at first (decided): sign off, tell them to
+ * end whenever ready, End button the one graded path. SUPERSEDED (owner
+ * call 2026-08-17): three sessions of the interviewer signing off into
+ * dead air showed the abdication reads as the same inactivity the module
+ * was built to kill. After the closing stands unanswered for
+ * WRAP_FINALIZE_QUIET_MS, the session announces once and runs the SAME
+ * finalize path as the End button (shouldAutoFinalize below; wired in
+ * session.ts's tick, mirroring the time-cap grace). The End button
+ * remains a graded path — just no longer the only one.
  *
  * Pure and stateless over the trace (detector convention).
  */
@@ -210,4 +216,26 @@ export function renderWrapState(
  *  — their whole job is the question. */
 export function countsAsWrapQuestion(say: string): boolean {
   return say.includes('?');
+}
+
+/** How long the closing must stand unanswered before the session ends
+ *  itself. Long enough for "oh wait, one more thing"; short enough that
+ *  the sign-off doesn't decay into the dead air it replaced. */
+export const WRAP_FINALIZE_QUIET_MS = 45_000;
+
+/**
+ * After the closing, is it time to end the round for them? True when the
+ * closing AND everything since — any interviewer turn, any speech
+ * (untranscribed included; sound is presence) — has stood quiet for
+ * WRAP_FINALIZE_QUIET_MS. Any activity resets the grace: a post-closing
+ * question gets its answer and the clock starts over.
+ */
+export function shouldAutoFinalize(
+  wrapClosedAt: number,
+  lastInterviewerTs: number,
+  lastSpeechTs: number,
+  nowMs: number,
+): boolean {
+  const lastActivity = Math.max(wrapClosedAt, lastInterviewerTs, lastSpeechTs);
+  return nowMs - lastActivity >= WRAP_FINALIZE_QUIET_MS;
 }

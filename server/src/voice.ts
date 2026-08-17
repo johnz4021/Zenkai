@@ -102,6 +102,14 @@ export interface VoiceHooks {
    * labels. This is the mechanism behind the two-sensor contamination split.
    */
   emitUtterance(text: string, speechStartTs: number): void;
+  /**
+   * A VAD segment just opened — the candidate is talking RIGHT NOW. The
+   * endpointing buffer (endpoint.ts) holds routing on this signal; without
+   * it the session only learns about speech when the transcript lands,
+   * seconds late, and replies barge into the next clause. Optional so
+   * tests and non-endpointing callers need no stub.
+   */
+  onSpeechStart?(ts: number): void;
 }
 
 export interface VoiceConfig {
@@ -184,6 +192,7 @@ export class VoiceRuntime extends EventEmitter {
         // happened — flush it as untranscribed before starting the next.
         this.flushUntranscribed();
         this.health.speech_starts += 1;
+        this.hooks.onSpeechStart?.(msg.ts);
         this.currentSpeechStart = msg.ts;
         this.partial = '';
         // FRESH upstream session per segment. Measured live: a long-lived

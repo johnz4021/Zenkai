@@ -196,6 +196,10 @@ export interface InterviewerContext {
    *  to answer. The ENGAGE prompt rules apply — react briefly to the
    *  content, or stay silent. */
   narrationEngage?: boolean;
+  /** questionStreak() at dispatch, when it tripped the governor: the last
+   *  N turns all asked. The {{QUESTION_BUDGET}} slot orders this turn to
+   *  give, not ask. Never set on wrap turns — their job is questions. */
+  questionStreak?: number;
 }
 
 export type Interviewer = (ctx: InterviewerContext) => Promise<InterviewerTurn>;
@@ -231,6 +235,32 @@ export type IntentCheck = (
    *  unreadable as a lone fragment. */
   recent?: { who: 'candidate' | 'interviewer'; text: string }[],
 ) => Promise<IntentVerdict>;
+
+/** Governor trip point: this many consecutive question-ended turns and
+ *  the next one is ordered to give, not ask. */
+export const QUESTION_STREAK_LIMIT = 2;
+
+/**
+ * How many consecutive recent interviewer turns asked a question. The
+ * question-density governor's mechanical half (2026-08-17 review): in
+ * sess-1786948725100 ten of twelve turns ended in '?', and every one
+ * re-armed the pending-answer window — an interrogation loop no prompt
+ * rule alone can stop, because one leaked question restarts it. Acks and
+ * time announcements neither ask nor break the streak (content-free by
+ * design — the addressing.ts precedent). Pure over the trace.
+ */
+export function questionStreak(events: TraceEvent[]): number {
+  let streak = 0;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type !== 'interviewer') continue;
+    const p = e.payload as { kind?: string; text?: string } | null;
+    if (p?.kind === 'ack' || p?.kind === 'time') continue;
+    if (String(p?.text ?? '').includes('?')) streak += 1;
+    else break;
+  }
+  return streak;
+}
 
 /** The model replies with one word; anything unrecognized is 'silent' —
  *  the same fail-toward-silence bias as the binary gate. Pure, exported
@@ -635,6 +665,9 @@ export function render(template: string, ctx: InterviewerContext): string {
     ENGAGE: ctx.narrationEngage
       ? 'ENGAGE — the message below was NOT addressed to you; they are thinking aloud and just completed a substantive thought. Follow the engage rules above: one brief reaction to its content, or silence.'
       : 'no',
+    QUESTION_BUDGET: ctx.questionStreak
+      ? `SPENT — you have ended your last ${ctx.questionStreak} turns with questions. This turn: answer, observe, or confirm — and STOP. Do not ask anything. A run of questions stops being an interview and becomes an interrogation.`
+      : 'available.',
     STUCK: ctx.stuckObservation
       ? `STUCK — ${ctx.stuckObservation} Follow the stuck rules above: one move, their vocabulary only, nudge true.`
       : 'no',
@@ -823,12 +856,12 @@ const INTENT_PROMPT = (
     '- a fragment that COMPLETES a question begun in the lines above',
     '- checks a shared assumption ("we are meant to fix only src, right?")',
     '- the interviewer\'s MOST RECENT turn above asked a question or gave a',
-    '  directive, and this utterance engages with it — even partially, even',
-    '  a bare "yes" or "no". Answering the question you were just asked is',
-    '  addressed however short it is. But an utterance that ignores the',
-    '  question and returns to working ("okay, so if I loop here...") is',
-    '  thinking aloud again — the question does not convert everything said',
-    '  after it.',
+    '  directive, and this utterance ANSWERS it — a bare "yes" or "no"',
+    '  counts. But a filler or false start alone ("Um...", "Uh, okay...")',
+    '  is NOT an answer even right after a question — the answer is coming;',
+    '  wait for it. And an utterance that ignores the question and returns',
+    '  to working ("okay, so if I loop here...") is thinking aloud again —',
+    '  the question does not convert everything said after it.',
     '',
     'NOT ADDRESSED (answer no) — thinking out loud:',
     '- a RHETORICAL SELF-QUESTION they are working through themselves',

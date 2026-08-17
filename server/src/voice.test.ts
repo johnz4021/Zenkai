@@ -361,3 +361,25 @@ describe('junk-segment filter (live finding: language-detection noise)', () => {
     expect(h.utterances).toEqual([{ text: 'ok', ts: 1_000 }]);
   });
 });
+
+describe('onSpeechStart hook — the endpointing signal (2026-08-17)', () => {
+  it('fires at segment open with the browser timestamp, before any transcript exists', () => {
+    const starts: number[] = [];
+    const h = hooks();
+    (h as VoiceHooks).onSpeechStart = (ts) => starts.push(ts);
+    const up = fakeUpstream();
+    const rt = new VoiceRuntime({ apiKey: 'test', upstreamFactory: () => up }, h);
+    rt.handleClientMessage({ type: 'speech_start', ts: 1_000 });
+    expect(starts).toEqual([1_000]);
+    rt.handleClientMessage({ type: 'speech_end', ts: 2_000 });
+    rt.handleClientMessage({ type: 'speech_start', ts: 5_000 });
+    expect(starts).toEqual([1_000, 5_000]);
+  });
+
+  it('is optional — a hooks object without it changes nothing', () => {
+    const { rt, h } = runtime();
+    rt.handleClientMessage({ type: 'speech_start', ts: 1_000 });
+    rt.handleClientMessage({ type: 'speech_end', ts: 2_000 });
+    expect(h.sensors.length).toBeGreaterThanOrEqual(0); // no throw is the assertion
+  });
+});

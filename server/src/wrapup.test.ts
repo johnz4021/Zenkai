@@ -11,6 +11,8 @@ import {
   WRAP_GREEN_DELAY_MS,
   WRAP_UP_QUESTIONS,
   countsAsWrapQuestion,
+  WRAP_FINALIZE_QUIET_MS,
+  shouldAutoFinalize,
   detectWrapSignal,
   isDonePhrase,
   renderWrapState,
@@ -162,5 +164,25 @@ describe('reply-carried wrap questions (the lane paces on silence; replies carry
   it('countsAsWrapQuestion is mechanical: the turn must actually ask', () => {
     expect(countsAsWrapQuestion('Good — why did that pass?')).toBe(true);
     expect(countsAsWrapQuestion('Understood, that matches what I saw.')).toBe(false);
+  });
+});
+
+describe('shouldAutoFinalize — the interviewer owns the ending (owner call 2026-08-17)', () => {
+  const C = T0; // closing spoke here
+  it('fires only after the full quiet window past ALL activity', () => {
+    expect(shouldAutoFinalize(C, C, 0, C + WRAP_FINALIZE_QUIET_MS - 1_000)).toBe(false);
+    expect(shouldAutoFinalize(C, C, 0, C + WRAP_FINALIZE_QUIET_MS)).toBe(true);
+  });
+
+  it('any candidate speech resets the grace — even untranscribed sound counts', () => {
+    const spoke = C + 20_000;
+    expect(shouldAutoFinalize(C, C, spoke, C + WRAP_FINALIZE_QUIET_MS + 5_000)).toBe(false);
+    expect(shouldAutoFinalize(C, C, spoke, spoke + WRAP_FINALIZE_QUIET_MS)).toBe(true);
+  });
+
+  it('a post-closing answer resets it too — the question gets its reply first', () => {
+    const replied = C + 30_000;
+    expect(shouldAutoFinalize(C, replied, C + 25_000, C + WRAP_FINALIZE_QUIET_MS + 10_000)).toBe(false);
+    expect(shouldAutoFinalize(C, replied, C + 25_000, replied + WRAP_FINALIZE_QUIET_MS)).toBe(true);
   });
 });

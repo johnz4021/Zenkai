@@ -44,22 +44,25 @@ import { injectWorkbenchDefaults } from './workbench-inject.js';
 import { describeStuck, detectStuck, type StuckState } from './stuck.js';
 import { describeAdrift, describeWarm, detectAdrift, regionContainsAnswer } from './adrift.js';
 import { assessAgenda, renderAgenda } from './agenda.js';
-import { CLOSING_TOPIC, WRAP_UP_QUESTIONS, countsAsWrapQuestion, detectWrapSignal, renderWrapState, selectWrapTopic } from './wrapup.js';
+import { CLOSING_TOPIC, WRAP_UP_QUESTIONS, countsAsWrapQuestion, detectWrapSignal, renderWrapState, selectWrapTopic, shouldAutoFinalize } from './wrapup.js';
 import { isModelPath, listWorkspaceFiles, parseRunCounts, runGuard, safeWorkspacePath, shadowsTestRunner, summarizeTail } from './panes.js';
 import { isAnswerToPendingQuestion, isCorrectionFollowUp, isExplicitAsk } from './addressing.js';
 import { decideAck } from './ack.js';
 import { renderWorkspaceView, selectRecentlyEdited, snapshotWorkspace } from './workspace-view.js';
 import { codebaseViewOf, focusViewOf, namedOutOfContextFiles, toRel } from './problem-view.js';
 import { detectMoment, detectUrgentMoment } from './moments.js';
+import { SpeechTurnBuffer } from './endpoint.js';
 import { extractSection, loadBlueprint } from './blueprint.js';
 import { TraceStore } from './trace-store.js';
 import {
+  QUESTION_STREAK_LIMIT,
   TurnQueue,
   buildTranscript,
   candidateVisitedBugFile,
   interviewerGroundTruth,
   pickIntentCheck,
   pickInterviewer,
+  questionStreak,
   renderActivity,
   type IntentCheck,
   type Interviewer,
@@ -700,6 +703,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   let wrapUpAt: number | null = null;
   let wrapQuestionsAsked = 0;
   let wrapClosed = false;
+  // When the closing SPOKE — the auto-finalize grace anchors here
+  // (wrapup.ts shouldAutoFinalize; owner call 2026-08-17).
+  let wrapClosedAt: number | null = null;
   let lastWarmTs = 0;
   // Engagement lane: burned only when an engage turn actually SPEAKS (the
   // adrift-budget lesson — a silent composition must not spend the slot).
@@ -828,6 +834,12 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   } else if (voiceOffReason === 'disabled') {
     console.log('[session] voice OFF — IP_VOICE=0 for this session');
   }
+  // Endpointing (endpoint.ts): voice utterances are TRACED per segment as
+  // ever, but ROUTED once per human turn — the buffer holds while the
+  // candidate is still talking and flushes after real silence. Routing per
+  // VAD breath is how the interviewer answered a slow speaker clause by
+  // clause (sess-1786948725100). Text keeps routing immediately.
+  const speechBuffer = new SpeechTurnBuffer();
   const voice = voiceEnabled
     ? new VoiceRuntime(
         {
@@ -837,17 +849,27 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         {
           emitSensor: (sensor, state, reason) =>
             store.emitChrome('sensor', { sensor, state, reason }),
+          onSpeechStart: (ts) => speechBuffer.speechStarted(ts),
           emitUtterance: (text, speechStartTs) => {
             store.emitChrome(
               'utterance',
               { text, via: 'voice', ...(text ? {} : { untranscribed: true }), speech_start_ts: speechStartTs },
               speechStartTs, // stamped at SPEECH START, never transcript arrival
             );
-            routeUtterance(text); // intent check; narration stays silent
+            speechBuffer.push(text, Date.now()); // routes at flush, below
           },
         },
       )
     : null;
+  let endpointTimer: NodeJS.Timeout | null = null;
+  if (voice) {
+    endpointTimer = setInterval(() => {
+      if (speechBuffer.shouldFlush(Date.now())) {
+        routeUtterance(speechBuffer.flush());
+      }
+    }, 500);
+    endpointTimer.unref();
+  }
 
   /**
    * Settling window before a turn starts composing.
@@ -1007,6 +1029,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         wrapQuestionsAsked < WRAP_UP_QUESTIONS
           ? selectWrapTopic(assessAgenda(events, now, agendaCaps), wrapQuestionsAsked, roundSpec.check.kind)
           : null;
+      const streak = questionStreak(events);
+      const governed =
+        streak >= QUESTION_STREAK_LIMIT && wrapTopic === null && replyWrapTopic === null;
       // The eyes, per turn: the file under their eyes first (focus sensor),
       // then real diffs + test output. Cheap — a handful of reads.
       const focusView = focusViewOf(cfg.problemDir, events, now);
@@ -1093,6 +1118,10 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
                   : `WRAP-UP phase is active (all ${WRAP_UP_QUESTIONS} questions asked; the closing is coming). This turn is a reply — just answer.`
                 : undefined,
         narrationEngage: narrationEngage || undefined,
+        // Question-density governor (mechanical half): a streak of
+        // question-ended turns orders this one to give, not ask. Wrap
+        // turns are exempt — their whole job is the next question.
+        questionStreak: governed ? streak : undefined,
       });
       if (turn.redacted) {
         console.warn('[interviewer] leak guard fired — reply replaced');
@@ -1136,6 +1165,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // Count only turns that actually spoke; a silent wrap turn retries.
         if (wrapTopic === CLOSING_TOPIC) {
           wrapClosed = true;
+          wrapClosedAt = lastInterviewerTs;
           console.log('[wrapup] closed — interviewer signed off');
         } else {
           wrapQuestionsAsked++;
@@ -1158,6 +1188,10 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         ...(stuck ? { stuck: true } : {}),
         ...(wrapTopic !== null || wrapQuestionViaReply ? { wrap: true } : {}),
         ...(narrationEngage ? { engage: true } : {}),
+        // Non-re-arming backstop: a governed turn that leaked a '?' anyway
+        // must not open a pending-answer window — one leak restarts the
+        // interrogation loop (addressing.ts reads this flag).
+        ...(governed && turn.say.includes('?') ? { governed: true } : {}),
       });
       notifyTurn();
     } catch (e) {
@@ -1185,6 +1219,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     if (pressureTimer) clearInterval(pressureTimer);
     if (ackTimer) clearInterval(ackTimer);
     if (capTimer) clearInterval(capTimer);
+    if (endpointTimer) clearInterval(endpointTimer);
     voice?.close();
 
     // One-shot rounds are graded HERE, server-side: the suite runs once, at
@@ -1825,6 +1860,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         ended = true;
         if (pressureTimer) clearInterval(pressureTimer);
         if (capTimer) clearInterval(capTimer);
+        if (endpointTimer) clearInterval(endpointTimer);
         voice?.close();
         // Closed trace vocabulary: abandonment is a session_end with a flag,
         // not a new event type.
@@ -1978,8 +2014,6 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       // waits for a short speech-free window instead of talking over an
       // answer in progress.
       if (wrapUpAt !== null) {
-        if (wrapClosed) return;
-        if (now - lastInterviewerTs < WRAP_TURN_GUARD_MS) return;
         let lastSpeechTs = 0;
         for (let i = events.length - 1; i >= 0; i--) {
           if (events[i]!.type === 'utterance') {
@@ -1987,6 +2021,30 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
             break;
           }
         }
+        if (wrapClosed) {
+          // The interviewer owns the ending (owner call 2026-08-17,
+          // superseding wrapup.ts's verbal-only decision): a closing that
+          // stands unanswered runs the SAME finalize as the End button —
+          // announce once, then the time-cap grace sequence verbatim.
+          if (
+            wrapClosedAt !== null &&
+            shouldAutoFinalize(wrapClosedAt, lastInterviewerTs, lastSpeechTs, now)
+          ) {
+            ended = true;
+            store.emitChrome('interviewer', {
+              text: 'Wrapping up here — your feedback is on its way.',
+              kind: 'time',
+              nudge: false,
+            });
+            notifyTurn();
+            console.log('[wrapup] closing stood unanswered — auto-finalizing');
+            void finalize()
+              .then(() => setImmediate(teardownContainer))
+              .catch((err) => console.error('[session] wrap auto-finalize failed:', err));
+          }
+          return;
+        }
+        if (now - lastInterviewerTs < WRAP_TURN_GUARD_MS) return;
         if (now - lastSpeechTs < WRAP_CANDIDATE_QUIET_MS) return;
         const topic =
           wrapQuestionsAsked >= WRAP_UP_QUESTIONS

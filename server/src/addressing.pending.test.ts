@@ -158,3 +158,18 @@ describe('the substance floor — fragments never fast-path (sess-1786924315899)
     expect(PENDING_QUESTION_WINDOW_MS).toBe(60_000);
   });
 });
+
+describe('governed turns never arm the window (the non-re-arming backstop)', () => {
+  it('a governed turn that leaked a "?" does not pend — one leak must not restart the loop', () => {
+    const events = [
+      ev('interviewer', 0, { text: 'Fair — but which branch handles the far edge?', kind: 'probe', governed: true }),
+    ];
+    const answer = 'the second branch handles the far edge of the window there';
+    expect(isAnswerToPendingQuestion(answer, events, T0 + 10_000)).toBe(false);
+    // Same turn without the flag: pending as ever.
+    const ungoverned = [
+      ev('interviewer', 0, { text: 'Fair — but which branch handles the far edge?', kind: 'probe' }),
+    ];
+    expect(isAnswerToPendingQuestion(answer, ungoverned, T0 + 10_000)).toBe(true);
+  });
+});
