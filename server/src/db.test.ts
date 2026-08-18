@@ -68,3 +68,25 @@ describe('row builders', () => {
     });
   });
 });
+
+describe('contact mirror — write-only, latency is the point (owner call 2026-08-17)', () => {
+  it('posts contact rows to the contact table with upsert semantics', () => {
+    const calls: { url: string; body: unknown }[] = [];
+    const fetchImpl = ((url: string, init: { body: string }) => {
+      calls.push({ url, body: JSON.parse(init.body) });
+      return Promise.resolve({ ok: true } as Response);
+    }) as unknown as typeof fetch;
+    const db = makeDb({ url: 'https://x.supabase.co', serviceKey: 'k' }, fetchImpl);
+    db.mirrorContact([{
+      id: 'ct-1', user_id: 'u9', email: 'a@b.c', kind: 'bug',
+      message: 'the run button vanished', reply_to: null, created_at: '2026-08-17T00:00:00Z',
+    }]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toContain('/rest/v1/contact?on_conflict=id');
+    expect(calls[0]!.body).toEqual([expect.objectContaining({ id: 'ct-1', kind: 'bug' })]);
+  });
+
+  it('the noop db has the method — absent Supabase costs nothing', () => {
+    expect(() => makeDb(null).mirrorContact([])).not.toThrow();
+  });
+});

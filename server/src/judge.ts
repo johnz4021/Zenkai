@@ -98,16 +98,27 @@ export type JudgeResult = Assessment | Unassessed;
  *  rule as every other gate. clarify/approach stay judge-graded: they have
  *  non-verbal evidence (which files were read before the first edit). */
 const VERBAL_ONLY_DIMENSIONS: readonly DimensionKey[] = ['communicate', 'reflect'];
+/** Panes-solo adds these: with no interviewer AND no IDE, the only "evidence"
+ *  for clarify/approach is tab-switching — grading them is fabrication with
+ *  extra steps, and a fabricated 'weak' pollutes the memory that targets
+ *  future generation (owner decision 2026-08-16: the judge's reach equals
+ *  the trace's evidence). Solo IDE rounds keep them: file navigation and
+ *  terminal activity are real signal. */
+const PANES_BLIND_DIMENSIONS: readonly DimensionKey[] = ['clarify', 'approach'];
 export function clampSilentDimensions(
   result: JudgeResult,
-  opts: { hasInterviewer: boolean; utteranceCount: number },
+  opts: { hasInterviewer: boolean; utteranceCount: number; surface?: 'ide' | 'panes' },
 ): JudgeResult {
   if (result.status !== 'assessed') return result;
   if (opts.hasInterviewer || opts.utteranceCount > 0) return result;
+  const clamped: readonly DimensionKey[] =
+    opts.surface === 'panes'
+      ? [...VERBAL_ONLY_DIMENSIONS, ...PANES_BLIND_DIMENSIONS]
+      : VERBAL_ONLY_DIMENSIONS;
   return {
     ...result,
     dimensions: result.dimensions.map((d) =>
-      VERBAL_ONLY_DIMENSIONS.includes(d.dimension) && d.verdict !== 'unassessable'
+      clamped.includes(d.dimension) && d.verdict !== 'unassessable'
         ? {
             ...d,
             verdict: 'unassessable',
@@ -190,7 +201,37 @@ function firstBalancedArray(s: string): string | null {
   return null;
 }
 
-export function parseAssessmentOutput(raw: string): {
+/** The trace's own verdict on `solved`, when a run exists to carry one —
+ *  the graded submit run when present, else the last run of any kind.
+ *  Counts win when parseRunCounts landed them on the payload (untyped
+ *  spread — same cast as groundTruth and the timeline); a bare clean exit
+ *  is the fallback. `undefined` when nothing ever ran (review/no-run
+ *  rounds — nothing mechanical to stand on). */
+export function runSolvedFromTrace(events: TraceEvent[]): boolean | undefined {
+  const runs = events.filter((e) => e.type === 'test_run');
+  const last =
+    [...runs].reverse().find((e) => (e.payload as { via?: string })?.via === 'submit') ??
+    runs.at(-1);
+  if (!last) return undefined;
+  const p = last.payload as { passed?: number; total?: number; exit_code?: number | null };
+  if (typeof p.passed === 'number' && typeof p.total === 'number') {
+    return p.total > 0 && p.passed === p.total;
+  }
+  return p.exit_code === 0;
+}
+
+export function parseAssessmentOutput(
+  raw: string,
+  /** Evidence-scoped solved (owner decision 2026-08-16, TODOS #-984 class):
+   *  `fallback` fills a missing/invalid model field from the trace —
+   *  sess-1786901438316's judge wrote full analysis but dodged `solved` on a
+   *  partial 12/36 multi-part result, and the schema-strict throw turned a
+   *  machine-known score into an unassessed card. `override` (one-shot
+   *  rounds) makes the graded run authoritative regardless of what the
+   *  model said: the run IS the bar, and a model opinion on a machine-known
+   *  fact is a fabrication surface. */
+  solvedOpts?: { fallback?: boolean; override?: boolean },
+): {
   solved: boolean;
   summary: string;
   dimensions: { dimension: DimensionKey; verdict: Verdict; analysis: string; evidence: number[] }[];
@@ -227,6 +268,8 @@ export function parseAssessmentOutput(raw: string): {
       if (summary) o.summary = JSON.parse(summary[1]!) as string;
     }
   }
+  if (solvedOpts?.override !== undefined) o.solved = solvedOpts.override;
+  else if (typeof o.solved !== 'boolean' && solvedOpts?.fallback !== undefined) o.solved = solvedOpts.fallback;
   if (typeof o.solved !== 'boolean') throw new Error('missing/invalid solved');
   if (typeof o.summary !== 'string') throw new Error('missing/invalid summary');
   if (!Array.isArray(o.dimensions)) throw new Error('missing dimensions array');
@@ -372,7 +415,7 @@ const ASSESSMENT_TOOL = {
   input_schema: {
     type: 'object' as const,
     properties: {
-      solved: { type: 'boolean', description: 'Did the candidate solve the round — bug rounds: fixed the planted bug; build rounds: the final graded run passed.' },
+      solved: { type: 'boolean', description: 'Did the candidate solve the round — bug rounds: fixed the planted bug; build rounds: the final graded run passed. Multi-part sets: every part green = true, anything partial = false. Always emit; a partial result is false, never an omission.' },
       summary: { type: 'string', description: "2-3 sentences: the session's shape in plain language." },
       dimensions: {
         type: 'array',
@@ -601,9 +644,21 @@ export async function judgeSession(opts: JudgeSessionOptions): Promise<JudgeResu
     }
   }
 
+  // The authority ladder for `solved` (evidence-scoped judging, 2026-08-16):
+  // on one-shot rounds the graded submit run IS the bar, so the trace
+  // overrides whatever the model says; everywhere else the trace only fills
+  // an omitted field. No run at all → the strict schema contract stands.
+  const runSolved = runSolvedFromTrace(opts.events);
+  const solvedOpts =
+    runSolved === undefined
+      ? undefined
+      : spec?.capabilities.submit === 'one_shot'
+        ? { override: runSolved }
+        : { fallback: runSolved };
+
   let parsed: ReturnType<typeof parseAssessmentOutput>;
   try {
-    parsed = parseAssessmentOutput(raw);
+    parsed = parseAssessmentOutput(raw, solvedOpts);
   } catch (e) {
     // Two different failures hide here (learned from the gauntlet):
     //  - JSON SYNTAX slop (an unescaped quote) is STOCHASTIC — a rerun at
@@ -614,7 +669,7 @@ export async function judgeSession(opts: JudgeSessionOptions): Promise<JudgeResu
       let retryRaw = '';
       try {
         retryRaw = await picked.model(prompt);
-        parsed = parseAssessmentOutput(retryRaw);
+        parsed = parseAssessmentOutput(retryRaw, solvedOpts);
       } catch (e2) {
         return unassessed(`judge output unparseable twice: ${String(e2).slice(0, 200)}`, retryRaw || raw);
       }

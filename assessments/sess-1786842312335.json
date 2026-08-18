@@ -1,0 +1,57 @@
+{
+  "session_id": "sess-1786842312335",
+  "status": "assessed",
+  "judged_at": 1786910531818,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "c2c4526143c3",
+  "schema_version": 1,
+  "renderer_version": 3,
+  "expectations_used": {
+    "clarify": "Pins the expected behavior straight from the failing test — states what net_for should report for a charge refunded in two parts, and what the already-passing single-refund test proves — instead of asking what the ledger is for.",
+    "approach": "Names a mechanism before editing: that the refund path hands the ledger the charge's cumulative refunded total rather than the individual refund amount, not merely 'something in the refund code is wrong'.",
+    "communicate": "Reads the failing assertion out loud and works through the arithmetic it implies — a 10000 capture with 6000 and 4000 refunds should net to zero but nets to -6000 — before naming a suspect file.",
+    "implement": "Fixes the write site in the gateway's refund path so the ledger entry carries the individual refund amount, rather than patching net_for or the ledger to compensate for entries that were recorded wrong.",
+    "verify": "Re-runs the whole suite after the fix and confirms the two-part refund test now passes while the single full refund, partial capture, void, and idempotent-retry tests are all still green.",
+    "reflect": "Explains why the first refund on a charge hides the bug — the cumulative and individual amounts are equal until a second refund lands — and names what else the ledger would have mis-reported, such as settled_total."
+  },
+  "solved": false,
+  "summary": "The candidate opened the problem file and ran the test suite once, observing the failure, but the microphone then went offline for the rest of the 7-minute session, leaving no observable speech, edits, or further test runs. The session ended with no visible fix attempted or verified, so the bug was not resolved.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "unassessable",
+      "analysis": "The microphone was off for the entire session after the first few seconds, so there is no way to observe whether the candidate voiced any hypothesis about expected behavior or asked questions. No text edits or additional test runs are logged either, leaving nothing to infer clarification behavior from.",
+      "evidence": []
+    },
+    {
+      "dimension": "approach",
+      "verdict": "unassessable",
+      "analysis": "Only the problem file was opened and the test suite was run once before the evidence gap swallows the rest of the session. There is no record of any stated plan or mechanism, and no way to know if one was formed silently, since speech is entirely unobservable for the remainder.",
+      "evidence": []
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "unassessable",
+      "analysis": "The mic outage from +7s to the end means speech evidence is unreliable for essentially the whole session; per the reliability rule, absence of narration here cannot be scored as weak since it may simply be unobserved.",
+      "evidence": []
+    },
+    {
+      "dimension": "implement",
+      "verdict": "unassessable",
+      "analysis": "No file edits, diffs, or code changes appear anywhere in the timeline after the initial test run; the session shows no evidence that implementation was ever reached before the candidate ended the session.",
+      "evidence": []
+    },
+    {
+      "dimension": "verify",
+      "verdict": "unassessable",
+      "analysis": "Only a single test run is logged, at the very start, which produced the failure the candidate was meant to fix. No subsequent test run appears, so there is nothing to indicate a verification step was performed on a fix.",
+      "evidence": []
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "unassessable",
+      "analysis": "The session ended abruptly at +417s with no logged resolution, code change, or final test run, and no way to observe any spoken explanation due to the microphone gap, so there is nothing to assess for reflection.",
+      "evidence": []
+    }
+  ]
+}

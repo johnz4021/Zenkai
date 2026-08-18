@@ -191,12 +191,22 @@ export interface InterviewerContext {
   /** renderWrapState() output while the wrap-up phase is active: which
    *  evaluation question is next, or the closing instruction. PER-TURN. */
   wrapState?: string;
+  /** Set on an engagement turn: candidateMessage is thinking-aloud the
+   *  intent gate flagged as a completed substantive thought, NOT a question
+   *  to answer. The ENGAGE prompt rules apply — react briefly to the
+   *  content, or stay silent. */
+  narrationEngage?: boolean;
+  /** questionStreak() at dispatch, when it tripped the governor: the last
+   *  N turns all asked. The {{QUESTION_BUDGET}} slot orders this turn to
+   *  give, not ask. Never set on wrap turns — their job is questions. */
+  questionStreak?: number;
 }
 
 export type Interviewer = (ctx: InterviewerContext) => Promise<InterviewerTurn>;
 
 /**
- * Is this utterance ADDRESSED to the interviewer, or narration?
+ * Is this utterance ADDRESSED to the interviewer, narration worth ENGAGING
+ * with, or narration to let pass?
  *
  * Runs OUTSIDE the interviewer busy-lock, on every utterance the moment it
  * lands (eng review issue 1): classification is per-utterance and cheap;
@@ -206,7 +216,17 @@ export type Interviewer = (ctx: InterviewerContext) => Promise<InterviewerTurn>;
  * Bias: default NOT addressed. A missed question costs a rephrase; a false
  * reply interrupts the candidate mid-thought, which is the one thing worse
  * than any latency number.
+ *
+ * 'engage' exists because the binary verdict made the interviewer deaf to
+ * content (sess-1786861469215): the candidate stated a complete hypothesis
+ * — "it's a string comparison, whereas commonpath checks actual paths" —
+ * and the only response channel for it was a canned "Mm-hm". A real
+ * interviewer reacts to a completed thought. The verdict only marks the
+ * opportunity; session.ts paces whether it becomes a turn (cooldowns,
+ * never mid-reply), and the turn itself may still choose silence.
  */
+export type IntentVerdict = 'addressed' | 'engage' | 'silent';
+
 export type IntentCheck = (
   text: string,
   spec: string,
@@ -214,7 +234,43 @@ export type IntentCheck = (
    *  ("So I'm thinking... / ...can you tell me if that's right?") is
    *  unreadable as a lone fragment. */
   recent?: { who: 'candidate' | 'interviewer'; text: string }[],
-) => Promise<boolean>;
+) => Promise<IntentVerdict>;
+
+/** Governor trip point: this many consecutive question-ended turns and
+ *  the next one is ordered to give, not ask. */
+export const QUESTION_STREAK_LIMIT = 2;
+
+/**
+ * How many consecutive recent interviewer turns asked a question. The
+ * question-density governor's mechanical half (2026-08-17 review): in
+ * sess-1786948725100 ten of twelve turns ended in '?', and every one
+ * re-armed the pending-answer window — an interrogation loop no prompt
+ * rule alone can stop, because one leaked question restarts it. Acks and
+ * time announcements neither ask nor break the streak (content-free by
+ * design — the addressing.ts precedent). Pure over the trace.
+ */
+export function questionStreak(events: TraceEvent[]): number {
+  let streak = 0;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type !== 'interviewer') continue;
+    const p = e.payload as { kind?: string; text?: string } | null;
+    if (p?.kind === 'ack' || p?.kind === 'time') continue;
+    if (String(p?.text ?? '').includes('?')) streak += 1;
+    else break;
+  }
+  return streak;
+}
+
+/** The model replies with one word; anything unrecognized is 'silent' —
+ *  the same fail-toward-silence bias as the binary gate. Pure, exported
+ *  for tests and for the claude -p path. */
+export function parseIntentVerdict(raw: string): IntentVerdict {
+  const out = raw.toLowerCase();
+  if (out.includes('engage')) return 'engage';
+  if (out.includes('yes')) return 'addressed';
+  return 'silent';
+}
 
 /**
  * Addressed turns waiting for the interviewer. FIFO, small cap.
@@ -606,15 +662,24 @@ export function render(template: string, ctx: InterviewerContext): string {
       ctx.agenda ??
       '(none this turn — this is a reply; answer what was asked. The agenda rides unprompted turns.)',
     WRAPUP: ctx.wrapState ?? 'no — the working phase is still on.',
+    ENGAGE: ctx.narrationEngage
+      ? 'ENGAGE — the message below was NOT addressed to you; they are thinking aloud and just completed a substantive thought. Follow the engage rules above: one brief reaction to its content, or silence.'
+      : 'no',
+    QUESTION_BUDGET: ctx.questionStreak
+      ? `SPENT — you have ended your last ${ctx.questionStreak} turns with questions. This turn: answer, observe, or confirm — and STOP. Do not ask anything. A run of questions stops being an interview and becomes an interrogation.`
+      : 'available.',
     STUCK: ctx.stuckObservation
       ? `STUCK — ${ctx.stuckObservation} Follow the stuck rules above: one move, their vocabulary only, nudge true.`
       : 'no',
     TRANSCRIPT: transcript,
     CANDIDATE_MESSAGE:
-      ctx.candidateMessage ??
-      '(nothing — this is an unprompted turn. Apply pressure or probe their ' +
-        'reasoning, or stay silent with an empty `say` if there is genuinely ' +
-        'nothing worth saying.)',
+      ctx.candidateMessage !== null && ctx.candidateMessage !== undefined
+        ? ctx.narrationEngage
+          ? `${ctx.candidateMessage}\n(thinking aloud — not addressed to you; see the Engage state above)`
+          : ctx.candidateMessage
+        : '(nothing — this is an unprompted turn. Apply pressure or probe their ' +
+          'reasoning, or stay silent with an empty `say` if there is genuinely ' +
+          'nothing worth saying.)',
   };
   return template.replace(/\{\{([A-Z_]+)\}\}/g, (whole, key: string) =>
     key in values ? (values[key] as string) : whole,
@@ -770,7 +835,12 @@ const INTENT_PROMPT = (
 ) =>
   [
     'A candidate is working through a technical interview problem out loud.',
-    'Decide whether their LATEST utterance is addressed to the interviewer.',
+    'Decide whether their LATEST utterance is addressed to the interviewer,',
+    'is thinking-aloud worth a brief reaction, or should pass in silence.',
+    '',
+    'The latest utterance has already been endpointed server-side: treat it',
+    'as a COMPLETE candidate turn, not a speech fragment. Do not apply',
+    'fragment-era caution to completed statements.',
     '',
     'Problem context: ' + spec.slice(0, 1200),
     '',
@@ -789,6 +859,18 @@ const INTENT_PROMPT = (
     '- addresses them directly ("hey", "so", "can you", using their role)',
     '- a fragment that COMPLETES a question begun in the lines above',
     '- checks a shared assumption ("we are meant to fix only src, right?")',
+    '- the interviewer\'s MOST RECENT turn above asked a question or gave a',
+    '  directive, and this utterance is a complete reply to that topic —',
+    '  even if short, uncertain, or negative. "I haven\'t thought about',
+    '  that", "I\'m not sure yet", "I don\'t know", "probably not", and bare',
+    '  "yes"/"no" all count as answers. Filler or a false start alone',
+    '  ("Um...", "Uh, okay...") is NOT an answer. And an utterance that',
+    '  ignores the question and returns to working ("okay, so if I loop',
+    '  here...") is thinking aloud again — the question does not convert',
+    '  everything said after it.',
+    '- they voice confusion about problem wording, requirements, or a term',
+    '  in the prompt ("I\'m not sure what X means here"). Treat that as a',
+    '  request for clarification even without a question mark.',
     '',
     'NOT ADDRESSED (answer no) — thinking out loud:',
     '- a RHETORICAL SELF-QUESTION they are working through themselves',
@@ -797,6 +879,26 @@ const INTENT_PROMPT = (
     '  asking. This is the most common case; do not mistake it for an ask.',
     '- narrating what they read, suspect, or are about to try',
     '- filler, false starts, swearing, or asides to no one',
+    '',
+    'ENGAGE (answer engage) — not addressed to the interviewer, but a',
+    'COMPLETED substantive thought a human interviewer sitting there would',
+    'naturally react to:',
+    '- they just stated a theory or conclusion about the cause ("so it must',
+    '  be comparing strings, not path segments")',
+    '- they made a substantive claim about how something works',
+    '- they announced a result or milestone ("all passing", "that fixed it")',
+    '- they committed out loud to a direction or an assumption they are',
+    '  about to act on ("For now I\'m assuming diagonals don\'t matter",',
+    '  "I\'ll handle this as zero-indexed", "I\'m going to rewrite the check',
+    '  to use commonpath")',
+    'ONLY when THIS utterance completes the thought. Fragments, false',
+    'starts, mid-sentence trailing off, and play-by-play of mechanical',
+    'actions ("opening the file", "let me run this") are "no", never',
+    '"engage". Since this is a completed endpointed turn: when torn between',
+    'engage and no on a complete decision, conclusion, milestone, or real',
+    'confusion or blocker, answer "engage". Keep "no" for filler, false',
+    'starts, mechanical play-by-play, and self-answered rhetorical',
+    'questions.',
     '',
     'OVERRIDE, before the deciding test: an EXPLICIT REQUEST is always',
     'addressed — asking for help, a hint, a hand, confirmation, or directions',
@@ -818,7 +920,7 @@ const INTENT_PROMPT = (
     'sitting there feel it was their turn to speak? If the candidate is',
     'mid-thought and would keep going regardless, answer no.',
     '',
-    'Reply with ONLY the word "yes" or "no".',
+    'Reply with ONLY one word: "yes", "engage", or "no".',
   ].join('\n');
 
 /** Intent check via the API (haiku, fast path). */
@@ -839,9 +941,8 @@ export function apiIntentCheck(): IntentCheck {
       const out = msg.content
         .filter((b) => b.type === 'text')
         .map((b) => (b as { text: string }).text)
-        .join('')
-        .toLowerCase();
-      return out.includes('yes');
+        .join('');
+      return parseIntentVerdict(out);
     } catch (e) {
       // Fail toward silence, never toward interruption — but NEVER silently.
       // First judge-era live session: every utterance (including "Yo,
@@ -866,7 +967,7 @@ export function claudePIntentCheck(): IntentCheck {
     if (out.trim().length === 0) {
       console.warn('[intent] claude -p returned EMPTY (treating as narration)');
     }
-    return out.toLowerCase().includes('yes');
+    return parseIntentVerdict(out);
   };
 }
 

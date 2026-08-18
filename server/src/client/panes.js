@@ -40,6 +40,8 @@
   const inflight = new Set(); // in-flight save PUTs and edit posts; every flush awaits these
   let editor = null;
   let activePath = null;
+  let modelFiles = []; // manifest model_paths — md files HERE default to source
+  const mdPreviewOn = new Map(); // path -> bool, md tabs only
 
   const save = (path) => {
     const m = models.get(path);
@@ -89,19 +91,118 @@
   // hook the last <800ms of typing was graded away by the submit run.
   window.ipPanesFlush = flushSaves;
 
-  const renderTabs = (files) => {
+  const fileTab = (f) => {
+    const b = document.createElement('button');
+    b.textContent = f;
+    b.dataset.path = f;
+    b.addEventListener('click', () => open(f));
+    return b;
+  };
+
+  // Primary files (the round's task) render as tabs; infra files
+  // (lockfiles, tool configs — the server partitions) sit behind one quiet
+  // "more" control so they stay reachable without crowding the strip. The
+  // old strip rendered package-lock.json as a co-equal alphabetical tab.
+  const renderTabs = (primary, infra) => {
     const tabs = $('tabs');
     tabs.textContent = '';
-    for (const f of files) {
-      const b = document.createElement('button');
-      b.textContent = f;
-      b.addEventListener('click', () => open(f));
-      tabs.appendChild(b);
+    for (const f of primary) tabs.appendChild(fileTab(f));
+    if (infra.length > 0) {
+      const more = document.createElement('button');
+      more.className = 'more';
+      more.textContent = '+' + infra.length + ' more \u25be';
+      more.addEventListener('click', () => {
+        for (const f of infra) tabs.insertBefore(fileTab(f), toggle);
+        more.remove();
+        markActive();
+      });
+      tabs.appendChild(more);
     }
+    const toggle = document.createElement('button');
+    toggle.className = 'mdtoggle';
+    toggle.id = 'mdtoggle';
+    toggle.style.display = 'none';
+    toggle.addEventListener('click', () => {
+      if (!activePath) return;
+      mdPreviewOn.set(activePath, !mdPreviewOn.get(activePath));
+      applyView();
+    });
+    tabs.appendChild(toggle);
   };
 
   const markActive = () => {
-    for (const b of $('tabs').children) b.classList.toggle('active', b.textContent === activePath);
+    for (const b of $('tabs').children) b.classList.toggle('active', b.dataset.path === activePath);
+  };
+
+  // Minimal markdown renderer for read-side docs. Everything is
+  // HTML-escaped BEFORE any transform, so the output can only contain the
+  // tags this function writes; links render as their text (inert — a round
+  // is not a browsing session). Headings shift down one level: the pane's
+  // own h1 stays the only h1.
+  const mdToHtml = (src) => {
+    const escMd = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const inline = (t) => t
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1');
+    const out = [];
+    let inCode = false;
+    let inList = false;
+    let para = [];
+    const flushPara = () => {
+      if (para.length) { out.push('<p>' + inline(para.join(' ')) + '</p>'); para = []; }
+    };
+    const closeList = () => { if (inList) { out.push('</ul>'); inList = false; } };
+    for (const line of escMd(src).split('\n')) {
+      if (line.trim().startsWith('```')) {
+        flushPara(); closeList();
+        out.push(inCode ? '</code></pre>' : '<pre><code>');
+        inCode = !inCode;
+        continue;
+      }
+      if (inCode) { out.push(line); continue; }
+      const h = line.match(/^(#{1,4})\s+(.*)$/);
+      if (h) {
+        flushPara(); closeList();
+        const lvl = h[1].length + 1;
+        out.push('<h' + lvl + '>' + inline(h[2]) + '</h' + lvl + '>');
+        continue;
+      }
+      const li = line.match(/^\s*[-*]\s+(.*)$/);
+      if (li) {
+        flushPara();
+        if (!inList) { out.push('<ul>'); inList = true; }
+        out.push('<li>' + inline(li[1]) + '</li>');
+        continue;
+      }
+      if (line.trim() === '') { flushPara(); closeList(); continue; }
+      para.push(line.trim());
+    }
+    flushPara(); closeList();
+    if (inCode) out.push('</code></pre>');
+    return out.join('\n');
+  };
+
+  // One view per active tab: markdown tabs flip between rendered preview
+  // and Monaco source; everything else is Monaco. Re-renders the preview
+  // from the live model each time, so source edits show on toggle-back.
+  const applyView = () => {
+    const preview = $('mdpreview');
+    const toggle = $('mdtoggle');
+    const isMd = activePath !== null && langOf(activePath) === 'markdown';
+    const showPreview = isMd && mdPreviewOn.get(activePath) === true;
+    if (preview) {
+      preview.style.display = showPreview ? 'block' : 'none';
+      if (showPreview) {
+        const m = models.get(activePath);
+        preview.innerHTML = mdToHtml(m ? m.getValue() : '');
+      }
+    }
+    editorHost.style.display = showPreview ? 'none' : 'block';
+    if (toggle) {
+      toggle.style.display = isMd ? 'inline-block' : 'none';
+      toggle.textContent = showPreview ? 'edit source' : 'preview';
+    }
   };
 
   const open = async (path) => {
@@ -137,6 +238,13 @@
     // markdown write-up — without wrap it edited as one endless line
     // (QA 2026-08-14).
     editor.updateOptions({ wordWrap: langOf(path) === 'markdown' ? 'on' : 'off' });
+    // Markdown defaults: docs open RENDERED (they are for reading); a
+    // model-path .md is the candidate's own deliverable and opens as
+    // source. The toggle overrides either way, remembered per tab.
+    if (langOf(path) === 'markdown' && !mdPreviewOn.has(path)) {
+      mdPreviewOn.set(path, !modelFiles.includes(path));
+    }
+    applyView();
     markActive();
     postEvent('file_open', { path });
     editor.focus();
@@ -144,7 +252,9 @@
 
   const boot = async () => {
     const r = await fetch('/api/files');
-    const { files } = await r.json();
+    const { files, primary, infra, model } = await r.json();
+    const primaries = primary && primary.length ? primary : files;
+    modelFiles = model || [];
     // Graphite Steel: sink the editor ground to the shell's --sunk tone so the
     // pane reads as one instrument; syntax colors inherit from vs-dark.
     monaco.editor.defineTheme('zenkai-graphite', {
@@ -168,10 +278,11 @@
       fontSize: 13,
       scrollBeyondLastLine: false,
     });
-    renderTabs(files);
-    // Open the most likely working file first: a declared model path if the
-    // server listed one, else the first file.
-    if (files.length > 0) await open(files[0]);
+    renderTabs(primaries, infra || []);
+    // Open the most likely working file first: the server puts declared
+    // model paths at the head of `primary`, so [0] is the working file —
+    // the old files[0] was alphabetical luck and could be a config.
+    if (primaries.length > 0) await open(primaries[0]);
   };
 
   // ---- run panel ----

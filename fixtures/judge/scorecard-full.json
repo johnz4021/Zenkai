@@ -1,15 +1,20 @@
 {
-  "ran_at": "2026-07-30T18:45:29.773Z",
+  "ran_at": "2026-08-16T20:07:13.583Z",
   "mode": "full",
   "model": "claude-sonnet-5 (api)",
-  "prompt_hash": "7111192943bf",
+  "prompt_hash": "c2c4526143c3",
   "metrics": [
     {
       "metric": "persona_agreement",
-      "score": 1,
+      "score": 0.8888888888888888,
       "threshold": 0.85,
       "pass": true,
-      "detail": []
+      "detail": [
+        "silent-editor-debugging.clarify: got unassessable, accepted [weak]",
+        "silent-editor-debugging.approach: got unassessable, accepted [weak]",
+        "interviewer-carried-debugging.clarify: got unassessable, accepted [adequate|weak]",
+        "productive-explorer-debugging.approach: got weak, accepted [strong|adequate]"
+      ]
     },
     {
       "metric": "format_adaptation",
@@ -20,20 +25,24 @@
     },
     {
       "metric": "contrast_discrimination",
-      "score": 0.9285714285714286,
+      "score": 0.8571428571428571,
       "threshold": 0.9,
-      "pass": true,
+      "pass": false,
       "detail": [
-        "clarify-pair.without.clarify: got adequate, accepted [weak|unassessable]",
-        "approach-pair.clarify: moved weak -> strong but only approach differed"
+        "approach-pair.clarify: moved weak -> unassessable but only approach differed",
+        "approach-pair.communicate: moved weak -> strong but only approach differed",
+        "communicate-pair.approach: moved weak -> strong but only communicate differed",
+        "communicate-pair.reflect: moved unassessable -> weak but only communicate differed"
       ]
     },
     {
       "metric": "reliability_sensitivity",
-      "score": 1,
+      "score": 0.5,
       "threshold": 1,
-      "pass": true,
-      "detail": []
+      "pass": false,
+      "detail": [
+        "mic-down-silence: healthy silent communicate was not weak (real silence must still count)"
+      ]
     },
     {
       "metric": "simulated_agreement",
@@ -44,28 +53,31 @@
     },
     {
       "metric": "self_consistency",
-      "score": 0.9555555555555557,
+      "score": 1,
       "threshold": 0.8,
       "pass": true,
-      "detail": [
-        "never-verifier-debugging.clarify: adequate,adequate,strong,adequate,adequate",
-        "never-verifier-debugging.communicate: strong,strong,strong,adequate,adequate",
-        "never-verifier-debugging.implement: adequate,strong,adequate,adequate,adequate"
-      ]
+      "detail": []
+    },
+    {
+      "metric": "intent_accuracy",
+      "score": 1,
+      "threshold": 0.9,
+      "pass": true,
+      "detail": []
     },
     {
       "metric": "citation_resolution",
-      "score": 0.9973333333333333,
+      "score": 1,
       "threshold": 0.95,
       "pass": true,
       "detail": [
-        "374/375 citations resolved to candidate events"
+        "399/399 citations resolved to candidate events"
       ]
     }
   ],
   "citation": {
-    "kept": 374,
-    "total": 375
+    "kept": 399,
+    "total": 399
   },
-  "pass": true
+  "pass": false
 }

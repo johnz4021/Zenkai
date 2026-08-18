@@ -12,9 +12,15 @@
  * wrap-up is where a real interview actually evaluates — and it did not
  * exist.
  *
- * The ending is verbal only (decided): the interviewer signs off and tells
- * the candidate to end the session whenever they're ready. The End button
- * stays the one graded path; nothing here touches /api/end.
+ * The ending was verbal-only at first (decided): sign off, tell them to
+ * end whenever ready, End button the one graded path. SUPERSEDED (owner
+ * call 2026-08-17): three sessions of the interviewer signing off into
+ * dead air showed the abdication reads as the same inactivity the module
+ * was built to kill. After the closing stands unanswered for
+ * WRAP_FINALIZE_QUIET_MS, the session announces once and runs the SAME
+ * finalize path as the End button (shouldAutoFinalize below; wired in
+ * session.ts's tick, mirroring the time-cap grace). The End button
+ * remains a graded path — just no longer the only one.
  *
  * Pure and stateless over the trace (detector convention).
  */
@@ -35,6 +41,19 @@ export const WRAP_UP_QUESTIONS = 3;
 const DONE_RE =
   /(any (other|more) questions|i'?m done|that'?s (it|all|everything)|we('re| are) (good|done))/i;
 
+/** "Okay. Uh, anything else?" — the phrasing an actual candidate used
+ *  (sess-1786861469215) while DONE_RE sat there matching only "any other
+ *  questions". Deliberately narrow: the phrase must END the utterance and
+ *  the utterance must be short, so a working-phase "is there anything else
+ *  that touches this cache?" never arms the wrap-up. */
+const DONE_TAIL_RE = /\banything else[.?!\s]*$/i;
+const DONE_TAIL_MAX_WORDS = 6;
+
+export function isDonePhrase(text: string): boolean {
+  if (DONE_RE.test(text)) return true;
+  return DONE_TAIL_RE.test(text.trim()) && text.trim().split(/\s+/).length <= DONE_TAIL_MAX_WORDS;
+}
+
 function isGreenRun(e: TraceEvent): boolean {
   return e.type === 'test_run' && (e.payload as { exit_code?: number | null })?.exit_code === 0;
 }
@@ -43,42 +62,66 @@ function isGreenRun(e: TraceEvent): boolean {
  * Is the working phase over? Non-null = yes, with the ts the signal fired.
  *
  * Two ways in:
- *  - the suite's LATEST completed run is green, a failing run preceded it
- *    (so this is a fix, not a round that started green), and it has stood
- *    for WRAP_GREEN_DELAY_MS;
- *  - the candidate said a done-phrase after real work started. On a
- *    runnable round "work started" means at least one completed run ("we
- *    good?" in minute one is a mic check, not a surrender). On a no-run
- *    round (can_run_tests:false) no run can EVER exist during
- *    the session, which used to make the wrap-up — evaluation questions,
- *    closing, all of it — unreachable even when the candidate said "I'm
- *    done" (QA 2026-08-14; the exact round-just-stops failure this module
- *    was built to kill). There, the first edit/save is the work anchor.
+ *  - the suite's LATEST completed run is green, it has stood for
+ *    WRAP_GREEN_DELAY_MS, and the green PROVES WORK: either a failing run
+ *    preceded it (the debugging shape — green means fixed), or the round's
+ *    kind is failing-by-construction (one_failing_test / all_failing) and
+ *    edits preceded the run — a builder who implements first and passes on
+ *    the first run finished the round, they didn't skip it
+ *    (sess-1786984222355). A round BORN green and untouched still never
+ *    wraps, and all_passing kinds never wrap on green at all.
+ *  - the candidate said a done-phrase after real work started — anchored
+ *    at the first completed run OR the first edit/save, whichever exists
+ *    ("we good?" in minute one is a mic check, not a surrender). The old
+ *    runnable-rounds-need-a-run anchor made the wrap unreachable on a
+ *    round where the candidate edited for 8 minutes and never ran
+ *    (sess-1786985531151), the same round-just-stops failure this module
+ *    was built to kill on no-run rounds (QA 2026-08-14).
  */
 export function detectWrapSignal(
   events: TraceEvent[],
   nowMs: number,
-  opts: { runnable?: boolean } = {},
+  opts: { checkKind?: string } = {},
 ): number | null {
-  const runnable = opts.runnable ?? true;
   const runs = events.filter(
     (e) => e.type === 'test_run' && (e.payload as { exit_code?: number | null })?.exit_code != null,
   );
   const latest = runs[runs.length - 1];
   const hadFailure = events.some(isFailingRun);
+  const editedBefore = (ts: number) =>
+    events.some((e) => (e.type === 'edit' || e.type === 'file_save') && e.ts < ts);
 
-  if (latest && isGreenRun(latest) && hadFailure && nowMs - latest.ts >= WRAP_GREEN_DELAY_MS) {
+  // hadFailure guards against wrapping a round that was BORN green — but it
+  // silently assumed the debugging shape, where green means "fixed". On a
+  // build round the suite is failing BY CONSTRUCTION until the work is
+  // done, so a candidate who implements first and passes on their first
+  // run (sess-1786984222355: one run, exit 0, wrap never armed, the
+  // candidate had to ask for the ending) is the ideal performance, not a
+  // no-op. For failing-by-construction kinds, edits-before-the-green-run
+  // is the "real work happened" witness; all_passing stays hadFailure-only
+  // — its suite is green the whole round and a green run proves nothing.
+  const failingByConstruction =
+    opts.checkKind === 'one_failing_test' || opts.checkKind === 'all_failing';
+  const greenProvesWork =
+    hadFailure || (failingByConstruction && latest !== undefined && editedBefore(latest.ts));
+
+  if (latest && isGreenRun(latest) && greenProvesWork && nowMs - latest.ts >= WRAP_GREEN_DELAY_MS) {
     return latest.ts + WRAP_GREEN_DELAY_MS;
   }
-  const workStartTs = runnable
-    ? runs[0]?.ts
-    : events.find((e) => e.type === 'edit' || e.type === 'file_save')?.ts;
+  // "Work started" anchors at the first run OR the first edit/save — a
+  // runnable round with zero runs used to make the done-phrase path
+  // unreachable entirely (sess-1786985531151: 8 minutes of editing, no
+  // runs, nothing the candidate said could have armed the wrap). The
+  // minute-one "we good?" mic check stays ignored: with no run and no
+  // edit there is still no anchor.
+  const workStartTs =
+    runs[0]?.ts ?? events.find((e) => e.type === 'edit' || e.type === 'file_save')?.ts;
   if (workStartTs !== undefined) {
     for (let i = events.length - 1; i >= 0; i--) {
       const e = events[i]!;
       if (e.type !== 'utterance' || e.ts <= workStartTs) continue;
       const text = String((e.payload as { text?: string })?.text ?? '');
-      if (DONE_RE.test(text)) return e.ts;
+      if (isDonePhrase(text)) return e.ts;
     }
   }
   return null;
@@ -165,14 +208,58 @@ export function selectWrapTopic(
 export const CLOSING_TOPIC =
   'CLOSING — acknowledge the round in one sentence (specific, not flattery), then tell them: that is everything from you, and they can end the session whenever they are ready. Nothing after this.';
 
-/** The {{WRAPUP}} slot value while the phase is active. */
-export function renderWrapState(questionsAsked: number, topic: string): string {
+/** The {{WRAPUP}} slot value while the phase is active. `viaReply` marks a
+ *  reply that carries the next question — see the wrap-up rules' REPLY
+ *  paragraph. Reply-carried questions exist because the lane's unprompted
+ *  turn paces on silence, and a candidate in wrap-up is rarely silent
+ *  (sess-1786861469215: three replies in the wrap window, zero lane turns,
+ *  the candidate ran their own wrap-up). */
+export function renderWrapState(
+  questionsAsked: number,
+  topic: string,
+  opts: { viaReply?: boolean } = {},
+): string {
   if (topic === CLOSING_TOPIC) {
     return `WRAP-UP, closing. ${topic}`;
   }
-  return (
+  const base =
     `WRAP-UP phase (the working part of the round is over; this conversation IS the round now). ` +
-    `Question ${questionsAsked + 1} of ${WRAP_UP_QUESTIONS}. Next: ${topic} ` +
-    `One question per turn; follow up once if their answer is thin, then move on.`
-  );
+    `Question ${questionsAsked + 1} of ${WRAP_UP_QUESTIONS}. Next: ${topic} `;
+  if (opts.viaReply) {
+    return (
+      base +
+      `This turn is a REPLY carrying the next question: answer what they said first, briefly, then ask it in the same breath.`
+    );
+  }
+  return base + `One question per turn; follow up once if their answer is thin, then move on.`;
+}
+
+/** Did a reply-carried wrap turn actually ASK its question? Counting an
+ *  unasked question skips a topic; the check is mechanical on purpose (the
+ *  same no-model-judgment rule as every detector). Lane turns always count
+ *  — their whole job is the question. */
+export function countsAsWrapQuestion(say: string): boolean {
+  return say.includes('?');
+}
+
+/** How long the closing must stand unanswered before the session ends
+ *  itself. Long enough for "oh wait, one more thing"; short enough that
+ *  the sign-off doesn't decay into the dead air it replaced. */
+export const WRAP_FINALIZE_QUIET_MS = 45_000;
+
+/**
+ * After the closing, is it time to end the round for them? True when the
+ * closing AND everything since — any interviewer turn, any speech
+ * (untranscribed included; sound is presence) — has stood quiet for
+ * WRAP_FINALIZE_QUIET_MS. Any activity resets the grace: a post-closing
+ * question gets its answer and the clock starts over.
+ */
+export function shouldAutoFinalize(
+  wrapClosedAt: number,
+  lastInterviewerTs: number,
+  lastSpeechTs: number,
+  nowMs: number,
+): boolean {
+  const lastActivity = Math.max(wrapClosedAt, lastInterviewerTs, lastSpeechTs);
+  return nowMs - lastActivity >= WRAP_FINALIZE_QUIET_MS;
 }

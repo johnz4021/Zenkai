@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clientScript, sessionPage } from './chrome.js';
+import { clientScript, sessionPage, statementHtml } from './chrome.js';
 
 /**
  * The client script has no build step and no module loader, so a syntax
@@ -433,5 +433,41 @@ describe('session page analytics (posthog.ts builds it; this pins the seam)', ()
     const inline = /<script>\n([\s\S]*?)<\/script>/.exec(snippet)?.[1] ?? '';
     expect(() => new Function(inline)).not.toThrow();
     expect(inline).toContain('window.posthog.identify("user-1")');
+  });
+});
+
+describe('the header holds one line (2026-08-16 — the TTS pump)', () => {
+  // Live symptom: every interviewer turn swapped the voice chip to a longer
+  // string, a squeezed sibling span wrapped to a second line, and the whole
+  // header grew and shrank in rhythm with the audio (measured 46px → 62px
+  // at a 1200px viewport). The guard is CSS: spans never wrap; #status is
+  // the one designated shrinker and ellipsizes instead.
+  const html = sessionPage('sess-test', {
+    interviewer: true, time_limit_ms: null, one_shot: false, autorun: true,
+  });
+
+  it('header spans are nowrap and #status ellipsizes', () => {
+    expect(html).toContain('header > span, header a#back { white-space: nowrap; }');
+    expect(html).toContain('header #status { overflow: hidden; text-overflow: ellipsis; min-width: 0;');
+  });
+
+  it('the voice chip has a fixed seat — listening ↔ hearing you must not shift the header', () => {
+    // Width, not just height: the chip swaps on every speech segment, and
+    // its width change walked the right-side button cluster back and forth.
+    expect(html).toContain('header #voicechip { min-width: 18ch; }');
+  });
+});
+
+describe('panes statement + markdown affordances (2026-08-18)', () => {
+  it('backticked spans in the statement render as code, everything else stays escaped', () => {
+    const html = statementHtml('Implement `busiest_window(log)` — return <b>the</b> count.');
+    expect(html).toContain('<code>busiest_window(log)</code>');
+    expect(html).toContain('&lt;b&gt;the&lt;/b&gt;'); // injection stays escaped
+  });
+
+  it('the panes page ships the md preview pane and its styles', () => {
+    const html = sessionPage('sess-test', { surface: 'panes', statement: 'x' });
+    expect(html).toContain('<div id="mdpreview"></div>');
+    expect(html).toContain('#tabs button.mdtoggle');
   });
 });

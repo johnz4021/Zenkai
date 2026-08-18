@@ -75,6 +75,18 @@ export function resolveRoute(
   return u.pathname === '/session' ? { kind: 'ended-page' } : { kind: 'unroutable' };
 }
 
+/** Served while a just-spawned session's port is not accepting yet. It
+ *  refreshes ITSELF every 2s until the proxy succeeds — the first version
+ *  told the user to refresh manually, which on the sample round (the
+ *  activation moment) read as a broken product: the owner backed out of a
+ *  blank page mid-launch (2026-08-18). Also: charset was missing, so the
+ *  em-dash rendered as mojibake. */
+export const WARMUP_PAGE = `<!doctype html>
+<meta charset="utf-8"><meta http-equiv="refresh" content="2"><title>Zenkai</title>
+<body style="background:#0e0e0f;color:#96979b;font-family:sans-serif;display:flex;justify-content:center;padding-top:20vh">
+<div style="max-width:420px;text-align:center"><p style="color:#f4f4f5;font-size:20px">Getting your room ready…</p>
+<p>This takes a few seconds — the page will come up on its own.</p></div>`;
+
 const ENDED_PAGE = `<!doctype html>
 <meta charset="utf-8"><title>Zenkai</title>
 <body style="background:#0e0e0f;color:#96979b;font-family:sans-serif;display:flex;justify-content:center;padding-top:20vh">
@@ -86,8 +98,8 @@ export function makeSessionRouter(deps: RouterDeps): http.Server {
   proxy.on('error', (_e, _req, resOrSocket) => {
     const res = resOrSocket as http.ServerResponse;
     if (res && 'headersSent' in res && !res.headersSent && typeof res.writeHead === 'function') {
-      res.writeHead(502, { 'content-type': 'text/html' });
-      res.end('<p style="font-family:sans-serif">warming up — refresh in a few seconds</p>');
+      res.writeHead(502, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(WARMUP_PAGE);
     } else if (resOrSocket && 'destroy' in resOrSocket) {
       (resOrSocket as { destroy: () => void }).destroy();
     }

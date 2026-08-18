@@ -477,13 +477,14 @@ describe('admissionVerdict (WU6 beta caps)', () => {
     expect(admissionVerdict(reps.slice(1), 'me', 'u1', NOON, caps)).toBe('ok');
   });
 
-  it('pending cap counts generating/ready/failed, not done/skipped', () => {
+  it('pending cap counts generating/ready only — failed is not a queue (owner call 2026-08-17)', () => {
     const old = NOON - 3 * 24 * 3600_000; // long ago: daily cap can't fire
     const reps = [
-      mine('generating', old), mine('ready', old), mine('failed', old), mine('ready', old),
-      mine('done', old), mine('skipped', old),
+      mine('generating', old), mine('ready', old), mine('ready', old), mine('ready', old),
+      mine('failed', old), mine('done', old), mine('skipped', old),
     ];
     expect(admissionVerdict(reps, 'me', 'u1', NOON, caps)).toBe('pending-cap');
+    // Dropping one playable round frees the door; the failed rep never held it.
     expect(admissionVerdict(reps.slice(1), 'me', 'u1', NOON, caps)).toBe('ok');
   });
 
@@ -525,5 +526,39 @@ describe('admissionVerdict (WU6 beta caps)', () => {
       const reps = Array.from({ length: 99 }, (_, i) => them(`u${i}`, NOON));
       expect(admissionVerdict(reps, 'me', 'u1', NOON, caps)).toBe('ok');
     });
+  });
+});
+
+describe('failed generations do not spend the user allowance (owner call 2026-08-17)', () => {
+  const caps = { maxRepsPerUserDay: 3, maxPendingPerUser: 4 };
+  const now = Date.parse('2026-08-17T20:00:00Z');
+  const rep = (status: string, created: string) => ({ user_id: 'u9', status, created });
+
+  it('daily-cap ignores failed builds — three failures still leave three slots', () => {
+    const reps = [
+      rep('failed', '2026-08-17T14:00:00Z'),
+      rep('failed', '2026-08-17T15:00:00Z'),
+      rep('failed', '2026-08-17T16:00:00Z'),
+    ];
+    expect(admissionVerdict(reps as never, 'u9', 'u1', now, caps)).toBe('ok');
+  });
+
+  it('daily-cap still fires on three real rounds', () => {
+    const reps = [
+      rep('done', '2026-08-17T14:00:00Z'),
+      rep('ready', '2026-08-17T15:00:00Z'),
+      rep('done', '2026-08-17T16:00:00Z'),
+    ];
+    expect(admissionVerdict(reps as never, 'u9', 'u1', now, caps)).toBe('daily-cap');
+  });
+
+  it('pending-cap counts playable rounds only — failed reps are not a queue', () => {
+    const reps = [
+      rep('failed', '2026-08-10T01:00:00Z'),
+      rep('failed', '2026-08-11T01:00:00Z'),
+      rep('ready', '2026-08-12T01:00:00Z'),
+      rep('ready', '2026-08-13T01:00:00Z'),
+    ];
+    expect(admissionVerdict(reps as never, 'u9', 'u1', now, caps)).toBe('ok');
   });
 });

@@ -4,7 +4,7 @@
  * here (repo convention) — the gate is pure.
  */
 import { describe, expect, it } from 'vitest';
-import { gateTopics } from './plan-topics.js';
+import { gateTopics, stripDefectTail } from './plan-topics.js';
 
 const good = [
   'Rate limiter — sliding window',
@@ -54,5 +54,35 @@ describe('banned-filler is terminal, not vocabulary (live false positive)', () =
   it('terminal filler still dies', () => {
     expect(() => gateTopics(['Async practice session', ...good.slice(0, 2)], 3)).toThrow(/banned/);
     expect(() => gateTopics(['Debugging drill 3', ...good.slice(0, 2)], 3)).toThrow(/banned/);
+  });
+});
+
+describe('stripDefectTail — the title never names the answer (Google plan leak, 2026-08-16)', () => {
+  it('cuts every defect tail the live plan actually shipped', () => {
+    // The five titles verbatim from targets/google-technical-interview-*:
+    // each named the planted defect on the rail the night before the round.
+    expect(stripDefectTail('User login streak counter — off-by-one bug')).toBe('User login streak counter');
+    expect(stripDefectTail('E-commerce cart total calculation — decimal precision error')).toBe('E-commerce cart total calculation');
+    expect(stripDefectTail('File permission inheritance — recursive logic flaw')).toBe('File permission inheritance');
+    expect(stripDefectTail('API rate limiter — timestamp boundary condition')).toBe('API rate limiter');
+    expect(stripDefectTail('Database query result deduplication — set membership logic')).toBe('Database query result deduplication');
+  });
+
+  it('always-mode (planted-bug rounds) cuts ANY tail — the tail is the diagnosis by construction', () => {
+    expect(stripDefectTail('Message thread aggregation — stale reply counts', { always: true })).toBe('Message thread aggregation');
+    // No separator and the title IS defect vocabulary: nothing safe remains.
+    expect(stripDefectTail('Off-by-one bug in streaks', { always: true })).toBeUndefined();
+    // No separator, clean surface: kept whole.
+    expect(stripDefectTail('Warehouse pallet pairing', { always: true })).toBe('Warehouse pallet pairing');
+  });
+
+  it('leaves non-defect tails alone outside always-mode', () => {
+    expect(stripDefectTail('Seat reservation — concurrent holds')).toBe('Seat reservation — concurrent holds');
+    expect(stripDefectTail('Delivery window overlap report')).toBe('Delivery window overlap report');
+  });
+
+  it('degrades to undefined rather than shipping an empty title', () => {
+    expect(stripDefectTail('')).toBeUndefined();
+    expect(stripDefectTail('— off-by-one bug')).toBeUndefined();
   });
 });

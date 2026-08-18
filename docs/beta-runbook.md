@@ -41,6 +41,15 @@ create table users (
   is_admin boolean default false,
   created_at timestamptz default now()
 );
+create table contact (
+  id text primary key,          -- ct-<ts36>-<rand>, minted at the endpoint
+  user_id text not null,
+  email text,                   -- account address at send time
+  kind text,                    -- bug | idea | question | other
+  message text,                 -- the note itself (disk JSONL remains truth)
+  reply_to text,
+  created_at timestamptz
+);
 create table reps (
   id text primary key, user_id text not null, label text, spec jsonb,
   status text, created_at timestamptz, updated_at timestamptz

@@ -77,8 +77,19 @@ export function isCorrectionFollowUp(text: string, events: TraceEvent[], nowMs: 
 }
 
 /** How long an interviewer question or directive stays "pending" — the
- *  candidate's first words inside this window are a reply, not narration. */
-export const PENDING_QUESTION_WINDOW_MS = 120_000;
+ *  candidate's first words inside this window are a reply, not narration.
+ *  60s, down from 120s (sess-1786924315899): the incident this detector
+ *  serves was a 26-second gap; a two-minute window mostly caught unrelated
+ *  thinking-aloud. */
+export const PENDING_QUESTION_WINDOW_MS = 60_000;
+
+/** The fast path claims an utterance ONLY at this length or above. A pure
+ *  word COUNT on purpose — no filler lexicon: a vocabulary list inside a
+ *  model-bypassing detector fails OPEN for every speaker whose habits it
+ *  didn't anticipate (owner decision, 2026-08-17). Shorter responses fall
+ *  to the LLM gate, which sees the pending question in its context window
+ *  and judges "No." vs "Um..." per speaker, not per lexicon. */
+export const MIN_ANSWER_WORDS = 8;
 
 /**
  * The candidate's FIRST utterance after an interviewer turn that asked for
@@ -102,6 +113,18 @@ export const PENDING_QUESTION_WINDOW_MS = 120_000;
  * nor cancel a pending question. A false positive costs one interviewer
  * call that may choose silence — the same cost model as the other two
  * detectors. Pure, clock injected.
+ *
+ * THE SUBSTANCE FLOOR (sess-1786924315899): this detector was dead code
+ * until the skip-self fix below, so its breadth was never load-tested.
+ * Live, "first words after a question" degenerated into "nearly every
+ * utterance": the interviewer ends most turns with a question, each reply
+ * re-armed the window, and every VAD breath — "Um...", "Oh my God.",
+ * "Uh, taking modulo." — fast-pathed into a spoken reply. 26 turns, gaps
+ * down to 1 second, a round-long interruption loop. The fast path now
+ * claims only responses of MIN_ANSWER_WORDS or more — the guaranteed
+ * class (the qa814 diagnosis was ~25 words) with fragments structurally
+ * ineligible; everything shorter is the LLM gate's call, made with the
+ * pending question in view.
  */
 export function isAnswerToPendingQuestion(
   text: string,
@@ -109,14 +132,37 @@ export function isAnswerToPendingQuestion(
   nowMs: number,
 ): boolean {
   if (!text.trim()) return false;
+  if (text.trim().split(/\s+/).length < MIN_ANSWER_WORDS) return false;
+  // The live wiring appends the utterance to the store BEFORE routing it
+  // (session.ts emitUtterance), so the backward walk meets the utterance
+  // under classification first. Skip it ONCE by text equality — without
+  // this the detector returns false on every real utterance and the fast
+  // path is dead code, which is exactly how sess-1786861469215's direct
+  // answer to "walk me through why…" fell to the gate and read as
+  // narration. Skipped once only: an identical OLDER utterance is still a
+  // prior word since the question and correctly falls to the gate.
+  let skippedSelf = false;
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i]!;
     if (e.type === 'utterance' && String((e.payload as { text?: string })?.text ?? '').trim()) {
+      if (!skippedSelf && String((e.payload as { text?: string })?.text) === text) {
+        skippedSelf = true;
+        continue;
+      }
       return false; // not the FIRST words since the question — the gate decides
     }
     if (e.type !== 'interviewer') continue;
-    const p = e.payload as { kind?: string; text?: string; nudge?: boolean } | null;
+    const p = e.payload as {
+      kind?: string;
+      text?: string;
+      nudge?: boolean;
+      governed?: boolean;
+    } | null;
     if (p?.kind === 'ack' || p?.kind === 'time') continue;
+    // A governed turn leaked its '?' past the question-budget order — it
+    // must not open a pending window, or one leak restarts the
+    // interrogation loop the governor exists to stop (2026-08-17 review).
+    if (p?.governed === true) return false;
     const asked =
       p?.kind === 'probe' ||
       p?.kind === 'pressure' ||

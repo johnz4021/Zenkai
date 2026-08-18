@@ -8,7 +8,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { WebSocket, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
-import { makeSessionRouter, resolveRoute, SID_COOKIE } from './session-router.js';
+import { makeSessionRouter, resolveRoute, SID_COOKIE, WARMUP_PAGE } from './session-router.js';
 import type { SessionEntry } from './session-registry.js';
 
 const entry = (sid: string, port: number): SessionEntry => ({
@@ -117,5 +117,13 @@ describe('router server against stub backends', () => {
       ws.on('open', resolve);
       ws.on('error', reject);
     })).rejects.toThrow();
+  });
+});
+
+describe('the warm-up page carries its own retry (owner report 2026-08-18)', () => {
+  it('auto-refreshes, declares utf-8, and never tells the user to refresh manually', () => {
+    expect(WARMUP_PAGE).toContain('http-equiv="refresh"');
+    expect(WARMUP_PAGE).toContain('charset="utf-8"');
+    expect(WARMUP_PAGE).not.toMatch(/refresh in a few seconds/);
   });
 });

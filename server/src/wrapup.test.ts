@@ -10,7 +10,11 @@ import {
   CLOSING_TOPIC,
   WRAP_GREEN_DELAY_MS,
   WRAP_UP_QUESTIONS,
+  countsAsWrapQuestion,
+  WRAP_FINALIZE_QUIET_MS,
+  shouldAutoFinalize,
   detectWrapSignal,
+  isDonePhrase,
   renderWrapState,
   selectWrapTopic,
 } from './wrapup.js';
@@ -122,5 +126,100 @@ describe('renderWrapState', () => {
     const out = renderWrapState(3, CLOSING_TOPIC);
     expect(out).toContain('closing');
     expect(out).not.toContain('Question 4');
+  });
+});
+
+describe('isDonePhrase — the short "anything else?" tail (sess-1786861469215)', () => {
+  it('matches the phrasing an actual candidate used', () => {
+    expect(isDonePhrase('Okay. Uh, anything else?')).toBe(true);
+    expect(isDonePhrase('anything else?')).toBe(true);
+    expect(isDonePhrase('Is there anything else?')).toBe(true);
+  });
+
+  it('never matches a working-phase question that happens to contain it', () => {
+    expect(isDonePhrase('is there anything else that touches this cache?')).toBe(false);
+    expect(isDonePhrase('let me check if anything else writes to the ledger here')).toBe(false);
+  });
+
+  it('the done path in detectWrapSignal accepts the tail phrase after work started', () => {
+    const ev = new T().fail(1).say(15, 'Okay. Uh, anything else?').build();
+    expect(detectWrapSignal(ev, at(15) + 1_000)).toBe(at(15));
+  });
+});
+
+describe('reply-carried wrap questions (the lane paces on silence; replies carry the phase)', () => {
+  it('viaReply instructs answer-then-ask and keeps the question number', () => {
+    const s = renderWrapState(1, 'ask why the fix works', { viaReply: true });
+    expect(s).toContain('REPLY');
+    expect(s).toContain(`Question 2 of ${WRAP_UP_QUESTIONS}`);
+    expect(s).toContain('answer what they said first');
+  });
+
+  it('without viaReply the lane wording is unchanged', () => {
+    const s = renderWrapState(0, 'ask why the fix works');
+    expect(s).toContain('One question per turn');
+    expect(s).not.toContain('REPLY');
+  });
+
+  it('countsAsWrapQuestion is mechanical: the turn must actually ask', () => {
+    expect(countsAsWrapQuestion('Good — why did that pass?')).toBe(true);
+    expect(countsAsWrapQuestion('Understood, that matches what I saw.')).toBe(false);
+  });
+});
+
+describe('shouldAutoFinalize — the interviewer owns the ending (owner call 2026-08-17)', () => {
+  const C = T0; // closing spoke here
+  it('fires only after the full quiet window past ALL activity', () => {
+    expect(shouldAutoFinalize(C, C, 0, C + WRAP_FINALIZE_QUIET_MS - 1_000)).toBe(false);
+    expect(shouldAutoFinalize(C, C, 0, C + WRAP_FINALIZE_QUIET_MS)).toBe(true);
+  });
+
+  it('any candidate speech resets the grace — even untranscribed sound counts', () => {
+    const spoke = C + 20_000;
+    expect(shouldAutoFinalize(C, C, spoke, C + WRAP_FINALIZE_QUIET_MS + 5_000)).toBe(false);
+    expect(shouldAutoFinalize(C, C, spoke, spoke + WRAP_FINALIZE_QUIET_MS)).toBe(true);
+  });
+
+  it('a post-closing answer resets it too — the question gets its reply first', () => {
+    const replied = C + 30_000;
+    expect(shouldAutoFinalize(C, replied, C + 25_000, C + WRAP_FINALIZE_QUIET_MS + 10_000)).toBe(false);
+    expect(shouldAutoFinalize(C, replied, C + 25_000, replied + WRAP_FINALIZE_QUIET_MS)).toBe(true);
+  });
+});
+
+describe('the one-shot green build (sess-1786984222355) — green proves work per kind', () => {
+  it('all_failing: implement-first-pass-first-run arms the wrap after 60s', () => {
+    const events = new T().say(1, 'starting').build();
+    // edit before the run, then the only run is green
+    const edits = [
+      { session_id: 'fixture', user_id: 'u1', source: 'chrome', seq: 90, ts: at(3), type: 'edit', payload: { path: 'solution.py' } },
+    ] as unknown as TraceEvent[];
+    const green = new T().pass(7).build();
+    const all = [...events, ...edits, ...green];
+    expect(detectWrapSignal(all, at(7) + WRAP_GREEN_DELAY_MS - 1_000, { checkKind: 'all_failing' })).toBeNull();
+    expect(detectWrapSignal(all, at(7) + WRAP_GREEN_DELAY_MS + 1_000, { checkKind: 'all_failing' })).not.toBeNull();
+    // Same trace, no kind: hadFailure-only rule — never arms.
+    expect(detectWrapSignal(all, at(7) + WRAP_GREEN_DELAY_MS + 1_000)).toBeNull();
+  });
+
+  it('born green and untouched still never wraps — no edits before the run', () => {
+    const all = new T().pass(1).build();
+    expect(detectWrapSignal(all, at(1) + WRAP_GREEN_DELAY_MS + 1_000, { checkKind: 'all_failing' })).toBeNull();
+  });
+
+  it('all_passing kinds never wrap on green — their suite is green the whole round', () => {
+    const edits = [
+      { session_id: 'fixture', user_id: 'u1', source: 'chrome', seq: 91, ts: at(2), type: 'edit', payload: { path: 'refactor.py' } },
+    ] as unknown as TraceEvent[];
+    const all = [...edits, ...new T().pass(5).build()];
+    expect(detectWrapSignal(all, at(5) + WRAP_GREEN_DELAY_MS + 1_000, { checkKind: 'all_passing' })).toBeNull();
+  });
+
+  it('one_failing_test gets the same edit-witness escape — a fix on the first recorded run', () => {
+    const edits = [
+      { session_id: 'fixture', user_id: 'u1', source: 'chrome', seq: 92, ts: at(2), type: 'edit', payload: { path: 'bugged.py' } },
+    ] as unknown as TraceEvent[];
+    const all = [...edits, ...new T().pass(6).build()];
+    expect(detectWrapSignal(all, at(6) + WRAP_GREEN_DELAY_MS + 1_000, { checkKind: 'one_failing_test' })).not.toBeNull();
   });
 });

@@ -44,22 +44,25 @@ import { injectWorkbenchDefaults } from './workbench-inject.js';
 import { describeStuck, detectStuck, type StuckState } from './stuck.js';
 import { describeAdrift, describeWarm, detectAdrift, regionContainsAnswer } from './adrift.js';
 import { assessAgenda, renderAgenda } from './agenda.js';
-import { CLOSING_TOPIC, WRAP_UP_QUESTIONS, detectWrapSignal, renderWrapState, selectWrapTopic } from './wrapup.js';
-import { isModelPath, listWorkspaceFiles, parseRunCounts, runGuard, safeWorkspacePath, shadowsTestRunner, summarizeTail } from './panes.js';
+import { CLOSING_TOPIC, WRAP_UP_QUESTIONS, countsAsWrapQuestion, detectWrapSignal, renderWrapState, selectWrapTopic, shouldAutoFinalize } from './wrapup.js';
+import { isModelPath, listWorkspaceFiles, parseRunCounts, partitionWorkspaceFiles, runGuard, safeWorkspacePath, shadowsTestRunner, summarizeTail } from './panes.js';
 import { isAnswerToPendingQuestion, isCorrectionFollowUp, isExplicitAsk } from './addressing.js';
 import { decideAck } from './ack.js';
 import { renderWorkspaceView, selectRecentlyEdited, snapshotWorkspace } from './workspace-view.js';
 import { codebaseViewOf, focusViewOf, namedOutOfContextFiles, toRel } from './problem-view.js';
-import { detectMoment } from './moments.js';
+import { detectMoment, detectUrgentMoment } from './moments.js';
+import { SpeechTurnBuffer } from './endpoint.js';
 import { extractSection, loadBlueprint } from './blueprint.js';
 import { TraceStore } from './trace-store.js';
 import {
+  QUESTION_STREAK_LIMIT,
   TurnQueue,
   buildTranscript,
   candidateVisitedBugFile,
   interviewerGroundTruth,
   pickIntentCheck,
   pickInterviewer,
+  questionStreak,
   renderActivity,
   type IntentCheck,
   type Interviewer,
@@ -94,6 +97,10 @@ export interface SessionConfig {
   targetId?: string;
   /** The home app's origin (IP_APP_URL) — where "back to plan" points. */
   appUrl?: string;
+  /** Sample round (IP_SAMPLE=1): the full loop runs — interviewer, judge,
+   *  card — but finalize's ONE persist seam is skipped, so nothing lands in
+   *  the user's history, memory, or counts. See the seam in finalize. */
+  sample?: boolean;
   /** Called once the server is listening — the point after which this session
    *  really exists. The caller marks the problem used here, so a start that
    *  fails on the port check leaves the pool untouched. */
@@ -141,6 +148,28 @@ const PRESSURE_INTERVAL_MS = 5 * 60_000;
 /** Floor for event-anchored moment probes — shorter than pressure: a probe
  *  about something that JUST happened tolerates less staleness. */
 const MOMENT_INTERVAL_MS = 2.5 * 60_000;
+/** Anti-stack guard for URGENT moments (the suite just went green): the
+ *  full 60s guard made the climax reaction arrive minutes late or never —
+ *  sess-1786861469215's pass met silence behind a reply 24s earlier. */
+const URGENT_MOMENT_GUARD_MS = 20_000;
+/** Wrap-up lane guard, replacing ANY_TURN_GUARD_MS there: the wrap-up is a
+ *  conversation the interviewer LEADS, and 60s of dead air between its
+ *  turns reads as the interviewer checking out (same session: phase armed,
+ *  zero questions asked before the candidate gave up and ended). */
+const WRAP_TURN_GUARD_MS = 30_000;
+/** The wrap lane also waits for this much candidate silence — a talking
+ *  candidate gets the next question via their reply, not talked over. */
+const WRAP_CANDIDATE_QUIET_MS = 15_000;
+/** Engagement lane (intent verdict 'engage'): no reaction within this of
+ *  any spoken turn, and at most one reaction per cooldown — seasoning,
+ *  never a metronome. Loosened 45s/2min → 15s/90s (Codex consult,
+ *  2026-08-17): post-endpointing a false engage lands after a COMPLETED
+ *  turn, not mid-thought, and the busy lock + endpoint buffer + question
+ *  governor now carry the barge-in protection the old timidity was
+ *  standing in for. Live evidence: engage fired once in ~23 gated turns
+ *  while three engage-worthy statements dropped to silence. */
+const ENGAGE_GUARD_MS = 15_000;
+const ENGAGE_COOLDOWN_MS = 90_000;
 const PRESSURE_TICK_MS = 30_000;
 
 const IDE_IMAGE = 'gitpod/openvscode-server:latest';
@@ -683,7 +712,13 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   let wrapUpAt: number | null = null;
   let wrapQuestionsAsked = 0;
   let wrapClosed = false;
+  // When the closing SPOKE — the auto-finalize grace anchors here
+  // (wrapup.ts shouldAutoFinalize; owner call 2026-08-17).
+  let wrapClosedAt: number | null = null;
   let lastWarmTs = 0;
+  // Engagement lane: burned only when an engage turn actually SPEAKS (the
+  // adrift-budget lesson — a silent composition must not spend the slot).
+  let lastEngageTs = 0;
   // Interviewer health for the chip (owner decision, QA 2026-08-14): a
   // model-path failure used to be indistinguishable from deliberate silence
   // — the candidate concluded they were being ignored. Set by the intent
@@ -808,6 +843,12 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   } else if (voiceOffReason === 'disabled') {
     console.log('[session] voice OFF — IP_VOICE=0 for this session');
   }
+  // Endpointing (endpoint.ts): voice utterances are TRACED per segment as
+  // ever, but ROUTED once per human turn — the buffer holds while the
+  // candidate is still talking and flushes after real silence. Routing per
+  // VAD breath is how the interviewer answered a slow speaker clause by
+  // clause (sess-1786948725100). Text keeps routing immediately.
+  const speechBuffer = new SpeechTurnBuffer();
   const voice = voiceEnabled
     ? new VoiceRuntime(
         {
@@ -817,17 +858,35 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         {
           emitSensor: (sensor, state, reason) =>
             store.emitChrome('sensor', { sensor, state, reason }),
+          // SERVER clock for the buffer, never the browser's msg.ts: the
+          // flush compares against Date.now(), and browser clock skew
+          // would silently stretch or collapse the settle window.
+          onSpeechStart: () => speechBuffer.speechStarted(Date.now()),
+          onSpeechEnd: () => speechBuffer.speechEnded(Date.now()),
           emitUtterance: (text, speechStartTs) => {
             store.emitChrome(
               'utterance',
               { text, via: 'voice', ...(text ? {} : { untranscribed: true }), speech_start_ts: speechStartTs },
               speechStartTs, // stamped at SPEECH START, never transcript arrival
             );
-            routeUtterance(text); // intent check; narration stays silent
+            speechBuffer.push(text, Date.now()); // routes at flush, below
           },
         },
       )
     : null;
+  let endpointTimer: NodeJS.Timeout | null = null;
+  if (voice) {
+    endpointTimer = setInterval(() => {
+      if (speechBuffer.shouldFlush(Date.now())) {
+        const turn = speechBuffer.flush();
+        // Visibility for tuning: the 15-37s lag diagnosis took trace
+        // archaeology; one line here makes the next one a grep.
+        console.log(`[endpoint] turn routed (${turn.length} chars): ${turn.slice(0, 80)}`);
+        routeUtterance(turn);
+      }
+    }, 500);
+    endpointTimer.unref();
+  }
 
   /**
    * Settling window before a turn starts composing.
@@ -897,12 +956,34 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       }))
       .filter((r) => r.text !== text);
     void intentCheck(text, problem.spec, recent)
-      .then((addressed) => {
+      .then((verdict) => {
         // "Judged not-addressed" and "check crashed" must never look the
         // same in the log (first live session was undebuggable without this).
-        console.log(`[intent] ${addressed ? 'ADDRESSED' : 'narration'}: ${text.slice(0, 80)}`);
+        console.log(
+          `[intent] ${verdict === 'addressed' ? 'ADDRESSED' : verdict === 'engage' ? 'ENGAGE' : 'narration'}: ${text.slice(0, 80)}`,
+        );
         if (interviewerFault === 'intent') interviewerFault = null; // gate healthy again
-        if (!addressed) return; // narration: traced, agent stays silent
+        if (verdict === 'silent') return; // narration: traced, agent stays silent
+        if (verdict === 'engage') {
+          // A completed thought, not a question. During wrap-up it gets the
+          // full reply treatment — the conversation IS the round there, and
+          // the reply also carries the next evaluation question. Otherwise
+          // it is optional seasoning: never contends with a real turn, paced
+          // by its own guard + cooldown, and the turn may still choose
+          // silence (the cooldown burns only if it speaks).
+          if (wrapUpAt !== null && !wrapClosed) {
+            turnQueue.push(text);
+            notifyTurn();
+            pump();
+            return;
+          }
+          const now = Date.now();
+          if (interviewerBusy || turnQueue.size > 0) return;
+          if (now - lastInterviewerTs < ENGAGE_GUARD_MS) return;
+          if (now - lastEngageTs < ENGAGE_COOLDOWN_MS) return;
+          void runInterviewer(text, null, null, null, null, null, true);
+          return;
+        }
         turnQueue.push(text);
         notifyTurn();
         pump();
@@ -934,6 +1015,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
      *  it looks sound — that region is not where the fault is"), the exact
      *  opposite of what a warm observation means (QA 2026-08-14 audit). */
     warmObservation: string | null = null,
+    /** Engagement turn: candidateMessage is thinking-aloud flagged by the
+     *  intent gate, not a question — the ENGAGE prompt rules apply. */
+    narrationEngage = false,
   ): Promise<void> => {
     if (!interviewer || ended) return;
     if (interviewerBusy) {
@@ -949,6 +1033,22 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     try {
       const events = store.readAll();
       const now = Date.now();
+      // Reply-carried wrap questions: while the phase is open, every reply
+      // carries the next evaluation question. The lane's unprompted turn
+      // paces on candidate SILENCE, and a wrap-phase candidate is rarely
+      // silent — sess-1786861469215 armed the phase, took three replies,
+      // asked zero questions, and the candidate ran their own wrap-up.
+      const replyWrapTopic =
+        wrapTopic === null &&
+        candidateMessage !== null &&
+        wrapUpAt !== null &&
+        !wrapClosed &&
+        wrapQuestionsAsked < WRAP_UP_QUESTIONS
+          ? selectWrapTopic(assessAgenda(events, now, agendaCaps), wrapQuestionsAsked, roundSpec.check.kind)
+          : null;
+      const streak = questionStreak(events);
+      const governed =
+        streak >= QUESTION_STREAK_LIMIT && wrapTopic === null && replyWrapTopic === null;
       // The eyes, per turn: the file under their eyes first (focus sensor),
       // then real diffs + test output. Cheap — a handful of reads.
       const focusView = focusViewOf(cfg.problemDir, events, now);
@@ -1022,15 +1122,23 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // sess-qa814-leak). A reply's job is the answer.
         agenda: candidateMessage === null ? renderAgenda(assessAgenda(events, now, agendaCaps)) : undefined,
         // During wrap-up every turn sees the phase state; the wrap-lane turn
-        // additionally carries its assigned topic.
+        // carries its assigned topic, and an open-phase reply carries the
+        // next question as a first-class assignment (viaReply).
         wrapState:
           wrapTopic !== null
             ? renderWrapState(wrapQuestionsAsked, wrapTopic)
-            : wrapUpAt !== null
-              ? wrapClosed
-                ? 'WRAP-UP is over — you have signed off. Stay silent unless directly asked.'
-                : `WRAP-UP phase is active (${wrapQuestionsAsked} of ${WRAP_UP_QUESTIONS} questions asked). This turn is a reply — answer, then you may segue into your next evaluation question if it flows.`
-              : undefined,
+            : replyWrapTopic !== null
+              ? renderWrapState(wrapQuestionsAsked, replyWrapTopic, { viaReply: true })
+              : wrapUpAt !== null
+                ? wrapClosed
+                  ? 'WRAP-UP is over — you have signed off. Stay silent unless directly asked.'
+                  : `WRAP-UP phase is active (all ${WRAP_UP_QUESTIONS} questions asked; the closing is coming). This turn is a reply — just answer.`
+                : undefined,
+        narrationEngage: narrationEngage || undefined,
+        // Question-density governor (mechanical half): a streak of
+        // question-ended turns orders this one to give, not ask. Wrap
+        // turns are exempt — their whole job is the next question.
+        questionStreak: governed ? streak : undefined,
       });
       if (turn.redacted) {
         console.warn('[interviewer] leak guard fired — reply replaced');
@@ -1068,15 +1176,33 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       interviewerFault = null; // a spoken turn is the all-clear
       // The once-per-session redirect budget burns on a SPOKEN redirect only.
       if (adriftObservation) adriftFired = true;
+      if (narrationEngage) lastEngageTs = lastInterviewerTs;
+      // Governor observability: a COMPLIANT governed turn used to be
+      // indistinguishable from a voluntary statement — the one brake we
+      // built was invisible when it worked (diagnosis 2026-08-17).
+      if (governed) {
+        console.log(
+          `[governor] question budget spent (streak ${streak}) — ${
+            turn.say.includes('?') ? 'turn LEAKED a question (marked non-pending)' : 'turn complied'
+          }`,
+        );
+      }
+      const wrapQuestionViaReply = replyWrapTopic !== null && countsAsWrapQuestion(turn.say);
       if (wrapTopic !== null) {
         // Count only turns that actually spoke; a silent wrap turn retries.
         if (wrapTopic === CLOSING_TOPIC) {
           wrapClosed = true;
+          wrapClosedAt = lastInterviewerTs;
           console.log('[wrapup] closed — interviewer signed off');
         } else {
           wrapQuestionsAsked++;
           console.log(`[wrapup] question ${wrapQuestionsAsked}/${WRAP_UP_QUESTIONS} asked`);
         }
+      } else if (wrapQuestionViaReply) {
+        // A reply-carried question counts only when the turn actually ASKED
+        // one — counting an unasked question would skip its topic.
+        wrapQuestionsAsked++;
+        console.log(`[wrapup] question ${wrapQuestionsAsked}/${WRAP_UP_QUESTIONS} asked (via reply)`);
       }
       store.emitChrome('interviewer', {
         text: turn.say,
@@ -1087,7 +1213,12 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         // Marked so replays can tell scaffolding from pressure — this is
         // how the K=3 threshold gets tuned from real sessions.
         ...(stuck ? { stuck: true } : {}),
-        ...(wrapTopic !== null ? { wrap: true } : {}),
+        ...(wrapTopic !== null || wrapQuestionViaReply ? { wrap: true } : {}),
+        ...(narrationEngage ? { engage: true } : {}),
+        // Non-re-arming backstop: a governed turn that leaked a '?' anyway
+        // must not open a pending-answer window — one leak restarts the
+        // interrogation loop (addressing.ts reads this flag).
+        ...(governed && turn.say.includes('?') ? { governed: true } : {}),
       });
       notifyTurn();
     } catch (e) {
@@ -1115,6 +1246,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     if (pressureTimer) clearInterval(pressureTimer);
     if (ackTimer) clearInterval(ackTimer);
     if (capTimer) clearInterval(capTimer);
+    if (endpointTimer) clearInterval(endpointTimer);
     voice?.close();
 
     // One-shot rounds are graded HERE, server-side: the suite runs once, at
@@ -1166,14 +1298,27 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       {
         hasInterviewer: interviewer !== null,
         utteranceCount: events.filter((e) => e.type === 'utterance').length,
+        // Panes-solo clamps clarify/approach too — tab-switching is not
+        // evidence (owner decision 2026-08-16); IDE-solo keeps them.
+        surface,
       },
     );
 
-    mkdirSync(path.join(cfg.repoRoot, 'assessments'), { recursive: true });
-    writeFileSync(
-      path.join(cfg.repoRoot, 'assessments', `${cfg.sessionId}.json`),
-      JSON.stringify(result, null, 2),
-    );
+    // THE PERSIST SEAM — the one gate between a judged round and durable
+    // state (owner call 2026-08-18, the sample-session design). A sample
+    // round runs the entire loop — interviewer, judge, card — but writes
+    // NOTHING here: no assessment file, no feedback file, no gap or topic
+    // deposit. Everything below that durably records the round must sit
+    // inside `persist`; anything added to finalize later that writes to
+    // disk belongs behind this same flag or it breaks the sample contract.
+    const persist = cfg.sample !== true;
+    if (persist) {
+      mkdirSync(path.join(cfg.repoRoot, 'assessments'), { recursive: true });
+      writeFileSync(
+        path.join(cfg.repoRoot, 'assessments', `${cfg.sessionId}.json`),
+        JSON.stringify(result, null, 2),
+      );
+    }
 
     let gapStore = loadStore(gapsDir, cfg.userId);
     // QA harness sessions run this same finalize with fabricated ids and
@@ -1181,7 +1326,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     // beat a prefix guard). Only ids shaped like a real mint deposit —
     // see isMemorableSessionId for the arms-race record.
     const realSession = isMemorableSessionId(cfg.sessionId);
-    if (result.status === 'assessed' && realSession) {
+    if (persist && result.status === 'assessed' && realSession) {
       // Unassessed writes NOTHING — a judge failure must not become history.
       const spec = resolveRoundSpec(problem);
       gapStore = recordAssessment(gapStore, result, spec.label, spec.memory_tags, cfg.targetId);
@@ -1219,6 +1364,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     const card = buildAssessmentCard(result, view, events, problem.planted_bug?.description, {
       interviewer: interviewer !== null,
     });
+    if (persist) {
     mkdirSync(path.join(cfg.repoRoot, 'feedback'), { recursive: true });
     writeFileSync(
       path.join(cfg.repoRoot, 'feedback', `${cfg.sessionId}.json`),
@@ -1240,6 +1386,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         2,
       ),
     );
+    }
 
     // The round's lifecycle record, mirrored (posthog.ts; the trace stays
     // authoritative). Plain capture, NOT captureAndWait: finalize's return
@@ -1253,6 +1400,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     }
     phSession.capture(cfg.userId, 'round_ended', {
       session_id: cfg.sessionId,
+      sample: cfg.sample === true,
       status: result.status,
       solved: result.status === 'assessed' ? (result.solved ?? null) : null,
       interviewer: interviewer !== null,
@@ -1556,8 +1704,15 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     // route emits test_run, and the server owns every seq (emitChrome) so
     // client events can never collide with interviewer/sensor seqs.
     if (url === '/api/files' && req.method === 'GET') {
+      // `files` stays the full flat list (client back-compat); primary/infra
+      // partition the tab strip and `model` drives per-file defaults (the
+      // md preview opens rendered for docs, as source for files the
+      // candidate is meant to write). See partitionWorkspaceFiles.
+      const files = listWorkspaceFiles(cfg.problemDir);
+      const model = (problem.model_paths ?? []).map((m) => m.replace(/^\.\//, ''));
+      const { primary, infra } = partitionWorkspaceFiles(files, model);
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ files: listWorkspaceFiles(cfg.problemDir) }));
+      return res.end(JSON.stringify({ files, primary, infra, model }));
     }
     if (url.startsWith('/api/file') && req.method === 'GET') {
       const rel = new URL(url, 'http://x').searchParams.get('path') ?? '';
@@ -1752,6 +1907,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         ended = true;
         if (pressureTimer) clearInterval(pressureTimer);
         if (capTimer) clearInterval(capTimer);
+        if (endpointTimer) clearInterval(endpointTimer);
         voice?.close();
         // Closed trace vocabulary: abandonment is a session_end with a flag,
         // not a new event type.
@@ -1887,23 +2043,56 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
 
       // Wrap signal: checked every tick regardless of clocks, set once.
       if (wrapUpAt === null) {
-        const sig = detectWrapSignal(events, now, { runnable: agendaCaps.runnable });
+        const sig = detectWrapSignal(events, now, { checkKind: roundSpec.check.kind });
         if (sig !== null) {
           wrapUpAt = now;
           console.log('[wrapup] working phase over — evaluation questions begin');
         }
       }
 
-      // Anti-stacking guard only: never talk on top of a turn just
-      // delivered. Everything else paces on the UNPROMPTED clock — replies
-      // no longer buy the interviewer silence (the single-clock bug that
-      // produced ZERO unprompted turns in a 26-minute session).
-      if (now - lastInterviewerTs < ANY_TURN_GUARD_MS) return;
-
       // Wrap-up lane: once active it OWNS initiative — no scaffolding, no
-      // moments, no pressure aimed at work that is already done.
+      // moments, no pressure aimed at work that is already done. It paces
+      // on its OWN short guard, NOT the 60s anti-stack guard below: in
+      // sess-1786861469215 the phase armed and never asked one question,
+      // because every reply to the candidate's polite check-ins reset the
+      // long guard until they gave up and ended the session. A talking
+      // candidate gets the next question through their reply
+      // (replyWrapTopic); this lane exists for the quiet one, so it also
+      // waits for a short speech-free window instead of talking over an
+      // answer in progress.
       if (wrapUpAt !== null) {
-        if (wrapClosed) return;
+        let lastSpeechTs = 0;
+        for (let i = events.length - 1; i >= 0; i--) {
+          if (events[i]!.type === 'utterance') {
+            lastSpeechTs = events[i]!.ts;
+            break;
+          }
+        }
+        if (wrapClosed) {
+          // The interviewer owns the ending (owner call 2026-08-17,
+          // superseding wrapup.ts's verbal-only decision): a closing that
+          // stands unanswered runs the SAME finalize as the End button —
+          // announce once, then the time-cap grace sequence verbatim.
+          if (
+            wrapClosedAt !== null &&
+            shouldAutoFinalize(wrapClosedAt, lastInterviewerTs, lastSpeechTs, now)
+          ) {
+            ended = true;
+            store.emitChrome('interviewer', {
+              text: 'Wrapping up here — your feedback is on its way.',
+              kind: 'time',
+              nudge: false,
+            });
+            notifyTurn();
+            console.log('[wrapup] closing stood unanswered — auto-finalizing');
+            void finalize()
+              .then(() => setImmediate(teardownContainer))
+              .catch((err) => console.error('[session] wrap auto-finalize failed:', err));
+          }
+          return;
+        }
+        if (now - lastInterviewerTs < WRAP_TURN_GUARD_MS) return;
+        if (now - lastSpeechTs < WRAP_CANDIDATE_QUIET_MS) return;
         const topic =
           wrapQuestionsAsked >= WRAP_UP_QUESTIONS
             ? CLOSING_TOPIC
@@ -1911,6 +2100,25 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
         void runInterviewer(null, null, null, null, topic);
         return;
       }
+
+      // Urgent moments — the suite just went green — react on a short
+      // guard and skip the moment-cadence gate entirely: the climax of the
+      // round tolerates no staleness. Checked via its OWN detector, not
+      // detectMoment's priority chain, so a stale unfired moment can't
+      // mask the pass (moments.ts detectUrgentMoment header).
+      const urgentMoment = detectUrgentMoment(events, roundSpec.check.kind, firedMoments);
+      if (urgentMoment && now - lastInterviewerTs >= URGENT_MOMENT_GUARD_MS) {
+        firedMoments.add(urgentMoment.kind);
+        console.log(`[moment] ${urgentMoment.kind} (urgent)`);
+        void runInterviewer(null, null, urgentMoment);
+        return;
+      }
+
+      // Anti-stacking guard only: never talk on top of a turn just
+      // delivered. Everything else paces on the UNPROMPTED clock — replies
+      // no longer buy the interviewer silence (the single-clock bug that
+      // produced ZERO unprompted turns in a 26-minute session).
+      if (now - lastInterviewerTs < ANY_TURN_GUARD_MS) return;
 
       // Priority unchanged: help > engagement > rhythm.
       // Scaffolding lane — paced by NEED (the detectors), not the metronome.

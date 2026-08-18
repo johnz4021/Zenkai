@@ -22,6 +22,50 @@ export type TopicNamer = (roundBrief: string, count: number) => Promise<string[]
 // legitimate system (live false positive that quiet-rowed a whole spec).
 const BANNED = /\b(round|problem|practice|session|drill)s?\s*#?\d*\s*$|\d+\s*$/i;
 
+/** Words that describe a DEFECT rather than a surface. Deliberately broad —
+ *  a stripped mechanism word ("fan-out logic") costs nothing, a kept one
+ *  ("off-by-one bug") hands the candidate the answer. */
+const DEFECT_TAIL_RE =
+  /\b(bugs?|flaws?|errors?|faults?|defects?|leaks?|races?|deadlocks?|overflow|underflow|off.by.one|precision|boundary|boundaries|edge.cases?|null|logic|regressions?|mismatch|corruption|condition)\b/i;
+
+/** Title separators the namer uses between surface and qualifier. */
+const TAIL_SEP_RE = /\s+[—–:-]\s+|\s*—\s*|\s*–\s*|:\s+/;
+
+/**
+ * A planned title names the SURFACE, never the answer. The Google-plan leak
+ * (2026-08-16): the namer titled every debugging round "<surface> —
+ * <defect>" ("User login streak counter — off-by-one bug"), the rail showed
+ * it the night before, and stripSpoilerTitles only guards against naming a
+ * real LC problem — nothing guarded the defect. The title is also the
+ * generation brief (header above), so the trim keeps the surface commitment
+ * and returns the defect to being the generator's secret.
+ *
+ * `always` (planted-bug rounds): any separator tail is cut — on a debugging
+ * round the tail is the diagnosis by construction. Otherwise only a tail
+ * matching defect vocabulary is cut. Returns undefined (quiet row) when
+ * nothing safe remains.
+ */
+export function stripDefectTail(
+  title: string,
+  opts: { always?: boolean } = {},
+): string | undefined {
+  const t = title.trim();
+  if (!t) return undefined;
+  const m = TAIL_SEP_RE.exec(t);
+  if (!m) {
+    // No separator: an always-mode title that is ITSELF defect vocabulary
+    // ("Off-by-one in streak counting") has no safe head to keep.
+    if (opts.always && DEFECT_TAIL_RE.test(t)) return undefined;
+    return t;
+  }
+  const head = t.slice(0, m.index).trim();
+  const tail = t.slice(m.index + m[0].length).trim();
+  if (opts.always || DEFECT_TAIL_RE.test(tail)) {
+    return head || undefined;
+  }
+  return t;
+}
+
 /** Mechanical gate on the model's titles: exactly N, 3-8 words, pairwise
  *  distinct, none of the banned filler. Throws with the reason — the caller
  *  degrades to quiet rows rather than shipping bad names. */

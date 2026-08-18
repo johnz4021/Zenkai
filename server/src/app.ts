@@ -15,7 +15,7 @@
  * port 3200 (assertPortFree guards the double-launch case).
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -29,7 +29,7 @@ import { loadTopicLog, rollupTopics } from './topic-log.js';
 import { applyAdaptation, pickAdapter, planAdaptation, reconcileAdaptation, retiredSpecIds, type AdaptDiff } from './adapt.js';
 import { appendLearnings, gateBlueprint, loadBlueprint, writeBlueprintWithBackup } from './blueprint.js';
 import { clearGeneratingMarker, generationProgress, pidAlive, readGeneratingMarker, sweepVerdict, writeGeneratingMarker } from './generation-state.js';
-import { pickTopicNamer } from './plan-topics.js';
+import { pickTopicNamer, stripDefectTail } from './plan-topics.js';
 import { clientScript } from './chrome.js';
 import { authConfigFromPublic, makeAuth } from './auth.js';
 import { childEnv } from './child-env.js';
@@ -80,6 +80,7 @@ import {
   type GateView,
   type PaywallRow,
 } from './paywall.js';
+import { CONTACT_EMAIL, gateContactNote } from './contact.js';
 import {
   acquireRepLock,
   admissionVerdict,
@@ -307,6 +308,40 @@ function attachmentBlocksFromDecoded(
  *  values ('repeat' joined them with practice-again, which must be countable
  *  separately from a first run); console scrollback is not a metric, a JSONL
  *  file is. */
+/** The demo round (IP_SAMPLE_REP): a hand-picked, already-generated rep
+ *  whose pristine archive seeds a throwaway per-launch copy. Absent or
+ *  unrestorable → the card never renders and the endpoint 404s. */
+const SAMPLE_REP_ID = process.env.IP_SAMPLE_REP ?? '';
+const SAMPLE_RUNS_DIR = '.sample-runs';
+const SAMPLE_RUNS_PER_DAY = 3;
+
+function sampleArchivePath(): string | null {
+  if (!SAMPLE_REP_ID) return null;
+  const archive = repProblemDir(repoRoot, SAMPLE_REP_ID) + '.pristine.tar.gz';
+  return existsSync(archive) ? archive : null;
+}
+
+/** Per-user sample throttle: nothing else caps a sample (no rep row, no
+ *  paywall round), and a free container + interviewer turns should not be
+ *  a loop anyone can run all day. Disk-derived like every count. */
+function sampleRunsToday(userId: string, nowMs: number): number {
+  try {
+    const rows = readFileSync(path.join(repoRoot, 'samples.jsonl'), 'utf8').split('\n');
+    const today = new Date(nowMs).toISOString().slice(0, 10);
+    let n = 0;
+    for (const line of rows) {
+      if (!line.trim()) continue;
+      try {
+        const r = JSON.parse(line) as { user_id?: string; ts?: string };
+        if (r.user_id === userId && (r.ts ?? '').startsWith(today)) n++;
+      } catch { /* torn tail */ }
+    }
+    return n;
+  } catch {
+    return 0;
+  }
+}
+
 function logLaunch(origin: unknown, sessionId: string, userId?: string): void {
   const o = origin === 'repeat' || origin === 'plans' || origin === 'practice' ? origin : 'unknown';
   try {
@@ -576,7 +611,12 @@ function spawnGeneration(target: Target, item: QueueItem, dir: string): void {
   if (item.source?.kind === 'leetcode') {
     const slugs = (item.source.parts ?? [item.source]).map((p) => p.slug).join(',');
     args.push('--source', `lc:${slugs}`);
-  } else if (item.planned_title) args.push('--title', item.planned_title);
+  } else if (item.planned_title) {
+    // A legacy stored title may still carry a defect tail — the brief keeps
+    // the surface commitment; the defect stays the generator's own secret.
+    const surface = stripDefectTail(item.planned_title);
+    if (surface) args.push('--title', surface);
+  }
   liveGenerations.add(dir);
   mkdirSync(dir, { recursive: true });
   const logFd = openBuildLog(dir);
@@ -750,25 +790,18 @@ function resolveTitle(item: QueueItem): string | null {
       }
     }
   }
-  // A bound-but-unbuilt item: display follows provenance. The candidate
-  // NAMED a user pick, so its real title is theirs to see; an auto pick
-  // stays hidden — the reskin is what keeps the round fresh, and the plan
-  // view is read the night before.
-  if (item.source) {
-    const parts = item.source.parts ?? [item.source];
-    const named = parts.filter((p) => p.picked_by === 'user');
-    if (parts.length === 1) {
-      return item.source.picked_by === 'user'
-        ? `${item.source.title} · ${item.source.difficulty} · from the real set`
-        : `sourced · ${item.source.difficulty} — revealed when the round starts`;
-    }
-    if (named.length) {
-      const extra = parts.length - named.length;
-      return `${named.map((p) => p.title).join(', ')}${extra ? ` + ${extra} more` : ''} · from the real set`;
-    }
-    return `${parts.length} from the real set — revealed when the round starts`;
-  }
-  return item.planned_title ?? null;
+  // A bound-but-unbuilt item has no title of its own — provenance is the
+  // CLIENT's chip (app.js sourceBits), and composing it here too rendered
+  // the same fact twice back to back on every sourced row ("sourced ·
+  // medium — revealed…" as the title, "real set · medium — revealed…" as
+  // the chip — the doubled Google-plan rows, 2026-08-16). Returning null
+  // lets the row fall back to its label; what the candidate may see of a
+  // pick (user-named vs auto-hidden) is entirely the chip's rule.
+  if (item.source) return null;
+  // Display-time defect gate: planned titles stored BEFORE the authoring
+  // trim existed still carry "<surface> — <defect>" tails on disk; trimming
+  // at render heals them without a data migration.
+  return item.planned_title ? (stripDefectTail(item.planned_title) ?? null) : null;
 }
 
 /** Reconcile a target's queue with disk, re-pace, persist if changed, and
@@ -890,8 +923,13 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   }
   #nav-home:hover .word { color: #fff; }
   .navright { display: flex; align-items: center; gap: 18px; }
-  #nav-live { display: none; align-items: center; gap: 7px; color: var(--steel-text); font-size: 12px; font-family: var(--mono); }
+  /* An ACTION, not a status light: "session live" read as an indicator and
+     the way back into a running round went undiscovered (owner call
+     2026-08-18). Button chrome + verb label; the pulse keeps the live tell. */
+  #nav-live { display: none; align-items: center; gap: 7px; color: var(--steel-text); font-size: 12px; font-family: var(--mono); border: 1px solid var(--steel); border-radius: 6px; padding: 5px 12px; text-decoration: none; transition: background .18s, color .18s; }
   #nav-live.on { display: flex; }
+  #nav-live:hover { background: var(--steel); color: var(--bg); }
+  #nav-live:hover .pulse { background: var(--bg); }
   #nav-kill { display: none; color: var(--text-2); font-size: 12px; }
   #nav-kill.on { display: inline; }
   #nav-kill:hover { color: var(--weak-text); }
@@ -908,8 +946,8 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
      under the wordmark now; plans and history are secondary destinations.
      Active tab = 2px steel underline — steel marks POSITION, never action.
      The attribute selector outranks the nav-wide text-decoration reset. */
-  #nav-practice, #nav-plans, #nav-history { color: var(--text-2); font-size: 12px; transition: color .18s; }
-  #nav-practice:hover, #nav-plans:hover, #nav-history:hover { color: var(--text-1); }
+  #nav-practice, #nav-plans, #nav-history, #nav-contact { color: var(--text-2); font-size: 12px; transition: color .18s; }
+  #nav-practice:hover, #nav-plans:hover, #nav-history:hover, #nav-contact:hover { color: var(--text-1); }
   .navright a[aria-current="page"] {
     color: var(--text-1);
     text-decoration: underline;
@@ -930,12 +968,20 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   }
   /* The landing hero: the a11y label IS the heading (real-labels rule) —
      the page's voice, centered over the instrument. */
-  #practice-wrap .hero { margin: 0 0 30px; text-align: center; }
+  #practice-wrap .hero { margin: 0 0 14px; text-align: center; }
   #practice-wrap .hero label {
     display: inline; margin: 0;
     font-size: 38px; font-weight: 500; letter-spacing: -.015em;
     line-height: 1.2; color: var(--text-1);
   }
+  /* The hint under the hero: what to actually write, and why detail pays.
+     Narrower than the composer (58ch vs 62ch) so it reads as guidance
+     hanging over the instrument, not another band of chrome. */
+  #practice-wrap .herohint {
+    max-width: 58ch; margin: 0 auto 26px; text-align: center;
+    font-size: 13px; line-height: 1.65; color: var(--text-2);
+  }
+  #practice-wrap .herohint b { color: var(--text-1); font-weight: 500; }
   /* The one status line beneath the composer. Steel-TEXT on the countdown
      (time in its readable tier — raw steel fails contrast on the ground).
      The container keeps the body font-size so 62ch computes the SAME width
@@ -952,6 +998,45 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   #home-status .statusline > div + div { margin-top: 7px; }
   #home-status a { color: var(--text-2); text-decoration: none; }
   #home-status a:hover { color: var(--text-1); }
+  /* The readout's TWO columns (2026-08-16): left is what already exists and
+     can start now, right is what shape to build another in. One stack made
+     the reader classify every row on the way past — nine lines of identical
+     mono, three of which started a round and six of which built a new one.
+     Same 720px break-out as #rep-confirm (symmetric negative inline margins,
+     so it stays centered on the composer's axis) — inside 62ch a column
+     resolves to ~290px and every title wraps to three lines. auto-fit
+     collapses to one column when only one section renders AND on narrow
+     viewports, so there is no second markup path. The track is CAPPED
+     (346px, not 1fr) and centered: a lone column at 1fr stretched to the
+     full 720px and parked its button a screen-width from its title. */
+  .homecols {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 346px));
+    justify-content: center; gap: 4px 28px; margin-top: 26px; text-align: left;
+    margin-inline: calc((720px - 100%) / -2);
+  }
+  .homecol .colhead {
+    margin: 0 0 2px; font-family: var(--mono); font-size: 11px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: .14em; color: var(--text-3);
+  }
+  /* Rows are generated problem TITLES — the one place the telemetry voice had
+     to go: uppercase mono at .14em is unreadable on a sentence. */
+  .homerow {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 0; border-top: 1px solid var(--rule);
+  }
+  .homerow .grow { flex: 1; min-width: 0; }
+  .homerow b { display: block; font-weight: 500; font-size: 14px; color: var(--text-1); line-height: 1.35; }
+  .homerow .shape { margin-top: 3px; font-size: 12px; color: var(--text-2); }
+  /* A real button at a real tap target: these were 11px uppercase links
+     buried in the same mono as the text around them (user report
+     2026-08-16). flex-none so a long title can never squeeze the verb. */
+  .homerow button { flex: none; min-height: 38px; font-size: 13px; padding: 7px 14px; }
+  .homerow .launchline { font-size: 12px; margin-top: 4px; }
+  .colmore { display: inline-block; margin-top: 12px; font-size: 12px; }
+  @media (max-width: 760px) {
+    /* No breakout — it would overflow the shell (the #rep-confirm rule). */
+    .homecols { margin-inline: 0; }
+  }
   /* The composer is ONE instrument: a single frame holding the borderless
      textarea and its footer row (affordances left, the action right). Focus
      lifts the whole frame's hairline to steel — the established focus
@@ -967,6 +1052,13 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
     padding: 16px 18px 8px; font: inherit; font-size: 15px; line-height: 1.6;
   }
   #rep-paste::placeholder { color: var(--text-3); }
+  /* The sample-round card: quiet sibling of the composer — an exit for the
+     blank-page moment, never competing with the primary Generate action. */
+  .sample-card { display: flex; align-items: center; gap: 18px; border: 1px solid var(--line); border-radius: 8px; padding: 14px 18px; margin-top: 14px; background: var(--panel); }
+  .sample-card .title { font-size: 14px; color: var(--text-1); margin-bottom: 3px; }
+  .sample-card .grow { flex: 1; min-width: 0; }
+  .sample-card button { background: none; border: 1px solid var(--line); color: var(--text-1); padding: 7px 16px; font: inherit; cursor: pointer; border-radius: 6px; white-space: nowrap; }
+  .sample-card button:hover:not(:disabled) { border-color: var(--steel); color: var(--steel-text); }
   .composer-foot {
     display: flex; align-items: center; justify-content: space-between;
     gap: 12px; padding: 8px 10px 10px 18px;
@@ -1105,6 +1197,49 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   .reprow .primary { min-width: 96px; min-height: 44px; }
   .reprow b { font-weight: 500; }
 
+  /* ---- contact + feedback (#/contact, contact.ts) ----------------------
+     Same 62ch measure and same composer grammar as the landing: one framed
+     instrument, quiet affordances, the action bottom-right. It is a form on
+     a page of forms — inventing a look for it would make the one surface
+     that says "tell us anything" feel like it came from somewhere else. */
+  #contact-wrap { max-width: 62ch; margin: 0 auto; }
+  #contact-wrap h1 {
+    margin: 0 0 10px; font-size: 26px; font-weight: 500;
+    letter-spacing: -.01em; color: var(--text-1);
+  }
+  #contact-wrap .lede { margin: 0 0 4px; color: var(--text-2); font-size: 14px; line-height: 1.6; }
+  /* The address is a real link and looks like one: the mailto is the door
+     that still works when the form is the thing that is broken, so it must
+     never read as decoration. */
+  #contact-wrap .lede a { color: var(--steel-text); text-decoration: none; border-bottom: 1px solid var(--line); }
+  #contact-wrap .lede a:hover { color: var(--text-1); border-bottom-color: var(--steel-text); }
+  .contact-kinds { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 14px; }
+  .contact-kinds button {
+    min-height: 34px; padding: 5px 14px; font-size: 13px; color: var(--text-2);
+    border-radius: 999px;
+  }
+  .contact-kinds button[aria-pressed="true"] {
+    color: var(--text-1); border-color: var(--steel); background: var(--panel);
+  }
+  #contact-msg {
+    width: 100%; min-height: 150px; resize: vertical; display: block;
+    background: transparent; color: var(--text-1); border: 0;
+    padding: 16px 18px 8px; font: inherit; font-size: 15px; line-height: 1.6;
+  }
+  #contact-msg::placeholder { color: var(--text-3); }
+  .contact-reply { display: flex; align-items: center; gap: 10px; margin: 4px 18px 0; }
+  .contact-reply label { font-size: 12px; color: var(--text-3); white-space: nowrap; }
+  .contact-reply input {
+    flex: 1; min-width: 0; background: transparent; border: 0; color: var(--text-1);
+    font: inherit; font-size: 13px; padding: 6px 0;
+  }
+  /* Sent: the form is REPLACED, not merely annotated. A send that leaves the
+     filled box on screen reads as "did that go?" and gets pressed twice. */
+  #contact-sent { border: 1px solid var(--line); border-radius: 8px; padding: 22px 24px; background: var(--panel); }
+  #contact-sent h2 { margin: 0 0 8px; font-size: 17px; font-weight: 500; color: var(--text-1); }
+  #contact-sent p { margin: 0; color: var(--text-2); font-size: 13px; line-height: 1.6; }
+  #contact-sent .btnrow { margin-top: 18px; }
+
   /* ---- first paint: the shape of the page before data lands ---- */
   #boot { padding-top: 6px; }
   #boot .sk { height: 11px; background: var(--line-soft); margin: 16px 0; animation: breathe 1.5s ease-in-out infinite; }
@@ -1189,6 +1324,13 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   .specbox.dropped { opacity: .55; }
   .specbox .keep { display: inline-flex; gap: 6px; margin-left: 12px; color: var(--text-2); font-weight: 400; }
   .specbox .keep input { width: auto; }
+  /* The shared model-wait notice (waitNote, 2026-08-16): what it is doing,
+     an indeterminate bar, then how long that is expected to take. GLOBAL and
+     unscoped on purpose — the same notice renders in the planner chat, the
+     practice composer and the adapt panel, and a surface-scoped rule would
+     silently drop the styling in whichever surface got added next. */
+  .waitdoing { margin: 0; font-size: 13px; }
+  .waitfine { margin: 0; max-width: 54ch; color: var(--text-3); font-size: 12px; line-height: 1.55; }
   .progress { height: 2px; background: var(--line); margin: 16px 0; overflow: hidden; }
   .progress .fill { height: 100%; background: var(--steel); width: 30%; animation: slide 1.5s ease-in-out infinite alternate; }
   /* Determinate variant: width measures real elapsed vs the 8-min wall. */
@@ -1515,20 +1657,6 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   #login-msg.bad { color: var(--weak-text); }
   #login-msg.good { color: var(--steel-text); }
   .loginfine { color: var(--text-3); font-size: 12px; line-height: 1.6; margin: 0; }
-  /* What a round actually costs you, before you commit to 45 minutes. */
-  .expect {
-    border-top: 1px solid var(--line-soft); margin: 34px 0 0; padding-top: 16px;
-    display: flex; flex-direction: column; gap: 9px; max-width: 52ch;
-  }
-  /* Grid, not flex with a min-width: THE INTERVIEWER is wider than any min
-     that suits the other two, so a flex row pushed its value out of the
-     column and the three descriptions no longer shared a left edge. */
-  .expect > div { display: grid; grid-template-columns: 136px 1fr; gap: 14px; align-items: baseline; }
-  .expect dt {
-    font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: .18em;
-    text-transform: uppercase; color: var(--text-3);
-  }
-  .expect dd { margin: 0; color: var(--text-2); font-size: 13px; }
   @media (max-width: 1099px) {
     .loginpane { grid-template-columns: 1fr; gap: 40px; max-width: 460px; }
     .loginsay h1 { font-size: 28px; }
@@ -1564,11 +1692,12 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
       <span class="betatag">beta</span>
     </a>
     <span class="navright">
-      <a href="#/t/" id="nav-live" aria-live="polite"><span class="pulse"></span>session live</a>
+      <a href="#/t/" id="nav-live" aria-live="polite"><span class="pulse"></span>return to session →</a>
       <a href="#" id="nav-kill" title="end the running session without grading">end session</a>
       <a href="#/" id="nav-practice">practice</a>
       <a href="#/plans" id="nav-plans">plans</a>
       <a href="#/history" id="nav-history">history</a>
+      <a href="#/contact" id="nav-contact">contact</a>
       <a href="#" id="nav-signout">sign out</a>
     </span>
   </nav>
@@ -1607,6 +1736,11 @@ ${analyticsSnippet ? analyticsSnippet + '\n' : ''}<style>
   <section id="history" hidden>
     <!-- Practice history: the reps strip + judged cards. Reps and seasons
          never share a page (design review 2026-08-10). -->
+  </section>
+
+  <section id="contact" hidden>
+    <!-- Contact + feedback (contact.ts, owner request 2026-08-16): the one
+         surface the app does not ask for. Rendered whole by the client. -->
   </section>
 
   <section id="timeline" hidden></section>
@@ -1665,7 +1799,7 @@ export function runApp(cfg: AppConfig): http.Server {
   const multiLaunch = async (
     who: { id: string; admin: boolean },
     problemDirArg: string,
-    opts?: { ignoreEndedOnSameDir?: boolean; beforeSpawn?: () => void },
+    opts?: { ignoreEndedOnSameDir?: boolean; beforeSpawn?: () => void; extraEnv?: Record<string, string> },
   ): Promise<{ code: number; body: Record<string, unknown> }> => {
     await reconcileRegistryNow();
     let result: { code: number; body: Record<string, unknown> } = {
@@ -1717,6 +1851,7 @@ export function runApp(cfg: AppConfig): http.Server {
         ...(internalHeaders['x-ip-internal']
           ? { IP_INTERNAL_TOKEN: internalHeaders['x-ip-internal'] }
           : {}),
+        ...(opts?.extraEnv ?? {}),
       });
       reg.entries.push({
         sid, user_id: who.id, port: slot.port, ide_port: slot.idePort,
@@ -1914,7 +2049,11 @@ export function runApp(cfg: AppConfig): http.Server {
           // user_id and they are through) — that lever predates billing and
           // stays, for handing free access to people whose feedback is worth
           // having.
-          if (hasGrant(readPaywallRows(), user!.id)) return null;
+          // betaFree: with no Stripe key there is nothing to buy, so a
+          // `not_yet` grants too — both gate answers lead to the same
+          // follow-up questions and the round runs either way (paywall.ts
+          // GRANTING_BETA). Configuring billing restores the denial.
+          if (hasGrant(readPaywallRows(), user!.id, cfg.pub.stripe === null)) return null;
           const subs = readSubscriptionRows();
           // A SUBSCRIBER is not ungated — they get a per-period allowance.
           // `since` is their billing period start, so last month's rounds do
@@ -2169,6 +2308,12 @@ export function runApp(cfg: AppConfig): http.Server {
                     return {
                       ...i,
                       title: resolveTitle(i),
+                      // The raw stored planned_title may predate the defect
+                      // gate — never let it reach the client unsanitized
+                      // (itemTitle falls back to it when title is null).
+                      ...(i.planned_title
+                        ? { planned_title: stripDefectTail(i.planned_title) }
+                        : {}),
                       // Honest progress (ISSUE-007): start time from the
                       // .generating marker, live file count, and a phase —
                       // replaces the decorative infinite bar.
@@ -2279,7 +2424,12 @@ export function runApp(cfg: AppConfig): http.Server {
           today: new Date(now).toISOString(),
           session_live: live,
           session_url: sessionUrl,
+          sample_available: sampleArchivePath() !== null && cfg.pub.multiSession,
           user: { id: user!.id, email: user!.email, admin: user!.admin },
+          // Served, never hardcoded in markup: contact.ts owns the address, so
+          // changing it is one edit and the mailto can never drift from the
+          // one the 500 path tells people to use.
+          contact_email: CONTACT_EMAIL,
           ...(allowance ? { paywall: allowance } : {}),
         });
       }
@@ -2408,6 +2558,67 @@ export function runApp(cfg: AppConfig): http.Server {
         // looping on the same gate. True for an admin/gate-off box too — they
         // were never gated in the first place.
         return json(200, { ok: true, granted: !recorded || grantsAccess(action) });
+      }
+      if (url === '/api/contact' && req.method === 'POST') {
+        // The unprompted door (contact.ts). Distinct from /api/feedback, which
+        // serves a JUDGED ROUND's card and is keyed by session id — this one
+        // is attached to nothing and can be sent at any time.
+        //
+        // Every failure here is the sender's sentence, shown verbatim: a
+        // person who took the trouble to write must never meet a status code.
+        let note;
+        try {
+          note = gateContactNote(JSON.parse((await readBody(req)) || '{}'));
+        } catch (e) {
+          return json(400, { error: e instanceof Error ? e.message : 'could not read that' });
+        }
+        // The write is SYNCHRONOUS and its failure is reported. logPaywall
+        // swallows errors because a lost metric must never block a launch;
+        // the opposite holds here — telling someone their report was sent
+        // when it was not is the one outcome worth a 500.
+        const noteId = `ct-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        const noteTs = new Date().toISOString();
+        try {
+          appendFileSync(
+            path.join(repoRoot, 'contact.jsonl'),
+            JSON.stringify({
+              id: noteId,
+              ts: noteTs,
+              user_id: user!.id,
+              // The account address, so a reply needs no typed reply-to. The
+              // optional one overrides it only as a preference, never as
+              // identity — identity is always the session's.
+              email: user!.email,
+              kind: note.kind,
+              message: note.message,
+              ...(note.reply_to ? { reply_to: note.reply_to } : {}),
+            }) + '\n',
+          );
+        } catch (e) {
+          console.error('[contact] append failed:', String(e).slice(0, 200));
+          return json(500, {
+            error: `could not save that — please email it to ${CONTACT_EMAIL} instead`,
+          });
+        }
+        // Kind ONLY on the wire. The note itself is user-authored prose and
+        // stays in the JSONL, exactly like the paywall's expect/value/improve
+        // (owner decision 2026-08-15).
+        ph.capture(user!.id, 'contact_note', { kind: note.kind });
+        // Write-only mirror (owner call 2026-08-17): the note lands in the
+        // founder-visible Postgres table within seconds instead of riding
+        // the nightly backup a day late. Fire-and-forget like every db.ts
+        // mirror — disk remains truth, and a missing table costs one warn.
+        db.mirrorContact([{
+          id: noteId,
+          user_id: user!.id,
+          email: user!.email ?? null,
+          kind: note.kind,
+          message: note.message,
+          reply_to: note.reply_to ?? null,
+          created_at: noteTs,
+        }]);
+        console.log(`[contact] ${note.kind} from ${user!.id}`);
+        return json(200, { ok: true });
       }
       if (url === '/api/target' && req.method === 'POST') {
         // The plan guardrail, checked FIRST — before label validation, before
@@ -2788,6 +2999,78 @@ export function runApp(cfg: AppConfig): http.Server {
         console.log(`[app] rep ${rep.id} requested (${rep.spec.label})`);
         spawnRepBuild(rep);
         return json(200, { ok: true, rep_id: rep.id });
+      }
+      if (url.startsWith('/api/session-ready') && req.method === 'GET') {
+        // Launch-time readiness for the stay-and-poll flow (owner call
+        // 2026-08-18): the client keeps the user on the home page and
+        // redirects only once the spawned session actually answers HTTP —
+        // the router's warm-up page becomes a fallback nobody sees on the
+        // normal path. Ownership-checked: sid enumeration must not leak
+        // whether someone else's room is up.
+        const sid = new URL(url, 'http://x').searchParams.get('sid') ?? '';
+        if (cfg.pub.multiSession) {
+          const reg = loadRegistry(repoRoot);
+          const entry = reg.entries.find((e) => e.sid === sid && e.ended_at === undefined);
+          if (!entry) return json(200, { ready: false, gone: true });
+          if (entry.user_id !== user!.id && !user!.admin) return json(403, { error: 'not yours' });
+          const p = await probeSession(entry.port);
+          return json(200, { ready: p.reachable && !p.ended });
+        }
+        const p = await probeSession(cfg.sessionPort);
+        return json(200, { ready: p.reachable && !p.ended });
+      }
+      if (url === '/api/practice/sample' && req.method === 'POST') {
+        // The activation door (owner call 2026-08-18): a hand-picked round,
+        // launched instantly from its pristine archive into a THROWAWAY
+        // copy, run as a completely normal session except for the one
+        // persist seam (session.ts finalize) — full loop, no history, no
+        // counts. Deliberately no paywall gate and no admission checks:
+        // there is no rep row for them to count, and the sample exists to
+        // earn the signup, not to spend it.
+        const archive = sampleArchivePath();
+        if (!archive) return json(404, { error: 'no sample round is configured' });
+        if (!cfg.pub.multiSession) return json(409, { error: 'sample rounds need multi-session mode' });
+        if (sampleRunsToday(user!.id, Date.now()) >= SAMPLE_RUNS_PER_DAY) {
+          return json(429, { error: "you've taken the sample a few times today — describe your own round instead, that's the real thing" });
+        }
+        // Throwaway copy per launch: sessions edit their dir in place, so
+        // two people sampling at once must never share one. Old copies are
+        // swept here (>24h) — launch-time is the one moment this dir is
+        // guaranteed to matter to someone.
+        const runsRoot = path.join(repoRoot, SAMPLE_RUNS_DIR);
+        mkdirSync(runsRoot, { recursive: true });
+        try {
+          for (const e of readdirSync(runsRoot)) {
+            const p = path.join(runsRoot, e);
+            try {
+              if (Date.now() - statSync(p).mtimeMs > 24 * 3600_000) rmSync(p, { recursive: true, force: true });
+            } catch { /* sweep is best-effort */ }
+          }
+        } catch { /* sweep is best-effort */ }
+        const dir = path.join(runsRoot, `smp-${Date.now().toString(36)}`);
+        mkdirSync(dir, { recursive: true });
+        const x = spawnSync('tar', ['-xzf', archive, '-C', dir], { encoding: 'utf8' });
+        if (x.status !== 0) {
+          rmSync(dir, { recursive: true, force: true });
+          console.error(`[sample] pristine extract failed: ${(x.stderr ?? '').slice(0, 200)}`);
+          return json(500, { error: 'could not prepare the sample round — try again in a minute' });
+        }
+        const out = await multiLaunch({ id: user!.id, admin: user!.admin }, dir, {
+          extraEnv: { IP_SAMPLE: '1' },
+        });
+        if (out.code === 200) {
+          try {
+            appendFileSync(
+              path.join(repoRoot, 'samples.jsonl'),
+              JSON.stringify({ ts: new Date().toISOString(), user_id: user!.id, session_id: out.body.session_id }) + '\n',
+            );
+          } catch { /* throttle row is best-effort */ }
+          logLaunch('sample', String(out.body.session_id), user!.id);
+          console.log(`[app] sample round launching as ${String(out.body.session_id)}`);
+        } else {
+          rmSync(dir, { recursive: true, force: true });
+        }
+        return json(out.code, out.body);
       }
       if (url === '/api/practice/launch' && req.method === 'POST') {
         const b = JSON.parse((await readBody(req)) || '{}') as { rep_id?: string; origin?: string };
@@ -3219,8 +3502,14 @@ export function runApp(cfg: AppConfig): http.Server {
                 t.description ? `The candidate describes it as: ${t.description}` : '',
               ].filter(Boolean).join('\n');
               const titles = await stripSpoilerTitles(await namer(brief, mine.length));
+              // Defect gate (Google-plan leak, 2026-08-16): a planted-bug
+              // round's title cuts ANY qualifier tail — the namer wrote
+              // "<surface> — off-by-one bug" and the rail showed the answer
+              // the night before. Other kinds cut only defect vocabulary.
+              const planted = spec.check.kind === 'one_failing_test';
               mine.forEach((item, i) => {
-                if (titles[i]) item.planned_title = titles[i];
+                const clean = titles[i] ? stripDefectTail(titles[i]!, { always: planted }) : undefined;
+                if (clean) item.planned_title = clean;
               });
             } catch (e) {
               console.warn(`[app] topic naming failed for ${spec.id} (quiet rows): ${String(e).slice(0, 200)}`);
@@ -3291,8 +3580,11 @@ export function runApp(cfg: AppConfig): http.Server {
                 `The candidate just learned: ${material.slice(0, 2000)}`,
               ].filter(Boolean).join('\n');
               const titles = await stripSpoilerTitles(await namer(brief, rows.length));
+              // Same defect gate as plan naming above.
+              const planted = spec.check.kind === 'one_failing_test';
               rows.forEach((r, i) => {
-                if (titles[i]) r.new_title = titles[i];
+                const clean = titles[i] ? stripDefectTail(titles[i]!, { always: planted }) : undefined;
+                if (clean) r.new_title = clean;
               });
             } catch (e) {
               console.warn(`[app] adapt naming failed for ${specId} (quiet rows): ${String(e).slice(0, 200)}`);

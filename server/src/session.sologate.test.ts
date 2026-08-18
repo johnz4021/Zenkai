@@ -100,3 +100,31 @@ describe('the solo trace stays utterance-free (pinned via source)', () => {
     expect(src).toContain('voiceOffReasonFor(interviewer !== null');
   });
 });
+
+describe('clamp scope follows the surface (evidence-scoped judging, 2026-08-16)', () => {
+  const byKey = (r: JudgeResult) =>
+    Object.fromEntries((r as Assessment).dimensions.map((d) => [d.dimension, d.verdict]));
+
+  it('panes solo clamps four dimensions — tab-switching is not evidence', () => {
+    const v = byKey(clampSilentDimensions(assessed({}), { hasInterviewer: false, utteranceCount: 0, surface: 'panes' }));
+    expect(v.clarify).toBe('unassessable');
+    expect(v.approach).toBe('unassessable');
+    expect(v.communicate).toBe('unassessable');
+    expect(v.reflect).toBe('unassessable');
+    expect(v.implement).toBe('adequate');
+    expect(v.verify).toBe('adequate');
+  });
+
+  it('IDE solo keeps clarify/approach — navigation and terminal are real signal', () => {
+    const v = byKey(clampSilentDimensions(assessed({}), { hasInterviewer: false, utteranceCount: 0, surface: 'ide' }));
+    expect(v.clarify).toBe('adequate');
+    expect(v.approach).toBe('adequate');
+    expect(v.communicate).toBe('unassessable');
+    expect(v.reflect).toBe('unassessable');
+  });
+
+  it('interviewer rounds clamp nothing regardless of surface', () => {
+    const a = assessed({});
+    expect(clampSilentDimensions(a, { hasInterviewer: true, utteranceCount: 0, surface: 'panes' })).toBe(a);
+  });
+});

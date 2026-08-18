@@ -1,0 +1,57 @@
+{
+  "session_id": "sess-1786841779652",
+  "status": "assessed",
+  "judged_at": 1786910554240,
+  "model": "claude-sonnet-5 (api)",
+  "prompt_hash": "c2c4526143c3",
+  "schema_version": 1,
+  "renderer_version": 3,
+  "expectations_used": {
+    "clarify": "Pins the contract down from the visible tests — confirming from test_fill_prints_at_the_resting_order_price that a fill trades at the maker's px rather than the taker's limit — instead of guessing at exchange conventions.",
+    "approach": "States a mechanism before writing much code — e.g. holding each side's resting orders sorted by price then arrival sequence so the matching loop always consumes the front of the book — not merely naming a dict or a heap.",
+    "communicate": "Names the invariant each step establishes as it lands: that a taker consumes liquidity best-price-first, or that a partly filled resting order keeps its remainder, rather than narrating keystrokes.",
+    "implement": "Turns the simplest tests green first — a lone resting order, then an exact-size cross — before taking on price-time priority and the partial-fill remainder cases, keeping earlier passes intact.",
+    "verify": "Runs `python3 -m unittest discover -v` repeatedly while building instead of once at the end, and reads which tests moved from red to green after each change to the matching loop.",
+    "reflect": "Explains which tests are still red and why — e.g. that a sweep stops correctly at the taker's limit price but arrival order within a level is not yet enforced — rather than claiming the engine is finished."
+  },
+  "solved": false,
+  "summary": "The candidate spent the entire ~2.5 minute session opening and re-opening the problem statement, book.py, model.py, and test files without writing any code or stating a plan. A brief frustrated remark at the start is the only captured speech before a total evidence gap covers the remainder of the session, which ended with the candidate clicking End Session having made no progress.",
+  "dimensions": [
+    {
+      "dimension": "clarify",
+      "verdict": "unassessable",
+      "analysis": "The session ended almost immediately after the candidate opened the problem files and tests, before any direction was committed to or any ambiguity could be surfaced. There is no evidence of questions asked or assumptions made, just file browsing.",
+      "evidence": []
+    },
+    {
+      "dimension": "approach",
+      "verdict": "unassessable",
+      "analysis": "The candidate never reached a point of stating a plan or hypothesis; the timeline shows only file opens across book.py, model.py, __init__.py, and test_book.py with no code written and no articulated mechanism.",
+      "evidence": []
+    },
+    {
+      "dimension": "communicate",
+      "verdict": "unassessable",
+      "analysis": "The only captured speech consists of a frustrated exclamation and a filler word early on, followed by an evidence gap covering the rest of the session where the microphone was off, so there is no reliable basis to judge narration quality.",
+      "evidence": []
+    },
+    {
+      "dimension": "implement",
+      "verdict": "unassessable",
+      "analysis": "No code changes were made at any point in the session; the candidate only opened and re-opened files (book.py, model.py, test_book.py) without writing any implementation.",
+      "evidence": []
+    },
+    {
+      "dimension": "verify",
+      "verdict": "unassessable",
+      "analysis": "There is no test run or any verification activity in the timeline; the session ended during initial exploration before any code existed to verify.",
+      "evidence": []
+    },
+    {
+      "dimension": "reflect",
+      "verdict": "unassessable",
+      "analysis": "The candidate ended the session by clicking End Session without any resolution, explanation, or summary of findings, and no work was done to reflect upon.",
+      "evidence": []
+    }
+  ]
+}

@@ -21,6 +21,11 @@ this round — never a vague theme.
    build commitment: a famous name spoils the round and drags its difficulty
    along; a technique name hands the candidate the answer. Name the situation,
    not the solution.
+3b. On a debugging round, never name the DEFECT, its class, or its location
+   ("— off-by-one bug", "— decimal precision error", "— timestamp boundary
+   condition"). The candidate's whole job is diagnosing the fault; a title
+   that names it is the answer printed on the door. Name only the system:
+   "User login streak counter", "E-commerce cart totals".
 4. All titles pairwise distinct — different domains, not the same domain rephrased.
 5. Every title must fit the round described above (its format, its topic emphasis,
    its difficulty for a strong college senior in the stated time).

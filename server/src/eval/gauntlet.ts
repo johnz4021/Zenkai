@@ -435,15 +435,19 @@ export async function runGauntlet(opts: GauntletOptions): Promise<Scorecard> {
   let falseTriggers = 0;
   for (const c of INTENT_CASES) {
     const got = await intentCheck(c.text, FIXTURE_DEBUGGING_PROBLEM.spec, c.recent);
-    if (got === c.addressed) intentOk += 1;
+    // The fixtures are binary (addressed vs not); 'engage' is a paced,
+    // optional reaction lane, not a reply, so it scores as not-addressed
+    // here. The raw verdict still prints so engage drift stays visible.
+    const gotAddressed = got === 'addressed';
+    if (gotAddressed === c.addressed) intentOk += 1;
     else {
       // Over-triggering (narration judged addressed) means interrupting a
       // candidate mid-thought — the failure the "when in doubt, no" bias
       // existed to prevent. Called out separately so loosening the bias
       // cannot look like a win while regressing this direction.
-      if (got && !c.addressed) falseTriggers += 1;
+      if (gotAddressed && !c.addressed) falseTriggers += 1;
       intentDetail.push(
-        `${got && !c.addressed ? 'FALSE TRIGGER ' : ''}"${c.text.slice(0, 50)}": got ${got ? 'addressed' : 'narration'}, expected ${c.addressed ? 'addressed' : 'narration'}`,
+        `${gotAddressed && !c.addressed ? 'FALSE TRIGGER ' : ''}"${c.text.slice(0, 50)}": got ${got}, expected ${c.addressed ? 'addressed' : 'narration'}`,
       );
     }
   }

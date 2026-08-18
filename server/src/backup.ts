@@ -47,6 +47,11 @@ export const BACKUP_PATHS = [
   // so a disk failure loses the experiment, not just a convenience.
   'launches.jsonl', // launch origin (the composer-landing falsifier)
   'paywall.jsonl',  // willingness-to-pay probe (paywall.ts); carries emails
+  // Unprompted notes from beta users (contact.ts). Same box-only, nothing-
+  // regenerates-it property as the two above, and the contents are worth
+  // more per byte than anything else in this list: a bug report nobody can
+  // read again is a bug that gets found twice.
+  'contact.jsonl',
   // Who paid, and until when. Not a metric — losing this file silently
   // un-entitles every paying customer, and Stripe cannot restore it because
   // the user_id mapping lives only here.

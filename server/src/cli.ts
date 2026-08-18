@@ -772,7 +772,8 @@ if (cmd === 'generate') {
   // Same talk-dimension clamp finalize applies (judge.ts): a rejudged solo
   // trace with zero utterances must not mint communicate/reflect verdicts.
   const { clampSilentDimensions } = await import('./judge.js');
-  const { resolveRoundSpec: resolveSpecForClamp } = await import('@interview-prep/shared');
+  const { resolveRoundSpec: resolveSpecForClamp, resolveSurface: resolveSurfaceForClamp } = await import('@interview-prep/shared');
+  const clampCaps = resolveSpecForClamp(problem).capabilities;
   const result = clampSilentDimensions(
     await judgeSession({
       sessionId,
@@ -782,8 +783,9 @@ if (cmd === 'generate') {
       templatePath: path.join(repoRoot, 'prompts', 'judge-session.md'),
     }),
     {
-      hasInterviewer: resolveSpecForClamp(problem).capabilities.interviewer,
+      hasInterviewer: clampCaps.interviewer,
       utteranceCount: events.filter((e: { type: string }) => e.type === 'utterance').length,
+      surface: resolveSurfaceForClamp(clampCaps),
     },
   );
   mkdirSync(path.join(repoRoot, 'assessments'), { recursive: true });
@@ -1072,6 +1074,7 @@ if (cmd === 'generate') {
     idePort: portEnv(process.env.IP_IDE_PORT, 3100),
     autorunTests: process.env.IP_AUTORUN_TESTS !== '0',
     prepareNext: process.env.IP_PREPARE_NEXT !== '0',
+    sample: process.env.IP_SAMPLE === '1',
     interviewer: process.env.IP_INTERVIEWER === '0' ? null : undefined,
     intentCheck: process.env.IP_INTERVIEWER === '0' ? null : undefined,
     voice: process.env.IP_VOICE !== '0',
