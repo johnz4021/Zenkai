@@ -23,6 +23,14 @@
  *
  * pickSender() returns null when unconfigured — the sweep then reports that
  * it sent nothing rather than crashing a systemd timer every 5 minutes.
+ *
+ * PORT 587 + STARTTLS, not 465 implicit TLS. Hetzner blocks outbound 25 and
+ * 465 as anti-spam policy — the first draft used 465, which worked from a
+ * laptop and hung forever on the box, the single most misleading way this
+ * could have failed (`--check` passes in dev, the timer silently times out in
+ * prod). 587 is open there and works everywhere else too. requireTLS is not
+ * optional: without it nodemailer will fall back to sending the app password
+ * in the clear if STARTTLS is ever stripped.
  */
 
 import type { SendMail } from './welcome.js';
@@ -30,6 +38,8 @@ import type { SendMail } from './welcome.js';
 export interface SmtpConfig {
   user: string;
   appPassword: string;
+  /** Default 587 (STARTTLS). Override only if a host blocks it too. */
+  port?: number;
   /** RFC 5322 From. Defaults to the authenticating account. Gmail rewrites
    *  anything that is not the account or a verified alias, so this is a
    *  display-name knob, not a spoofing one. */
@@ -43,22 +53,33 @@ export function readSmtpConfig(env: Record<string, string | undefined>): SmtpCon
   // is the obvious thing to do and authenticates with a 535 otherwise.
   const appPassword = env.IP_GMAIL_APP_PASSWORD?.replace(/\s+/g, '');
   if (!user || !appPassword) return null;
+  const port = Number(env.IP_SMTP_PORT ?? '') || 587;
   return {
     user,
     appPassword,
+    port,
     ...(env.IP_WELCOME_FROM?.trim() ? { from: env.IP_WELCOME_FROM.trim() } : {}),
     ...(env.IP_WELCOME_REPLY_TO?.trim() ? { replyTo: env.IP_WELCOME_REPLY_TO.trim() } : {}),
   };
 }
 
-export async function makeSender(cfg: SmtpConfig): Promise<SendMail> {
+async function createTransport(cfg: SmtpConfig) {
   const { default: nodemailer } = await import('nodemailer');
-  const transport = nodemailer.createTransport({
+  const port = cfg.port ?? 587;
+  return nodemailer.createTransport({
     host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
+    port,
+    secure: port === 465, // implicit TLS only on 465; 587 upgrades via STARTTLS
+    requireTLS: true,
     auth: { user: cfg.user, pass: cfg.appPassword },
+    // A blocked port must fail fast and say so, not hang a systemd timer.
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
   });
+}
+
+export async function makeSender(cfg: SmtpConfig): Promise<SendMail> {
+  const transport = await createTransport(cfg);
   return async ({ to, subject, text }) => {
     await transport.sendMail({
       from: cfg.from ?? cfg.user,
@@ -72,12 +93,6 @@ export async function makeSender(cfg: SmtpConfig): Promise<SendMail> {
 
 /** Verify credentials without sending anything (`--check`). */
 export async function verifySender(cfg: SmtpConfig): Promise<void> {
-  const { default: nodemailer } = await import('nodemailer');
-  const transport = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
-    auth: { user: cfg.user, pass: cfg.appPassword },
-  });
+  const transport = await createTransport(cfg);
   await transport.verify();
 }
