@@ -48,6 +48,10 @@ datasets/
 # per-user topic ledgers (same class of data as gaps/)
 topics/
 
+# welcome-email send log (welcome.ts). Carries beta user emails; the
+# authoritative dedupe is the welcome_emails table in Postgres, not this.
+outreach/
+
 # git worktrees parked under .claude/ (full repo checkouts, never commit)
 .claude/worktrees/
 

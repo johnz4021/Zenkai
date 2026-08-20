@@ -59,6 +59,16 @@ describe('childEnv', () => {
     }
   });
 
+  it('the Gmail app password reaches NO child kind, ever', () => {
+    // It does not read mail, it SENDS as the founder — leaked, it is a
+    // trusted From: header aimed at every beta user. The welcome sweep runs
+    // in cli.ts; no child has any use for this.
+    const withMail = { ...BASE, IP_GMAIL_APP_PASSWORD: 'abcd efgh ijkl mnop' };
+    for (const kind of ['sandbox', 'generator', 'session'] as const) {
+      expect(childEnv(kind, withMail).IP_GMAIL_APP_PASSWORD).toBeUndefined();
+    }
+  });
+
   it('PostHog: sessions keep it (they emit round events); generators and the sandbox never see it', () => {
     // Deliberately GENERATOR_DROP, not ALWAYS_DROP: phc_ is a public key that
     // ships to every browser — it guards nothing. Dropping it from generators

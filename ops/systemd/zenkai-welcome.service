@@ -1,0 +1,18 @@
+[Unit]
+Description=Zenkai post-signup welcome email sweep
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=zenkai
+WorkingDirectory=/home/zenkai/Zenkai
+# cli.ts loads .env itself — never pass the Supabase service key or the Gmail
+# app password on a command line (they land in the journal and in `ps`), and
+# never through a shell one-liner (docs/beta-runbook.md's key-mangling trap).
+ExecStart=/usr/bin/npx tsx server/src/cli.ts welcome-sweep
+# A sweep that cannot reach Supabase or authenticate to Gmail must be visible
+# in `systemctl status`, never silent — this is an outbound email path where
+# "nothing happened" and "everything is fine" look identical from outside.
+StandardOutput=journal
+StandardError=journal

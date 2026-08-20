@@ -1,0 +1,18 @@
+[Unit]
+Description=Post-signup welcome sweep every 5 minutes
+
+[Timer]
+# Every 5 minutes. The 30-minute delay lives in welcome.ts, not here: this
+# cadence only sets the GRANULARITY, so real sends land anywhere in the
+# 30–35 minute band after signup. That spread is a feature — a mail that
+# arrives at exactly T+30:00 every time reads as a machine.
+OnCalendar=*:0/5
+# Deliberately NOT Persistent=true, unlike zenkai-backup.timer. A missed
+# backup should run the moment the box is back; a missed welcome sweep should
+# NOT fire a catch-up burst at boot. The sweep re-derives who is due from the
+# window every time it runs, so the next scheduled tick already covers the
+# gap — and welcome.ts's 24h backstop is what bounds it.
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

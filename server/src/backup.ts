@@ -56,6 +56,12 @@ export const BACKUP_PATHS = [
   // un-entitles every paying customer, and Stripe cannot restore it because
   // the user_id mapping lives only here.
   'subscriptions.jsonl',
+  // What we have already said to whom (welcome.ts). Unlike the ledgers above
+  // this one is NOT the guard — the welcome_emails table in Postgres is, and
+  // it survives the disk on its own. Backed up because it is the only place
+  // the sent SUBJECT and wording are recorded, which is what you need when a
+  // reply arrives quoting an email nobody can find.
+  'outreach',
 ] as const;
 
 /** Bulk that is regenerable or machine-local — never worth the bytes. */

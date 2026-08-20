@@ -1102,6 +1102,130 @@ if (cmd === 'generate') {
     console.error(`[backup] ${String(e instanceof Error ? e.message : e)}`);
     process.exit(1);
   }
+} else if (cmd === 'welcome-sweep') {
+  // Post-signup welcome email, ~30 min after signup. Driven by a systemd
+  // timer every 5 minutes (ops/systemd/zenkai-welcome.timer); the WINDOW,
+  // not a sleeping process, is what carries the delay — welcome.ts explains
+  // why. Lives in cli.ts for the same reason backup does: process.loadEnvFile
+  // is the only path that hands the Supabase key over intact.
+  //
+  // Each guard below sits with the path that needs it: --seed-existing needs
+  // no mailbox (it cannot send), --check needs no database (it only proves
+  // the credential). Demanding all of both up front would mean you cannot
+  // suppress your existing users until SMTP happens to be configured — and
+  // suppression is the step you want to run FIRST.
+  const { mkdirSync, appendFileSync } = await import('node:fs');
+  const { runWelcomeSweep, seedExisting } = await import('./welcome.js');
+  const { readSmtpConfig, makeSender, verifySender } = await import('./mailer.js');
+  const { flags } = parseFlags(process.argv.slice(3));
+  const dryRun = flags['dry-run'] === 'true' || flags.n === 'true';
+
+  const needDb = (): { url: string; key: string } => {
+    const url = process.env.IP_SUPABASE_URL;
+    const key = process.env.IP_SUPABASE_SERVICE_KEY;
+    if (!url || !key) {
+      console.error('[welcome] IP_SUPABASE_URL and IP_SUPABASE_SERVICE_KEY are required');
+      process.exit(2);
+    }
+    return { url, key };
+  };
+
+  if (flags['seed-existing'] === 'true') {
+    // Cutover: claim everyone who exists NOW so the sweep can only ever reach
+    // people who sign up after this. Run once, before enabling the timer.
+    const { url, key } = needDb();
+    try {
+      console.log(await seedExisting({ supabaseUrl: url, serviceKey: key, adminEmails: [] }, { dryRun }));
+    } catch (e) {
+      console.error(`[welcome] ${String(e instanceof Error ? e.message : e)}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
+  const smtp = readSmtpConfig(process.env);
+  if (!smtp) {
+    console.error('[welcome] IP_GMAIL_USER and IP_GMAIL_APP_PASSWORD are required');
+    process.exit(2);
+  }
+  if (flags.check === 'true') {
+    // Prove the credential on demand, so a timer never discovers a revoked
+    // app password at 3am with nothing but a journal line to say so.
+    try {
+      await verifySender(smtp);
+      console.log(`[welcome] SMTP ok as ${smtp.user}`);
+      process.exit(0);
+    } catch (e) {
+      console.error(`[welcome] SMTP FAILED: ${String(e instanceof Error ? e.message : e)}`);
+      process.exit(1);
+    }
+  }
+
+  if (flags['test-to']) {
+    // Send ONE real email to an address you choose, bypassing the window, the
+    // claim table and the send log entirely. Needs no database — it is the
+    // only way to see what actually lands in an inbox (line breaks, subject,
+    // how the From renders) before a timer starts doing it unattended, and
+    // the admin exclusion means you cannot see it by signing up yourself.
+    const tpl = path.join(repoRoot, 'templates', 'welcome-email.md');
+    if (!existsSync(tpl)) {
+      console.error(`[welcome] template missing: ${tpl}`);
+      process.exit(2);
+    }
+    const to = flags['test-to'];
+    const { renderTemplate, firstName } = await import('./welcome.js');
+    try {
+      const { subject, text } = renderTemplate(readFileSync(tpl, 'utf8'), {
+        FIRST_NAME: flags.name ?? firstName({ email: to, user_metadata: null }),
+        EMAIL: to,
+      });
+      console.log(`[welcome] --- subject ---\n${subject}\n[welcome] --- body ---\n${text}\n[welcome] ---`);
+      await (await makeSender(smtp))({ to, subject, text });
+      console.log(`[welcome] test email sent to ${to} — claimed nothing, logged nothing`);
+      process.exit(0);
+    } catch (e) {
+      console.error(`[welcome] ${String(e instanceof Error ? e.message : e)}`);
+      process.exit(1);
+    }
+  }
+
+  const { url, key } = needDb();
+  const tplPath = path.join(repoRoot, 'templates', 'welcome-email.md');
+  if (!existsSync(tplPath)) {
+    console.error(`[welcome] template missing: ${tplPath}`);
+    process.exit(2);
+  }
+
+  try {
+    console.log(
+      await runWelcomeSweep(
+        {
+          supabaseUrl: url,
+          serviceKey: key,
+          adminEmails: (process.env.IP_AUTH_ADMIN_EMAILS ?? '')
+            .split(',')
+            .map((s) => s.trim().toLowerCase())
+            .filter(Boolean),
+          ...(flags['delay-min'] ? { delayMs: Number(flags['delay-min']) * 60_000 } : {}),
+        },
+        {
+          template: readFileSync(tplPath, 'utf8'),
+          send: dryRun ? async () => {} : await makeSender(smtp),
+          dryRun,
+          // The human-readable log. The Postgres claim is the guard; this is
+          // what you read when someone asks "did we ever email them?".
+          onSent: (row) => {
+            const dir = path.join(repoRoot, 'outreach');
+            mkdirSync(dir, { recursive: true });
+            appendFileSync(path.join(dir, 'sent.jsonl'), JSON.stringify(row) + '\n');
+          },
+        },
+      ),
+    );
+  } catch (e) {
+    console.error(`[welcome] ${String(e instanceof Error ? e.message : e)}`);
+    process.exit(1);
+  }
 } else if (cmd === 'lc') {
   // Vendored LeetCode dataset ops. fetch is idempotent and pinned — see
   // LC_DATASET_PINS in lc-source.ts for the integrity story.
@@ -1279,6 +1403,9 @@ if (cmd === 'generate') {
       '  cli.ts rep-build <rep-id>   build a practice rep (draft blueprint + generate)\n' +
       '  cli.ts lc <fetch|list|show> ...   vendored LeetCode dataset ops\n' +
       '  cli.ts backup [--keep N]  tar gaps/topics/traces/feedback/targets → Supabase Storage\n' +
+      '  cli.ts welcome-sweep [--dry-run] [--check]   email new signups ~30 min after they join\n' +
+      '  cli.ts welcome-sweep --seed-existing   suppress every CURRENT user (run once, before the timer)\n' +
+      '  cli.ts welcome-sweep --test-to <email>   send one real copy to yourself; touches no state\n' +
       '  cli.ts app               run the home app (:3300) - targets, queues, launch',
   );
   process.exit(64);
