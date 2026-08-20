@@ -389,24 +389,40 @@ export async function seedExisting(
     const nowMs = deps.nowMs ?? Date.now();
     const delay = cfg.delayMs ?? DELAY_MS;
     const backstop = cfg.backstopMs ?? BACKSTOP_MS;
+    // Consult the ledger too. Re-running this after a seed must not shout
+    // "WOULD BE MAILED" about people it already suppressed — the preview is
+    // read to decide whether seeding costs anything, and an already-claimed
+    // user costs nothing by definition.
+    const held = await fetchClaimed(cfg, rows.map((r) => r.user_id), fetchImpl);
     const byId = new Map(users.map((u) => [u.id, u]));
     const aged = rows
       .map((r) => {
         const u = byId.get(r.user_id)!;
         const age = nowMs - Date.parse(u.created_at);
         const confirmed = Boolean(u.email_confirmed_at ?? u.confirmed_at);
-        return { email: r.email, age, inWindow: confirmed && age >= delay && age <= backstop };
+        return {
+          email: r.email,
+          age,
+          claimed: held.has(r.user_id),
+          inWindow: confirmed && age >= delay && age <= backstop,
+        };
       })
       .sort((x, y) => x.age - y.age);
 
     for (const r of aged) {
-      log(`[welcome] ${r.inWindow ? 'WOULD BE MAILED ->' : '  already unreachable'} ${r.email} (signed up ${humanAge(r.age)} ago)`);
+      const label = r.claimed
+        ? '  already suppressed  '
+        : r.inWindow
+          ? 'WOULD BE MAILED ->   '
+          : '  already unreachable ';
+      log(`[welcome] ${label}${r.email} (signed up ${humanAge(r.age)} ago)`);
     }
-    const live = aged.filter((r) => r.inWindow).length;
+    const live = aged.filter((r) => r.inWindow && !r.claimed).length;
+    const already = aged.filter((r) => r.claimed).length;
     return (
-      `[welcome] would suppress ${rows.length} existing user(s); sends nothing, ever\n` +
-      `[welcome] of those, ${live} would otherwise be mailed on the next tick — ` +
-      `the remaining ${rows.length - live} are already past the 24h backstop`
+      `[welcome] would suppress ${rows.length - already} more existing user(s); sends nothing, ever\n` +
+      `[welcome] ${live} would otherwise be mailed on the next tick; ` +
+      `${already} already suppressed, ${rows.length - already - live} past the 24h backstop`
     );
   }
 

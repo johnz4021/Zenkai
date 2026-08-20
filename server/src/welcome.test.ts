@@ -354,7 +354,8 @@ describe('seed dry run tells you what you are giving up', () => {
     expect(lines.find((l) => l.includes('live@x.com'))).toContain('WOULD BE MAILED');
     expect(lines.find((l) => l.includes('toonew@x.com'))).toContain('already unreachable');
     expect(lines.find((l) => l.includes('old@x.com'))).toContain('already unreachable');
-    expect(out).toContain('of those, 1 would otherwise be mailed');
+    expect(out).toContain('1 would otherwise be mailed on the next tick');
+    expect(out).toContain('0 already suppressed');
     expect(fake.claimed.size).toBe(0);
   });
 
@@ -362,5 +363,23 @@ describe('seed dry run tells you what you are giving up', () => {
     expect(humanAge(5 * 60_000)).toBe('5m');
     expect(humanAge(3 * 3600_000)).toBe('3h');
     expect(humanAge(9 * 24 * 3600_000)).toBe('9d');
+  });
+});
+
+describe('seed preview after a seed', () => {
+  it('reports already-suppressed users as such, not as pending sends', async () => {
+    const fake = fakeSupabase({ users: [user({ id: 'live', email: 'live@x.com' })] });
+    await seedExisting(CFG, { fetchImpl: fake.fetchImpl as never, log: () => {} });
+    const lines: string[] = [];
+    const out = await seedExisting(CFG, {
+      fetchImpl: fake.fetchImpl as never,
+      log: (l) => void lines.push(l),
+      dryRun: true,
+      nowMs: NOW,
+    });
+    expect(lines.find((l) => l.includes('live@x.com'))).toContain('already suppressed');
+    expect(lines.find((l) => l.includes('live@x.com'))).not.toContain('WOULD BE MAILED');
+    expect(out).toContain('0 would otherwise be mailed');
+    expect(out).toContain('would suppress 0 more');
   });
 });
