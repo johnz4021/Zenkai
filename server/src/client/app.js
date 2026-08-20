@@ -102,9 +102,13 @@ function renderLogin(msg) {
     '<div class="loginpane">' +
     '<div class="loginsay">' +
     '<h1>Practice the interview you actually have.</h1>' +
-    '<p class="desc">You describe the round you are facing. Zenkai generates a real repo with a real bug, ' +
-    'sits an interviewer beside you who listens while you work, then grades the trace and aims the next ' +
-    'one at what you missed.</p>' +
+    // Format-neutral on purpose (owner call 2026-08-17): the old line sold
+    // only the debugging round ("a real repo with a real bug") when the
+    // product generates builds, OAs, and review rounds too.
+    '<p class="desc">You describe the round you are facing. Zenkai builds the real thing — a repo to ' +
+    'debug, a spec to implement, a timed assessment to clear — sits an interviewer beside you on the ' +
+    'rounds that have one, then grades what you actually did and aims the next round at what you ' +
+    'missed.</p>' +
     // The three-term "what a round costs you" list lived here and was cut
     // (owner call 2026-08-16): a signed-out visitor is deciding whether to
     // make an account, not budgeting 45 minutes for a round they cannot
