@@ -23,6 +23,11 @@
   "workbench.secondarySideBar.defaultVisibility": "hidden",
   "chat.commandCenter.enabled": false,
 
+  "//agentmode": "An interview round has no legitimate use for an AI assistant — this is the one product where the assistant is the thing being tested against. These keys exist in this build (openvscode-server 1.105.1, verified by grepping the workbench bundle) and are kept because they are semantically correct. THEY DO NOT HIDE THE CHAT PANEL: verified live 2026-08-19 with all three delivered via configurationDefaults (confirmed present in the injected boot HTML), the Chat view still auto-opened in the auxiliary bar — 191px on first boot, 300px after a reload. The auxiliary bar is driven by PERSISTED VIEW STATE, not by settings: vscode-web-state-db-global > ItemTable > workbench.panel.chat.hidden holds [{id:workbench.panel.chat.view.copilot,isHidden:false}]. Seeding that key before boot is the real lever — the same browser-storage channel the KNOWN-ISSUE above named. CSS is not a substitute: display:none on .part.auxiliarybar leaves a 191px dead gap because the editor part width is JS-driven.",
+  "chat.disableAIFeatures": true,
+  "chat.agent.enabled": false,
+  "workbench.chat.hideWelcomeView": true,
+
   "//noise": "The round starts on the problem, not on a Welcome tab or a tip.",
   "workbench.startupEditor": "none",
   "workbench.tips.enabled": false,

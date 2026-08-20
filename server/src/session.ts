@@ -40,7 +40,7 @@ import {
   posthogConfigFromEnv,
   posthogSnippet,
 } from './posthog.js';
-import { injectWorkbenchDefaults } from './workbench-inject.js';
+import { injectPreBoot, injectWorkbenchDefaults, preBootSeedScript } from './workbench-inject.js';
 import { describeStuck, detectStuck, type StuckState } from './stuck.js';
 import { describeAdrift, describeWarm, detectAdrift, regionContainsAnswer } from './adrift.js';
 import { assessAgenda, renderAgenda } from './agenda.js';
@@ -1863,7 +1863,9 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       try {
         const html = await fetchIdeHtml(cfg.idePort, url);
         res.writeHead(200, { 'content-type': 'text/html' });
-        return res.end(injectWorkbenchDefaults(html, ideSettings));
+        return res.end(
+          injectPreBoot(injectWorkbenchDefaults(html, ideSettings), preBootSeedScript()),
+        );
       } catch {
         /* IDE still booting or unexpected response — proxy as before */
       }
