@@ -585,7 +585,14 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     'run', '-d', '--name', containerName,
     // Per-session network (multi mode): isolates this container from every other
     // live round's container. --add-host=host-gateway (below) still resolves on a
-    // user-defined bridge, so the trace WS is unaffected. See networkNameFor.
+    // user-defined bridge, but resolution is NOT reachability: the box firewall
+    // only admitted container->host traffic arriving on docker0, and these
+    // networks attach via br-* — the first IDE round after this shipped
+    // (sess-1787275423362-d258) had every trace-WS SYN silently dropped, the
+    // whole editor plane blind, Run Tests answering ide_not_connected. The
+    // pairing rule lives in ops/provision.sh (172.16.0.0/12 -> 3401:3450);
+    // deploying this to a new box without it re-breaks every IDE round. See
+    // networkNameFor.
     ...(cfg.multiSession ? ['--network', networkNameFor(cfg.sessionId)] : []),
     // Runaway bounds. --pids-limit caps a fork bomb (safe, no OOM risk).
     // --memory is opt-in via IP_SESSION_MEMORY: left unset it is byte-identical

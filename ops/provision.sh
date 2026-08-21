@@ -70,11 +70,26 @@ echo "== firewall =="
 # That traffic traverses the host INPUT chain; a bare "allow ssh only"
 # silently drops it and every edit/test-run is lost while the session
 # looks fine. 80/443 are for Caddy; the app (3300) and session ports
-# (3200, 3401+) are NEVER opened — Caddy reaches them over loopback.
+# (3200, 3401+) are never opened to the internet — Caddy reaches them
+# over loopback.
+#
+# TWO rules, not one (sess-1787275423362-d258): the docker0 rule only
+# matches the DEFAULT bridge. Per-session networks (session.ts
+# networkNameFor, security hardening 3fab07e) attach via br-* interfaces,
+# which ufw cannot wildcard — the first IDE round after that deploy had
+# its trace WS silently dropped (no editor events, Run Tests dead) while
+# voice and chat looked fine. The subnet rule admits container-sourced
+# traffic to the multi-session port range only (3401-3450,
+# session-registry.ts SESSION_PORT_BASE); the /trace WS stays token-gated
+# and HTTP stays auth-gated, so this restores the designed posture, not a
+# hole. 172.16.0.0/12 covers Docker's default address pools (bridges
+# allocate 172.17-172.31); if daemon.json ever pins custom pools outside
+# it, this rule must follow.
 ufw allow OpenSSH
 ufw allow 80/tcp
 ufw allow 443/tcp
 ufw allow in on docker0
+ufw allow from 172.16.0.0/12 to any port 3401:3450 proto tcp
 ufw --force enable
 
 echo "== repo =="
