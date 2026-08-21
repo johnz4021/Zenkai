@@ -58,3 +58,7 @@ outreach/
 # qa harness runtime droppings (qa/README.md)
 qa/.shim-log.jsonl
 qa/.shim-control.json
+
+# per-user daily throttle ledgers (app.ts dailyUserCount) — carry user ids
+planner-turns.jsonl
+clarify-runs.jsonl

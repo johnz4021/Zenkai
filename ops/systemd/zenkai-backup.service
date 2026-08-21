@@ -7,6 +7,8 @@ Wants=network-online.target
 Type=oneshot
 User=zenkai
 WorkingDirectory=/home/zenkai/Zenkai
+# Secrets from the root-owned file (see zenkai-app.service). Required.
+EnvironmentFile=/etc/zenkai/env
 # cli.ts loads .env itself — never pass the Supabase key on a command line
 # or through a shell one-liner (docs/beta-runbook.md's key-mangling trap).
 ExecStart=/usr/bin/npx tsx server/src/cli.ts backup

@@ -7,7 +7,13 @@ Requires=docker.service
 [Service]
 User=zenkai
 WorkingDirectory=/home/zenkai/Zenkai
-# cli.ts loads .env itself; systemd only needs the entry point.
+# Secrets come from a ROOT-owned file the zenkai user cannot read off disk,
+# injected by systemd — NOT a repo-root .env (which a generator or test child
+# running as zenkai could read directly, defeating child-env.ts scrubbing).
+# REQUIRED (no leading '-'): a missing file FAILS the unit rather than booting
+# with auth silently OFF (no Supabase config = every request resolves to local
+# admin). cli.ts still reads a repo-root .env in local dev; the box has none.
+EnvironmentFile=/etc/zenkai/env
 #
 # node --import, NOT `npx tsx`. npx and the tsx bin are wrappers that spawn the
 # real server as a CHILD, so systemd's MainPID was the wrapper — and with

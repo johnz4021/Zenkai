@@ -145,10 +145,15 @@ cat <<'DONE'
    on Cloudflare, set both records to "DNS only" (grey cloud) so the 100s
    proxy timeout stays out of the path.
 2. Edit the email at the top of /etc/caddy/Caddyfile (cert expiry notices).
-3. Copy your .env to /home/zenkai/Zenkai/.env — start from
-   ops/env.launch.template, which carries the VPS-only settings
-   (IP_MULTI_SESSION, the room/build caps, retention) already sized for
-   this box. Keep it mode 600 and owned by zenkai.
+3. Install secrets to /etc/zenkai/env (ROOT-owned, 0600) — do NOT put a .env
+   in the repo tree any more: the zenkai user runs generators and test suites
+   that could read it off disk. From your laptop:
+     bash ops/push-env.sh zenkai-box
+   It merges the local .env secrets with the sized VPS settings from
+   ops/env.launch.template, writes /etc/zenkai/env root:root 0600, and removes
+   any old /home/zenkai/Zenkai/.env. The systemd units load it via
+   EnvironmentFile= and FAIL to start if it is missing (safer than booting with
+   auth silently off). Run push-env BEFORE the daemon-reload/start below.
 4. systemctl start zenkai-app   (caddy is already restarted by this script)
    (Caddy issues certs on first request — allow ~30s, then check
     `journalctl -u caddy -n 30` for "certificate obtained successfully".)

@@ -89,7 +89,7 @@ alter table sessions enable row level security;
    Probe through the same loader the app uses, never through the shell:
 
    ```bash
-   ssh zenkai-box "node -e \"process.loadEnvFile('/home/zenkai/Zenkai/.env');
+   ssh zenkai-box "node -e \"process.loadEnvFile('/etc/zenkai/env');
      const U=process.env.IP_SUPABASE_URL, S=process.env.IP_SUPABASE_SERVICE_KEY;
      for (const t of ['users','reps','targets','sessions'])
        fetch(\\\`\\\${U}/rest/v1/\\\${t}?select=*&limit=1\\\`,
@@ -337,7 +337,7 @@ ssh root@<box-ip> 'bash ops/provision.sh'     # idempotent; prints remaining ste
 
 # .env — fill ops/env.launch.template and ship that (it carries the LAUNCH
 # sizing: 4 concurrent rooms, 2 concurrent builds, and the spend note).
-scp ops/env.launch.template zenkai@<box-ip>:Zenkai/.env
+bash ops/push-env.sh zenkai-box   # writes /etc/zenkai/env (root:root 0600)
 
 # DNS: A records for BOTH hostnames -> this box's IPv4, wherever your
 # domain's DNS lives (no migration needed). If DNS happens to be on

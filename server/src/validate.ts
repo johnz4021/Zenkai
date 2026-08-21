@@ -289,8 +289,11 @@ function runSuite(
   }
 
   // Install if the agent cleaned up node_modules (or we're on a fresh clone).
+  // --ignore-scripts is load-bearing security: this runs a GENERATED (potentially
+  // prompt-injected) package.json on the HOST. Without it, a lifecycle script or a
+  // typosquatted dep name is arbitrary code as the app user. Do not remove.
   if (!existsSync(path.join(repoDir, 'node_modules'))) {
-    const install = spawnSync('npm', ['install', '--no-fund', '--no-audit'], {
+    const install = spawnSync('npm', ['install', '--no-fund', '--no-audit', '--ignore-scripts'], {
       cwd: repoDir,
       encoding: 'utf8',
       timeout: 180_000,

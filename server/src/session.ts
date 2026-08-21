@@ -183,12 +183,35 @@ export function containerNameFor(sessionId: string, multiSession: boolean): stri
   return multiSession ? `ip-session-${sessionId}` : 'ip-session';
 }
 
+/** Per-session network name (multi mode only). Isolates each round's container
+ *  on its OWN user-defined bridge so one candidate's terminal cannot reach
+ *  another's tokenless IDE across the shared default bridge (the cross-tenant
+ *  hole: HTTP authz was right, but L3 bypassed it). Legacy single-session uses
+ *  the default bridge — one user, one container, nothing to isolate from. */
+export function networkNameFor(sessionId: string): string {
+  return `ip-net-${sessionId}`;
+}
+
+/** The network paired with a container, DERIVED from its name so teardown (and
+ *  the app-side sweeper) need no extra state — the same derive-don't-store
+ *  convention the sweeper already uses for container names. Null for the legacy
+ *  'ip-session' container, which has no per-session network. */
+export function networkNameForContainer(containerName: string): string | null {
+  return containerName.startsWith('ip-session-')
+    ? containerName.replace(/^ip-session-/, 'ip-net-')
+    : null;
+}
+
 /** The one way the IDE container dies. Called after grading, on abandon, on
  *  shutdown, and from the signal handlers — a session that ends by ANY path
  *  must not leave a live container behind (QA ISSUE-001: it did, and every
- *  finished round soft-locked the product until a terminal intervened). */
+ *  finished round soft-locked the product until a terminal intervened). The
+ *  per-session network goes AFTER the container — `docker network rm` fails
+ *  while a container is still attached; best-effort, legacy/absent no-ops. */
 function teardownContainerByName(name: string): void {
   spawnSync('docker', ['rm', '-f', name], { encoding: 'utf8' });
+  const net = networkNameForContainer(name);
+  if (net) spawnSync('docker', ['network', 'rm', net], { encoding: 'utf8' });
 }
 
 function sh(cmd: string, args: string[], opts: { cwd?: string } = {}): string {
@@ -540,7 +563,14 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   // docker). The openvscode process inside simply idles unused — nobody
   // loads the workbench, so the extension never activates. Accepted idle
   // cost over a second launch path.
-  spawnSync('docker', ['rm', '-f', containerName], { encoding: 'utf8' });
+  // Clear any stale container AND its stale network from a crashed prior run of
+  // this sid before we recreate them (teardown removes both, in order).
+  teardownContainerByName(containerName);
+  if (cfg.multiSession) {
+    // Fresh per-session network. If it somehow still exists (create races the
+    // rm above), the run below still attaches by name — non-fatal.
+    spawnSync('docker', ['network', 'create', networkNameFor(cfg.sessionId)], { encoding: 'utf8' });
+  }
   // Per-session workspace path (QA ISSUE-005): VS Code Web keys workbench
   // state (open tabs, layout) by folder URI in BROWSER IndexedDB — a
   // constant path meant every round opened on the previous round's tabs.
@@ -553,6 +583,16 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     `${BUNDLED_NODE} ${workspacePath}/node_modules/vitest/vitest.mjs run`;
   sh('docker', [
     'run', '-d', '--name', containerName,
+    // Per-session network (multi mode): isolates this container from every other
+    // live round's container. --add-host=host-gateway (below) still resolves on a
+    // user-defined bridge, so the trace WS is unaffected. See networkNameFor.
+    ...(cfg.multiSession ? ['--network', networkNameFor(cfg.sessionId)] : []),
+    // Runaway bounds. --pids-limit caps a fork bomb (safe, no OOM risk).
+    // --memory is opt-in via IP_SESSION_MEMORY: left unset it is byte-identical
+    // to today — measure `docker stats` on a busy evening before pinning a hard
+    // cap, or a heavy-but-legit round OOM-kills mid-session.
+    '--pids-limit', process.env.IP_SESSION_PIDS || '512',
+    ...(process.env.IP_SESSION_MEMORY ? ['--memory', process.env.IP_SESSION_MEMORY] : []),
     // Loopback publish: the only consumer of the IDE port is the host-side
     // proxy (target 127.0.0.1). Publishing on 0.0.0.0 exposed a TOKENLESS
     // remote IDE to the LAN, beside whatever auth the servers enforce.

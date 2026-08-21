@@ -21,6 +21,18 @@ describe('home app page', () => {
     expect(() => new Function(js)).not.toThrow();
   });
 
+  it('esc() escapes attribute-breaking chars, not just < (stored-XSS via round names)', () => {
+    // finding #5: esc() escaped only "<", so a label with a double-quote broke
+    // out of title=/value=/aria-label= attributes and injected a handler that
+    // fired in the ADMIN's browser (the home page renders every user's targets).
+    // The escaper must cover the full set; chrome.ts's server escaper already does.
+    expect(js).toContain("replace(/&/g, '&amp;')");
+    expect(js).toContain("replace(/</g, '&lt;')");
+    expect(js).toContain("replace(/>/g, '&gt;')");
+    expect(js).toContain("replace(/\"/g, '&quot;')");
+    expect(js).toContain("replace(/'/g, '&#39;')");
+  });
+
   it('no DOUBLE-escaped unicode — it renders as literal backslash-u to the user', () => {
     // Found in QA 2026-08-15: the Stripe merge wrote '\\u2014' into seven
     // strings in showPaywallGate. In JS source that is an escaped backslash

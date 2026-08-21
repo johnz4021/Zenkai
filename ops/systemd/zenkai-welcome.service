@@ -7,6 +7,8 @@ Wants=network-online.target
 Type=oneshot
 User=zenkai
 WorkingDirectory=/home/zenkai/Zenkai
+# Secrets from the root-owned file (see zenkai-app.service). Required.
+EnvironmentFile=/etc/zenkai/env
 # cli.ts loads .env itself — never pass the Supabase service key or the Gmail
 # app password on a command line (they land in the journal and in `ps`), and
 # never through a shell one-liner (docs/beta-runbook.md's key-mangling trap).

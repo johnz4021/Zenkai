@@ -19,7 +19,9 @@
 
 /* global document, window, fetch, FileReader */
 
-function esc(s) { return String(s).replace(/</g, '&lt;'); }
+function esc(s) { return String(s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 function el(id) { return document.getElementById(id); }
 
 // ---- beta auth (WU4) ------------------------------------------------------
