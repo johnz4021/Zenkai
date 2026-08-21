@@ -1311,7 +1311,14 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   let lastActivityMs = bornMs;
   let idleReaper: NodeJS.Timeout | null = null;
   const IDLE_REAP_MS = Number(process.env.IP_SESSION_IDLE_MS) || 15 * 60_000;
-  const MAX_LIFETIME_MS = Number(process.env.IP_SESSION_MAX_MS) || 90 * 60_000;
+  // Absolute cap must sit ABOVE the longest round + its grace, or it preempts an
+  // ACTIVE round: rounds run up to a 90-min time_limit (5400000ms), and this
+  // anchors on bornMs (container launch, before the candidate arrives) and
+  // ignores activity — a 90-min default reaped a live 90-min round ~2min early.
+  // 3h clears every timed round; the round's own capTimer ends those long before,
+  // so this only catches a tab left open (and polling) for hours. Untimed rounds
+  // are the real target. The 15-min idle reaper still catches abandoned tabs fast.
+  const MAX_LIFETIME_MS = Number(process.env.IP_SESSION_MAX_MS) || 180 * 60_000;
 
   const readBody = (req: http.IncomingMessage): Promise<string> =>
     new Promise((resolve) => {
