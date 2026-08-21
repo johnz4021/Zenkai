@@ -3776,9 +3776,10 @@ function showPaywallGate(pw) {
         host.dataset.step = '2';
         host.innerHTML =
           '<div class="card" role="dialog" aria-modal="true" aria-labelledby="paywall-h">' +
-            '<h2 id="paywall-h">Two quick questions?</h2>' +
-            '<p>Your round is going ahead either way — but these two answers ' +
-              'genuinely steer what gets built next.</p>' +
+            '<h2 id="paywall-h">That was a test — you’re not charged</h2>' +
+            '<p>Zenkai is free in beta and this round’s on us. We floated a price just ' +
+              'to learn what it’d be worth to you. Thanks for weighing in.</p>' +
+            '<p>Two quick questions while your round spins up:</p>' +
             '<label class="sub" for="paywall-value">What’s the most valuable part of Zenkai for you so far?</label>' +
             '<textarea id="paywall-value" rows="2" maxlength="500"></textarea>' +
             '<label class="sub" for="paywall-improve">What’s the one thing you’d most want improved or added?</label>' +
