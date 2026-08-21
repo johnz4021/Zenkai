@@ -487,6 +487,29 @@ export function voiceOffReasonFor(
   return null;
 }
 
+/**
+ * Idle / lifetime reaper decision (Reddit-launch slot hygiene). Sessions had no
+ * idle timeout and untimed rounds no hard cap, so an abandoned tab held its
+ * limited slot forever (a real sample session sat live 13h in prod). Pure so it
+ * is unit-tested; the interval that calls it lives in runSession.
+ *
+ * The activity signal is accurate BECAUSE the client polls /api/status every 3s
+ * while the tab is open (session.js) — a silent READER still heartbeats, so
+ * `idle` only accrues once the tab is gone. `lastActivityMs` is bumped in the
+ * auth gate for non-internal viewers only (the app's own x-ip-internal probes
+ * and the container's /trace WS never count).
+ */
+export function reapReason(
+  nowMs: number,
+  lastActivityMs: number,
+  bornMs: number,
+  cfg: { idleMs: number; maxMs: number },
+): 'idle' | 'expired' | null {
+  if (nowMs - lastActivityMs >= cfg.idleMs) return 'idle';
+  if (nowMs - bornMs >= cfg.maxMs) return 'expired';
+  return null;
+}
+
 export async function runSession(cfg: SessionConfig): Promise<void> {
   // First statement in the function, on purpose: everything below this line
   // mutates state the running session owns.
@@ -1281,6 +1304,14 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
   let pressureTimer: NodeJS.Timeout | null = null;
   let ackTimer: NodeJS.Timeout | null = null;
   let capTimer: NodeJS.Timeout | null = null;
+  // Idle / lifetime reaper state (slot hygiene — see reapReason). bornMs is
+  // process/container birth; lastActivityMs is refreshed by the auth gate on
+  // every non-internal viewer request (the tab's 3s /api/status poll).
+  const bornMs = Date.now();
+  let lastActivityMs = bornMs;
+  let idleReaper: NodeJS.Timeout | null = null;
+  const IDLE_REAP_MS = Number(process.env.IP_SESSION_IDLE_MS) || 15 * 60_000;
+  const MAX_LIFETIME_MS = Number(process.env.IP_SESSION_MAX_MS) || 90 * 60_000;
 
   const readBody = (req: http.IncomingMessage): Promise<string> =>
     new Promise((resolve) => {
@@ -1502,6 +1533,11 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
           res.writeHead(403, { 'content-type': 'application/json' });
           return res.end(JSON.stringify({ error: 'someone else is mid-round on this server' }));
         }
+        // Slot-hygiene heartbeat: a real viewer request (the tab polls
+        // /api/status every 3s while open) means someone is here — so a silent
+        // reader is never reaped. Internal x-ip-internal probes are EXCLUDED so
+        // the app's own liveness polls cannot keep an abandoned session alive.
+        if (!viewer.internal) lastActivityMs = Date.now();
       }
     }
     if (url === '/session') {
@@ -2305,6 +2341,44 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     }, 5_000);
     capTimer.unref();
   }
+
+  // Idle / lifetime reaper (slot hygiene). Every 60s: if the tab has gone quiet
+  // past IDLE_REAP_MS (the 3s /api/status poll stopped) or the session has run
+  // past MAX_LIFETIME_MS, free the slot. An underway round is graded (card
+  // persists to disk, served by the app afterward); a never-started one is
+  // discarded like /api/abandon so it cannot pollute the gap graph.
+  // teardownContainer removes the container AND its per-session network; the
+  // app's reconcileRegistryNow drops the dead-port entry on the next launch.
+  idleReaper = setInterval(() => {
+    if (ended) return;
+    const now = Date.now();
+    const why = reapReason(now, lastActivityMs, bornMs, { idleMs: IDLE_REAP_MS, maxMs: MAX_LIFETIME_MS });
+    if (!why) return;
+    ended = true;
+    if (pressureTimer) clearInterval(pressureTimer);
+    if (capTimer) clearInterval(capTimer);
+    if (endpointTimer) clearInterval(endpointTimer);
+    if (idleReaper) clearInterval(idleReaper);
+    voice?.close();
+    const underway = sessionStartedAt !== null && roundUnderway(store.readAll(), now, sessionStartedAt);
+    console.log(`[session] reaping ${underway ? 'underway' : 'abandoned'} session (${why}) — freeing the slot`);
+    const exit = (): void => {
+      setImmediate(() => process.exit(0));
+    };
+    if (underway) {
+      void finalize()
+        .catch((e) => console.error('[session] reap finalize failed:', e))
+        .finally(() => {
+          teardownContainer();
+          exit();
+        });
+    } else {
+      store.emitChrome('session_end', { abandoned: true });
+      teardownContainer();
+      exit();
+    }
+  }, 60_000);
+  idleReaper.unref();
 
   console.log(`[session] ${cfg.sessionId}`);
   console.log(`[session] open   http://localhost:${cfg.port}/session`);
