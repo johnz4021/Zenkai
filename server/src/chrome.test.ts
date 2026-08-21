@@ -227,6 +227,21 @@ describe('panes surface (the HackerRank-classic renderer)', () => {
     expect(html).toContain('data-limit="6300000"');
   });
 
+  it('both panes are resizable — splitters render as focusable separators (owner ask 2026-08-21)', () => {
+    const html = oaPanes();
+    // The statement was capped at 480px and the test panel fixed at 180px;
+    // a run with a long tail was unreadable. The splitters are the fix, and
+    // role/tabindex make them keyboard-reachable (DESIGN.md rule 7).
+    expect(html).toContain('id="splitv" role="separator" aria-orientation="vertical"');
+    expect(html).toContain('id="splith" role="separator" aria-orientation="horizontal"');
+    expect(html).toMatch(/id="splitv"[^>]*tabindex="0"/);
+    expect(html).toMatch(/id="splith"[^>]*tabindex="0"/);
+    // panes.js persists both sizes; the keys are the contract localStorage holds.
+    const js = clientScript('panes.js');
+    expect(js).toContain('zenkai.panes.statementW');
+    expect(js).toContain('zenkai.panes.testH');
+  });
+
   it('the ide surface is byte-for-byte the page the product always had', () => {
     const html = sessionPage('s', { workspace_path: '/home/workspace/p-s' });
     expect(html).toContain('/?folder=/home/workspace/p-s');

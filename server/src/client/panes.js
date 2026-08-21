@@ -317,6 +317,80 @@
     });
   }
 
+  // ---- pane resizing (owner ask 2026-08-21) ----
+  // The statement pane was capped at 480px and the test panel fixed at
+  // 180px; a run with a long tail was unreadable. Both splitters drag
+  // (pointer capture, so the drag survives leaving the 7px handle), take
+  // arrow keys when focused, persist per-browser, and reset on dblclick.
+  // Monaco relayouts itself (automaticLayout: true). No trace events: layout
+  // is the candidate's viewing preference, not activity.
+  const initSplitters = () => {
+    const panes = $('panes');
+    const statement = $('statement');
+    const work = $('work');
+    const testpanel = $('testpanel');
+    const store = (k, v) => { try { localStorage.setItem(k, String(v)); } catch {} };
+    const stored = (k) => { try { return Number(localStorage.getItem(k)) || 0; } catch { return 0; } };
+
+    const clampW = (px) => Math.round(Math.min(Math.max(px, 200), panes.clientWidth * 0.6));
+    const clampH = (px) => Math.round(Math.min(Math.max(px, 64), Math.max(64, work.clientHeight - 160)));
+    const setW = (px) => { statement.style.width = clampW(px) + 'px'; store('zenkai.panes.statementW', clampW(px)); };
+    const setH = (px) => { testpanel.style.height = clampH(px) + 'px'; store('zenkai.panes.testH', clampH(px)); };
+
+    const wire = (bar, axis, apply, current, reset) => {
+      if (!bar) return;
+      bar.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        try { bar.setPointerCapture(e.pointerId); } catch {} // synthetic/odd pointers lack capture
+        bar.classList.add('drag');
+        document.body.classList.add('resizing', axis === 'v' ? 'rz-v' : 'rz-h');
+        const from = current();
+        const origin = axis === 'v' ? e.clientX : e.clientY;
+        const move = (ev) => {
+          const d = (axis === 'v' ? ev.clientX : ev.clientY) - origin;
+          // The test panel grows UPWARD: dragging its handle up (negative d)
+          // must make it taller, so the vertical delta inverts.
+          apply(axis === 'v' ? from + d : from - d);
+        };
+        const up = () => {
+          bar.classList.remove('drag');
+          document.body.classList.remove('resizing', 'rz-v', 'rz-h');
+          bar.removeEventListener('pointermove', move);
+          bar.removeEventListener('pointerup', up);
+          bar.removeEventListener('pointercancel', up);
+        };
+        bar.addEventListener('pointermove', move);
+        bar.addEventListener('pointerup', up);
+        bar.addEventListener('pointercancel', up);
+      });
+      bar.addEventListener('keydown', (e) => {
+        const grow = axis === 'v' ? 'ArrowRight' : 'ArrowUp';
+        const shrink = axis === 'v' ? 'ArrowLeft' : 'ArrowDown';
+        if (e.key !== grow && e.key !== shrink) return;
+        e.preventDefault();
+        apply(current() + (e.key === grow ? 24 : -24));
+      });
+      bar.addEventListener('dblclick', reset);
+    };
+
+    wire($('splitv'), 'v', setW, () => statement.getBoundingClientRect().width, () => {
+      statement.style.width = '';
+      try { localStorage.removeItem('zenkai.panes.statementW'); } catch {}
+    });
+    wire($('splith'), 'h', setH, () => testpanel.getBoundingClientRect().height, () => {
+      testpanel.style.height = '';
+      try { localStorage.removeItem('zenkai.panes.testH'); } catch {}
+    });
+
+    const w = stored('zenkai.panes.statementW');
+    const h = stored('zenkai.panes.testH');
+    if (w) setW(w);
+    if (h) setH(h);
+  };
+  // A layout bug must never take the editor and trace emitter down with it
+  // (17768dc: one bad renderer line broke every practice page render).
+  try { initSplitters(); } catch (e) { console.error('splitters failed', e); }
+
   // Monaco's AMD loader was configured inline by the page; editor.main pulls
   // the actual editor. Boot only after it lands.
   require(['vs/editor/editor.main'], () => {
