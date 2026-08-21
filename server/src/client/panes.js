@@ -307,8 +307,27 @@
           $('runstate').textContent = (out.exit_code === 0 ? 'passed' : 'failed') + (counts ? ' — ' + counts : '');
           // Presentation hook only: lets the stylesheet color the verdict.
           $('runstate').className = out.exit_code === 0 ? 'pass' : 'fail';
-          $('runout').textContent = out.tail || out.summary || '';
-          $('runout').scrollTop = $('runout').scrollHeight;
+          var txt = out.tail || out.summary || '';
+          var ro = $('runout');
+          ro.textContent = txt;
+          // Land on the FIRST failure block, not the very bottom: with runs now
+          // unbuffered, a candidate's print()s interleave in the progress lines
+          // at the TOP, and the old bottom-jump parked print-debuggers under
+          // every traceback (first real-user report, 2026-08-21). The first
+          // ====== / FAIL / ERROR line is where attention goes; their prints sit
+          // just above it. All-pass output has no marker and keeps the old
+          // jump-to-end. #runout is a non-wrapping <pre>, so line-count
+          // proportion maps exactly onto scrollHeight.
+          var lines = txt.split('\n');
+          var target = -1;
+          for (var li = 0; li < lines.length; li++) {
+            if (/^(={10,}|\u23af{5,}|FAIL[ :(]|ERROR: )/.test(lines[li])) { target = li; break; }
+          }
+          if (target > 0 && ro.scrollHeight > ro.clientHeight) {
+            ro.scrollTop = Math.max(0, (target - 2) * (ro.scrollHeight / lines.length));
+          } else {
+            ro.scrollTop = ro.scrollHeight;
+          }
         }
       } catch {
         $('runstate').textContent = 'run failed to start';

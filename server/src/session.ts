@@ -632,6 +632,14 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
     '-e', `IP_USER_ID=${cfg.userId}`,
     '-e', `IP_WS_URL=ws://host.docker.internal:${cfg.port}/trace?token=${traceToken}`,
     '-e', `IP_TEST_CMD=${testCmd}`,
+    // Python block-buffers stdout when piped, so a candidate's print()s arrived
+    // in ONE lump after the failure output instead of beside their test case —
+    // first real-user bug report (OA round, 2026-08-21). Container-wide env
+    // fixes every run shape (panes /api/run, one-shot submit, IDE terminal) for
+    // every ALREADY-GENERATED manifest; putting -u into test_command instead
+    // would break test-command.ts's terminal-run classifier (it anchors on
+    // `python3 -m`), which would un-count terminal verification for the judge.
+    '-e', 'PYTHONUNBUFFERED=1',
     // Kickoff run is the DEFAULT for failure-triggered rounds: the debugging
     // trigger must not depend on the candidate finding the status-bar button
     // (learned the hard way). Other check kinds start green or blank — an
@@ -1347,7 +1355,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       const t0 = Date.now();
       const run = spawnSync(
         'docker',
-        ['exec', containerName, 'bash', '-lc', `cd ${workspacePath} && ${testCmd}`],
+        ['exec', containerName, 'bash', '-lc', `cd ${workspacePath} && ${testCmd} 2>&1`],
         { encoding: 'utf8', timeout: 180_000 },
       );
       const tail = `${run.stdout ?? ''}\n${run.stderr ?? ''}`.slice(-4_000);
@@ -1909,10 +1917,13 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
       const t0 = Date.now();
       // spawn, not spawnSync: a suite can take minutes and the status /
       // message polls must keep answering while it runs.
-      const child = spawn('docker', ['exec', containerName, 'bash', '-lc', `cd ${workspacePath} && ${testCmd}`]);
+      const child = spawn('docker', ['exec', containerName, 'bash', '-lc', `cd ${workspacePath} && ${testCmd} 2>&1`]);
       let tail = '';
       const keep = (chunk: Buffer) => {
-        tail = (tail + chunk.toString()).slice(-4_000);
+        // 20k for the CLIENT pane (print-debugging needs the middle of a run,
+        // and 4k truncated it — same user report); the trace event below stays
+        // at 4k so judge context and trace size are unchanged.
+        tail = (tail + chunk.toString()).slice(-20_000);
       };
       child.stdout.on('data', keep);
       child.stderr.on('data', keep);
@@ -1930,7 +1941,7 @@ export async function runSession(cfg: SessionConfig): Promise<void> {
             exit_code: code,
             duration_ms: Date.now() - t0,
             summary,
-            output_tail: tail,
+            output_tail: tail.slice(-4_000),
             ...(counts ?? {}),
           });
         }
