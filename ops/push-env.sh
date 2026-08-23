@@ -40,7 +40,13 @@ done
 # env.launch.template because the template is committed and this is a
 # credential — and because a sweep whose keys never reached the box fails
 # invisibly: the timer fires every 5 minutes and exits 2 into the journal.
-SECRETS='^(ANTHROPIC_API_KEY|ELEVENLABS_API_KEY|IP_SUPABASE_URL|IP_SUPABASE_ANON_KEY|IP_SUPABASE_SERVICE_KEY|IP_AUTH_ADMIN_EMAILS|IP_GMAIL_USER|IP_GMAIL_APP_PASSWORD|IP_WELCOME_FROM|IP_WELCOME_REPLY_TO)='
+# IP_POSTHOG_* rides HERE, not in env.launch.template: the template keeps it
+# COMMENTED (a phc_ placeholder would refuse to boot at the prefix check), so
+# push-env never shipped it and the 2026-08-21 .env -> /etc/zenkai/env migration
+# dropped it — analytics and session replay were silently OFF on the live box
+# during the Reddit launch. The real value lives in the local .env like every
+# other key here, so pull it from there.
+SECRETS='^(ANTHROPIC_API_KEY|ELEVENLABS_API_KEY|IP_SUPABASE_URL|IP_SUPABASE_ANON_KEY|IP_SUPABASE_SERVICE_KEY|IP_AUTH_ADMIN_EMAILS|IP_GMAIL_USER|IP_GMAIL_APP_PASSWORD|IP_WELCOME_FROM|IP_WELCOME_REPLY_TO|IP_POSTHOG_KEY|IP_POSTHOG_HOST)='
 
 # The stream is sanitized (sed below) before it lands: systemd EnvironmentFile
 # does not strip trailing inline comments the way node's loadEnvFile did, so a
