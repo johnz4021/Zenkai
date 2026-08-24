@@ -29,7 +29,7 @@ apt-get update -q
 # lsof is NOT in Ubuntu minimal — assertPortFree (session.ts) does
 # spawnSync('lsof').stdout.trim() and TypeErrors on a missing binary at the
 # first statement of every session boot. Not optional.
-apt-get install -yq docker.io lsof git curl jq ufw
+apt-get install -yq docker.io lsof git curl jq ufw g++
 
 echo "== node ${NODE_MAJOR} =="
 # Node 20 reached EOL on 2026-04-30 — no security patches. This box faces the
@@ -125,7 +125,7 @@ PY_CTX=$(mktemp -d)
 cat > "${PY_CTX}/Dockerfile" <<'PYDOCKER'
 FROM gitpod/openvscode-server:latest
 USER root
-RUN apt-get update -qq && apt-get install -y -qq python3 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -qq && apt-get install -y -qq python3 g++ && rm -rf /var/lib/apt/lists/*
 USER openvscode-server
 PYDOCKER
 docker build -t "${PY_TAG}" "${PY_CTX}" \

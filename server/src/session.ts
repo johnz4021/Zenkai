@@ -250,12 +250,12 @@ function ensureLinuxDeps(problemDir: string): void {
  */
 const RUNTIME_IMAGES: Record<'node' | 'python', string> = {
   node: IDE_IMAGE,
-  python: 'ip-ide-python:1',
+  python: 'ip-ide-python:2',
 };
 
 const PYTHON_DOCKERFILE = `FROM ${IDE_IMAGE}
 USER root
-RUN apt-get update -qq && apt-get install -y -qq python3 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -qq && apt-get install -y -qq python3 g++ && rm -rf /var/lib/apt/lists/*
 USER openvscode-server
 `;
 
