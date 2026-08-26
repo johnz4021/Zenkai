@@ -48,9 +48,17 @@ datasets/
 # per-user topic ledgers (same class of data as gaps/)
 topics/
 
+# welcome-email send log (welcome.ts). Carries beta user emails; the
+# authoritative dedupe is the welcome_emails table in Postgres, not this.
+outreach/
+
 # git worktrees parked under .claude/ (full repo checkouts, never commit)
 .claude/worktrees/
 
 # qa harness runtime droppings (qa/README.md)
 qa/.shim-log.jsonl
 qa/.shim-control.json
+
+# per-user daily throttle ledgers (app.ts dailyUserCount) — carry user ids
+planner-turns.jsonl
+clarify-runs.jsonl

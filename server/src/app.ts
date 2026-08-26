@@ -314,6 +314,12 @@ function attachmentBlocksFromDecoded(
 const SAMPLE_REP_ID = process.env.IP_SAMPLE_REP ?? '';
 const SAMPLE_RUNS_DIR = '.sample-runs';
 const SAMPLE_RUNS_PER_DAY = 3;
+// Per-user daily throttles for the two model-call doors that create NO rep row
+// and were therefore globally uncapped (finding #4): the planner chat and the
+// rep clarifier. Env-overridable so they can be tuned on the box without a
+// deploy; `Number('') || N` keeps the default when unset. See dailyUserCount.
+const PLANNER_TURNS_PER_DAY = Number(process.env.IP_MAX_PLANNER_TURNS_PER_DAY) || 60;
+const CLARIFY_RUNS_PER_DAY = Number(process.env.IP_MAX_CLARIFY_RUNS_PER_DAY) || 30;
 
 function sampleArchivePath(): string | null {
   if (!SAMPLE_REP_ID) return null;
@@ -340,6 +346,43 @@ function sampleRunsToday(userId: string, nowMs: number): number {
   } catch {
     return 0;
   }
+}
+
+/** Pure per-user daily counter over append-only JSONL text (one {user_id, ts}
+ *  object per line). UTC day, torn-tail tolerant. Exported for unit tests; the
+ *  sampleRunsToday shape, generalized for the doors that mint no rep row. */
+export function countDailyRows(text: string, userId: string, nowMs: number): number {
+  const today = new Date(nowMs).toISOString().slice(0, 10);
+  let n = 0;
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const r = JSON.parse(line) as { user_id?: string; ts?: string };
+      if (r.user_id === userId && (r.ts ?? '').startsWith(today)) n++;
+    } catch { /* torn tail */ }
+  }
+  return n;
+}
+
+/** File-reading wrapper for countDailyRows. Fails OPEN (returns 0) on any read
+ *  error, matching the sample throttle: a broken ledger grants, never 500s. */
+function dailyUserCount(file: string, userId: string, nowMs: number): number {
+  try {
+    return countDailyRows(readFileSync(path.join(repoRoot, file), 'utf8'), userId, nowMs);
+  } catch {
+    return 0;
+  }
+}
+
+/** Record one use for dailyUserCount. Best-effort — an append failure grants a
+ *  free call rather than 500ing the user, matching the sample throttle. */
+function recordDailyUse(file: string, userId: string): void {
+  try {
+    appendFileSync(
+      path.join(repoRoot, file),
+      JSON.stringify({ ts: new Date().toISOString(), user_id: userId }) + '\n',
+    );
+  } catch { /* best-effort */ }
 }
 
 function logLaunch(origin: unknown, sessionId: string, userId?: string): void {
@@ -2755,6 +2798,12 @@ export function runApp(cfg: AppConfig): http.Server {
         if (admission === 'global-cap') {
           return json(429, { error: "Zenkai hit its build budget for today — everyone's rounds run on the same meter. Come back tomorrow." });
         }
+        // Per-user daily cap on the clarifier itself (finding #4): admission
+        // counts REPS and this door mints none, so a zero-rep user could call
+        // it (up to 5x10MB to the model) all day. Recorded at the 200s below.
+        if (dailyUserCount('clarify-runs.jsonl', user!.id, Date.now()) >= CLARIFY_RUNS_PER_DAY) {
+          return json(429, { error: "you have drafted a lot of rounds today — come back tomorrow to keep going" });
+        }
         const att = decodeAttachments(b.attachments ?? []);
         if ('error' in att) return json(400, { error: att.error });
         const answers = (b.answers ?? [])
@@ -2836,6 +2885,7 @@ export function runApp(cfg: AppConfig): http.Server {
           } catch (e) {
             console.warn(`[practice] source decoration skipped: ${String(e).slice(0, 160)}`);
           }
+          recordDailyUse('clarify-runs.jsonl', user!.id);
           return json(200, result);
         } catch (e) {
           console.warn(`[app] practice clarify failed, falling back to infer: ${String(e).slice(0, 200)}`);
@@ -2847,6 +2897,7 @@ export function runApp(cfg: AppConfig): http.Server {
             // time is a gap unless the draft carries a limit. `degraded`
             // tells the client to say "check the facts" instead of nothing.
             const ms = draft.spec.capabilities.time_limit_ms;
+            recordDailyUse('clarify-runs.jsonl', user!.id);
             return json(200, {
               drafts: [draft],
               // Single-spec inference reports no provenance at all, so BOTH
@@ -3311,6 +3362,11 @@ export function runApp(cfg: AppConfig): http.Server {
         const t = b.target_id ? loadTarget(repoRoot, b.target_id) : null;
         if (t && !ownsTarget(t)) return json(403, { error: 'not your plan' });
         if (!t) return json(404, { error: 'no such target' });
+        // Per-user daily cap (finding #4): each turn is a 30-60s opus call with
+        // web search, and nothing else bounded this door — ownership only.
+        if (dailyUserCount('planner-turns.jsonl', user!.id, Date.now()) >= PLANNER_TURNS_PER_DAY) {
+          return json(429, { error: "you have done a lot of planning today — come back tomorrow to keep shaping rounds" });
+        }
         if (!process.env.ANTHROPIC_API_KEY) {
           // The conversational planner needs typed content blocks + server
           // tools, which the claude -p path cannot carry. 501 tells the
@@ -3331,6 +3387,7 @@ export function runApp(cfg: AppConfig): http.Server {
             templatePath: path.join(repoRoot, 'prompts', 'planner.md'),
             userMessage: b.message,
           });
+          recordDailyUse('planner-turns.jsonl', user!.id);
           return json(200, { turns: result.turns, done: t.specs.length > 0 });
         } catch (e) {
           return json(502, { error: `planner turn failed: ${String(e).slice(0, 300)}` });

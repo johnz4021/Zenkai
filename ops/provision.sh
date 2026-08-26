@@ -29,7 +29,7 @@ apt-get update -q
 # lsof is NOT in Ubuntu minimal — assertPortFree (session.ts) does
 # spawnSync('lsof').stdout.trim() and TypeErrors on a missing binary at the
 # first statement of every session boot. Not optional.
-apt-get install -yq docker.io lsof git curl jq ufw
+apt-get install -yq docker.io lsof git curl jq ufw g++
 
 echo "== node ${NODE_MAJOR} =="
 # Node 20 reached EOL on 2026-04-30 — no security patches. This box faces the
@@ -70,11 +70,26 @@ echo "== firewall =="
 # That traffic traverses the host INPUT chain; a bare "allow ssh only"
 # silently drops it and every edit/test-run is lost while the session
 # looks fine. 80/443 are for Caddy; the app (3300) and session ports
-# (3200, 3401+) are NEVER opened — Caddy reaches them over loopback.
+# (3200, 3401+) are never opened to the internet — Caddy reaches them
+# over loopback.
+#
+# TWO rules, not one (sess-1787275423362-d258): the docker0 rule only
+# matches the DEFAULT bridge. Per-session networks (session.ts
+# networkNameFor, security hardening 3fab07e) attach via br-* interfaces,
+# which ufw cannot wildcard — the first IDE round after that deploy had
+# its trace WS silently dropped (no editor events, Run Tests dead) while
+# voice and chat looked fine. The subnet rule admits container-sourced
+# traffic to the multi-session port range only (3401-3450,
+# session-registry.ts SESSION_PORT_BASE); the /trace WS stays token-gated
+# and HTTP stays auth-gated, so this restores the designed posture, not a
+# hole. 172.16.0.0/12 covers Docker's default address pools (bridges
+# allocate 172.17-172.31); if daemon.json ever pins custom pools outside
+# it, this rule must follow.
 ufw allow OpenSSH
 ufw allow 80/tcp
 ufw allow 443/tcp
 ufw allow in on docker0
+ufw allow from 172.16.0.0/12 to any port 3401:3450 proto tcp
 ufw --force enable
 
 echo "== repo =="
@@ -110,7 +125,7 @@ PY_CTX=$(mktemp -d)
 cat > "${PY_CTX}/Dockerfile" <<'PYDOCKER'
 FROM gitpod/openvscode-server:latest
 USER root
-RUN apt-get update -qq && apt-get install -y -qq python3 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -qq && apt-get install -y -qq python3 g++ && rm -rf /var/lib/apt/lists/*
 USER openvscode-server
 PYDOCKER
 docker build -t "${PY_TAG}" "${PY_CTX}" \
@@ -145,10 +160,15 @@ cat <<'DONE'
    on Cloudflare, set both records to "DNS only" (grey cloud) so the 100s
    proxy timeout stays out of the path.
 2. Edit the email at the top of /etc/caddy/Caddyfile (cert expiry notices).
-3. Copy your .env to /home/zenkai/Zenkai/.env — start from
-   ops/env.launch.template, which carries the VPS-only settings
-   (IP_MULTI_SESSION, the room/build caps, retention) already sized for
-   this box. Keep it mode 600 and owned by zenkai.
+3. Install secrets to /etc/zenkai/env (ROOT-owned, 0600) — do NOT put a .env
+   in the repo tree any more: the zenkai user runs generators and test suites
+   that could read it off disk. From your laptop:
+     bash ops/push-env.sh zenkai-box
+   It merges the local .env secrets with the sized VPS settings from
+   ops/env.launch.template, writes /etc/zenkai/env root:root 0600, and removes
+   any old /home/zenkai/Zenkai/.env. The systemd units load it via
+   EnvironmentFile= and FAIL to start if it is missing (safer than booting with
+   auth silently off). Run push-env BEFORE the daemon-reload/start below.
 4. systemctl start zenkai-app   (caddy is already restarted by this script)
    (Caddy issues certs on first request — allow ~30s, then check
     `journalctl -u caddy -n 30` for "certificate obtained successfully".)

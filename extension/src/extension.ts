@@ -267,6 +267,24 @@ export function activate(context: vscode.ExtensionContext): void {
   // rounds run freely and grade server-side at submit). The affordance is
   // ABSENT, not disabled — a greyed-out button reads as broken, an absent
   // one reads as the rules.
+  // Close the auxiliary bar (owner call 2026-08-19). VS Code 1.105 opens it
+  // on the Chat view and greets the candidate with "Build with agent mode"
+  // inside a timed interview. Seeding browser storage
+  // (workbench-inject.ts preBootSeedScript) hides the chat VIEW, but the
+  // CONTAINER's own key is workspace-scoped and its DB does not exist at
+  // pre-boot — so an empty 300px strip survived. This is the clean lever:
+  // we already run inside the workbench with the full API, and closing it
+  // here uses VS Code's own command, persists into that workspace's state,
+  // and needs no storage archaeology or extra reload. Fire-and-forget: a
+  // renamed command in a future build must never break activation.
+  void (async () => {
+    try {
+      await vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar');
+    } catch {
+      /* command gone in a future VS Code — the panel is cosmetic, activation is not */
+    }
+  })();
+
   const canRunTests = process.env.IP_CAN_RUN_TESTS !== '0';
   // The editor-title Run button (manifest.mjs menus contribution) is gated
   // by this context key — manifest `when` clauses cannot read env. Same

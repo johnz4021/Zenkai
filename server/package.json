@@ -6,10 +6,12 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
     "@interview-prep/shared": "*",
-    "stripe": "^22.4.0",
+    "@types/nodemailer": "^8.0.1",
     "http-proxy": "^1.18.1",
     "monaco-editor": "0.52.2",
+    "nodemailer": "^9.0.5",
     "posthog-js": "^1.302.0",
+    "stripe": "^22.4.0",
     "ws": "^8.21.1"
   }
 }

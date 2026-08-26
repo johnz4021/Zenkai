@@ -28,11 +28,17 @@ const SANDBOX_KEEP = ['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'SHELL', 'USER
  *  generator is an agentic `claude -p` run whose brief carries
  *  stranger-authored prose, and money-moving credentials in its environment
  *  are one prompt injection away from being exfiltrated. Nothing a child does
- *  needs them — billing lives entirely in the app process. */
+ *  needs them — billing lives entirely in the app process.
+ *
+ *  The Gmail app password joins them for the same reason and a sharper one:
+ *  it does not read mail, it SENDS as the founder. Leaked, it is a trusted
+ *  From: header pointed at every beta user's inbox. The welcome sweep runs
+ *  in cli.ts, never in a child. */
 const ALWAYS_DROP = [
   'IP_SUPABASE_SERVICE_KEY',
   'STRIPE_API_KEY',
   'STRIPE_WEBHOOK_SECRET',
+  'IP_GMAIL_APP_PASSWORD',
 ] as const;
 
 /** Dropped for generators on top of ALWAYS_DROP.

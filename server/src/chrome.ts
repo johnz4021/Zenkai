@@ -98,10 +98,12 @@ export function statementHtml(statement: string): string {
 function panesMain(view: SessionPageView): string {
   return /* html */ `<div id="panes">
     <section id="statement"><h1>Problem</h1><div class="body">${statementHtml(view.statement)}</div></section>
+    <div id="splitv" role="separator" aria-orientation="vertical" aria-label="Resize problem pane" tabindex="0"></div>
     <section id="work">
       <div id="tabs"></div>
       <div id="editor"></div>
       <div id="mdpreview"></div>
+      <div id="splith" role="separator" aria-orientation="horizontal" aria-label="Resize test results" tabindex="0"></div>
       <div id="testpanel">
         <div id="testbar"><span class="lbl">test results</span><span id="runstate"></span></div>
         <pre id="runout"></pre>
@@ -260,7 +262,19 @@ ${view.analytics ? view.analytics + '\n' : ''}<style>
   button.cf:hover { border-color: var(--text-3); }
   /* Panes surface: statement · editor · test panel. Same chrome around it. */
   #panes { flex: 1; display: flex; min-width: 0; }
-  #statement { width: 34%; min-width: 260px; max-width: 480px; overflow-y: auto; padding: 16px 18px; border-right: 1px solid var(--line); }
+  #statement { width: 34%; flex: 0 0 auto; overflow-y: auto; padding: 16px 18px; }
+  /* Splitters (owner ask 2026-08-21: test results unreadable at a fixed
+     180px). Hairline handles, not chrome: the 1px line rides one edge of a
+     7px hit area, and steel — the position color — marks an active drag.
+     Sizes are clamped and persisted in panes.js; dblclick resets. */
+  #splitv, #splith { flex: 0 0 7px; }
+  #splitv { cursor: col-resize; border-left: 1px solid var(--line); }
+  #splith { cursor: row-resize; border-top: 1px solid var(--line); }
+  #splitv:hover, #splitv.drag { border-left-color: var(--steel); }
+  #splith:hover, #splith.drag { border-top-color: var(--steel); }
+  body.resizing { user-select: none; }
+  body.resizing.rz-v { cursor: col-resize; }
+  body.resizing.rz-h { cursor: row-resize; }
   #statement h1 { font-family: var(--mono); font-size: 11px; font-weight: normal; color: var(--text-3); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 10px; }
   #statement .body { white-space: pre-wrap; line-height: 1.55; }
   #statement .body code, #mdpreview code { font-family: var(--mono); font-size: .92em; background: var(--sunk); padding: 1px 5px; border-radius: 4px; }
@@ -281,7 +295,7 @@ ${view.analytics ? view.analytics + '\n' : ''}<style>
   #tabs button { background: none; border: 0; border-right: 1px solid var(--line); color: var(--text-2); padding: 7px 14px; font: 12px/1.45 var(--mono); cursor: pointer; white-space: nowrap; border-radius: 0; }
   #tabs button.active { color: var(--text-1); background: var(--sunk); border-bottom: 2px solid var(--steel); }  /* position marker */
   #editor { flex: 1; min-height: 0; }
-  #testpanel { height: 180px; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+  #testpanel { height: 180px; display: flex; flex-direction: column; }
   #testbar { display: flex; align-items: center; gap: 12px; padding: 6px 12px; border-bottom: 1px solid var(--line); }
   #testbar .lbl { color: var(--text-3); font-family: var(--mono); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
   #runstate { color: var(--text-2); font-family: var(--mono); font-size: 12px; }

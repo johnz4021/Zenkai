@@ -102,6 +102,14 @@ export function applySessionSweep(
         // Container FIRST: ide-data is a live mount until it dies.
         spawnSync('docker', ['rm', '-f', a.container], { encoding: 'utf8' });
         console.log(`[sweep] removed container ${a.container}`);
+        // Network AFTER the container (rm fails while attached). Derived from
+        // the container name; legacy 'ip-session' has none and no-ops.
+        // Net name derived inline (same convention as the ip-session-<sid>
+        // container name above) — avoids importing session.ts into the app.
+        if (a.container.startsWith('ip-session-')) {
+          const net = a.container.replace(/^ip-session-/, 'ip-net-');
+          spawnSync('docker', ['network', 'rm', net], { encoding: 'utf8' });
+        }
       } else {
         const dir = path.join(deps.root, '.ide-data', a.sid);
         if (existsSync(dir)) {

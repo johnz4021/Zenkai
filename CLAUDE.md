@@ -36,6 +36,7 @@ cli.ts blueprint <target-id> <spec-id>       # (re)draft a round blueprint — i
 cli.ts generate-for <target-id> [spec-id]    # generate a problem from a confirmed spec
 cli.ts prepare | generate [dir]              # untargeted / gap-targeted pool generation
 cli.ts validate <dir> | cli.ts pool          # mechanical problem check / list unused problems
+cli.ts welcome-sweep [--dry-run|--check]     # post-signup email, ~30 min after they join
 cli.ts rejudge <session-id> [--record]       # re-judge a stored trace; --record writes gap + topic graphs
 cli.ts eval-judge [--quick|--simulate|--resume]  # the judge gauntlet (REAL model calls)
 cli.ts promote-fixture <session-id>          # confirmed session → golden regression fixture
